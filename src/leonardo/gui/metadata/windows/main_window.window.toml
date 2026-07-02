@@ -1,0 +1,81 @@
+metadata_id = "main_window.window"
+kind = "window"
+schema_version = "1"
+title = "Leonardo"
+label = "Leonardo"
+
+[metadata]
+contract_id = "main_window.window"
+logical_kind = "main_application_shell"
+owner_area = "shell"
+window_id = "main_window.window"
+object_name = "main_window"
+test_id = "main_window"
+instance_policy = "singleton"
+
+[metadata.geometry_policy]
+start_mode = "maximized"
+minimum_width = 1280
+minimum_height = 800
+
+[metadata.style_tokens]
+theme_role = "application_shell"
+background = "surface"
+foreground = "text"
+
+[geometry]
+width = 1440
+height = 900
+
+[display]
+visible = true
+enabled = true
+theme = "system"
+
+[style]
+font_size = 14
+density = "comfortable"
+
+[[regions]]
+region_id = "menu_bar"
+label = "Menu Bar"
+
+[[regions]]
+region_id = "toolbar"
+label = "Toolbar"
+
+[[regions]]
+region_id = "central"
+label = "Central Content"
+
+[[regions]]
+region_id = "status_bar"
+label = "Status Bar"
+
+[[actions]]
+action_id = "main_window.open_dummy_metadata_test"
+label = "Open Dummy Metadata Test"
+
+[[actions]]
+action_id = "main_window.open_settings_inspector"
+label = "Open Settings Inspector"
+
+[[actions]]
+action_id = "main_window.open_runtime_manager"
+label = "Open Runtime Manager"
+
+[[actions]]
+action_id = "main_window.exit"
+label = "Exit"
+
+[[settings]]
+path = "style.font_size"
+label = "Font Size"
+value_type = "integer"
+description = "Default text size for the Leonardo shell."
+
+[[settings]]
+path = "style.density"
+label = "Density"
+value_type = "string"
+description = "Default density token for the Leonardo shell."
