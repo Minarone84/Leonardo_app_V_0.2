@@ -1,16 +1,6 @@
-from pathlib import Path
-import sys
-import types
-
 import pytest
 
-_SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
-sys.path.insert(0, str(_SRC_ROOT))
-leonardo_package = types.ModuleType("leonardo")
-leonardo_package.__path__ = [str(_SRC_ROOT / "leonardo")]
-sys.modules["leonardo"] = leonardo_package
-
-from src.leonardo.contracts.kernel import (  # noqa: E402
+from leonardo.contracts.kernel import (
     ContractCompatibilityReport,
     ContractCompatibilityStatus,
     ContractDescriptor,
