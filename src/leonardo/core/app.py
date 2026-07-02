@@ -18,6 +18,7 @@ from leonardo.core.audit_log import (
     JsonlAuditSink,
 )
 from leonardo.core.action_registry import ActionRegistry
+from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.error_router import ErrorRouter
@@ -46,6 +47,7 @@ class CoreContext:
     error_router: ErrorRouter
     task_manager: TaskManager
     process_manager: ProcessManager
+    connection_registry: ConnectionRegistry
     window_registry: WindowRegistry
     action_registry: ActionRegistry
     operation_registry: OperationRegistry
@@ -57,8 +59,8 @@ class LeonardoApp:
     Composition root for the initial Leonardo V2 Core runtime foundation.
 
     The skeleton owns construction of Core services and lifecycle state
-    transitions. It does not start an async runtime, GUI, process, or
-    domain service.
+    transitions. It does not start an async runtime, GUI, process, connection,
+    or domain service.
     """
 
     def __init__(self, config: AppConfig | None = None) -> None:
@@ -82,6 +84,7 @@ class LeonardoApp:
             self.audit_log,
             error_router=self.error_router,
         )
+        self.connection_registry = ConnectionRegistry(self.state_store)
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
         self.operation_registry = OperationRegistry(self.state_store)
@@ -91,6 +94,7 @@ class LeonardoApp:
             service_registry=self.service_registry,
             task_manager=self.task_manager,
             process_manager=self.process_manager,
+            connection_registry=self.connection_registry,
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
@@ -108,6 +112,7 @@ class LeonardoApp:
             error_router=self.error_router,
             task_manager=self.task_manager,
             process_manager=self.process_manager,
+            connection_registry=self.connection_registry,
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
@@ -229,6 +234,57 @@ def _runtime_contract_descriptors() -> tuple[ContractDescriptor, ...]:
                 "exit_code",
                 "status",
                 "completed_at_utc",
+            ),
+        ),
+        _descriptor(
+            "leonardo.connections.endpoint",
+            required_fields=("label", "protocol"),
+        ),
+        _descriptor(
+            "leonardo.connections.definition",
+            required_fields=(
+                "connection_id",
+                "label",
+                "kind",
+                "protocol",
+                "direction",
+            ),
+        ),
+        _descriptor(
+            "leonardo.connections.runtime_state",
+            required_fields=(
+                "connection_id",
+                "label",
+                "kind",
+                "protocol",
+                "direction",
+                "status",
+                "registered_at_utc",
+                "updated_at_utc",
+            ),
+        ),
+        _descriptor(
+            "leonardo.connections.websocket_channel_definition",
+            required_fields=("channel_id", "connection_id", "label"),
+        ),
+        _descriptor(
+            "leonardo.connections.websocket_channel_runtime_state",
+            required_fields=(
+                "channel_id",
+                "connection_id",
+                "label",
+                "status",
+                "registered_at_utc",
+                "updated_at_utc",
+            ),
+        ),
+        _descriptor(
+            "leonardo.connections.event_record",
+            required_fields=(
+                "event_type",
+                "connection_id",
+                "status",
+                "timestamp_utc",
             ),
         ),
         _descriptor(

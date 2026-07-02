@@ -37,6 +37,10 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
         "1.0",
     ) is not None
     assert app.contract_registry.get_contract(
+        "leonardo.connections.runtime_state",
+        "1.0",
+    ) is not None
+    assert app.contract_registry.get_contract(
         "leonardo.gui.window_definition",
         "1.0",
     ) is not None
@@ -46,11 +50,14 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     ) is not None
     assert context.task_manager is app.task_manager
     assert context.process_manager is app.process_manager
+    assert context.connection_registry is app.connection_registry
     assert context.window_registry is app.window_registry
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
     assert context.runtime_manager is app.runtime_manager
     assert app.process_manager.active_processes() == ()
+    assert app.connection_registry.connection_states() == ()
+    assert app.connection_registry.websocket_channel_states() == ()
 
     app.shutdown()
     app.shutdown()

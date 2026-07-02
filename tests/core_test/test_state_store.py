@@ -1,6 +1,14 @@
 import pytest
 
 from leonardo.contracts.audit import AuditCategory
+from leonardo.contracts.connections import (
+    ConnectionDefinition,
+    ConnectionDirection,
+    ConnectionKind,
+    ConnectionLifecycleStatus,
+    ConnectionProtocol,
+    WebSocketChannelDefinition,
+)
 from leonardo.contracts.gui import (
     ActionTriggerRecord,
     WindowDefinition,
@@ -171,3 +179,39 @@ def test_state_store_tracks_active_processes_and_removes_terminal_state() -> Non
     assert state_store.processes_state() == ()
     assert state_store.runtime_snapshot().process_states == ()
     assert audit_log.snapshot()[-1].event_type == "process.lifecycle.stopped"
+
+
+def test_state_store_tracks_connection_and_channel_last_known_state() -> None:
+    audit_log = AuditLog()
+    state_store = StateStore(audit_log)
+    definition = ConnectionDefinition(
+        connection_id="connection-1",
+        label="Runtime feed",
+        kind=ConnectionKind.EXTERNAL_SERVICE,
+        protocol=ConnectionProtocol.WEBSOCKET,
+        direction=ConnectionDirection.OUTBOUND,
+    )
+    channel = WebSocketChannelDefinition(
+        channel_id="channel-1",
+        connection_id="connection-1",
+        label="Runtime channel",
+    )
+
+    registered = state_store.connection_registered(definition)
+    state_store.websocket_channel_registered(channel)
+    connected = state_store.connection_connected("connection-1")
+    counted = state_store.websocket_channel_received("channel-1", count=2)
+    failed = state_store.connection_failed(
+        "connection-1",
+        last_error_message="Runtime feed stopped",
+    )
+
+    snapshot = state_store.runtime_snapshot()
+    assert registered.status is ConnectionLifecycleStatus.REGISTERED
+    assert connected.status is ConnectionLifecycleStatus.CONNECTED
+    assert counted.received_count == 2
+    assert failed.status is ConnectionLifecycleStatus.FAILED
+    assert snapshot.connection_states == (failed,)
+    assert snapshot.websocket_channel_states[0].status is ConnectionLifecycleStatus.FAILED
+    assert snapshot.websocket_channel_states[0].received_count == 2
+    assert audit_log.snapshot()[-1].event_type == "connection.lifecycle.failed"

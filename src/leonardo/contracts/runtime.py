@@ -8,6 +8,10 @@ from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
 
+from leonardo.contracts.connections import (
+    ConnectionRuntimeState,
+    WebSocketChannelRuntimeState,
+)
 from leonardo.contracts.gui import ActionTriggerRecord, WindowRuntimeState
 from leonardo.contracts.operations import OperationRuntimeState
 from leonardo.contracts.processes import ProcessRuntimeState
@@ -149,7 +153,7 @@ class TaskRuntimeState:
 
 @dataclass(frozen=True)
 class RuntimeSnapshot:
-    """Immutable snapshot of current app, service, and task runtime state."""
+    """Immutable snapshot of current Core runtime state."""
 
     app_state: AppRuntimeState
     service_states: tuple[ServiceRuntimeState, ...]
@@ -158,6 +162,8 @@ class RuntimeSnapshot:
     recent_action_triggers: tuple[ActionTriggerRecord, ...] = ()
     operation_states: tuple[OperationRuntimeState, ...] = ()
     process_states: tuple[ProcessRuntimeState, ...] = ()
+    connection_states: tuple[ConnectionRuntimeState, ...] = ()
+    websocket_channel_states: tuple[WebSocketChannelRuntimeState, ...] = ()
     captured_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -196,6 +202,23 @@ class RuntimeSnapshot:
             if not isinstance(process_state, ProcessRuntimeState):
                 raise TypeError(
                     "process_states entries must be ProcessRuntimeState"
+                )
+        object.__setattr__(self, "connection_states", tuple(self.connection_states))
+        for connection_state in self.connection_states:
+            if not isinstance(connection_state, ConnectionRuntimeState):
+                raise TypeError(
+                    "connection_states entries must be ConnectionRuntimeState"
+                )
+        object.__setattr__(
+            self,
+            "websocket_channel_states",
+            tuple(self.websocket_channel_states),
+        )
+        for channel_state in self.websocket_channel_states:
+            if not isinstance(channel_state, WebSocketChannelRuntimeState):
+                raise TypeError(
+                    "websocket_channel_states entries must be "
+                    "WebSocketChannelRuntimeState"
                 )
         object.__setattr__(
             self,

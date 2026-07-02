@@ -6,6 +6,13 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
+from leonardo.contracts.connections import (
+    ConnectionDefinition,
+    ConnectionLifecycleStatus,
+    ConnectionRuntimeState,
+    WebSocketChannelDefinition,
+    WebSocketChannelRuntimeState,
+)
 from leonardo.contracts.gui import (
     ActionTriggerRecord,
     WindowDefinition,
@@ -53,6 +60,8 @@ class StateStore:
         self._recent_action_triggers: list[ActionTriggerRecord] = []
         self._operation_states: dict[str, OperationRuntimeState] = {}
         self._process_states: dict[str, ProcessRuntimeState] = {}
+        self._connection_states: dict[str, ConnectionRuntimeState] = {}
+        self._websocket_channel_states: dict[str, WebSocketChannelRuntimeState] = {}
 
     def get_app_state(self) -> AppRuntimeState:
         """Return the current application runtime state."""
@@ -187,6 +196,8 @@ class StateStore:
             recent_action_triggers=self.recent_action_triggers(),
             operation_states=self.operations_state(),
             process_states=self.processes_state(),
+            connection_states=self.connection_states(),
+            websocket_channel_states=self.websocket_channel_states(),
         )
 
     def task_started(
@@ -611,6 +622,388 @@ class StateStore:
             for process_id in sorted(self._process_states)
         )
 
+    def connection_registered(
+        self,
+        definition: ConnectionDefinition,
+    ) -> ConnectionRuntimeState:
+        """Register a tracked connection as current runtime state."""
+
+        if not isinstance(definition, ConnectionDefinition):
+            raise TypeError("definition must be a ConnectionDefinition")
+        if definition.connection_id in self._connection_states:
+            raise ValueError(
+                "Connection runtime state already registered: "
+                f"{definition.connection_id}"
+            )
+        now = datetime.now(UTC)
+        state = ConnectionRuntimeState(
+            connection_id=definition.connection_id,
+            label=definition.label,
+            kind=definition.kind,
+            protocol=definition.protocol,
+            direction=definition.direction,
+            status=ConnectionLifecycleStatus.REGISTERED,
+            registered_at_utc=now,
+            updated_at_utc=now,
+            service_id=definition.service_id,
+            process_id=definition.process_id,
+            metadata=definition.metadata,
+        )
+        self._connection_states[state.connection_id] = state
+        self._emit_connection_event(
+            state,
+            event_type="connection.lifecycle.registered",
+            message=f"Connection registered: {state.label}",
+            failed=False,
+        )
+        return state
+
+    def connection_connecting(
+        self,
+        connection_id: str,
+        *,
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> ConnectionRuntimeState:
+        """Mark a tracked connection as attempting readiness."""
+
+        return self._set_connection_status(
+            connection_id,
+            ConnectionLifecycleStatus.CONNECTING,
+            event_type="connection.lifecycle.connecting",
+            operation_id=operation_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
+    def connection_connected(
+        self,
+        connection_id: str,
+        *,
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> ConnectionRuntimeState:
+        """Mark a tracked connection as ready."""
+
+        return self._set_connection_status(
+            connection_id,
+            ConnectionLifecycleStatus.CONNECTED,
+            event_type="connection.lifecycle.connected",
+            operation_id=operation_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
+    def connection_degraded(
+        self,
+        connection_id: str,
+        *,
+        last_error_message: str,
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> ConnectionRuntimeState:
+        """Mark a tracked connection as degraded with diagnostic text."""
+
+        return self._set_connection_status(
+            connection_id,
+            ConnectionLifecycleStatus.DEGRADED,
+            event_type="connection.lifecycle.degraded",
+            last_error_message=last_error_message,
+            operation_id=operation_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
+    def connection_disconnect_requested(
+        self,
+        connection_id: str,
+        *,
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> ConnectionRuntimeState:
+        """Mark a tracked connection as requested to stop."""
+
+        return self._set_connection_status(
+            connection_id,
+            ConnectionLifecycleStatus.DISCONNECT_REQUESTED,
+            event_type="connection.lifecycle.disconnect_requested",
+            operation_id=operation_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
+    def connection_disconnected(
+        self,
+        connection_id: str,
+        *,
+        message: str = "",
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> ConnectionRuntimeState:
+        """Mark a tracked connection as stopped while retaining last-known state."""
+
+        return self._set_connection_status(
+            connection_id,
+            ConnectionLifecycleStatus.DISCONNECTED,
+            event_type="connection.lifecycle.disconnected",
+            message=message,
+            operation_id=operation_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+        )
+
+    def connection_failed(
+        self,
+        connection_id: str,
+        *,
+        last_error_message: str,
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> ConnectionRuntimeState:
+        """Mark a tracked connection as failed while retaining last-known state."""
+
+        return self._set_connection_status(
+            connection_id,
+            ConnectionLifecycleStatus.FAILED,
+            event_type="connection.lifecycle.failed",
+            last_error_message=last_error_message,
+            operation_id=operation_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            failed=True,
+        )
+
+    def connection_heartbeat(
+        self,
+        connection_id: str,
+        *,
+        timestamp_utc: datetime | None = None,
+    ) -> ConnectionRuntimeState:
+        """Record the latest observed heartbeat timestamp for a connection."""
+
+        previous = self._require_connection_state(connection_id)
+        timestamp = _coerce_utc(
+            timestamp_utc if timestamp_utc is not None else datetime.now(UTC),
+            "timestamp_utc",
+        )
+        state = replace(
+            previous,
+            updated_at_utc=timestamp,
+            last_heartbeat_at_utc=timestamp,
+        )
+        self._connection_states[connection_id] = state
+        return state
+
+    def connection_states(self) -> tuple[ConnectionRuntimeState, ...]:
+        """Return connection runtime states in deterministic order."""
+
+        return tuple(
+            self._connection_states[connection_id]
+            for connection_id in sorted(self._connection_states)
+        )
+
+    def websocket_channel_registered(
+        self,
+        definition: WebSocketChannelDefinition,
+    ) -> WebSocketChannelRuntimeState:
+        """Register a tracked WebSocket channel under a known connection."""
+
+        if not isinstance(definition, WebSocketChannelDefinition):
+            raise TypeError("definition must be a WebSocketChannelDefinition")
+        if definition.channel_id in self._websocket_channel_states:
+            raise ValueError(
+                "WebSocket channel runtime state already registered: "
+                f"{definition.channel_id}"
+            )
+        parent = self._require_connection_state(definition.connection_id)
+        now = datetime.now(UTC)
+        state = WebSocketChannelRuntimeState(
+            channel_id=definition.channel_id,
+            connection_id=definition.connection_id,
+            label=definition.label,
+            status=parent.status,
+            registered_at_utc=now,
+            updated_at_utc=now,
+            metadata=definition.metadata,
+        )
+        self._websocket_channel_states[state.channel_id] = state
+        self._emit_channel_event(
+            state,
+            event_type="connection.channel.registered",
+            message=f"WebSocket channel registered: {state.label}",
+            failed=False,
+        )
+        return state
+
+    def websocket_channel_received(
+        self,
+        channel_id: str,
+        *,
+        count: int = 1,
+        timestamp_utc: datetime | None = None,
+    ) -> WebSocketChannelRuntimeState:
+        """Record received message count for a tracked WebSocket channel."""
+
+        return self._update_channel_counter(
+            channel_id,
+            field_name="received_count",
+            count=count,
+            timestamp_utc=timestamp_utc,
+        )
+
+    def websocket_channel_sent(
+        self,
+        channel_id: str,
+        *,
+        count: int = 1,
+        timestamp_utc: datetime | None = None,
+    ) -> WebSocketChannelRuntimeState:
+        """Record sent message count for a tracked WebSocket channel."""
+
+        return self._update_channel_counter(
+            channel_id,
+            field_name="sent_count",
+            count=count,
+            timestamp_utc=timestamp_utc,
+        )
+
+    def websocket_channel_error(
+        self,
+        channel_id: str,
+        *,
+        count: int = 1,
+        timestamp_utc: datetime | None = None,
+    ) -> WebSocketChannelRuntimeState:
+        """Record error count for a tracked WebSocket channel."""
+
+        return self._update_channel_counter(
+            channel_id,
+            field_name="error_count",
+            count=count,
+            timestamp_utc=timestamp_utc,
+            status=ConnectionLifecycleStatus.DEGRADED,
+        )
+
+    def websocket_channel_states(self) -> tuple[WebSocketChannelRuntimeState, ...]:
+        """Return WebSocket channel runtime states in deterministic order."""
+
+        return tuple(
+            self._websocket_channel_states[channel_id]
+            for channel_id in sorted(self._websocket_channel_states)
+        )
+
+    def _set_connection_status(
+        self,
+        connection_id: str,
+        status: ConnectionLifecycleStatus,
+        *,
+        event_type: str,
+        message: str = "",
+        last_error_message: str | None = None,
+        operation_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+        failed: bool = False,
+    ) -> ConnectionRuntimeState:
+        previous = self._require_connection_state(connection_id)
+        now = datetime.now(UTC)
+        connected_at = previous.connected_at_utc
+        disconnected_at = previous.disconnected_at_utc
+        if status is ConnectionLifecycleStatus.CONNECTED:
+            connected_at = connected_at or now
+            disconnected_at = None
+        if status.is_terminal:
+            disconnected_at = now
+
+        state = replace(
+            previous,
+            status=status,
+            updated_at_utc=now,
+            connected_at_utc=connected_at,
+            disconnected_at_utc=disconnected_at,
+            last_error_message=(
+                last_error_message
+                if last_error_message is not None
+                else previous.last_error_message
+            ),
+            operation_id=(
+                operation_id if operation_id is not None else previous.operation_id
+            ),
+            task_id=task_id if task_id is not None else previous.task_id,
+            correlation_id=(
+                correlation_id if correlation_id is not None else previous.correlation_id
+            ),
+        )
+        self._connection_states[connection_id] = state
+        self._set_channel_status_for_connection(state.connection_id, status, now)
+        self._emit_connection_event(
+            state,
+            event_type=event_type,
+            message=(
+                message
+                or f"Connection status changed to {status.value}: {state.label}"
+            ),
+            failed=failed,
+        )
+        return state
+
+    def _set_channel_status_for_connection(
+        self,
+        connection_id: str,
+        status: ConnectionLifecycleStatus,
+        updated_at_utc: datetime,
+    ) -> None:
+        for channel_id in sorted(self._websocket_channel_states):
+            previous = self._websocket_channel_states[channel_id]
+            if previous.connection_id != connection_id:
+                continue
+            state = replace(
+                previous,
+                status=status,
+                updated_at_utc=updated_at_utc,
+            )
+            self._websocket_channel_states[channel_id] = state
+            self._emit_channel_event(
+                state,
+                event_type="connection.channel.status_changed",
+                message=(
+                    "WebSocket channel status changed to "
+                    f"{status.value}: {state.label}"
+                ),
+                failed=status is ConnectionLifecycleStatus.FAILED,
+            )
+
+    def _update_channel_counter(
+        self,
+        channel_id: str,
+        *,
+        field_name: str,
+        count: int,
+        timestamp_utc: datetime | None,
+        status: ConnectionLifecycleStatus | None = None,
+    ) -> WebSocketChannelRuntimeState:
+        _validate_positive_int(count, "count")
+        previous = self._require_channel_state(channel_id)
+        timestamp = _coerce_utc(
+            timestamp_utc if timestamp_utc is not None else datetime.now(UTC),
+            "timestamp_utc",
+        )
+        state = replace(
+            previous,
+            status=status if status is not None else previous.status,
+            updated_at_utc=timestamp,
+            last_message_at_utc=timestamp,
+            **{field_name: getattr(previous, field_name) + count},
+        )
+        self._websocket_channel_states[channel_id] = state
+        return state
+
     def _emit_transition_event(
         self,
         *,
@@ -646,6 +1039,25 @@ class StateStore:
         state = self._process_states.get(process_id)
         if state is None:
             raise KeyError(f"Process runtime state is not active: {process_id}")
+        return state
+
+    def _require_connection_state(self, connection_id: str) -> ConnectionRuntimeState:
+        state = self._connection_states.get(connection_id)
+        if state is None:
+            raise KeyError(
+                f"Connection runtime state is not registered: {connection_id}"
+            )
+        return state
+
+    def _require_channel_state(
+        self,
+        channel_id: str,
+    ) -> WebSocketChannelRuntimeState:
+        state = self._websocket_channel_states.get(channel_id)
+        if state is None:
+            raise KeyError(
+                f"WebSocket channel runtime state is not registered: {channel_id}"
+            )
         return state
 
     def _terminal_process_transition(
@@ -809,3 +1221,85 @@ class StateStore:
                 },
             )
         )
+
+    def _emit_connection_event(
+        self,
+        state: ConnectionRuntimeState,
+        *,
+        event_type: str,
+        message: str,
+        failed: bool,
+    ) -> None:
+        severity = AuditSeverity.INFO
+        if failed:
+            severity = AuditSeverity.ERROR
+        elif state.status is ConnectionLifecycleStatus.DEGRADED:
+            severity = AuditSeverity.WARNING
+        self._audit_log.emit(
+            AuditEvent(
+                event_type=event_type,
+                message=message,
+                severity=severity,
+                category=AuditCategory.RUNTIME,
+                origin=ActorOrigin.SYSTEM,
+                operation_id=state.operation_id,
+                task_id=state.task_id,
+                connection_id=state.connection_id,
+                correlation_id=state.correlation_id,
+                payload={
+                    "connection_id": state.connection_id,
+                    "label": state.label,
+                    "kind": state.kind,
+                    "protocol": state.protocol,
+                    "direction": state.direction,
+                    "status": state.status,
+                    "service_id": state.service_id,
+                    "process_id": state.process_id,
+                    "error_message": state.last_error_message,
+                },
+            )
+        )
+
+    def _emit_channel_event(
+        self,
+        state: WebSocketChannelRuntimeState,
+        *,
+        event_type: str,
+        message: str,
+        failed: bool,
+    ) -> None:
+        severity = AuditSeverity.ERROR if failed else AuditSeverity.INFO
+        if state.status is ConnectionLifecycleStatus.DEGRADED:
+            severity = AuditSeverity.WARNING
+        self._audit_log.emit(
+            AuditEvent(
+                event_type=event_type,
+                message=message,
+                severity=severity,
+                category=AuditCategory.RUNTIME,
+                origin=ActorOrigin.SYSTEM,
+                connection_id=state.connection_id,
+                payload={
+                    "connection_id": state.connection_id,
+                    "channel_id": state.channel_id,
+                    "label": state.label,
+                    "status": state.status,
+                    "received_count": state.received_count,
+                    "sent_count": state.sent_count,
+                    "error_count": state.error_count,
+                },
+            )
+        )
+
+
+def _coerce_utc(value: datetime, field_name: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise TypeError(f"{field_name} must be a datetime")
+    if value.tzinfo is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _validate_positive_int(value: int, field_name: str) -> None:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{field_name} must be a positive integer")

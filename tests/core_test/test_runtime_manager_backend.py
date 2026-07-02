@@ -1,4 +1,11 @@
 from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
+from leonardo.contracts.connections import (
+    ConnectionDefinition,
+    ConnectionDirection,
+    ConnectionKind,
+    ConnectionProtocol,
+    WebSocketChannelDefinition,
+)
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import RuntimeHealthStatus, RuntimeSectionStatus
 from leonardo.contracts.operations import OperationKind
@@ -148,6 +155,7 @@ def test_runtime_manager_snapshot_includes_audit_sink_failure_previews() -> None
         service_registry=app.service_registry,
         task_manager=app.task_manager,
         process_manager=app.process_manager,
+        connection_registry=app.connection_registry,
         window_registry=app.window_registry,
         action_registry=app.action_registry,
         operation_registry=app.operation_registry,
@@ -177,9 +185,9 @@ def test_runtime_manager_snapshot_includes_contract_registry_summary() -> None:
 
     snapshot = app.runtime_manager.snapshot()
 
-    assert snapshot.contract_registry.total_contracts == 14
-    assert snapshot.contract_registry.active_contracts == 14
-    assert snapshot.contracts_summary.count == 14
+    assert snapshot.contract_registry.total_contracts == 20
+    assert snapshot.contract_registry.active_contracts == 20
+    assert snapshot.contracts_summary.count == 20
 
 
 def test_runtime_manager_snapshot_includes_process_summary() -> None:
@@ -201,6 +209,62 @@ def test_runtime_manager_snapshot_includes_process_summary() -> None:
     assert snapshot.processes_summary.metadata["process_labels"] == (
         "Inspect runtime",
     )
+
+
+def test_runtime_manager_snapshot_includes_connection_summary() -> None:
+    app = LeonardoApp()
+    app.connection_registry.register_connection(
+        ConnectionDefinition(
+            connection_id="connection-1",
+            label="Runtime feed",
+            kind=ConnectionKind.EXTERNAL_SERVICE,
+            protocol=ConnectionProtocol.WEBSOCKET,
+            direction=ConnectionDirection.OUTBOUND,
+        )
+    )
+    app.connection_registry.register_websocket_channel(
+        WebSocketChannelDefinition(
+            channel_id="channel-1",
+            connection_id="connection-1",
+            label="Runtime channel",
+        )
+    )
+    app.connection_registry.mark_connection_connected("connection-1")
+    app.connection_registry.record_channel_received("channel-1", count=2)
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.connections_summary.count == 1
+    assert snapshot.connections_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.connections_summary.metadata["connection_ids"] == (
+        "connection-1",
+    )
+    assert snapshot.connections_summary.metadata["connected_count"] == 1
+    assert snapshot.connections_summary.metadata["websocket_channel_count"] == 1
+    assert snapshot.connections_summary.metadata["channel_received_count"] == 2
+
+
+def test_runtime_manager_snapshot_degrades_when_connection_degraded() -> None:
+    app = LeonardoApp()
+    app.connection_registry.register_connection(
+        ConnectionDefinition(
+            connection_id="connection-1",
+            label="Runtime feed",
+            kind=ConnectionKind.EXTERNAL_SERVICE,
+            protocol=ConnectionProtocol.WEBSOCKET,
+            direction=ConnectionDirection.OUTBOUND,
+        )
+    )
+    app.connection_registry.mark_connection_degraded(
+        "connection-1",
+        last_error_message="Heartbeat late",
+    )
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.connections_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.connections_summary.metadata["degraded_count"] == 1
 
 
 def test_runtime_manager_snapshot_degrades_when_app_failed() -> None:

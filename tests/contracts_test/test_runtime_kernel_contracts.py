@@ -8,6 +8,14 @@ from leonardo.contracts.audit import (
     AuditEvent,
     AuditSeverity,
 )
+from leonardo.contracts.connections import (
+    ConnectionDirection,
+    ConnectionKind,
+    ConnectionLifecycleStatus,
+    ConnectionProtocol,
+    ConnectionRuntimeState,
+    WebSocketChannelRuntimeState,
+)
 from leonardo.contracts.errors import ErrorReport, ErrorSeverity
 from leonardo.contracts.identity import (
     ActorOrigin,
@@ -81,13 +89,36 @@ def test_runtime_snapshot_contains_current_app_and_service_state() -> None:
         service_id="audit-log",
         status=ServiceLifecycleStatus.RUNNING,
     )
+    now = datetime.now(UTC)
+    connection_state = ConnectionRuntimeState(
+        connection_id="connection-1",
+        label="Runtime feed",
+        kind=ConnectionKind.EXTERNAL_SERVICE,
+        protocol=ConnectionProtocol.WEBSOCKET,
+        direction=ConnectionDirection.OUTBOUND,
+        status=ConnectionLifecycleStatus.CONNECTED,
+        registered_at_utc=now,
+        updated_at_utc=now,
+    )
+    channel_state = WebSocketChannelRuntimeState(
+        channel_id="channel-1",
+        connection_id="connection-1",
+        label="Runtime channel",
+        status=ConnectionLifecycleStatus.CONNECTED,
+        registered_at_utc=now,
+        updated_at_utc=now,
+    )
     snapshot = RuntimeSnapshot(
         app_state=app_state,
         service_states=(service_state,),
+        connection_states=(connection_state,),
+        websocket_channel_states=(channel_state,),
     )
 
     assert snapshot.app_state.status is AppLifecycleStatus.RUNNING
     assert snapshot.service_states == (service_state,)
+    assert snapshot.connection_states == (connection_state,)
+    assert snapshot.websocket_channel_states == (channel_state,)
 
 
 def test_service_descriptor_rejects_duplicate_dependencies() -> None:
