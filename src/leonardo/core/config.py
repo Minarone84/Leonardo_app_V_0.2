@@ -22,12 +22,28 @@ class RuntimePaths:
 
 
 @dataclass(frozen=True)
+class AuditConfig:
+    """
+    Audit logging configuration.
+
+    The JSONL path is resolved during configuration loading, but directories are
+    not created until a durable sink writes an event.
+    """
+
+    enabled: bool = True
+    memory_max_events: int = 1000
+    jsonl_enabled: bool = False
+    jsonl_path: Path | None = None
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Core application configuration for the initial runtime foundation."""
 
     app_name: str
     environment: str
     paths: RuntimePaths
+    audit: AuditConfig
     development_mode: bool = True
 
 
@@ -52,5 +68,8 @@ def load_default_config(repo_root: Path | str | None = None) -> AppConfig:
             runs_dir=resolved_root / "runs",
             historical_data_dir=resolved_root / "historical_data",
             tmp_dir=resolved_root / "tmp",
+        ),
+        audit=AuditConfig(
+            jsonl_path=resolved_root / "runs" / "audit.jsonl",
         ),
     )

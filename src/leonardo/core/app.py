@@ -11,8 +11,13 @@ from leonardo.contracts.kernel import (
     ContractStatus,
 )
 from leonardo.contracts.runtime import AppLifecycleStatus
-from leonardo.core.audit_log import AuditLog
-from leonardo.core.config import AppConfig, load_default_config
+from leonardo.core.audit_log import (
+    AuditLog,
+    CompositeAuditSink,
+    InMemoryAuditSink,
+    JsonlAuditSink,
+)
+from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.error_router import ErrorRouter
 from leonardo.core.service_registry import ServiceRegistry
@@ -48,7 +53,7 @@ class LeonardoApp:
 
     def __init__(self, config: AppConfig | None = None) -> None:
         self.config = config if config is not None else load_default_config()
-        self.audit_log = AuditLog()
+        self.audit_log = _build_audit_log(self.config.audit)
         self.contract_registry = ContractRegistry()
         self.state_store = StateStore(self.audit_log)
         self.session_manager = SessionManager(audit_log=self.audit_log)
@@ -116,6 +121,7 @@ class LeonardoApp:
             return
         self.state_store.set_app_lifecycle_status(AppLifecycleStatus.STOPPING)
         self.state_store.set_app_lifecycle_status(AppLifecycleStatus.STOPPED)
+        self.audit_log.close()
 
     def _register_runtime_contracts(self) -> None:
         for descriptor in _runtime_contract_descriptors():
@@ -189,4 +195,21 @@ def _descriptor(
         status=ContractStatus.ACTIVE,
         schema_kind=ContractSchemaKind.FIELD_SET,
         required_fields=required_fields,
+    )
+
+
+def _build_audit_log(config: AuditConfig) -> AuditLog:
+    memory_sink = InMemoryAuditSink(max_events=config.memory_max_events)
+    if not config.enabled or not config.jsonl_enabled:
+        return AuditLog(memory_sink)
+
+    if config.jsonl_path is None:
+        raise ValueError("audit.jsonl_path must be configured when JSONL audit is enabled")
+    return AuditLog(
+        CompositeAuditSink(
+            (
+                memory_sink,
+                JsonlAuditSink(config.jsonl_path),
+            )
+        )
     )

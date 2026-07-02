@@ -13,6 +13,7 @@ def test_default_config_resolves_runtime_paths_without_creating_directories(tmp_
     assert config.paths.runs_dir == tmp_path / "runs"
     assert config.paths.historical_data_dir == tmp_path / "historical_data"
     assert config.paths.tmp_dir == tmp_path / "tmp"
+    assert config.audit.jsonl_path == tmp_path / "runs" / "audit.jsonl"
     assert not config.paths.runs_dir.exists()
 
 
