@@ -10,6 +10,7 @@ from types import MappingProxyType
 
 from leonardo.contracts.gui import ActionTriggerRecord, WindowRuntimeState
 from leonardo.contracts.operations import OperationRuntimeState
+from leonardo.contracts.processes import ProcessRuntimeState
 
 
 class AppLifecycleStatus(str, Enum):
@@ -156,6 +157,7 @@ class RuntimeSnapshot:
     window_states: tuple[WindowRuntimeState, ...] = ()
     recent_action_triggers: tuple[ActionTriggerRecord, ...] = ()
     operation_states: tuple[OperationRuntimeState, ...] = ()
+    process_states: tuple[ProcessRuntimeState, ...] = ()
     captured_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -188,6 +190,12 @@ class RuntimeSnapshot:
             if not isinstance(operation_state, OperationRuntimeState):
                 raise TypeError(
                     "operation_states entries must be OperationRuntimeState"
+                )
+        object.__setattr__(self, "process_states", tuple(self.process_states))
+        for process_state in self.process_states:
+            if not isinstance(process_state, ProcessRuntimeState):
+                raise TypeError(
+                    "process_states entries must be ProcessRuntimeState"
                 )
         object.__setattr__(
             self,

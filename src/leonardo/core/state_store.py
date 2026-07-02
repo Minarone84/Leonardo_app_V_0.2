@@ -14,6 +14,11 @@ from leonardo.contracts.gui import (
 )
 from leonardo.contracts.identity import ActorOrigin
 from leonardo.contracts.operations import OperationRuntimeState
+from leonardo.contracts.processes import (
+    ProcessLaunchRequest,
+    ProcessLifecycleStatus,
+    ProcessRuntimeState,
+)
 from leonardo.contracts.runtime import (
     AppLifecycleStatus,
     AppRuntimeState,
@@ -47,6 +52,7 @@ class StateStore:
         self._window_states: dict[str, WindowRuntimeState] = {}
         self._recent_action_triggers: list[ActionTriggerRecord] = []
         self._operation_states: dict[str, OperationRuntimeState] = {}
+        self._process_states: dict[str, ProcessRuntimeState] = {}
 
     def get_app_state(self) -> AppRuntimeState:
         """Return the current application runtime state."""
@@ -180,6 +186,7 @@ class StateStore:
             window_states=self.windows_state(),
             recent_action_triggers=self.recent_action_triggers(),
             operation_states=self.operations_state(),
+            process_states=self.processes_state(),
         )
 
     def task_started(
@@ -466,6 +473,144 @@ class StateStore:
             for operation_id in sorted(self._operation_states)
         )
 
+    def process_starting(
+        self,
+        request: ProcessLaunchRequest,
+    ) -> ProcessRuntimeState:
+        """Register a process launch attempt as active runtime state."""
+
+        if not isinstance(request, ProcessLaunchRequest):
+            raise TypeError("request must be a ProcessLaunchRequest")
+        if request.process_id in self._process_states:
+            raise ValueError(
+                f"Process runtime state already registered: {request.process_id}"
+            )
+        now = datetime.now(UTC)
+        state = ProcessRuntimeState(
+            process_id=request.process_id,
+            label=request.label,
+            kind=request.kind,
+            status=ProcessLifecycleStatus.STARTING,
+            command=request.command,
+            updated_at_utc=now,
+            operation_id=request.operation_id,
+            task_id=request.task_id,
+            service_id=request.service_id,
+            correlation_id=request.correlation_id,
+            metadata=request.metadata,
+        )
+        self._process_states[state.process_id] = state
+        self._emit_process_event(
+            state,
+            event_type="process.lifecycle.starting",
+            message=f"Process starting: {state.label}",
+            failed=False,
+        )
+        return state
+
+    def process_running(
+        self,
+        process_id: str,
+        *,
+        pid: int | None,
+    ) -> ProcessRuntimeState:
+        """Mark an active process as running."""
+
+        previous = self._require_process_state(process_id)
+        now = datetime.now(UTC)
+        state = replace(
+            previous,
+            status=ProcessLifecycleStatus.RUNNING,
+            pid=pid,
+            started_at_utc=previous.started_at_utc or now,
+            updated_at_utc=now,
+        )
+        self._process_states[process_id] = state
+        self._emit_process_event(
+            state,
+            event_type="process.lifecycle.running",
+            message=f"Process running: {state.label}",
+            failed=False,
+        )
+        return state
+
+    def process_stop_requested(self, process_id: str) -> ProcessRuntimeState:
+        """Mark an active process as requested to stop."""
+
+        previous = self._require_process_state(process_id)
+        state = replace(
+            previous,
+            status=ProcessLifecycleStatus.STOP_REQUESTED,
+            updated_at_utc=datetime.now(UTC),
+        )
+        self._process_states[process_id] = state
+        self._emit_process_event(
+            state,
+            event_type="process.lifecycle.stop_requested",
+            message=f"Process stop requested: {state.label}",
+            failed=False,
+        )
+        return state
+
+    def process_stopped(
+        self,
+        process_id: str,
+        *,
+        exit_code: int | None,
+    ) -> ProcessRuntimeState:
+        """Record process completion and remove active runtime state."""
+
+        return self._terminal_process_transition(
+            process_id,
+            ProcessLifecycleStatus.STOPPED,
+            "process.lifecycle.stopped",
+            exit_code=exit_code,
+        )
+
+    def process_failed(
+        self,
+        process_id: str,
+        *,
+        exit_code: int | None = None,
+        error_message: str,
+    ) -> ProcessRuntimeState:
+        """Record process failure and remove active runtime state."""
+
+        return self._terminal_process_transition(
+            process_id,
+            ProcessLifecycleStatus.FAILED,
+            "process.lifecycle.failed",
+            exit_code=exit_code,
+            error_message=error_message,
+            failed=True,
+        )
+
+    def process_killed(
+        self,
+        process_id: str,
+        *,
+        exit_code: int | None = None,
+        error_message: str = "",
+    ) -> ProcessRuntimeState:
+        """Record forced process termination and remove active runtime state."""
+
+        return self._terminal_process_transition(
+            process_id,
+            ProcessLifecycleStatus.KILLED,
+            "process.lifecycle.killed",
+            exit_code=exit_code,
+            error_message=error_message,
+            failed=True,
+        )
+
+    def processes_state(self) -> tuple[ProcessRuntimeState, ...]:
+        """Return active process runtime states in deterministic order."""
+
+        return tuple(
+            self._process_states[process_id]
+            for process_id in sorted(self._process_states)
+        )
+
     def _emit_transition_event(
         self,
         *,
@@ -495,6 +640,41 @@ class StateStore:
         state = self._window_states.get(window_id)
         if state is None:
             raise KeyError(f"Window runtime state is not open: {window_id}")
+        return state
+
+    def _require_process_state(self, process_id: str) -> ProcessRuntimeState:
+        state = self._process_states.get(process_id)
+        if state is None:
+            raise KeyError(f"Process runtime state is not active: {process_id}")
+        return state
+
+    def _terminal_process_transition(
+        self,
+        process_id: str,
+        status: ProcessLifecycleStatus,
+        event_type: str,
+        *,
+        exit_code: int | None,
+        error_message: str = "",
+        failed: bool = False,
+    ) -> ProcessRuntimeState:
+        previous = self._require_process_state(process_id)
+        now = datetime.now(UTC)
+        state = replace(
+            previous,
+            status=status,
+            updated_at_utc=now,
+            completed_at_utc=now,
+            exit_code=exit_code,
+            error_message=error_message or previous.error_message,
+        )
+        del self._process_states[process_id]
+        self._emit_process_event(
+            state,
+            event_type=event_type,
+            message=f"Process status changed to {status.value}: {state.label}",
+            failed=failed,
+        )
         return state
 
     def _emit_task_event(
@@ -592,6 +772,39 @@ class StateStore:
                         }
                         for warning in state.warnings
                     ),
+                    "error_message": state.error_message,
+                },
+            )
+        )
+
+    def _emit_process_event(
+        self,
+        state: ProcessRuntimeState,
+        *,
+        event_type: str,
+        message: str,
+        failed: bool,
+    ) -> None:
+        self._audit_log.emit(
+            AuditEvent(
+                event_type=event_type,
+                message=message,
+                severity=AuditSeverity.ERROR if failed else AuditSeverity.INFO,
+                category=AuditCategory.RUNTIME,
+                origin=ActorOrigin.SYSTEM,
+                process_id=state.process_id,
+                operation_id=state.operation_id,
+                task_id=state.task_id,
+                correlation_id=state.correlation_id,
+                payload={
+                    "process_id": state.process_id,
+                    "label": state.label,
+                    "kind": state.kind,
+                    "status": state.status,
+                    "command": state.command,
+                    "pid": state.pid,
+                    "exit_code": state.exit_code,
+                    "service_id": state.service_id,
                     "error_message": state.error_message,
                 },
             )

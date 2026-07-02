@@ -11,6 +11,11 @@ from leonardo.contracts.operations import (
     OperationLifecycleStatus,
     OperationRuntimeState,
 )
+from leonardo.contracts.processes import (
+    ProcessKind,
+    ProcessLaunchRequest,
+    ProcessLifecycleStatus,
+)
 from leonardo.contracts.runtime import (
     AppLifecycleStatus,
     ServiceLifecycleStatus,
@@ -140,3 +145,29 @@ def test_state_store_tracks_windows_actions_and_operations() -> None:
 
     assert state_store.operations_state() == ()
     assert state_store.windows_state() == ()
+
+
+def test_state_store_tracks_active_processes_and_removes_terminal_state() -> None:
+    audit_log = AuditLog()
+    state_store = StateStore(audit_log)
+    request = ProcessLaunchRequest(
+        process_id="process-1",
+        label="Inspect runtime",
+        command=("python", "-c", "print('ok')"),
+        kind=ProcessKind.UTILITY,
+        correlation_id="corr-1",
+    )
+
+    starting = state_store.process_starting(request)
+    running = state_store.process_running("process-1", pid=123)
+
+    assert starting.status is ProcessLifecycleStatus.STARTING
+    assert running.status is ProcessLifecycleStatus.RUNNING
+    assert state_store.runtime_snapshot().process_states == (running,)
+
+    stopped = state_store.process_stopped("process-1", exit_code=0)
+
+    assert stopped.status is ProcessLifecycleStatus.STOPPED
+    assert state_store.processes_state() == ()
+    assert state_store.runtime_snapshot().process_states == ()
+    assert audit_log.snapshot()[-1].event_type == "process.lifecycle.stopped"

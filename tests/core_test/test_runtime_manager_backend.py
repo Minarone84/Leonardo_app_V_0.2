@@ -2,6 +2,7 @@ from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import RuntimeHealthStatus, RuntimeSectionStatus
 from leonardo.contracts.operations import OperationKind
+from leonardo.contracts.processes import ProcessKind, ProcessLaunchRequest
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.contracts.services import ServiceDescriptor, ServiceKind
 from leonardo.core.app import LeonardoApp
@@ -146,6 +147,7 @@ def test_runtime_manager_snapshot_includes_audit_sink_failure_previews() -> None
         session_manager=app.session_manager,
         service_registry=app.service_registry,
         task_manager=app.task_manager,
+        process_manager=app.process_manager,
         window_registry=app.window_registry,
         action_registry=app.action_registry,
         operation_registry=app.operation_registry,
@@ -175,9 +177,30 @@ def test_runtime_manager_snapshot_includes_contract_registry_summary() -> None:
 
     snapshot = app.runtime_manager.snapshot()
 
-    assert snapshot.contract_registry.total_contracts == 11
-    assert snapshot.contract_registry.active_contracts == 11
-    assert snapshot.contracts_summary.count == 11
+    assert snapshot.contract_registry.total_contracts == 14
+    assert snapshot.contract_registry.active_contracts == 14
+    assert snapshot.contracts_summary.count == 14
+
+
+def test_runtime_manager_snapshot_includes_process_summary() -> None:
+    app = LeonardoApp()
+    app.state_store.process_starting(
+        ProcessLaunchRequest(
+            process_id="process-1",
+            label="Inspect runtime",
+            command=("python", "-c", "print('ok')"),
+            kind=ProcessKind.UTILITY,
+        )
+    )
+    app.state_store.process_running("process-1", pid=123)
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.processes_summary.count == 1
+    assert snapshot.processes_summary.metadata["process_ids"] == ("process-1",)
+    assert snapshot.processes_summary.metadata["process_labels"] == (
+        "Inspect runtime",
+    )
 
 
 def test_runtime_manager_snapshot_degrades_when_app_failed() -> None:

@@ -201,6 +201,7 @@ class RuntimeManagerSnapshot:
     session_summary: RuntimeSectionSummary
     services_summary: RuntimeSectionSummary
     tasks_summary: RuntimeSectionSummary
+    processes_summary: RuntimeSectionSummary
     windows_summary: RuntimeSectionSummary
     actions_summary: RuntimeSectionSummary
     operations_summary: RuntimeSectionSummary
@@ -228,6 +229,7 @@ class RuntimeManagerSnapshot:
             "session_summary",
             "services_summary",
             "tasks_summary",
+            "processes_summary",
             "windows_summary",
             "actions_summary",
             "operations_summary",
@@ -268,6 +270,7 @@ class RuntimeManagerSnapshot:
             self.session_summary,
             self.services_summary,
             self.tasks_summary,
+            self.processes_summary,
             self.windows_summary,
             self.actions_summary,
             self.operations_summary,

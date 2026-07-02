@@ -16,6 +16,7 @@ from leonardo.contracts.inspection import (
 )
 from leonardo.contracts.kernel import ContractStatus
 from leonardo.contracts.operations import OperationLifecycleStatus
+from leonardo.contracts.processes import ProcessLifecycleStatus
 from leonardo.contracts.runtime import (
     AppLifecycleStatus,
     RuntimeSnapshot,
@@ -26,6 +27,7 @@ from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.audit_log import AuditLog, AuditSinkFailure
 from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.operation_registry import OperationRegistry
+from leonardo.core.process_manager import ProcessManager
 from leonardo.core.service_registry import ServiceRegistry
 from leonardo.core.session_manager import SessionManager
 from leonardo.core.state_store import StateStore
@@ -49,6 +51,7 @@ class RuntimeManagerBackend:
         session_manager: SessionManager,
         service_registry: ServiceRegistry,
         task_manager: TaskManager,
+        process_manager: ProcessManager,
         window_registry: WindowRegistry,
         action_registry: ActionRegistry,
         operation_registry: OperationRegistry,
@@ -64,6 +67,8 @@ class RuntimeManagerBackend:
             raise TypeError("service_registry must be a ServiceRegistry")
         if not isinstance(task_manager, TaskManager):
             raise TypeError("task_manager must be a TaskManager")
+        if not isinstance(process_manager, ProcessManager):
+            raise TypeError("process_manager must be a ProcessManager")
         if not isinstance(window_registry, WindowRegistry):
             raise TypeError("window_registry must be a WindowRegistry")
         if not isinstance(action_registry, ActionRegistry):
@@ -81,6 +86,7 @@ class RuntimeManagerBackend:
         self._session_manager = session_manager
         self._service_registry = service_registry
         self._task_manager = task_manager
+        self._process_manager = process_manager
         self._window_registry = window_registry
         self._action_registry = action_registry
         self._operation_registry = operation_registry
@@ -112,6 +118,7 @@ class RuntimeManagerBackend:
             session_summary=self._session_summary(),
             services_summary=self._services_summary(runtime_snapshot),
             tasks_summary=self._tasks_summary(),
+            processes_summary=self._processes_summary(),
             windows_summary=self._windows_summary(),
             actions_summary=self._actions_summary(),
             operations_summary=self._operations_summary(),
@@ -136,6 +143,11 @@ class RuntimeManagerBackend:
         """Return the active task section summary."""
 
         return self._tasks_summary()
+
+    def processes_summary(self) -> RuntimeSectionSummary:
+        """Return the active process section summary."""
+
+        return self._processes_summary()
 
     def windows_summary(self) -> RuntimeSectionSummary:
         """Return the open window section summary."""
@@ -278,6 +290,33 @@ class RuntimeManagerBackend:
             metadata={
                 "task_ids": tuple(state.task_id for state in task_states),
                 "task_names": tuple(state.task_name for state in task_states),
+                "status_counts": dict(sorted(status_counts.items())),
+            },
+        )
+
+    def _processes_summary(self) -> RuntimeSectionSummary:
+        process_states = self._process_manager.active_processes()
+        status_counts = Counter(state.status.value for state in process_states)
+        status = (
+            RuntimeSectionStatus.DEGRADED
+            if any(
+                state.status
+                in {
+                    ProcessLifecycleStatus.FAILED,
+                    ProcessLifecycleStatus.UNKNOWN,
+                }
+                for state in process_states
+            )
+            else RuntimeSectionStatus.OK
+        )
+        return RuntimeSectionSummary(
+            section_id="processes",
+            status=status,
+            count=len(process_states),
+            message=f"{len(process_states)} active processes",
+            metadata={
+                "process_ids": tuple(state.process_id for state in process_states),
+                "process_labels": tuple(state.label for state in process_states),
                 "status_counts": dict(sorted(status_counts.items())),
             },
         )

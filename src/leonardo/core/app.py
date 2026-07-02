@@ -22,6 +22,7 @@ from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.error_router import ErrorRouter
 from leonardo.core.operation_registry import OperationRegistry
+from leonardo.core.process_manager import ProcessManager
 from leonardo.core.runtime_manager import RuntimeManagerBackend
 from leonardo.core.service_registry import ServiceRegistry
 from leonardo.core.session_manager import SessionManager
@@ -44,6 +45,7 @@ class CoreContext:
     service_registry: ServiceRegistry
     error_router: ErrorRouter
     task_manager: TaskManager
+    process_manager: ProcessManager
     window_registry: WindowRegistry
     action_registry: ActionRegistry
     operation_registry: OperationRegistry
@@ -55,7 +57,7 @@ class LeonardoApp:
     Composition root for the initial Leonardo V2 Core runtime foundation.
 
     The skeleton owns construction of Core services and lifecycle state
-    transitions. It does not start an async runtime, GUI, process manager, or
+    transitions. It does not start an async runtime, GUI, process, or
     domain service.
     """
 
@@ -75,6 +77,11 @@ class LeonardoApp:
             self.state_store,
             error_router=self.error_router,
         )
+        self.process_manager = ProcessManager(
+            self.state_store,
+            self.audit_log,
+            error_router=self.error_router,
+        )
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
         self.operation_registry = OperationRegistry(self.state_store)
@@ -83,6 +90,7 @@ class LeonardoApp:
             session_manager=self.session_manager,
             service_registry=self.service_registry,
             task_manager=self.task_manager,
+            process_manager=self.process_manager,
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
@@ -99,6 +107,7 @@ class LeonardoApp:
             service_registry=self.service_registry,
             error_router=self.error_router,
             task_manager=self.task_manager,
+            process_manager=self.process_manager,
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
@@ -196,6 +205,30 @@ def _runtime_contract_descriptors() -> tuple[ContractDescriptor, ...]:
                 "status",
                 "started_at_utc",
                 "updated_at_utc",
+            ),
+        ),
+        _descriptor(
+            "leonardo.processes.launch_request",
+            required_fields=("process_id", "label", "command", "kind"),
+        ),
+        _descriptor(
+            "leonardo.processes.runtime_state",
+            required_fields=(
+                "process_id",
+                "label",
+                "kind",
+                "status",
+                "command",
+                "updated_at_utc",
+            ),
+        ),
+        _descriptor(
+            "leonardo.processes.exit_record",
+            required_fields=(
+                "process_id",
+                "exit_code",
+                "status",
+                "completed_at_utc",
             ),
         ),
         _descriptor(
