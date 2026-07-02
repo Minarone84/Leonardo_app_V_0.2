@@ -8,6 +8,9 @@ from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
 
+from leonardo.contracts.gui import ActionTriggerRecord, WindowRuntimeState
+from leonardo.contracts.operations import OperationRuntimeState
+
 
 class AppLifecycleStatus(str, Enum):
     """Lifecycle status for the Core application runtime."""
@@ -150,6 +153,9 @@ class RuntimeSnapshot:
     app_state: AppRuntimeState
     service_states: tuple[ServiceRuntimeState, ...]
     task_states: tuple[TaskRuntimeState, ...] = ()
+    window_states: tuple[WindowRuntimeState, ...] = ()
+    recent_action_triggers: tuple[ActionTriggerRecord, ...] = ()
+    operation_states: tuple[OperationRuntimeState, ...] = ()
     captured_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -163,6 +169,26 @@ class RuntimeSnapshot:
         for task_state in self.task_states:
             if not isinstance(task_state, TaskRuntimeState):
                 raise TypeError("task_states entries must be TaskRuntimeState")
+        object.__setattr__(self, "window_states", tuple(self.window_states))
+        for window_state in self.window_states:
+            if not isinstance(window_state, WindowRuntimeState):
+                raise TypeError("window_states entries must be WindowRuntimeState")
+        object.__setattr__(
+            self,
+            "recent_action_triggers",
+            tuple(self.recent_action_triggers),
+        )
+        for trigger in self.recent_action_triggers:
+            if not isinstance(trigger, ActionTriggerRecord):
+                raise TypeError(
+                    "recent_action_triggers entries must be ActionTriggerRecord"
+                )
+        object.__setattr__(self, "operation_states", tuple(self.operation_states))
+        for operation_state in self.operation_states:
+            if not isinstance(operation_state, OperationRuntimeState):
+                raise TypeError(
+                    "operation_states entries must be OperationRuntimeState"
+                )
         object.__setattr__(
             self,
             "captured_at_utc",

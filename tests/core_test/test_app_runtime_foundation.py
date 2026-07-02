@@ -32,7 +32,18 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
         "leonardo.runtime.task_state",
         "1.0",
     ) is not None
+    assert app.contract_registry.get_contract(
+        "leonardo.gui.window_definition",
+        "1.0",
+    ) is not None
+    assert app.contract_registry.get_contract(
+        "leonardo.operations.operation_state",
+        "1.0",
+    ) is not None
     assert context.task_manager is app.task_manager
+    assert context.window_registry is app.window_registry
+    assert context.action_registry is app.action_registry
+    assert context.operation_registry is app.operation_registry
 
     app.shutdown()
     app.shutdown()

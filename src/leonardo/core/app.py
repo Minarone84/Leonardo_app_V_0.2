@@ -17,14 +17,17 @@ from leonardo.core.audit_log import (
     InMemoryAuditSink,
     JsonlAuditSink,
 )
+from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.error_router import ErrorRouter
+from leonardo.core.operation_registry import OperationRegistry
 from leonardo.core.service_registry import ServiceRegistry
 from leonardo.core.session_manager import SessionManager
 from leonardo.core.state_store import StateStore
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.user_policy import UserPolicy
+from leonardo.core.window_registry import WindowRegistry
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,9 @@ class CoreContext:
     service_registry: ServiceRegistry
     error_router: ErrorRouter
     task_manager: TaskManager
+    window_registry: WindowRegistry
+    action_registry: ActionRegistry
+    operation_registry: OperationRegistry
 
 
 class LeonardoApp:
@@ -67,6 +73,9 @@ class LeonardoApp:
             self.state_store,
             error_router=self.error_router,
         )
+        self.window_registry = WindowRegistry(self.state_store)
+        self.action_registry = ActionRegistry(self.state_store)
+        self.operation_registry = OperationRegistry(self.state_store)
         self._context = CoreContext(
             config=self.config,
             audit_log=self.audit_log,
@@ -77,6 +86,9 @@ class LeonardoApp:
             service_registry=self.service_registry,
             error_router=self.error_router,
             task_manager=self.task_manager,
+            window_registry=self.window_registry,
+            action_registry=self.action_registry,
+            operation_registry=self.operation_registry,
         )
 
     @property
@@ -169,6 +181,25 @@ def _runtime_contract_descriptors() -> tuple[ContractDescriptor, ...]:
                 "task_name",
                 "status",
                 "started_at_utc",
+                "updated_at_utc",
+            ),
+        ),
+        _descriptor(
+            "leonardo.gui.window_definition",
+            required_fields=("window_id", "title", "window_type"),
+        ),
+        _descriptor(
+            "leonardo.gui.action_definition",
+            required_fields=("action_id", "label", "kind"),
+        ),
+        _descriptor(
+            "leonardo.operations.operation_state",
+            required_fields=(
+                "operation_id",
+                "operation_kind",
+                "status",
+                "label",
+                "requested_at_utc",
                 "updated_at_utc",
             ),
         ),
