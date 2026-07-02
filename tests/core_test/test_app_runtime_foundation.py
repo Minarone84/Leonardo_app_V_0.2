@@ -44,6 +44,7 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert context.window_registry is app.window_registry
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
+    assert context.runtime_manager is app.runtime_manager
 
     app.shutdown()
     app.shutdown()
