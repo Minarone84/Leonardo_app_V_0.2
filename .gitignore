@@ -1,0 +1,82 @@
+# ----------------------------
+# Python bytecode / caches
+# ----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ----------------------------
+# Distribution / packaging
+# ----------------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ----------------------------
+# Virtual environments
+# ----------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# ----------------------------
+# Pytest / coverage
+# ----------------------------
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ----------------------------
+# Runtime output
+# ----------------------------
+runs/*.log
+runs/*.tmp
+runs/*.jsonl
+
+# ----------------------------
+# Local historical datasets
+# ----------------------------
+data/historical/
+
+# ----------------------------
+# Editor / IDE junk
+# ----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----------------------------
+# OS junk
+# ----------------------------
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# Python packaging artifacts
+# ----------------------------
+pip-wheel-metadata/
+
+# ----------------------------
+# Temporary files
+# ----------------------------
+*.tmp
+*.bak
+
+# ----------------------------
+# Local archives / temporary update folders
+# ----------------------------
+*.zip
+_readme_update/
+updated_readme_files*/
+
+# ----------------------------
+# Local scratch / exports
+# ----------------------------
+exports/
+tmp/
+temp/
