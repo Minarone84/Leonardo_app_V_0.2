@@ -18,6 +18,7 @@ from leonardo.core.error_router import ErrorRouter
 from leonardo.core.service_registry import ServiceRegistry
 from leonardo.core.session_manager import SessionManager
 from leonardo.core.state_store import StateStore
+from leonardo.core.task_manager import TaskManager
 from leonardo.core.user_policy import UserPolicy
 
 
@@ -33,6 +34,7 @@ class CoreContext:
     user_policy: UserPolicy
     service_registry: ServiceRegistry
     error_router: ErrorRouter
+    task_manager: TaskManager
 
 
 class LeonardoApp:
@@ -40,8 +42,8 @@ class LeonardoApp:
     Composition root for the initial Leonardo V2 Core runtime foundation.
 
     The skeleton owns construction of Core services and lifecycle state
-    transitions. It does not start an async runtime, GUI, task manager, process
-    manager, or domain service.
+    transitions. It does not start an async runtime, GUI, process manager, or
+    domain service.
     """
 
     def __init__(self, config: AppConfig | None = None) -> None:
@@ -56,6 +58,10 @@ class LeonardoApp:
             self.audit_log,
             session_context_provider=lambda: self.session_manager.current_session,
         )
+        self.task_manager = TaskManager(
+            self.state_store,
+            error_router=self.error_router,
+        )
         self._context = CoreContext(
             config=self.config,
             audit_log=self.audit_log,
@@ -65,6 +71,7 @@ class LeonardoApp:
             user_policy=self.user_policy,
             service_registry=self.service_registry,
             error_router=self.error_router,
+            task_manager=self.task_manager,
         )
 
     @property
@@ -148,6 +155,16 @@ def _runtime_contract_descriptors() -> tuple[ContractDescriptor, ...]:
         _descriptor(
             "leonardo.runtime.service_state",
             required_fields=("service_id", "status", "last_updated_utc"),
+        ),
+        _descriptor(
+            "leonardo.runtime.task_state",
+            required_fields=(
+                "task_id",
+                "task_name",
+                "status",
+                "started_at_utc",
+                "updated_at_utc",
+            ),
         ),
         _descriptor(
             "leonardo.services.service_descriptor",

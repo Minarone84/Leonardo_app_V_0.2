@@ -13,6 +13,8 @@ from leonardo.contracts.runtime import (
     RuntimeSnapshot,
     ServiceLifecycleStatus,
     ServiceRuntimeState,
+    TaskLifecycleStatus,
+    TaskRuntimeState,
 )
 from leonardo.core.audit_log import AuditLog
 
@@ -31,6 +33,7 @@ class StateStore:
         self._audit_log = audit_log
         self._app_state = AppRuntimeState()
         self._service_states: dict[str, ServiceRuntimeState] = {}
+        self._task_states: dict[str, TaskRuntimeState] = {}
 
     def get_app_state(self) -> AppRuntimeState:
         """Return the current application runtime state."""
@@ -152,7 +155,7 @@ class StateStore:
         return state
 
     def runtime_snapshot(self) -> RuntimeSnapshot:
-        """Return an immutable snapshot of current app and service state."""
+        """Return an immutable snapshot of current app, service, and task state."""
 
         return RuntimeSnapshot(
             app_state=self._app_state,
@@ -160,6 +163,129 @@ class StateStore:
                 self._service_states[service_id]
                 for service_id in sorted(self._service_states)
             ),
+            task_states=self.tasks_state(),
+        )
+
+    def task_started(
+        self,
+        *,
+        task_id: str,
+        task_name: str,
+        operation_id: str | None = None,
+        service_id: str | None = None,
+        correlation_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> TaskRuntimeState:
+        """Register an active task and emit a start audit event."""
+
+        if task_id in self._task_states:
+            raise ValueError(f"Task runtime state already registered: {task_id}")
+        now = datetime.now(UTC)
+        state = TaskRuntimeState(
+            task_id=task_id,
+            task_name=task_name,
+            status=TaskLifecycleStatus.RUNNING,
+            started_at_utc=now,
+            updated_at_utc=now,
+            operation_id=operation_id,
+            service_id=service_id,
+            correlation_id=correlation_id,
+            metadata=metadata or {},
+        )
+        self._task_states[task_id] = state
+        self._emit_task_event(
+            state,
+            event_type="task.lifecycle.started",
+            message=f"Task started: {task_name}",
+            failed=False,
+        )
+        return state
+
+    def task_cancel_requested(self, task_id: str) -> TaskRuntimeState:
+        """Mark an active task as cancellation-requested."""
+
+        previous = self._require_task_state(task_id)
+        state = replace(
+            previous,
+            status=TaskLifecycleStatus.CANCEL_REQUESTED,
+            updated_at_utc=datetime.now(UTC),
+        )
+        self._task_states[task_id] = state
+        self._emit_task_event(
+            state,
+            event_type="task.lifecycle.cancel_requested",
+            message=f"Task cancellation requested: {state.task_name}",
+            failed=False,
+        )
+        return state
+
+    def task_completed(self, task_id: str) -> TaskRuntimeState:
+        """Record successful task completion and remove active runtime state."""
+
+        previous = self._require_task_state(task_id)
+        now = datetime.now(UTC)
+        state = replace(
+            previous,
+            status=TaskLifecycleStatus.COMPLETED,
+            updated_at_utc=now,
+            completed_at_utc=now,
+        )
+        del self._task_states[task_id]
+        self._emit_task_event(
+            state,
+            event_type="task.lifecycle.completed",
+            message=f"Task completed: {state.task_name}",
+            failed=False,
+        )
+        return state
+
+    def task_failed(self, task_id: str, error_message: str) -> TaskRuntimeState:
+        """Record task failure and remove active runtime state."""
+
+        previous = self._require_task_state(task_id)
+        now = datetime.now(UTC)
+        state = replace(
+            previous,
+            status=TaskLifecycleStatus.FAILED,
+            updated_at_utc=now,
+            completed_at_utc=now,
+            error_message=error_message,
+        )
+        del self._task_states[task_id]
+        self._emit_task_event(
+            state,
+            event_type="task.lifecycle.failed",
+            message=f"Task failed: {state.task_name}",
+            failed=True,
+        )
+        return state
+
+    def task_cancelled(self, task_id: str) -> TaskRuntimeState:
+        """Record task cancellation and remove active runtime state."""
+
+        previous = self._require_task_state(task_id)
+        now = datetime.now(UTC)
+        state = replace(
+            previous,
+            status=TaskLifecycleStatus.CANCELLED,
+            updated_at_utc=now,
+            completed_at_utc=now,
+        )
+        del self._task_states[task_id]
+        self._emit_task_event(
+            state,
+            event_type="task.lifecycle.cancelled",
+            message=f"Task cancelled: {state.task_name}",
+            failed=False,
+        )
+        return state
+
+    def tasks_state(self) -> tuple[TaskRuntimeState, ...]:
+        """Return active task runtime states in deterministic task-id order."""
+
+        return tuple(
+            self._task_states[task_id]
+            for task_id in sorted(self._task_states)
         )
 
     def _emit_transition_event(
@@ -178,5 +304,39 @@ class StateStore:
                 category=AuditCategory.STATE,
                 origin=ActorOrigin.SYSTEM,
                 payload=payload,
+            )
+        )
+
+    def _require_task_state(self, task_id: str) -> TaskRuntimeState:
+        state = self._task_states.get(task_id)
+        if state is None:
+            raise KeyError(f"Task runtime state is not registered: {task_id}")
+        return state
+
+    def _emit_task_event(
+        self,
+        state: TaskRuntimeState,
+        *,
+        event_type: str,
+        message: str,
+        failed: bool,
+    ) -> None:
+        self._audit_log.emit(
+            AuditEvent(
+                event_type=event_type,
+                message=message,
+                severity=AuditSeverity.ERROR if failed else AuditSeverity.INFO,
+                category=AuditCategory.STATE,
+                origin=ActorOrigin.SYSTEM,
+                operation_id=state.operation_id,
+                task_id=state.task_id,
+                correlation_id=state.correlation_id,
+                payload={
+                    "task_id": state.task_id,
+                    "task_name": state.task_name,
+                    "status": state.status,
+                    "service_id": state.service_id,
+                    "error_message": state.error_message,
+                },
             )
         )
