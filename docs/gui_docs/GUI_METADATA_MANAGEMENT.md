@@ -257,13 +257,17 @@ change Core behavior.
 
 Phase 003L1 adds a GUI-layer settings profile provider for production settings
 inspection. The provider exposes an explicit allowlist of inspectable metadata
-profiles instead of scanning the metadata directory. In this phase the allowlist
-contains only `main_window.window`.
+profiles instead of scanning the metadata directory.
 
-`runtime_manager.window` remains excluded until a future Runtime Manager
-settings phase. `dummy_metadata_test.window` remains test-only and must not be
-surfaced by the production provider. The settings inspector dialog and
-viewmodel remain single-profile components assembled by GUI composition.
+Phase 003M3 extends the provider allowlist to include `main_window.window` and
+`runtime_manager.window`. Runtime Manager exposure is provider-only: no Runtime
+Manager settings UI, Runtime Manager settings action, Runtime Manager
+self-entry, profile selector, composition behavior change, or Core ownership is
+added. Main Window settings behavior remains Main Window-only.
+
+`dummy_metadata_test.window` remains test-only and must not be surfaced by the
+production provider. The settings inspector dialog and viewmodel remain
+single-profile components assembled by GUI composition.
 
 This phase does not add a profile selector UI, Runtime Manager settings
 inspection, live refresh for open windows, session persistence, source TOML

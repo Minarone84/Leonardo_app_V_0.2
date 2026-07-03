@@ -64,8 +64,11 @@ current production settings-inspector factory resolves only
 `main_window.window` through this provider before constructing the existing
 single-profile viewmodel and dialog.
 
-`runtime_manager.window` remains a future candidate and is not exposed through
-the provider in this phase. `dummy_metadata_test.window` remains a test-only
+Phase 003M3 extends the provider allowlist to include `runtime_manager.window`
+as provider-only metadata exposure. The current Main Window settings behavior
+still resolves only `main_window.window`; no profile selector, Runtime Manager
+settings action, Runtime Manager self-entry, composition behavior change, or
+Core ownership is added. `dummy_metadata_test.window` remains a test-only
 metadata surface and is not part of production settings inspection.
 
 ## Window Tracking

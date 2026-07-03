@@ -10,10 +10,15 @@ from leonardo.gui.metadata import load_metadata_document
 
 
 MAIN_WINDOW_SETTINGS_PROFILE_ID = "main_window.window"
+RUNTIME_MANAGER_SETTINGS_PROFILE_ID = "runtime_manager.window"
 
 _WINDOW_METADATA_DIR = Path(__file__).resolve().parent / "metadata" / "windows"
 _ALLOWED_SETTINGS_PROFILES = (
     (MAIN_WINDOW_SETTINGS_PROFILE_ID, _WINDOW_METADATA_DIR / "main_window.window.toml"),
+    (
+        RUNTIME_MANAGER_SETTINGS_PROFILE_ID,
+        _WINDOW_METADATA_DIR / "runtime_manager.window.toml",
+    ),
 )
 
 

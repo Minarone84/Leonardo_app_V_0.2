@@ -8,9 +8,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from leonardo.gui.composition import GuiCompositionRoot  # noqa: E402
-from leonardo.gui.metadata import GuiMetadataOverrideStore  # noqa: E402
+from leonardo.gui.metadata import GuiMetadataOverrideStore, load_metadata_document  # noqa: E402
 from leonardo.gui.settings_profiles import (  # noqa: E402
     MAIN_WINDOW_SETTINGS_PROFILE_ID,
+    RUNTIME_MANAGER_SETTINGS_PROFILE_ID,
     GuiSettingsProfileProvider,
     GuiSettingsProfileRef,
 )
@@ -19,12 +20,29 @@ from leonardo.gui.windows.settings_inspector_window import (  # noqa: E402
 )
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _SETTINGS_PROFILES_SOURCE = (
-    Path(__file__).resolve().parents[2]
+    _REPO_ROOT / "src" / "leonardo" / "gui" / "settings_profiles.py"
+)
+_COMPOSITION_SOURCE = _REPO_ROOT / "src" / "leonardo" / "gui" / "composition.py"
+_MAIN_WINDOW_SOURCE = (
+    _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "main_window.py"
+)
+_RUNTIME_MANAGER_WINDOW_SOURCE = (
+    _REPO_ROOT
     / "src"
     / "leonardo"
     / "gui"
-    / "settings_profiles.py"
+    / "windows"
+    / "runtime_manager_window.py"
+)
+_SETTINGS_INSPECTOR_WINDOW_SOURCE = (
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
+    / "settings_inspector_window.py"
 )
 
 
@@ -47,14 +65,16 @@ class RecordingSettingsProfileProvider(GuiSettingsProfileProvider):
         return super().get_profile(metadata_id)
 
 
-def test_settings_profile_provider_exposes_only_main_window_profile() -> None:
+def test_settings_profile_provider_exposes_only_allowlisted_profiles() -> None:
     provider = GuiSettingsProfileProvider()
 
     profile_ids = tuple(profile.metadata_id for profile in provider.list_profiles())
 
-    assert profile_ids == (MAIN_WINDOW_SETTINGS_PROFILE_ID,)
+    assert profile_ids == (
+        MAIN_WINDOW_SETTINGS_PROFILE_ID,
+        RUNTIME_MANAGER_SETTINGS_PROFILE_ID,
+    )
     assert "dummy_metadata_test.window" not in profile_ids
-    assert "runtime_manager.window" not in profile_ids
 
 
 def test_settings_profile_provider_returns_main_window_source_reference() -> None:
@@ -70,9 +90,31 @@ def test_settings_profile_provider_returns_main_window_source_reference() -> Non
     assert profile.logical_kind == "main_application_shell"
 
 
+def test_settings_profile_provider_returns_runtime_manager_source_reference() -> None:
+    provider = GuiSettingsProfileProvider()
+
+    profile = provider.get_profile(RUNTIME_MANAGER_SETTINGS_PROFILE_ID)
+    result = load_metadata_document(profile.metadata_path)
+
+    assert profile.metadata_id == RUNTIME_MANAGER_SETTINGS_PROFILE_ID
+    assert profile.title == "Runtime Manager"
+    assert profile.metadata_path.name == "runtime_manager.window.toml"
+    assert profile.metadata_path.exists() is True
+    assert profile.owner_area == "runtime"
+    assert profile.logical_kind == "read_only_runtime_inspection"
+    assert result.document is not None
+    assert result.report.has_errors is False
+    assert result.document.metadata_id == RUNTIME_MANAGER_SETTINGS_PROFILE_ID
+    assert result.document.metadata["owner_area"] == "runtime"
+    assert result.document.metadata["logical_kind"] == "read_only_runtime_inspection"
+    assert {
+        setting.path for setting in result.document.settings
+    } >= {"style.font_size", "style.density"}
+
+
 @pytest.mark.parametrize(
     "metadata_id",
-    ("dummy_metadata_test.window", "runtime_manager.window", "missing.window"),
+    ("dummy_metadata_test.window", "missing.window"),
 )
 def test_settings_profile_provider_rejects_unapproved_profiles(
     metadata_id: str,
@@ -97,6 +139,26 @@ def test_settings_profile_provider_has_no_qt_or_core_dependency() -> None:
     assert "PySide6" not in source
     assert "QtWidgets" not in source
     assert "leonardo.core" not in source
+
+
+def test_runtime_manager_profile_exposure_does_not_wire_user_facing_surfaces() -> None:
+    composition_source = _COMPOSITION_SOURCE.read_text(encoding="utf-8")
+    main_window_source = _MAIN_WINDOW_SOURCE.read_text(encoding="utf-8")
+    runtime_manager_window_source = _RUNTIME_MANAGER_WINDOW_SOURCE.read_text(
+        encoding="utf-8"
+    )
+    settings_inspector_window_source = _SETTINGS_INSPECTOR_WINDOW_SOURCE.read_text(
+        encoding="utf-8"
+    )
+
+    assert RUNTIME_MANAGER_SETTINGS_PROFILE_ID not in composition_source
+    assert "get_profile(RUNTIME_MANAGER_SETTINGS_PROFILE_ID)" not in composition_source
+    assert RUNTIME_MANAGER_SETTINGS_PROFILE_ID not in main_window_source
+    assert "GuiSettingsProfileProvider" not in runtime_manager_window_source
+    assert "SettingsInspector" not in runtime_manager_window_source
+    assert "settings_inspector" not in runtime_manager_window_source
+    assert "GuiSettingsProfileProvider" not in settings_inspector_window_source
+    assert "list_profiles" not in settings_inspector_window_source
 
 
 def test_composition_uses_provider_for_current_settings_inspector_factory(
