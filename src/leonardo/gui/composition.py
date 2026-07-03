@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Protocol
 
-from leonardo.gui.metadata import EffectiveGuiMetadataProfile
+from leonardo.gui.metadata import (
+    EffectiveGuiMetadataProfile,
+    GuiMetadataOverrideStore,
+    GuiMetadataOverrideStoreResult,
+    GuiMetadataResolver,
+    load_metadata_document,
+)
 from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
 from leonardo.gui.windows.main_window import (
     LeonardoMainWindow,
+    _MAIN_WINDOW_METADATA_PATH,
     load_main_window_profile,
 )
 from leonardo.gui.windows.runtime_manager_window import (
     RuntimeManagerWindow,
+    _RUNTIME_MANAGER_METADATA_PATH,
     load_runtime_manager_profile,
 )
 
@@ -46,13 +55,21 @@ class GuiCompositionRoot:
         context: GuiCoreContext,
         *,
         track_windows: bool = True,
+        override_store: GuiMetadataOverrideStore | None = None,
     ) -> None:
         snapshot = getattr(getattr(context, "runtime_manager", None), "snapshot", None)
         if not callable(snapshot):
             raise TypeError("context.runtime_manager must expose callable snapshot")
+        if override_store is not None and not isinstance(
+            override_store,
+            GuiMetadataOverrideStore,
+        ):
+            raise TypeError("override_store must be a GuiMetadataOverrideStore or None")
         self._context = context
         self._snapshot_provider = snapshot
         self._track_windows = track_windows
+        self._override_store = override_store
+        self._override_load_results: dict[str, GuiMetadataOverrideStoreResult] = {}
         self._window_registry = getattr(context, "window_registry", None)
         if self._track_windows and self._window_registry is None:
             raise TypeError("context.window_registry is required when tracking windows")
@@ -69,6 +86,12 @@ class GuiCompositionRoot:
 
         return self._trackers.get(window_id)
 
+    @property
+    def override_load_results(self) -> Mapping[str, GuiMetadataOverrideStoreResult]:
+        """Return retained override load results by metadata identifier."""
+
+        return dict(self._override_load_results)
+
     def create_main_window(
         self,
         profile: EffectiveGuiMetadataProfile | None = None,
@@ -80,7 +103,11 @@ class GuiCompositionRoot:
         called during Main Window creation.
         """
 
-        main_profile = profile if profile is not None else load_main_window_profile()
+        main_profile = (
+            profile
+            if profile is not None
+            else self._load_main_window_profile()
+        )
         window = LeonardoMainWindow(
             main_profile,
             runtime_manager_window_factory=self._create_runtime_manager_window,
@@ -93,7 +120,7 @@ class GuiCompositionRoot:
         return window
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
-        profile = load_runtime_manager_profile()
+        profile = self._load_runtime_manager_profile()
         window = RuntimeManagerWindow(
             profile,
             snapshot_provider=self._snapshot_provider,
@@ -122,6 +149,29 @@ class GuiCompositionRoot:
         tracker.track(window)
         self._trackers[identity.window_id] = tracker
         return tracker
+
+    def _load_main_window_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_main_window_profile()
+        return self._load_profile_with_overrides(_MAIN_WINDOW_METADATA_PATH)
+
+    def _load_runtime_manager_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_runtime_manager_profile()
+        return self._load_profile_with_overrides(_RUNTIME_MANAGER_METADATA_PATH)
+
+    def _load_profile_with_overrides(
+        self,
+        metadata_path: Path,
+    ) -> EffectiveGuiMetadataProfile:
+        result = load_metadata_document(metadata_path)
+        if result.document is None or result.report.has_errors:
+            messages = "; ".join(issue.message for issue in result.report.issues)
+            raise ValueError(f"Invalid GUI metadata profile: {messages}")
+
+        override_result = self._override_store.load(result.document.metadata_id)
+        self._override_load_results[result.document.metadata_id] = override_result
+        return GuiMetadataResolver().resolve(result.document, override_result.document)
 
 
 def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindow:

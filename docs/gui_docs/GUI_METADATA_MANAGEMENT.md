@@ -170,6 +170,21 @@ GUI windows, or Core services. Composition, Main Window, Runtime Manager,
 production settings inspector integration, and session-state persistence remain
 future phases.
 
+## Composition Override Consumption
+
+Phase 003D lets the GUI composition root optionally consume a
+`GuiMetadataOverrideStore`. When a store is supplied, composition loads
+changed-only JSON overrides for the Main Window and Runtime Manager, resolves
+effective profiles, and passes those profiles into the window constructors.
+
+Corrupt, mismatched, or structurally invalid override files fall back to source
+metadata defaults and retain diagnostics on the composition root. Source TOML
+metadata remains default truth and is not modified.
+
+This phase does not add a production settings manager, session-state
+persistence, application startup wiring, Runtime Manager controls, action
+tracking, or operation tracking.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that
