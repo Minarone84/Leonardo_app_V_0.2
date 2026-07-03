@@ -128,6 +128,18 @@ does not add full application startup, Core window tracking, registry
 integration, Core mutation controls, production override persistence, or the
 final settings manager.
 
+## GUI Composition And Window Tracking
+
+Phase 002B adds a GUI-layer composition root and a minimal top-level window
+tracking adapter. The composition root receives an existing Core context,
+constructs the metadata-driven Main Window, injects a Runtime Manager factory,
+and passes the Core Runtime Manager snapshot method as a read-only provider.
+
+Runtime Manager remains read-only. Core window tracking receives stable window
+IDs and registry-safe lifecycle state only; Qt widgets remain owned by the GUI
+layer and are never stored in Core. Application startup and production override
+persistence remain future work.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that
