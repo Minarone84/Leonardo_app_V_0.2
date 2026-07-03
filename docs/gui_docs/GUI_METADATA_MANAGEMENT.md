@@ -201,6 +201,24 @@ This pilot does not add a production settings inspector, persist session state,
 derive production override paths, wire application startup, add Runtime Manager
 controls, or change Core behavior.
 
+## Production Settings Viewmodel
+
+Phase 003H adds a non-Qt production settings inspector viewmodel for
+metadata-exposed GUI preferences. The viewmodel reads `settings` declarations
+from a source metadata document, exposes rows with default, effective, and
+override values, tracks local unsaved edits, validates candidate override
+values through the metadata resolver, and persists changed-only overrides
+through `GuiMetadataOverrideStore`.
+
+The viewmodel supports save, reset field, reset section, and reset profile
+operations without writing metadata defaults into override files. Reset removes
+override entries or deletes the override file through existing override-store
+semantics.
+
+This phase does not create a Qt settings dialog, wire Main Window or Runtime
+Manager actions, add live refresh, persist session state, mutate source TOML
+metadata, derive production override paths, or change Core behavior.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that
