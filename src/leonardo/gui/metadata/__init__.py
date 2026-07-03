@@ -30,6 +30,12 @@ from leonardo.gui.metadata.models import (
     ResolvedValueSource,
     ResolvedValueTrace,
 )
+from leonardo.gui.metadata.override_store import (
+    GuiMetadataOverrideStore,
+    GuiMetadataOverrideStoreDiagnostic,
+    GuiMetadataOverrideStoreResult,
+    OVERRIDE_FILE_SCHEMA_VERSION,
+)
 from leonardo.gui.metadata.resolver import GuiMetadataResolver
 
 __all__ = [
@@ -44,6 +50,9 @@ __all__ = [
     "GuiMetadataIssueSeverity",
     "GuiMetadataKind",
     "GuiMetadataLoadResult",
+    "GuiMetadataOverrideStore",
+    "GuiMetadataOverrideStoreDiagnostic",
+    "GuiMetadataOverrideStoreResult",
     "GuiMetadataOverrideDocument",
     "GuiMetadataReport",
     "GuiMetadataResolver",
@@ -58,6 +67,7 @@ __all__ = [
     "GuiWidgetReference",
     "ResolvedValueSource",
     "ResolvedValueTrace",
+    "OVERRIDE_FILE_SCHEMA_VERSION",
     "load_metadata_document",
     "metadata_document_from_mapping",
 ]

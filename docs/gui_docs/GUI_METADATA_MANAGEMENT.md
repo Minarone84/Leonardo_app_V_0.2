@@ -140,6 +140,36 @@ IDs and registry-safe lifecycle state only; Qt widgets remain owned by the GUI
 layer and are never stored in Core. Application startup and production override
 persistence remain future work.
 
+## GUI Override Store
+
+Phase 003B adds a pure Python GUI override store for durable user preference
+overrides. The store is rooted at an injected path and writes one JSON file per
+metadata profile:
+
+```text
+<metadata_id>.override.json
+```
+
+The JSON payload contains the override store schema version, metadata ID,
+updated timestamp, and changed-only override values. It does not store source
+metadata defaults, session state, Qt state, runtime snapshots, comments, source
+metadata hashes, or application version metadata.
+
+Reset keeps the changed-only contract. Resetting a field or section removes
+override entries. Resetting the full profile deletes the override file. Saving
+an empty override document also deletes the file. Missing override files load
+as empty override documents.
+
+Corrupt, mismatched, or structurally invalid override files return diagnostics
+and an empty override document. Loading does not auto-delete or auto-repair
+invalid files. Unsafe metadata IDs are rejected before any file path is
+resolved.
+
+The override store does not mutate source TOML metadata. It does not import Qt,
+GUI windows, or Core services. Composition, Main Window, Runtime Manager,
+production settings inspector integration, and session-state persistence remain
+future phases.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that
