@@ -219,6 +219,23 @@ This phase does not create a Qt settings dialog, wire Main Window or Runtime
 Manager actions, add live refresh, persist session state, mutate source TOML
 metadata, derive production override paths, or change Core behavior.
 
+## Production Qt Settings Inspector UI Pilot
+
+Phase 003I adds a standalone PySide6 settings inspector dialog for production
+metadata settings inspection. The dialog receives an injected
+`GuiSettingsInspectorViewModel`, lists metadata-declared settings rows, exposes
+field diagnostics, and delegates local edit, save, reset field, reset section,
+and reset profile behavior to the viewmodel.
+
+The dialog does not construct Core services, derive production override paths,
+or duplicate metadata resolver and override-store ownership. It remains generic
+for one metadata profile and can be tested independently of application
+startup.
+
+This phase does not wire Main Window or Runtime Manager actions, add live
+refresh for open windows, persist session state, mutate source TOML metadata,
+create a global settings manager, or change Core behavior.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that
