@@ -15,6 +15,7 @@ The GUI composition root:
 - injects a Runtime Manager window factory into the Main Window;
 - passes `context.runtime_manager.snapshot` as a read-only snapshot provider;
 - optionally loads changed-only GUI override documents before window creation;
+- resolves production settings-inspector metadata through a GUI allowlist;
 - installs opt-in top-level window tracking for composed windows.
 
 The Runtime Manager snapshot provider is passed as a callable. It is not called
@@ -56,6 +57,16 @@ only the factory and owns local show, raise, and activate behavior.
 Runtime Manager settings wiring, live refresh, session-state persistence,
 global settings management, production override path derivation, and Core
 ownership changes remain out of scope.
+
+Phase 003L1 introduces a GUI settings profile provider at the composition
+boundary. The provider is an explicit allowlist, not directory discovery. The
+current production settings-inspector factory resolves only
+`main_window.window` through this provider before constructing the existing
+single-profile viewmodel and dialog.
+
+`runtime_manager.window` remains a future candidate and is not exposed through
+the provider in this phase. `dummy_metadata_test.window` remains a test-only
+metadata surface and is not part of production settings inspection.
 
 ## Window Tracking
 

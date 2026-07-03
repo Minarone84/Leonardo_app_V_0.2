@@ -13,6 +13,10 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.settings_profiles import (
+    GuiSettingsProfileProvider,
+    MAIN_WINDOW_SETTINGS_PROFILE_ID,
+)
 from leonardo.gui.settings_inspector import GuiSettingsInspectorViewModel
 from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
 from leonardo.gui.windows.main_window import (
@@ -58,6 +62,7 @@ class GuiCompositionRoot:
         *,
         track_windows: bool = True,
         override_store: GuiMetadataOverrideStore | None = None,
+        settings_profile_provider: GuiSettingsProfileProvider | None = None,
     ) -> None:
         snapshot = getattr(getattr(context, "runtime_manager", None), "snapshot", None)
         if not callable(snapshot):
@@ -67,10 +72,22 @@ class GuiCompositionRoot:
             GuiMetadataOverrideStore,
         ):
             raise TypeError("override_store must be a GuiMetadataOverrideStore or None")
+        if settings_profile_provider is not None and not isinstance(
+            settings_profile_provider,
+            GuiSettingsProfileProvider,
+        ):
+            raise TypeError(
+                "settings_profile_provider must be a GuiSettingsProfileProvider or None"
+            )
         self._context = context
         self._snapshot_provider = snapshot
         self._track_windows = track_windows
         self._override_store = override_store
+        self._settings_profile_provider = (
+            settings_profile_provider
+            if settings_profile_provider is not None
+            else GuiSettingsProfileProvider()
+        )
         self._override_load_results: dict[str, GuiMetadataOverrideStoreResult] = {}
         self._window_registry = getattr(context, "window_registry", None)
         if self._track_windows and self._window_registry is None:
@@ -143,7 +160,10 @@ class GuiCompositionRoot:
     def _create_settings_inspector_window(self) -> SettingsInspectorWindow:
         if self._override_store is None:
             raise RuntimeError("override_store is required for settings inspector wiring")
-        result = load_metadata_document(_MAIN_WINDOW_METADATA_PATH)
+        profile_ref = self._settings_profile_provider.get_profile(
+            MAIN_WINDOW_SETTINGS_PROFILE_ID,
+        )
+        result = load_metadata_document(profile_ref.metadata_path)
         if result.document is None or result.report.has_errors:
             messages = "; ".join(issue.message for issue in result.report.issues)
             raise ValueError(f"Invalid GUI metadata profile: {messages}")
