@@ -37,6 +37,16 @@ Composition does not derive the override root from Core in this phase. The
 store remains injected by the caller, and production app startup wiring remains
 future work.
 
+Phase 003F adds a persisted settings pilot for `main_window.window` and
+`runtime_manager.window`. The pilot verifies that changed-only visual overrides
+saved in an injected `GuiMetadataOverrideStore` are applied to the real windows
+after composition construction and Runtime Manager handoff. Reset and reload
+restore source defaults without mutating source TOML files.
+
+The pilot does not create a production settings UI, persist session state,
+hardcode production override paths, create application startup integration, or
+add Runtime Manager control behavior.
+
 ## Window Tracking
 
 The GUI window tracking adapter observes explicitly provided top-level Qt

@@ -185,6 +185,22 @@ This phase does not add a production settings manager, session-state
 persistence, application startup wiring, Runtime Manager controls, action
 tracking, or operation tracking.
 
+## Persisted Settings Pilot
+
+Phase 003F verifies the persisted visual settings path for `main_window.window`
+and `runtime_manager.window`. The pilot saves changed-only `style.font_size`
+overrides through `GuiMetadataOverrideStore`, resolves them through
+`GuiCompositionRoot`, and proves that the real Main Window and Runtime Manager
+consume the effective profiles.
+
+Reset remains changed-only. Resetting a field removes the stored override, and
+resetting a profile deletes the override file. Reloading through composition
+then restores source metadata defaults without modifying source TOML files.
+
+This pilot does not add a production settings inspector, persist session state,
+derive production override paths, wire application startup, add Runtime Manager
+controls, or change Core behavior.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that
