@@ -236,6 +236,23 @@ This phase does not wire Main Window or Runtime Manager actions, add live
 refresh for open windows, persist session state, mutate source TOML metadata,
 create a global settings manager, or change Core behavior.
 
+## Main Window Settings Inspector Wiring
+
+Phase 003J wires the existing Main Window settings action to the production
+settings inspector through an injected dialog factory. The Main Window owns only
+the shell action handler, retained dialog reference, and local show, raise, and
+activate behavior.
+
+Settings metadata loading, resolver use, override-store access, viewmodel
+construction, parsing, diagnostics, save, and reset policy remain outside Main
+Window. GUI composition may assemble the real dialog factory when it already
+receives an injected `GuiMetadataOverrideStore`.
+
+This phase does not wire Runtime Manager settings actions, add live refresh for
+open windows, persist session state, mutate source TOML metadata, derive
+production override paths in Main Window, create a global settings manager, or
+change Core behavior.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that

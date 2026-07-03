@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -13,6 +13,7 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.settings_inspector import GuiSettingsInspectorViewModel
 from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
 from leonardo.gui.windows.main_window import (
     LeonardoMainWindow,
@@ -24,6 +25,7 @@ from leonardo.gui.windows.runtime_manager_window import (
     _RUNTIME_MANAGER_METADATA_PATH,
     load_runtime_manager_profile,
 )
+from leonardo.gui.windows.settings_inspector_window import SettingsInspectorWindow
 
 
 class RuntimeSnapshotBackend(Protocol):
@@ -111,6 +113,7 @@ class GuiCompositionRoot:
         window = LeonardoMainWindow(
             main_profile,
             runtime_manager_window_factory=self._create_runtime_manager_window,
+            settings_inspector_factory=self._settings_inspector_factory(),
         )
         self._install_tracker(
             window,
@@ -131,6 +134,21 @@ class GuiCompositionRoot:
             fallback_window_type="runtime_manager",
         )
         return window
+
+    def _settings_inspector_factory(self) -> Callable[[], SettingsInspectorWindow] | None:
+        if self._override_store is None:
+            return None
+        return self._create_settings_inspector_window
+
+    def _create_settings_inspector_window(self) -> SettingsInspectorWindow:
+        if self._override_store is None:
+            raise RuntimeError("override_store is required for settings inspector wiring")
+        result = load_metadata_document(_MAIN_WINDOW_METADATA_PATH)
+        if result.document is None or result.report.has_errors:
+            messages = "; ".join(issue.message for issue in result.report.issues)
+            raise ValueError(f"Invalid GUI metadata profile: {messages}")
+        viewmodel = GuiSettingsInspectorViewModel(result.document, self._override_store)
+        return SettingsInspectorWindow(viewmodel)
 
     def _install_tracker(
         self,

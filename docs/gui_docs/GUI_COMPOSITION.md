@@ -47,6 +47,16 @@ The pilot does not create a production settings UI, persist session state,
 hardcode production override paths, create application startup integration, or
 add Runtime Manager control behavior.
 
+Phase 003J lets composition provide the Main Window settings-inspector dialog
+factory when a `GuiMetadataOverrideStore` is injected. Composition loads the
+Main Window source metadata, creates the `GuiSettingsInspectorViewModel`, and
+constructs `SettingsInspectorWindow` at the GUI boundary. Main Window receives
+only the factory and owns local show, raise, and activate behavior.
+
+Runtime Manager settings wiring, live refresh, session-state persistence,
+global settings management, production override path derivation, and Core
+ownership changes remain out of scope.
+
 ## Window Tracking
 
 The GUI window tracking adapter observes explicitly provided top-level Qt

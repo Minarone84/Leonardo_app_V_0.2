@@ -26,6 +26,7 @@ _MAIN_WINDOW_METADATA_PATH = (
 )
 RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
+SettingsInspectorFactory = Callable[[], QWidget]
 
 
 def load_main_window_profile() -> EffectiveGuiMetadataProfile:
@@ -53,6 +54,7 @@ class LeonardoMainWindow(QMainWindow):
         *,
         runtime_manager_window_factory: RuntimeManagerWindowFactory | None = None,
         runtime_snapshot_provider: RuntimeSnapshotProvider | None = None,
+        settings_inspector_factory: SettingsInspectorFactory | None = None,
     ) -> None:
         super().__init__()
         self._profile = profile if profile is not None else load_main_window_profile()
@@ -64,12 +66,18 @@ class LeonardoMainWindow(QMainWindow):
             raise TypeError("runtime_manager_window_factory must be callable")
         if runtime_snapshot_provider is not None and not callable(runtime_snapshot_provider):
             raise TypeError("runtime_snapshot_provider must be callable")
+        if settings_inspector_factory is not None and not callable(
+            settings_inspector_factory
+        ):
+            raise TypeError("settings_inspector_factory must be callable")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
         self._last_local_action_id = ""
         self._runtime_manager_window_factory = runtime_manager_window_factory
         self._runtime_snapshot_provider = runtime_snapshot_provider
         self._runtime_manager_window: QWidget | None = None
+        self._settings_inspector_factory = settings_inspector_factory
+        self._settings_inspector_window: QWidget | None = None
         self._apply_profile_metadata()
         self._build_menu_bar()
         self._build_central_placeholder()
@@ -100,6 +108,12 @@ class LeonardoMainWindow(QMainWindow):
 
         return self._runtime_manager_window
 
+    @property
+    def settings_inspector_window(self) -> QWidget | None:
+        """Return the locally retained Settings Inspector dialog, if created."""
+
+        return self._settings_inspector_window
+
     def action_ids(self) -> tuple[str, ...]:
         """Return metadata action IDs in deterministic order."""
 
@@ -124,6 +138,8 @@ class LeonardoMainWindow(QMainWindow):
         self.close_requested_locally = True
         if self._runtime_manager_window is not None:
             self._runtime_manager_window.close()
+        if self._settings_inspector_window is not None:
+            self._settings_inspector_window.close()
         super().closeEvent(event)
 
     def _apply_profile_metadata(self) -> None:
@@ -181,7 +197,7 @@ class LeonardoMainWindow(QMainWindow):
             self.statusBar().showMessage("Dummy metadata test action is local/inert.")
             return
         if action_id == "main_window.open_settings_inspector":
-            self.statusBar().showMessage("Settings inspector action is local/inert.")
+            self._open_settings_inspector_window()
             return
         if action_id == "main_window.open_runtime_manager":
             self._open_runtime_manager_window()
@@ -211,6 +227,32 @@ class LeonardoMainWindow(QMainWindow):
             )
         if not isinstance(window, QWidget):
             raise TypeError("Runtime Manager window factory must return a QWidget")
+        return window
+
+    def _open_settings_inspector_window(self) -> None:
+        if self._settings_inspector_factory is None:
+            self.statusBar().showMessage("Settings inspector action is local/inert.")
+            return
+
+        created = False
+        if self._settings_inspector_window is None:
+            self._settings_inspector_window = self._create_settings_inspector_window()
+            created = True
+
+        self._settings_inspector_window.show()
+        self._settings_inspector_window.raise_()
+        self._settings_inspector_window.activateWindow()
+        if created:
+            self.statusBar().showMessage("Settings inspector opened locally.")
+            return
+        self.statusBar().showMessage("Settings inspector raised locally.")
+
+    def _create_settings_inspector_window(self) -> QWidget:
+        if self._settings_inspector_factory is None:
+            raise RuntimeError("settings_inspector_factory is not configured")
+        window = self._settings_inspector_factory()
+        if not isinstance(window, QWidget):
+            raise TypeError("Settings Inspector factory must return a QWidget")
         return window
 
 

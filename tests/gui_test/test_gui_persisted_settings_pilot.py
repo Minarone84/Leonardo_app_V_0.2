@@ -16,6 +16,9 @@ from leonardo.gui.metadata import (  # noqa: E402
     OVERRIDE_FILE_SCHEMA_VERSION,
 )
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow  # noqa: E402
+from leonardo.gui.windows.settings_inspector_window import (  # noqa: E402
+    SettingsInspectorWindow,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -308,22 +311,23 @@ def test_no_production_override_files_are_written_outside_tmp_path(
     _dispose_windows(qapplication, window)
 
 
-def test_settings_inspector_action_remains_local_without_production_ui(
+def test_settings_inspector_action_opens_dialog_without_runtime_manager(
     qapplication: QApplication,
     tmp_path: Path,
 ) -> None:
     store = _store_with_override(tmp_path, "main_window.window", {"style.font_size": 18})
     window = GuiCompositionRoot(FakeGuiContext(), override_store=store).create_main_window()
-    top_level_before = tuple(QApplication.topLevelWidgets())
 
     window.action_for_id("main_window.open_settings_inspector").trigger()
     qapplication.processEvents()
 
     assert window.last_local_action_id == "main_window.open_settings_inspector"
     assert window.runtime_manager_window is None
-    assert tuple(QApplication.topLevelWidgets()) == top_level_before
+    assert isinstance(window.settings_inspector_window, SettingsInspectorWindow)
+    assert window.settings_inspector_window.isVisible() is True
+    assert window.settings_inspector_window.viewmodel.metadata_id == "main_window.window"
 
-    _dispose_windows(qapplication, window)
+    _dispose_windows(qapplication, window, window.settings_inspector_window)
 
 
 def test_no_application_or_qapplication_startup_is_required(
