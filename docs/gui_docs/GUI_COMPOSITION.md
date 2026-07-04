@@ -7,22 +7,22 @@ The composition root receives a Core context object after Core has been
 constructed elsewhere. It does not create `LeonardoApp`, start Core lifecycle,
 create `QApplication`, or launch the application.
 
-## Future Startup Runner Boundary
+## Startup Runner Boundary
 
-Production GUI startup wiring does not exist yet. A future startup runner should
-own the `QApplication` boundary and top-level GUI orchestration while
-`LeonardoApp` remains the owner of Core lifecycle and `CoreContext`.
+The minimal GUI runner owns the `QApplication` boundary and top-level GUI
+orchestration while `LeonardoApp` remains the owner of Core lifecycle and
+`CoreContext`.
 
-The expected runner contract is to receive or resolve configuration, create and
-start `LeonardoApp`, create or reuse the Qt application boundary before any Qt
-widgets are constructed, create the GUI override store from an injected or
-configured path, pass `app.context` into `GuiCompositionRoot`, create and show
-the Main Window through composition, then enter the GUI event-loop boundary.
-When the GUI exits, top-level GUI windows should close before Core shutdown.
+The runner receives or resolves configuration, creates and starts
+`LeonardoApp`, creates or reuses the Qt application boundary before Qt widgets
+are constructed, creates the GUI override store from an explicit
+`override_store_root`, passes `app.context` into `GuiCompositionRoot`, creates
+and shows the Main Window through composition, then enters the event-loop
+boundary. When the GUI exits, top-level GUI windows close before Core shutdown.
 
-Phase 003O1 validates this contract with a test-only fake-boundary harness. It
-does not add a launcher, app entry point, real event loop, production override
-path, or production startup module.
+The runner does not add a launcher, app entry point, console script, production
+shortcut, automatic user settings path, selector, or Runtime Manager settings
+UI. Production override path policy remains deferred.
 
 ## Responsibilities
 
@@ -120,7 +120,8 @@ or persistence.
 This phase does not add:
 
 - application startup entry point;
-- `QApplication` creation;
+- CLI command, console script, or production shortcut;
+- automatic production override path;
 - action tracking;
 - operation tracking;
 - Runtime Manager control actions;

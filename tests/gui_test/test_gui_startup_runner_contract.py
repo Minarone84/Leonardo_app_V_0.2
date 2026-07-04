@@ -447,7 +447,7 @@ def test_shutdown_failure_is_surfaced(tmp_path: Path) -> None:
     assert harness.app.shutdown_calls == 1
 
 
-def test_harness_uses_fake_boundaries_and_no_production_startup_module(
+def test_harness_uses_fake_boundaries_and_runner_remains_boundary_safe(
     tmp_path: Path,
 ) -> None:
     harness = StartupContractHarness(tmp_path)
@@ -457,9 +457,62 @@ def test_harness_uses_fake_boundaries_and_no_production_startup_module(
     assert type(harness.app) is FakeCoreApp
     assert type(harness.qapplication_boundary) is FakeQApplicationBoundary
     repo_root = Path(__file__).resolve().parents[2]
-    forbidden_startup_modules = [
-        repo_root / "src" / "leonardo" / "gui" / "startup.py",
-        repo_root / "src" / "leonardo" / "gui" / "runner.py",
-        repo_root / "src" / "leonardo" / "gui" / "app.py",
+    gui_root = repo_root / "src" / "leonardo" / "gui"
+    runner_path = gui_root / "runner.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+
+    assert runner_path.exists()
+
+    forbidden_launcher_modules = [
+        gui_root / "startup.py",
+        gui_root / "app.py",
+        gui_root / "__main__.py",
     ]
-    assert [path for path in forbidden_startup_modules if path.exists()] == []
+    assert [path for path in forbidden_launcher_modules if path.exists()] == []
+
+    pyproject_source = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[project.scripts]" not in pyproject_source
+    assert "[project.gui-scripts]" not in pyproject_source
+    assert "console_scripts" not in pyproject_source
+    assert "gui_scripts" not in pyproject_source
+
+    assert "if __name__" not in runner_source
+    assert "argparse" not in runner_source
+    assert "click" not in runner_source
+    assert "typer" not in runner_source
+
+    assert "tmp_dir" not in runner_source
+    assert "runs_dir" not in runner_source
+    assert "Path.cwd" not in runner_source
+    assert ".home" not in runner_source
+    assert "AppData" not in runner_source
+
+    assert "app_factory" in runner_source
+    assert "qapplication_factory" in runner_source
+    assert "override_store_factory" in runner_source
+    assert "composition_factory" in runner_source
+    assert "event_loop_runner" in runner_source
+
+    forbidden_event_loop_call = "." + "ex" + "ec" + "()"
+    assert forbidden_event_loop_call not in Path(__file__).read_text(encoding="utf-8")
+    assert forbidden_event_loop_call not in (
+        repo_root / "tests" / "gui_test" / "test_gui_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "RuntimeManagerWindow" not in runner_source
+    assert "SettingsInspectorWindow" not in runner_source
+    assert "selector" not in runner_source.lower()
+
+    for boundary_root in (
+        repo_root / "src" / "leonardo" / "core",
+        repo_root / "src" / "leonardo" / "contracts",
+    ):
+        for path in boundary_root.rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            assert "from leonardo.gui" not in source
+            assert "import leonardo.gui" not in source
+            assert "PySide6" not in source
+            assert "PyQt6" not in source
+            assert "QtWidgets" not in source
+            assert "QtCore" not in source
+            assert "QtGui" not in source
