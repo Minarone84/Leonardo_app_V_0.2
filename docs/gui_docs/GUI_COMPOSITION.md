@@ -7,6 +7,23 @@ The composition root receives a Core context object after Core has been
 constructed elsewhere. It does not create `LeonardoApp`, start Core lifecycle,
 create `QApplication`, or launch the application.
 
+## Future Startup Runner Boundary
+
+Production GUI startup wiring does not exist yet. A future startup runner should
+own the `QApplication` boundary and top-level GUI orchestration while
+`LeonardoApp` remains the owner of Core lifecycle and `CoreContext`.
+
+The expected runner contract is to receive or resolve configuration, create and
+start `LeonardoApp`, create or reuse the Qt application boundary before any Qt
+widgets are constructed, create the GUI override store from an injected or
+configured path, pass `app.context` into `GuiCompositionRoot`, create and show
+the Main Window through composition, then enter the GUI event-loop boundary.
+When the GUI exits, top-level GUI windows should close before Core shutdown.
+
+Phase 003O1 validates this contract with a test-only fake-boundary harness. It
+does not add a launcher, app entry point, real event loop, production override
+path, or production startup module.
+
 ## Responsibilities
 
 The GUI composition root:
