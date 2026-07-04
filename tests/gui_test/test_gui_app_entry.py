@@ -248,12 +248,18 @@ def test_no_pyproject_launcher_entry_points_are_added() -> None:
 def test_no_module_main_or_launcher_directories_are_created() -> None:
     project_dir = _project_dir()
     main_filename = "__main__" + ".py"
+    tools_dir = project_dir / "tools"
 
     assert not (project_dir / "src" / "leonardo" / main_filename).exists()
     assert not (project_dir / "src" / "leonardo" / "gui" / main_filename).exists()
     assert not (project_dir / "scripts").exists()
-    assert not (project_dir / "tools").exists()
     assert not (project_dir / "bin").exists()
+    assert (tools_dir / "dev_launch_gui.py").exists()
+    assert {
+        path.name
+        for path in tools_dir.iterdir()
+        if path.name != "dev_launch_gui.py"
+    } == set()
 
 
 def test_runner_remains_explicit_root_capable() -> None:
