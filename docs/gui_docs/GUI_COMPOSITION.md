@@ -24,6 +24,12 @@ The runner does not add a launcher, app entry point, console script, production
 shortcut, automatic user settings path, selector, or Runtime Manager settings
 UI. Production override path policy remains deferred.
 
+A pure GUI path-policy helper resolves the future GUI override root from an
+injected base path as `base / "gui_overrides"`. The helper does not create
+directories or write files and is not wired into the runner. `LeonardoGuiRunner`
+still requires explicit `override_store_root`; production app entry-point
+integration and platform user-config policy remain deferred.
+
 ## Responsibilities
 
 The GUI composition root:
