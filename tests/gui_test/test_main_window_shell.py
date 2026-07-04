@@ -7,9 +7,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QAction  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
+from leonardo.gui.metadata import (  # noqa: E402
+    GuiMetadataOverrideDocument,
+    GuiMetadataResolver,
+    load_metadata_document,
+)
 from leonardo.gui.windows.main_window import (  # noqa: E402
     LeonardoMainWindow,
+    _MAIN_WINDOW_METADATA_PATH,
     load_main_window_profile,
+)
+from leonardo.gui.windows.runtime_manager_window import (  # noqa: E402
+    load_runtime_manager_profile,
 )
 
 
@@ -127,6 +136,46 @@ def test_main_window_runtime_manager_action_exists_from_metadata(
     qapplication.processEvents()
 
 
+def test_main_window_live_apply_updates_font_without_rebuilding_shell(
+    qapplication: QApplication,
+) -> None:
+    window = LeonardoMainWindow(load_main_window_profile())
+    action = window.action_for_id("main_window.open_settings_inspector")
+    object_name = window.objectName()
+    title = window.windowTitle()
+    labels = window.action_labels()
+
+    window.apply_effective_profile(
+        _main_window_profile_with_overrides(
+            {
+                "style.font_size": 18,
+                "style.density": "compact",
+            }
+        )
+    )
+
+    assert window.font().pointSize() == 18
+    assert window.objectName() == object_name
+    assert window.windowTitle() == title
+    assert window.action_for_id("main_window.open_settings_inspector") is action
+    assert window.action_labels() == labels
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_live_apply_rejects_non_main_window_profile(
+    qapplication: QApplication,
+) -> None:
+    window = LeonardoMainWindow(load_main_window_profile())
+
+    with pytest.raises(ValueError, match="main_window.window"):
+        window.apply_effective_profile(load_runtime_manager_profile())
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
 def test_main_window_can_be_destroyed_cleanly(qapplication: QApplication) -> None:
     window = LeonardoMainWindow(load_main_window_profile())
     window.show()
@@ -137,6 +186,21 @@ def test_main_window_can_be_destroyed_cleanly(qapplication: QApplication) -> Non
     qapplication.processEvents()
 
     assert window.close_requested_locally is True
+
+
+def _main_window_profile_with_overrides(
+    values: dict[str, object],
+):
+    result = load_metadata_document(_MAIN_WINDOW_METADATA_PATH)
+    assert result.document is not None
+    assert result.report.has_errors is False
+    return GuiMetadataResolver().resolve(
+        result.document,
+        GuiMetadataOverrideDocument(
+            metadata_id=result.document.metadata_id,
+            values=values,
+        ),
+    )
 
 
 def _qapplication() -> QApplication:

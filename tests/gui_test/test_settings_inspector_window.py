@@ -43,6 +43,7 @@ def test_dialog_constructs_with_injected_viewmodel(qapplication: QApplication, t
     assert window.objectName() == "settings_inspector_window"
     assert window.findChild(QTableWidget, "settings_inspector.settings_table") is not None
     assert window.findChild(QPushButton, "settings_inspector.save") is not None
+    assert window.findChild(QPushButton, "settings_inspector.apply_changes") is not None
     assert window.findChild(QPushButton, "settings_inspector.reset_field") is not None
     assert window.findChild(QPushButton, "settings_inspector.reset_section") is not None
     assert window.findChild(QPushButton, "settings_inspector.reset_profile") is not None
@@ -112,6 +113,147 @@ def test_save_writes_changed_only_override_through_viewmodel(
     assert window.row_snapshot("style.font_size")["dirty"] == "no"
 
     _dispose(qapplication, window)
+
+
+def test_apply_changes_saves_and_calls_injected_callback(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, store = _viewmodel(tmp_path)
+    applied: list[tuple[str, object]] = []
+    window = SettingsInspectorWindow(
+        viewmodel,
+        on_apply=lambda metadata_id, profile: applied.append((metadata_id, profile)),
+    )
+
+    assert window.set_editor_value("style.font_size", "18") is True
+    window.findChild(QPushButton, "settings_inspector.apply_changes").click()
+    qapplication.processEvents()
+    payload = _load_payload(store.path_for(viewmodel.metadata_id))
+
+    assert payload["overrides"] == {"style.font_size": 18}
+    assert len(applied) == 1
+    assert applied[0][0] == "main_window.window"
+    assert applied[0][1].metadata_id == "main_window.window"
+    assert applied[0][1].values["style"]["font_size"] == 18
+
+    _dispose(qapplication, window)
+
+
+def test_apply_changes_does_not_call_callback_on_invalid_edit(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, store = _viewmodel(tmp_path)
+    applied: list[tuple[str, object]] = []
+    window = SettingsInspectorWindow(
+        viewmodel,
+        on_apply=lambda metadata_id, profile: applied.append((metadata_id, profile)),
+    )
+
+    assert window.set_editor_value("style.font_size", "banana") is False
+    assert window.apply_changes() is False
+
+    assert applied == []
+    assert store.path_for(viewmodel.metadata_id).exists() is False
+
+    _dispose(qapplication, window)
+
+
+def test_apply_changes_surfaces_callback_errors(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, _store = _viewmodel(tmp_path)
+    failure = RuntimeError("apply failed")
+    calls = 0
+
+    def callback(_metadata_id: str, _profile: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise failure
+
+    window = SettingsInspectorWindow(viewmodel, on_apply=callback)
+
+    assert window.set_editor_value("style.font_size", "18") is True
+    with pytest.raises(RuntimeError) as exc_info:
+        window.apply_changes()
+
+    assert exc_info.value is failure
+
+    _dispose(qapplication, window)
+
+
+def test_save_persists_without_applying_immediately(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, store = _viewmodel(tmp_path)
+    applied: list[tuple[str, object]] = []
+    window = SettingsInspectorWindow(
+        viewmodel,
+        on_apply=lambda metadata_id, profile: applied.append((metadata_id, profile)),
+    )
+
+    assert window.set_editor_value("style.font_size", "18") is True
+    assert window.save_settings() is True
+    payload = _load_payload(store.path_for(viewmodel.metadata_id))
+
+    assert payload["overrides"] == {"style.font_size": 18}
+    assert applied == []
+
+    _dispose(qapplication, window)
+
+
+def test_close_applies_saved_but_unapplied_change_once(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, _store = _viewmodel(tmp_path)
+    applied: list[tuple[str, object]] = []
+    window = SettingsInspectorWindow(
+        viewmodel,
+        on_apply=lambda metadata_id, profile: applied.append((metadata_id, profile)),
+    )
+
+    assert window.set_editor_value("style.font_size", "18") is True
+    assert window.save_settings() is True
+    assert applied == []
+
+    window.close()
+    qapplication.processEvents()
+    window.close()
+    qapplication.processEvents()
+
+    assert len(applied) == 1
+    assert applied[0][0] == "main_window.window"
+    assert applied[0][1].values["style"]["font_size"] == 18
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_close_with_dirty_unsaved_edit_does_not_save_or_apply(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, store = _viewmodel(tmp_path)
+    applied: list[tuple[str, object]] = []
+    window = SettingsInspectorWindow(
+        viewmodel,
+        on_apply=lambda metadata_id, profile: applied.append((metadata_id, profile)),
+    )
+
+    assert window.set_editor_value("style.font_size", "18") is True
+    window.close()
+    qapplication.processEvents()
+
+    assert applied == []
+    assert store.path_for(viewmodel.metadata_id).exists() is False
+
+    window.deleteLater()
+    qapplication.processEvents()
 
 
 def test_invalid_integer_input_shows_diagnostics_and_does_not_save(

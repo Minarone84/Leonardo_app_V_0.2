@@ -132,6 +132,22 @@ class LeonardoMainWindow(QMainWindow):
         except KeyError as error:
             raise KeyError(f"Unknown Main Window action: {action_id}") from error
 
+    def apply_effective_profile(self, profile: EffectiveGuiMetadataProfile) -> None:
+        """
+        Apply safe live visual settings from a Main Window effective profile.
+
+        The method intentionally limits live updates to visual fields that can
+        be changed without rebuilding the shell, rewiring actions, changing
+        stable object names, or mutating Core state.
+        """
+
+        if not isinstance(profile, EffectiveGuiMetadataProfile):
+            raise TypeError("profile must be an EffectiveGuiMetadataProfile")
+        if profile.metadata_id != MAIN_WINDOW_METADATA_ID:
+            raise ValueError("profile must describe main_window.window")
+        self._profile = profile
+        self._apply_visual_profile_metadata()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Record that the shell close path stayed local."""
 
@@ -146,7 +162,6 @@ class LeonardoMainWindow(QMainWindow):
         values = self._profile.values
         metadata = _mapping_at(values, "metadata")
         geometry = _mapping_at(values, "geometry")
-        style = _mapping_at(values, "style")
 
         self.setWindowTitle(self.metadata_title)
         self.setObjectName(_string_value(metadata, "object_name", "main_window"))
@@ -155,6 +170,10 @@ class LeonardoMainWindow(QMainWindow):
             _int_value(geometry, "height", 900),
         )
 
+        self._apply_visual_profile_metadata()
+
+    def _apply_visual_profile_metadata(self) -> None:
+        style = _mapping_at(self._profile.values, "style")
         font = self.font()
         font.setPointSize(_int_value(style, "font_size", 14))
         self.setFont(font)

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -17,12 +18,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.metadata import EffectiveGuiMetadataProfile
 from leonardo.gui.settings_inspector import (
     GuiSettingsInspectorDiagnostic,
     GuiSettingsInspectorResult,
     GuiSettingsInspectorRow,
     GuiSettingsInspectorViewModel,
 )
+
+
+SettingsApplyCallback = Callable[[str, EffectiveGuiMetadataProfile], None]
 
 
 class SettingsInspectorWindow(QDialog):
@@ -40,15 +45,20 @@ class SettingsInspectorWindow(QDialog):
         viewmodel: GuiSettingsInspectorViewModel,
         *,
         parent: QWidget | None = None,
+        on_apply: SettingsApplyCallback | None = None,
     ) -> None:
         if not isinstance(viewmodel, GuiSettingsInspectorViewModel):
             raise TypeError("viewmodel must be a GuiSettingsInspectorViewModel")
+        if on_apply is not None and not callable(on_apply):
+            raise TypeError("on_apply must be callable or None")
         super().__init__(parent)
         self.setObjectName("settings_inspector_window")
         self.setWindowTitle(f"Settings Inspector - {viewmodel.metadata_id}")
 
         self._viewmodel = viewmodel
+        self._on_apply = on_apply
         self._operation_diagnostics: tuple[GuiSettingsInspectorDiagnostic, ...] = ()
+        self._saved_profile_pending_apply: EffectiveGuiMetadataProfile | None = None
 
         self.settings_table = QTableWidget(0, 9)
         self.settings_table.setObjectName("settings_inspector.settings_table")
@@ -81,6 +91,10 @@ class SettingsInspectorWindow(QDialog):
         self.save_button = QPushButton("Save")
         self.save_button.setObjectName("settings_inspector.save")
         self.save_button.clicked.connect(self.save_settings)
+
+        self.apply_button = QPushButton("Apply Changes")
+        self.apply_button.setObjectName("settings_inspector.apply_changes")
+        self.apply_button.clicked.connect(self.apply_changes)
 
         self.reset_field_button = QPushButton("Reset Field")
         self.reset_field_button.setObjectName("settings_inspector.reset_field")
@@ -169,7 +183,19 @@ class SettingsInspectorWindow(QDialog):
         if not self.apply_selected_edit():
             return False
         result = self._viewmodel.save()
-        return self._handle_operation_result(result)
+        return self._handle_persistence_result(result)
+
+    def apply_changes(self) -> bool:
+        """
+        Persist pending settings and apply the saved effective profile.
+
+        The method does not apply invalid or unsaved dirty edits. The apply
+        callback is invoked only after the viewmodel save succeeds.
+        """
+
+        if not self.save_settings():
+            return False
+        return self._apply_saved_profile_if_pending()
 
     def reset_selected_field(self) -> bool:
         """Reset the selected field through the injected viewmodel."""
@@ -185,7 +211,7 @@ class SettingsInspectorWindow(QDialog):
             self._refresh_diagnostics()
             return False
         result = self._viewmodel.reset_field(path)
-        return self._handle_operation_result(result, selected_path=path)
+        return self._handle_persistence_result(result, selected_path=path)
 
     def reset_selected_section(self) -> bool:
         """Reset the selected row's profile section through the viewmodel."""
@@ -201,13 +227,13 @@ class SettingsInspectorWindow(QDialog):
             self._refresh_diagnostics()
             return False
         result = self._viewmodel.reset_section(_section_path_for(path))
-        return self._handle_operation_result(result, selected_path=path)
+        return self._handle_persistence_result(result, selected_path=path)
 
     def reset_profile(self) -> bool:
         """Reset all persisted overrides for the inspected metadata profile."""
 
         result = self._viewmodel.reset_profile()
-        return self._handle_operation_result(result)
+        return self._handle_persistence_result(result)
 
     def row_snapshot(self, path: str) -> Mapping[str, str]:
         """Return current table text for one displayed settings row."""
@@ -232,6 +258,18 @@ class SettingsInspectorWindow(QDialog):
 
         return self.diagnostics_view.toPlainText()
 
+    def close(self) -> bool:
+        """Apply saved-but-not-applied settings before closing the dialog."""
+
+        self._apply_saved_profile_if_pending()
+        return bool(super().close())
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Apply saved-but-not-applied settings for non-button close paths."""
+
+        self._apply_saved_profile_if_pending()
+        super().closeEvent(event)
+
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
         root.addWidget(self.settings_table)
@@ -241,6 +279,7 @@ class SettingsInspectorWindow(QDialog):
 
         controls = QHBoxLayout()
         controls.addWidget(self.save_button)
+        controls.addWidget(self.apply_button)
         controls.addWidget(self.reset_field_button)
         controls.addWidget(self.reset_section_button)
         controls.addWidget(self.reset_profile_button)
@@ -273,6 +312,35 @@ class SettingsInspectorWindow(QDialog):
         self._operation_diagnostics = result.diagnostics
         self._refresh_rows(selected_path=selected_path, preserve_editor_text=not result.ok)
         return result.ok
+
+    def _handle_persistence_result(
+        self,
+        result: GuiSettingsInspectorResult,
+        *,
+        selected_path: str | None = None,
+    ) -> bool:
+        ok = self._handle_operation_result(result, selected_path=selected_path)
+        if ok:
+            self._record_saved_profile_for_apply()
+        return ok
+
+    def _record_saved_profile_for_apply(self) -> None:
+        if self._on_apply is None:
+            self._saved_profile_pending_apply = None
+            return
+        self._saved_profile_pending_apply = self._viewmodel.effective_profile
+
+    def _apply_saved_profile_if_pending(self) -> bool:
+        if self._on_apply is None:
+            self._saved_profile_pending_apply = None
+            return True
+        if self._saved_profile_pending_apply is None:
+            return True
+
+        profile = self._saved_profile_pending_apply
+        self._on_apply(self._viewmodel.metadata_id, profile)
+        self._saved_profile_pending_apply = None
+        return True
 
     def _refresh_rows(
         self,
@@ -339,6 +407,7 @@ class SettingsInspectorWindow(QDialog):
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         self.save_button.setEnabled(enabled)
+        self.apply_button.setEnabled(enabled)
         self.reset_field_button.setEnabled(enabled)
         self.reset_section_button.setEnabled(enabled)
         self.reset_profile_button.setEnabled(enabled)

@@ -168,6 +168,12 @@ class GuiSettingsInspectorViewModel:
 
         return tuple(self._row_for_setting(setting) for setting in self._document.settings)
 
+    @property
+    def effective_profile(self) -> EffectiveGuiMetadataProfile:
+        """Return the effective profile for the current pending settings state."""
+
+        return self._current_profile()
+
     def row_for_path(self, path: str) -> GuiSettingsInspectorRow:
         """Return one settings row for a metadata-declared setting path."""
 

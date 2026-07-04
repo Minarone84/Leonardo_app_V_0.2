@@ -273,6 +273,23 @@ This phase does not add a profile selector UI, Runtime Manager settings
 inspection, live refresh for open windows, session persistence, source TOML
 mutation, production override path derivation, or a global settings manager.
 
+## Main Window Settings Apply Changes
+
+Phase 003T1 adds a narrow live-apply path for saved Main Window settings. The
+Settings Inspector receives an injected apply callback. `Apply Changes`
+persists changed-only overrides through the existing viewmodel and then passes
+the resolved effective profile to the callback so the currently open Main
+Window can update safe visual settings.
+
+Closing the Settings Inspector applies saved-but-not-yet-applied changes once.
+Dirty unsaved edits are not silently saved on close. Live apply is limited to
+`main_window.window` and safe visual fields such as `style.font_size`.
+
+Runtime Manager settings remain provider-only. This phase does not add a
+selector, multi-profile inspector, Runtime Manager settings UI, source TOML
+mutation, session-state persistence, Core changes, runner changes, app-entry
+changes, or production path-policy changes.
+
 ## User Overrides
 
 User overrides are changed-only documents. They contain only profile paths that

@@ -106,6 +106,18 @@ settings action, Runtime Manager self-entry, composition behavior change, or
 Core ownership is added. `dummy_metadata_test.window` remains a test-only
 metadata surface and is not part of production settings inspection.
 
+Phase 003T1 lets the Main Window settings inspector apply saved visual settings
+to the currently open Main Window. The dialog receives an injected apply
+callback from composition. `Apply Changes` persists through the existing
+viewmodel and then invokes that callback with the resolved effective profile.
+Closing the dialog applies saved-but-not-yet-applied changes once. Dirty
+unsaved edits are not saved silently on close.
+
+Live apply remains Main Window-only and is limited to safe visual fields such
+as `style.font_size`. Runtime Manager settings remain provider-only; no
+Runtime Manager settings UI, selector, multi-profile inspector, Core ownership
+change, or source metadata mutation is introduced.
+
 ## Window Tracking
 
 The GUI window tracking adapter observes explicitly provided top-level Qt

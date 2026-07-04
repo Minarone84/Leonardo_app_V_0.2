@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -122,16 +122,22 @@ class GuiCompositionRoot:
         called during Main Window creation.
         """
 
-        main_profile = (
-            profile
-            if profile is not None
-            else self._load_main_window_profile()
-        )
+        main_profile = profile if profile is not None else self._load_main_window_profile()
+        main_window: LeonardoMainWindow | None = None
+
+        def settings_inspector_factory() -> SettingsInspectorWindow:
+            if main_window is None:
+                raise RuntimeError("Main Window is not available for settings apply")
+            return self._create_settings_inspector_window(main_window)
+
         window = LeonardoMainWindow(
             main_profile,
             runtime_manager_window_factory=self._create_runtime_manager_window,
-            settings_inspector_factory=self._settings_inspector_factory(),
+            settings_inspector_factory=(
+                settings_inspector_factory if self._override_store is not None else None
+            ),
         )
+        main_window = window
         self._install_tracker(
             window,
             main_profile,
@@ -152,12 +158,10 @@ class GuiCompositionRoot:
         )
         return window
 
-    def _settings_inspector_factory(self) -> Callable[[], SettingsInspectorWindow] | None:
-        if self._override_store is None:
-            return None
-        return self._create_settings_inspector_window
-
-    def _create_settings_inspector_window(self) -> SettingsInspectorWindow:
+    def _create_settings_inspector_window(
+        self,
+        target_window: LeonardoMainWindow,
+    ) -> SettingsInspectorWindow:
         if self._override_store is None:
             raise RuntimeError("override_store is required for settings inspector wiring")
         profile_ref = self._settings_profile_provider.get_profile(
@@ -168,7 +172,16 @@ class GuiCompositionRoot:
             messages = "; ".join(issue.message for issue in result.report.issues)
             raise ValueError(f"Invalid GUI metadata profile: {messages}")
         viewmodel = GuiSettingsInspectorViewModel(result.document, self._override_store)
-        return SettingsInspectorWindow(viewmodel)
+        return SettingsInspectorWindow(
+            viewmodel,
+            on_apply=lambda metadata_id, effective_profile: (
+                _apply_main_window_settings(
+                    target_window,
+                    metadata_id,
+                    effective_profile,
+                )
+            ),
+        )
 
     def _install_tracker(
         self,
@@ -216,3 +229,13 @@ def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindo
     """Create a Core-aware Main Window using the default GUI composition root."""
 
     return GuiCompositionRoot(context).create_main_window()
+
+
+def _apply_main_window_settings(
+    target_window: LeonardoMainWindow,
+    metadata_id: str,
+    effective_profile: EffectiveGuiMetadataProfile,
+) -> None:
+    if metadata_id != MAIN_WINDOW_SETTINGS_PROFILE_ID:
+        raise ValueError("Settings apply callback only supports main_window.window")
+    target_window.apply_effective_profile(effective_profile)

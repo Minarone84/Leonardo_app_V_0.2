@@ -219,6 +219,47 @@ def test_real_path_saves_changed_only_override_without_mutating_source_toml(
     _dispose(qapplication, window, dialog)
 
 
+def test_real_path_apply_changes_updates_open_main_window_font(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    window, store, dialog = _open_real_settings_inspector(qapplication, tmp_path)
+    action = window.action_for_id("main_window.open_settings_inspector")
+    object_name = window.objectName()
+    labels = window.action_labels()
+
+    assert dialog.set_editor_value("style.font_size", "18") is True
+    assert dialog.apply_changes() is True
+    loaded = store.load("main_window.window")
+
+    assert loaded.document is not None
+    assert loaded.document.values == {"style.font_size": 18}
+    assert window.font().pointSize() == 18
+    assert window.objectName() == object_name
+    assert window.action_for_id("main_window.open_settings_inspector") is action
+    assert window.action_labels() == labels
+
+    _dispose(qapplication, window, dialog)
+
+
+def test_real_path_close_after_save_applies_saved_change(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    window, _store, dialog = _open_real_settings_inspector(qapplication, tmp_path)
+
+    assert dialog.set_editor_value("style.font_size", "19") is True
+    assert dialog.save_settings() is True
+    assert window.font().pointSize() == 14
+
+    dialog.close()
+    qapplication.processEvents()
+
+    assert window.font().pointSize() == 19
+
+    _dispose(qapplication, window, dialog)
+
+
 def test_real_path_reset_profile_removes_override(
     qapplication: QApplication,
     tmp_path: Path,
