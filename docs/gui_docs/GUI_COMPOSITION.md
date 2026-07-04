@@ -30,6 +30,18 @@ directories or write files and is not wired into the runner. `LeonardoGuiRunner`
 still requires explicit `override_store_root`; production app entry-point
 integration and platform user-config policy remain deferred.
 
+## Pure App-Entry Helper
+
+The pure GUI app-entry helper accepts an explicit `settings_base_dir`, resolves
+the GUI override root through the path-policy helper, and delegates actual
+startup to `LeonardoGuiRunner` through the runner boundary.
+
+The helper does not create a CLI, console script, package entry point, platform
+default settings path, `QApplication`, or Core application instance. It does not
+enter the Qt event loop itself. `LeonardoGuiRunner` remains responsible for
+QApplication ownership, Core startup orchestration, GUI composition, event-loop
+execution, and shutdown ordering.
+
 ## Responsibilities
 
 The GUI composition root:
