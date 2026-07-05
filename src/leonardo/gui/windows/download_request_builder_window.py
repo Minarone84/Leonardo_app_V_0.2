@@ -624,6 +624,18 @@ def _format_submit_result(result: object) -> str:
         f"Item count: {getattr(result, 'item_count', 0)}",
         f"Estimated items: {_display_optional(getattr(result, 'estimated_items', None))}",
         f"Runtime visible: {getattr(result, 'runtime_visible', False)}",
+        (
+            "Execution plan created: "
+            f"{_display_yes_no(getattr(result, 'execution_plan_created', False))}"
+        ),
+        (
+            "Execution plan ID: "
+            f"{_display_optional(getattr(result, 'execution_plan_id', None))}"
+        ),
+        (
+            "Execution plan message: "
+            f"{getattr(result, 'execution_plan_message', '')}"
+        ),
         "Submit issues:",
     ]
     if not issues:
@@ -685,6 +697,10 @@ def _display_value(value: str) -> str:
 
 def _display_optional(value: object) -> str:
     return "unresolved" if value is None else str(value)
+
+
+def _display_yes_no(value: object) -> str:
+    return "yes" if value is True else "no"
 
 
 def _format_sequence(values: tuple[str, ...]) -> str:

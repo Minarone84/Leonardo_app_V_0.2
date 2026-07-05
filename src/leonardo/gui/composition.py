@@ -68,6 +68,7 @@ class GuiCoreContext(Protocol):
     user_policy: object
     audit_log: object
     download_manager: object
+    download_execution_manager: object
 
 
 class GuiCompositionRoot:
@@ -122,6 +123,11 @@ class GuiCompositionRoot:
         )
         self._download_request_builder_window: DownloadRequestBuilderWindow | None = None
         self._download_manager = getattr(context, "download_manager", None)
+        self._download_execution_manager = getattr(
+            context,
+            "download_execution_manager",
+            None,
+        )
 
     @property
     def window_trackers(self) -> Mapping[str, GuiWindowTracker]:
@@ -295,10 +301,21 @@ class GuiCompositionRoot:
                 "Download request submit rejected.",
                 (f"{type(error).__name__}: {error}",),
             )
+        (
+            execution_plan_id,
+            execution_plan_created,
+            execution_plan_message,
+        ) = _create_execution_plan(
+            self._download_execution_manager,
+            request.request_id,
+        )
         return build_submit_result_view(
             request,
             preflight,
             item_count=item_count,
+            execution_plan_id=execution_plan_id,
+            execution_plan_created=execution_plan_created,
+            execution_plan_message=execution_plan_message,
         )
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
@@ -388,6 +405,31 @@ def _submitted_item_count(download_manager: object, request_id: str) -> int:
     if not callable(list_items):
         return 0
     return len(tuple(list_items(request_id)))
+
+
+def _create_execution_plan(
+    download_execution_manager: object,
+    request_id: str,
+) -> tuple[str | None, bool, str]:
+    create_plan = getattr(download_execution_manager, "create_plan", None)
+    if not callable(create_plan):
+        return None, False, "Download Execution Manager is unavailable."
+
+    try:
+        snapshot = create_plan(request_id)
+    except Exception as error:
+        return (
+            None,
+            False,
+            "Download execution plan creation failed: "
+            f"{type(error).__name__}: {error}",
+        )
+
+    plan = getattr(snapshot, "plan", None)
+    plan_id = getattr(plan, "plan_id", None)
+    if isinstance(plan_id, str) and plan_id:
+        return plan_id, True, "Download execution plan created."
+    return None, False, "Download execution plan was created without a plan ID."
 
 
 def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindow:

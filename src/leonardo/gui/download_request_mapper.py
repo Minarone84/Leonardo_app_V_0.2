@@ -60,6 +60,9 @@ class DownloadSubmitResultView:
     issues: tuple[str, ...]
     message: str
     runtime_visible: bool
+    execution_plan_id: str | None = None
+    execution_plan_created: bool = False
+    execution_plan_message: str = "Execution plan was not created."
 
 
 class DownloadRequestDraftLike(Protocol):
@@ -167,6 +170,9 @@ def build_submit_result_view(
     *,
     item_count: int,
     accepted: bool = True,
+    execution_plan_id: str | None = None,
+    execution_plan_created: bool = False,
+    execution_plan_message: str = "Execution plan was not created.",
 ) -> DownloadSubmitResultView:
     """Convert a Core submit result into a GUI-safe display view."""
 
@@ -190,6 +196,9 @@ def build_submit_result_view(
             else "Download request rejected."
         ),
         runtime_visible=accepted,
+        execution_plan_id=execution_plan_id,
+        execution_plan_created=execution_plan_created,
+        execution_plan_message=execution_plan_message,
     )
 
 
@@ -210,6 +219,11 @@ def build_submit_error_view(
         issues=tuple(issues),
         message=message,
         runtime_visible=False,
+        execution_plan_id=None,
+        execution_plan_created=False,
+        execution_plan_message=(
+            "Execution plan was not created because submit was rejected."
+        ),
     )
 
 

@@ -318,6 +318,9 @@ def test_submit_valid_download_data_draft_calls_callback_once(
     assert "Request ID: request-test" in result
     assert "Status: validated" in result
     assert "Runtime visible: True" in result
+    assert "Execution plan created: yes" in result
+    assert "Execution plan ID: execution-plan-request-test" in result
+    assert "Execution plan message: Download execution plan created." in result
     assert "Submit issues:\n- none" in result
 
     window.deleteLater()
@@ -758,4 +761,7 @@ def _submit_view() -> SimpleNamespace:
         issues=(),
         message="Download request submitted.",
         runtime_visible=True,
+        execution_plan_id="execution-plan-request-test",
+        execution_plan_created=True,
+        execution_plan_message="Download execution plan created.",
     )

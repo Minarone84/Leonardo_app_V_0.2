@@ -168,6 +168,35 @@ def test_mapper_converts_submit_result_to_gui_view() -> None:
     assert view.issues == ()
     assert view.message == "Download request submitted."
     assert view.runtime_visible is True
+    assert view.execution_plan_id is None
+    assert view.execution_plan_created is False
+    assert view.execution_plan_message == "Execution plan was not created."
+
+
+def test_mapper_converts_submit_result_with_execution_plan_fields() -> None:
+    request = build_download_request_for_submit(_draft())
+    preflight = DownloadPreflight(
+        request_id=request.request_id,
+        status=DownloadStatus.VALIDATED,
+        can_run=True,
+        estimated_items=4,
+        estimated_symbols=2,
+        estimated_timeframes=2,
+    )
+
+    view = build_submit_result_view(
+        request,
+        preflight,
+        item_count=4,
+        execution_plan_id="execution-plan-request-test",
+        execution_plan_created=True,
+        execution_plan_message="Download execution plan created.",
+    )
+
+    assert isinstance(view, DownloadSubmitResultView)
+    assert view.execution_plan_id == "execution-plan-request-test"
+    assert view.execution_plan_created is True
+    assert view.execution_plan_message == "Download execution plan created."
 
 
 def test_mapper_builds_safe_rejected_submit_result() -> None:
@@ -187,6 +216,11 @@ def test_mapper_builds_safe_rejected_submit_result() -> None:
     assert view.issues == ("ValueError: duplicate",)
     assert view.message == "Download request submit rejected."
     assert view.runtime_visible is False
+    assert view.execution_plan_id is None
+    assert view.execution_plan_created is False
+    assert view.execution_plan_message == (
+        "Execution plan was not created because submit was rejected."
+    )
 
 
 def test_mapper_imports_contracts_but_no_core_or_qt() -> None:

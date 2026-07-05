@@ -196,11 +196,48 @@ class FakeDownloadManager:
         )
 
 
+class FakeDownloadExecutionManager:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.create_plan_calls = 0
+        self.request_ids: list[str] = []
+        self._snapshots: dict[str, SimpleNamespace] = {}
+
+    def create_plan(self, request_id: str) -> SimpleNamespace:
+        self.create_plan_calls += 1
+        self.request_ids.append(request_id)
+        if self.fail:
+            raise RuntimeError("plan failed")
+        plan_id = f"execution-plan-{request_id}"
+        snapshot = self._snapshots.get(plan_id)
+        if snapshot is None:
+            snapshot = SimpleNamespace(
+                plan=SimpleNamespace(
+                    plan_id=plan_id,
+                    request_id=request_id,
+                )
+            )
+            self._snapshots[plan_id] = snapshot
+        return snapshot
+
+    def list_snapshots(self) -> tuple[SimpleNamespace, ...]:
+        return tuple(self._snapshots[plan_id] for plan_id in sorted(self._snapshots))
+
+
 class FakeCoreContext:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        download_execution_manager: FakeDownloadExecutionManager | None = None,
+    ) -> None:
         self.runtime_manager = FakeRuntimeManager()
         self.window_registry = FakeWindowRegistry()
         self.download_manager = FakeDownloadManager()
+        self.download_execution_manager = (
+            download_execution_manager
+            if download_execution_manager is not None
+            else FakeDownloadExecutionManager()
+        )
 
 
 def test_composition_creates_main_window_from_context_without_startup(
@@ -279,6 +316,7 @@ def test_composition_injects_inert_download_placeholder_callbacks(
     assert builder.isVisible() is True
     assert window.statusBar().currentMessage() == "Download Data request builder opened."
     assert context.download_manager.submit_calls == 0
+    assert context.download_execution_manager.create_plan_calls == 0
 
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
     qapplication.processEvents()
@@ -289,6 +327,7 @@ def test_composition_injects_inert_download_placeholder_callbacks(
         "OHLCV Maintenance request builder opened."
     )
     assert context.download_manager.submit_calls == 0
+    assert context.download_execution_manager.create_plan_calls == 0
 
     builder.close()
     builder.deleteLater()
@@ -319,6 +358,7 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
 
     assert context.download_manager.preview_calls == 1
     assert context.download_manager.submit_calls == 0
+    assert context.download_execution_manager.create_plan_calls == 0
     assert context.download_manager.last_preview_request is not None
     assert context.download_manager.last_preview_request.request_id.startswith(
         "preview-"
@@ -359,7 +399,11 @@ def test_composition_wires_download_submit_without_preview_call(
 
     assert context.download_manager.submit_calls == 1
     assert context.download_manager.preview_calls == 0
+    assert context.download_execution_manager.create_plan_calls == 1
     assert context.download_manager.last_submit_request is not None
+    assert context.download_execution_manager.request_ids == [
+        context.download_manager.last_submit_request.request_id,
+    ]
     assert context.download_manager.last_submit_request.request_id.startswith(
         "request-"
     )
@@ -375,6 +419,11 @@ def test_composition_wires_download_submit_without_preview_call(
     assert "Download request submitted." in submit_text.toPlainText()
     assert "Item count: 4" in submit_text.toPlainText()
     assert "Runtime visible: True" in submit_text.toPlainText()
+    assert "Execution plan created: yes" in submit_text.toPlainText()
+    assert "Execution plan ID: execution-plan-request-" in submit_text.toPlainText()
+    assert "Execution plan message: Download execution plan created." in (
+        submit_text.toPlainText()
+    )
 
     builder.close()
     builder.deleteLater()
@@ -405,6 +454,7 @@ def test_composition_handles_duplicate_download_submit_safely(
 
     assert context.download_manager.submit_calls == 2
     assert context.download_manager.preview_calls == 0
+    assert context.download_execution_manager.create_plan_calls == 1
     assert submit_text is not None
     assert "Download request submit rejected." in submit_text.toPlainText()
     assert "Accepted: False" in submit_text.toPlainText()
@@ -438,6 +488,7 @@ def test_composition_blocks_ohlcv_submit_without_core_call(
 
     assert context.download_manager.submit_calls == 0
     assert context.download_manager.preview_calls == 0
+    assert context.download_execution_manager.create_plan_calls == 0
     assert submit_text is not None
     assert (
         "OHLCV Maintenance submit is deferred until storage execution and "
@@ -474,12 +525,60 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     assert snapshot.downloads_summary.count == 1
     assert snapshot.downloads_summary.metadata["total_requests"] == 1
     assert snapshot.downloads_summary.metadata["total_items"] == 4
+    assert snapshot.download_execution_summary.count == 1
+    assert snapshot.download_execution_summary.metadata["total_plans"] == 1
+    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == (
+        f"execution-plan-{app.download_manager.list_requests()[0].request_id}",
+    )
+    assert any(
+        event.event_type == "download.execution.plan.created"
+        for event in app.audit_log.snapshot()
+    )
 
     builder.close()
     builder.deleteLater()
     window.deleteLater()
     qapplication.processEvents()
     app.shutdown()
+
+
+def test_download_submit_plan_failure_preserves_accepted_submit(
+    qapplication: QApplication,
+) -> None:
+    execution_manager = FakeDownloadExecutionManager(fail=True)
+    context = FakeCoreContext(download_execution_manager=execution_manager)
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _set_builder_text(builder, "symbols", "BTCUSDT")
+    _set_builder_text(builder, "timeframes", "1m")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    submit_text = builder.findChild(
+        QTextEdit,
+        "download_request_builder.submit_result_text",
+    )
+
+    assert context.download_manager.submit_calls == 1
+    assert execution_manager.create_plan_calls == 1
+    assert context.download_manager.last_submit_request is not None
+    assert submit_text is not None
+    assert "Accepted: True" in submit_text.toPlainText()
+    assert "Runtime visible: True" in submit_text.toPlainText()
+    assert "Execution plan created: no" in submit_text.toPlainText()
+    assert "Execution plan ID: unresolved" in submit_text.toPlainText()
+    assert (
+        "Execution plan message: Download execution plan creation failed: "
+        "RuntimeError: plan failed"
+    ) in submit_text.toPlainText()
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
 
 
 def test_window_tracking_reports_lifecycle_only_after_window_events(
