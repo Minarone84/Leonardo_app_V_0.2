@@ -14,6 +14,7 @@ from leonardo.contracts.downloads import (
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
+from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_execution_manager import DownloadExecutionManager
 from leonardo.core.download_manager import DownloadManager
 
@@ -124,6 +125,7 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert context.window_registry is app.window_registry
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
+    assert context.download_capability_catalog is app.download_capability_catalog
     assert context.download_manager is app.download_manager
     assert context.download_execution_manager is app.download_execution_manager
     assert context.runtime_manager is app.runtime_manager
@@ -174,6 +176,17 @@ def test_leonardo_app_exposes_download_execution_manager_without_service_registr
     assert isinstance(app.download_execution_manager, DownloadExecutionManager)
     assert context.download_execution_manager is app.download_execution_manager
     assert context.download_execution_manager.list_snapshots() == ()
+    assert context.service_registry.list_services() == ()
+
+
+def test_leonardo_app_exposes_empty_download_capability_catalog_without_service_registration() -> None:
+    app = LeonardoApp()
+
+    context = app.startup()
+
+    assert isinstance(app.download_capability_catalog, DownloadCapabilityCatalog)
+    assert context.download_capability_catalog is app.download_capability_catalog
+    assert context.download_capability_catalog.list_providers() == ()
     assert context.service_registry.list_services() == ()
 
 

@@ -21,6 +21,7 @@ from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
+from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_execution_manager import DownloadExecutionManager
 from leonardo.core.download_manager import DownloadManager
 from leonardo.core.error_router import ErrorRouter
@@ -53,6 +54,7 @@ class CoreContext:
     window_registry: WindowRegistry
     action_registry: ActionRegistry
     operation_registry: OperationRegistry
+    download_capability_catalog: DownloadCapabilityCatalog
     download_manager: DownloadManager
     download_execution_manager: DownloadExecutionManager
     runtime_manager: RuntimeManagerBackend
@@ -92,6 +94,7 @@ class LeonardoApp:
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
         self.operation_registry = OperationRegistry(self.state_store)
+        self.download_capability_catalog = DownloadCapabilityCatalog()
         self.download_manager = DownloadManager(self.audit_log)
         self.download_execution_manager = DownloadExecutionManager(
             self.download_manager,
@@ -127,6 +130,7 @@ class LeonardoApp:
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
+            download_capability_catalog=self.download_capability_catalog,
             download_manager=self.download_manager,
             download_execution_manager=self.download_execution_manager,
             runtime_manager=self.runtime_manager,
