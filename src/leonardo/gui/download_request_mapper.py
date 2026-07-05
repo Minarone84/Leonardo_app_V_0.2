@@ -63,6 +63,9 @@ class DownloadSubmitResultView:
     execution_plan_id: str | None = None
     execution_plan_created: bool = False
     execution_plan_message: str = "Execution plan was not created."
+    execution_plan_phase: str | None = None
+    execution_plan_ready: bool = False
+    execution_plan_blocked: bool = False
 
 
 class DownloadRequestDraftLike(Protocol):
@@ -173,6 +176,9 @@ def build_submit_result_view(
     execution_plan_id: str | None = None,
     execution_plan_created: bool = False,
     execution_plan_message: str = "Execution plan was not created.",
+    execution_plan_phase: str | None = None,
+    execution_plan_ready: bool = False,
+    execution_plan_blocked: bool = False,
 ) -> DownloadSubmitResultView:
     """Convert a Core submit result into a GUI-safe display view."""
 
@@ -199,6 +205,9 @@ def build_submit_result_view(
         execution_plan_id=execution_plan_id,
         execution_plan_created=execution_plan_created,
         execution_plan_message=execution_plan_message,
+        execution_plan_phase=execution_plan_phase,
+        execution_plan_ready=execution_plan_ready,
+        execution_plan_blocked=execution_plan_blocked,
     )
 
 
@@ -224,6 +233,9 @@ def build_submit_error_view(
         execution_plan_message=(
             "Execution plan was not created because submit was rejected."
         ),
+        execution_plan_phase=None,
+        execution_plan_ready=False,
+        execution_plan_blocked=False,
     )
 
 

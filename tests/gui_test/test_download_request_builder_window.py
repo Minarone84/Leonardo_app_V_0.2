@@ -320,7 +320,10 @@ def test_submit_valid_download_data_draft_calls_callback_once(
     assert "Runtime visible: True" in result
     assert "Execution plan created: yes" in result
     assert "Execution plan ID: execution-plan-request-test" in result
-    assert "Execution plan message: Download execution plan created." in result
+    assert "Execution plan message: Download execution plan classified as ready." in result
+    assert "Execution plan phase: ready" in result
+    assert "Execution plan ready: yes" in result
+    assert "Execution plan blocked: no" in result
     assert "Submit issues:\n- none" in result
 
     window.deleteLater()
@@ -763,5 +766,8 @@ def _submit_view() -> SimpleNamespace:
         runtime_visible=True,
         execution_plan_id="execution-plan-request-test",
         execution_plan_created=True,
-        execution_plan_message="Download execution plan created.",
+        execution_plan_message="Download execution plan classified as ready.",
+        execution_plan_phase="ready",
+        execution_plan_ready=True,
+        execution_plan_blocked=False,
     )

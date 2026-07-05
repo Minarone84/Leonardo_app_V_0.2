@@ -171,6 +171,9 @@ def test_mapper_converts_submit_result_to_gui_view() -> None:
     assert view.execution_plan_id is None
     assert view.execution_plan_created is False
     assert view.execution_plan_message == "Execution plan was not created."
+    assert view.execution_plan_phase is None
+    assert view.execution_plan_ready is False
+    assert view.execution_plan_blocked is False
 
 
 def test_mapper_converts_submit_result_with_execution_plan_fields() -> None:
@@ -190,13 +193,19 @@ def test_mapper_converts_submit_result_with_execution_plan_fields() -> None:
         item_count=4,
         execution_plan_id="execution-plan-request-test",
         execution_plan_created=True,
-        execution_plan_message="Download execution plan created.",
+        execution_plan_message="Download execution plan classified as ready.",
+        execution_plan_phase="ready",
+        execution_plan_ready=True,
+        execution_plan_blocked=False,
     )
 
     assert isinstance(view, DownloadSubmitResultView)
     assert view.execution_plan_id == "execution-plan-request-test"
     assert view.execution_plan_created is True
-    assert view.execution_plan_message == "Download execution plan created."
+    assert view.execution_plan_message == "Download execution plan classified as ready."
+    assert view.execution_plan_phase == "ready"
+    assert view.execution_plan_ready is True
+    assert view.execution_plan_blocked is False
 
 
 def test_mapper_builds_safe_rejected_submit_result() -> None:
@@ -221,6 +230,9 @@ def test_mapper_builds_safe_rejected_submit_result() -> None:
     assert view.execution_plan_message == (
         "Execution plan was not created because submit was rejected."
     )
+    assert view.execution_plan_phase is None
+    assert view.execution_plan_ready is False
+    assert view.execution_plan_blocked is False
 
 
 def test_mapper_imports_contracts_but_no_core_or_qt() -> None:

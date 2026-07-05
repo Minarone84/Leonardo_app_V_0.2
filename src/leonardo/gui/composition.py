@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -69,6 +70,16 @@ class GuiCoreContext(Protocol):
     audit_log: object
     download_manager: object
     download_execution_manager: object
+
+
+@dataclass(frozen=True)
+class _ExecutionPlanSubmitState:
+    plan_id: str | None
+    created: bool
+    message: str
+    phase: str | None = None
+    ready: bool = False
+    blocked: bool = False
 
 
 class GuiCompositionRoot:
@@ -301,11 +312,7 @@ class GuiCompositionRoot:
                 "Download request submit rejected.",
                 (f"{type(error).__name__}: {error}",),
             )
-        (
-            execution_plan_id,
-            execution_plan_created,
-            execution_plan_message,
-        ) = _create_execution_plan(
+        execution_plan = _create_execution_plan(
             self._download_execution_manager,
             request.request_id,
         )
@@ -313,9 +320,12 @@ class GuiCompositionRoot:
             request,
             preflight,
             item_count=item_count,
-            execution_plan_id=execution_plan_id,
-            execution_plan_created=execution_plan_created,
-            execution_plan_message=execution_plan_message,
+            execution_plan_id=execution_plan.plan_id,
+            execution_plan_created=execution_plan.created,
+            execution_plan_message=execution_plan.message,
+            execution_plan_phase=execution_plan.phase,
+            execution_plan_ready=execution_plan.ready,
+            execution_plan_blocked=execution_plan.blocked,
         )
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
@@ -410,15 +420,19 @@ def _submitted_item_count(download_manager: object, request_id: str) -> int:
 def _create_execution_plan(
     download_execution_manager: object,
     request_id: str,
-) -> tuple[str | None, bool, str]:
+) -> _ExecutionPlanSubmitState:
     create_plan = getattr(download_execution_manager, "create_plan", None)
     if not callable(create_plan):
-        return None, False, "Download Execution Manager is unavailable."
+        return _ExecutionPlanSubmitState(
+            None,
+            False,
+            "Download Execution Manager is unavailable.",
+        )
 
     try:
         snapshot = create_plan(request_id)
     except Exception as error:
-        return (
+        return _ExecutionPlanSubmitState(
             None,
             False,
             "Download execution plan creation failed: "
@@ -428,8 +442,79 @@ def _create_execution_plan(
     plan = getattr(snapshot, "plan", None)
     plan_id = getattr(plan, "plan_id", None)
     if isinstance(plan_id, str) and plan_id:
-        return plan_id, True, "Download execution plan created."
-    return None, False, "Download execution plan was created without a plan ID."
+        return _classify_execution_plan(download_execution_manager, snapshot, plan_id)
+    return _ExecutionPlanSubmitState(
+        None,
+        False,
+        "Download execution plan was created without a plan ID.",
+    )
+
+
+def _classify_execution_plan(
+    download_execution_manager: object,
+    snapshot: object,
+    plan_id: str,
+) -> _ExecutionPlanSubmitState:
+    classify_readiness = getattr(download_execution_manager, "classify_readiness", None)
+    if not callable(classify_readiness):
+        return _ExecutionPlanSubmitState(
+            plan_id,
+            True,
+            "Download execution plan created. Readiness classification is unavailable.",
+            _snapshot_plan_phase(snapshot),
+        )
+
+    try:
+        classified_snapshot = classify_readiness(plan_id)
+    except Exception as error:
+        return _ExecutionPlanSubmitState(
+            plan_id,
+            True,
+            "Download execution readiness classification failed: "
+            f"{type(error).__name__}: {error}",
+            _snapshot_plan_phase(snapshot),
+        )
+
+    phase = _snapshot_plan_phase(classified_snapshot)
+    if phase == "ready":
+        message = "Download execution plan classified as ready."
+    elif phase == "blocked":
+        detail = _snapshot_progress_message(classified_snapshot)
+        message = (
+            f"Download execution plan classified as blocked: {detail}"
+            if detail
+            else "Download execution plan classified as blocked."
+        )
+    else:
+        message = (
+            f"Download execution plan classified as {phase}."
+            if phase is not None
+            else "Download execution plan classification completed."
+        )
+
+    return _ExecutionPlanSubmitState(
+        plan_id,
+        True,
+        message,
+        phase,
+        ready=phase == "ready",
+        blocked=phase == "blocked",
+    )
+
+
+def _snapshot_plan_phase(snapshot: object) -> str | None:
+    plan = getattr(snapshot, "plan", None)
+    phase = getattr(plan, "phase", None)
+    value = getattr(phase, "value", phase)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _snapshot_progress_message(snapshot: object) -> str:
+    progress = getattr(snapshot, "progress", None)
+    message = getattr(progress, "message", "")
+    return message if isinstance(message, str) else ""
 
 
 def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindow:

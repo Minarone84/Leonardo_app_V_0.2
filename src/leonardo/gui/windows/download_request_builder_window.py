@@ -636,6 +636,18 @@ def _format_submit_result(result: object) -> str:
             "Execution plan message: "
             f"{getattr(result, 'execution_plan_message', '')}"
         ),
+        (
+            "Execution plan phase: "
+            f"{_display_optional(getattr(result, 'execution_plan_phase', None))}"
+        ),
+        (
+            "Execution plan ready: "
+            f"{_display_yes_no(getattr(result, 'execution_plan_ready', False))}"
+        ),
+        (
+            "Execution plan blocked: "
+            f"{_display_yes_no(getattr(result, 'execution_plan_blocked', False))}"
+        ),
         "Submit issues:",
     ]
     if not issues:
