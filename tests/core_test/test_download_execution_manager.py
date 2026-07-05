@@ -342,6 +342,224 @@ def test_phase_change_without_audit_log_keeps_audit_out_of_band() -> None:
     assert updated.plan.phase is DownloadExecutionPhase.READY
 
 
+def test_classify_readiness_marks_valid_explicit_plan_ready_with_audit() -> None:
+    audit_log = AuditLog()
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    before_state = _download_manager_state(download_manager)
+    manager = DownloadExecutionManager(download_manager, audit_log)
+    snapshot = manager.create_plan("req-explicit")
+    before_events = audit_log.snapshot()
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.READY
+    assert updated.progress is not None
+    assert updated.progress.phase is DownloadExecutionPhase.READY
+    assert updated.progress.message == (
+        "Download execution plan is ready for future execution."
+    )
+    assert updated.plan.item_ids == snapshot.plan.item_ids
+    assert updated.outputs == ()
+    assert updated.errors == ()
+    assert updated.plan.operation_id is None
+    assert updated.plan.task_id is None
+    assert manager.get_snapshot(snapshot.plan.plan_id) is updated
+    assert _download_manager_state(download_manager) == before_state
+
+    events = audit_log.snapshot()
+    assert len(events) == len(before_events) + 1
+    assert events[-1].event_type == "download.execution.phase.changed"
+    assert events[-1].payload["plan_id"] == updated.plan.plan_id
+    assert events[-1].payload["request_id"] == "req-explicit"
+    assert events[-1].payload["old_phase"] == "planned"
+    assert events[-1].payload["new_phase"] == "ready"
+
+
+def test_classify_readiness_blocks_failed_structural_preflight() -> None:
+    download_manager = DownloadManager()
+    request = _request(
+        request_id="req-invalid",
+        timeframe_mode=DownloadTimeframeMode.DEFAULT,
+        timeframes=(),
+    )
+    object.__setattr__(request, "timeframe_mode", DownloadTimeframeMode.EXPLICIT)
+    download_manager.submit_request(request)
+    before_state = _download_manager_state(download_manager)
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-invalid")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress.message == "Structural preflight failed."
+    assert updated.metadata["blocked_reason"] == "Structural preflight failed."
+    assert updated.preflight_layers == snapshot.preflight_layers
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_blocks_explicit_mode_without_stored_items() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+    download_manager._item_by_id.clear()  # type: ignore[attr-defined]
+    before_state = _download_manager_state(download_manager)
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Explicit timeframe mode has no stored items."
+    assert updated.plan.item_ids == snapshot.plan.item_ids
+    assert download_manager.list_items("req-explicit") == ()
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_blocks_inconsistent_item_state() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+    download_manager._item_by_id.pop(  # type: ignore[attr-defined]
+        "req-explicit:BTCUSDT:1m"
+    )
+    before_state = _download_manager_state(download_manager)
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Download plan/item state is inconsistent."
+    assert updated.plan.item_ids == snapshot.plan.item_ids
+    assert _download_manager_state(download_manager) == before_state
+
+
+@pytest.mark.parametrize(
+    "timeframe_mode",
+    (
+        DownloadTimeframeMode.ALL,
+        DownloadTimeframeMode.DEFAULT,
+        DownloadTimeframeMode.SUPPORTED,
+    ),
+)
+def test_classify_readiness_blocks_unresolved_timeframe_modes_without_fake_items(
+    timeframe_mode: DownloadTimeframeMode,
+) -> None:
+    request_id = f"req-classify-{timeframe_mode.value}"
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id=request_id,
+            timeframe_mode=timeframe_mode,
+            timeframes=(),
+        )
+    )
+    before_state = _download_manager_state(download_manager)
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan(request_id)
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert snapshot.plan.phase is DownloadExecutionPhase.PLANNED
+    assert snapshot.plan.item_ids == ()
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Timeframe expansion is unresolved."
+    assert updated.plan.item_ids == ()
+    assert updated.estimate is not None
+    assert updated.estimate.estimated_items is None
+    assert download_manager.list_items(request_id) == ()
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_blocks_unsupported_ohlcv_workflow() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id="req-ohlcv",
+            workflow_kind=DownloadWorkflowKind.OHLCV_MAINTENANCE,
+        )
+    )
+    before_state = _download_manager_state(download_manager)
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-ohlcv")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Unsupported workflow kind: ohlcv_maintenance."
+    assert updated.metadata["blocked_reason"] == (
+        "Unsupported workflow kind: ohlcv_maintenance."
+    )
+    assert updated.outputs == ()
+    assert updated.errors == ()
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_blocks_missing_request_state() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+    download_manager._request_by_id.pop("req-explicit")  # type: ignore[attr-defined]
+    before_state = _download_manager_state(download_manager)
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Stored download request is unavailable."
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_blocks_missing_preflight_state() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+    download_manager._preflight_by_request_id.pop(  # type: ignore[attr-defined]
+        "req-explicit"
+    )
+    before_state = _download_manager_state(download_manager)
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Stored structural preflight is unavailable."
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_rejects_unknown_plan_id() -> None:
+    manager = DownloadExecutionManager(DownloadManager())
+
+    with pytest.raises(KeyError, match="Download execution plan is not retained"):
+        manager.classify_readiness("execution-plan-missing")
+
+
+def test_classify_readiness_rejects_non_planned_plan() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    ready = manager.mark_ready(manager.create_plan("req-explicit").plan.plan_id)
+
+    with pytest.raises(ValueError, match="only planned plans can be classified"):
+        manager.classify_readiness(ready.plan.plan_id)
+
+    download_manager.submit_request(_request(request_id="req-blocked"))
+    blocked = manager.mark_blocked(
+        manager.create_plan("req-blocked").plan.plan_id,
+        "Missing storage policy.",
+    )
+
+    with pytest.raises(ValueError, match="only planned plans can be classified"):
+        manager.classify_readiness(blocked.plan.plan_id)
+
+
 def test_manager_constructor_requires_download_manager() -> None:
     with pytest.raises(TypeError, match="download_manager"):
         DownloadExecutionManager(object())  # type: ignore[arg-type]
@@ -403,6 +621,7 @@ def test_core_execution_manager_has_no_process_network_or_file_behavior() -> Non
 def _request(
     *,
     request_id: str = "req-explicit",
+    workflow_kind: DownloadWorkflowKind = DownloadWorkflowKind.DOWNLOAD_DATA,
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT"),
     timeframe_mode: DownloadTimeframeMode = DownloadTimeframeMode.EXPLICIT,
     timeframes: tuple[str, ...] = ("1m", "5m"),
@@ -410,7 +629,7 @@ def _request(
 ) -> DownloadRequest:
     return DownloadRequest(
         request_id=request_id,
-        workflow_kind=DownloadWorkflowKind.DOWNLOAD_DATA,
+        workflow_kind=workflow_kind,
         batch_id="batch-1",
         source="binance",
         market="spot",

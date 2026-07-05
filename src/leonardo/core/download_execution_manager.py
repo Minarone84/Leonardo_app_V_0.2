@@ -14,7 +14,12 @@ from leonardo.contracts.download_execution import (
     DownloadPreflightLayerStatus,
     default_execution_progress,
 )
-from leonardo.contracts.downloads import DownloadPreflight, DownloadRequest
+from leonardo.contracts.downloads import (
+    DownloadPreflight,
+    DownloadRequest,
+    DownloadTimeframeMode,
+    DownloadWorkflowKind,
+)
 from leonardo.core.audit_log import AuditLog
 from leonardo.core.download_manager import DownloadManager
 
@@ -85,6 +90,23 @@ class DownloadExecutionManager:
         self._plan_id_by_request_id[request.request_id] = plan.plan_id
         self._emit_plan_created(snapshot)
         return snapshot
+
+    def classify_readiness(self, plan_id: str) -> DownloadExecutionSnapshot:
+        """
+        Classify a retained planned snapshot as ready or blocked.
+
+        The classifier inspects only the current stored Download Manager
+        request, structural preflight, and item read models. It delegates phase
+        mutation to `mark_ready` and `mark_blocked`, so audit behavior and
+        immutable snapshot updates stay centralized.
+        """
+
+        snapshot = self._require_snapshot(plan_id)
+        _validate_readiness_classification(snapshot)
+        blocked_reason = _readiness_blocker(snapshot, self._download_manager)
+        if blocked_reason is not None:
+            return self.mark_blocked(plan_id, blocked_reason)
+        return self.mark_ready(plan_id)
 
     def mark_ready(self, plan_id: str) -> DownloadExecutionSnapshot:
         """
@@ -238,6 +260,53 @@ def _validate_planned_transition(
         f"{snapshot.plan.phase.value} to {new_phase.value}; only planned plans "
         "can transition in this phase."
     )
+
+
+def _validate_readiness_classification(snapshot: DownloadExecutionSnapshot) -> None:
+    if snapshot.plan.phase is DownloadExecutionPhase.PLANNED:
+        return
+    raise ValueError(
+        "Download execution plan cannot be readiness-classified from "
+        f"{snapshot.plan.phase.value}; only planned plans can be classified "
+        "in this phase."
+    )
+
+
+def _readiness_blocker(
+    snapshot: DownloadExecutionSnapshot,
+    download_manager: DownloadManager,
+) -> str | None:
+    request = download_manager.get_request(snapshot.plan.request_id)
+    if request is None:
+        return "Stored download request is unavailable."
+    if request.request_id != snapshot.plan.request_id:
+        return "Download request state is inconsistent."
+
+    preflight = download_manager.get_preflight(snapshot.plan.request_id)
+    if preflight is None:
+        return "Stored structural preflight is unavailable."
+    if preflight.request_id != snapshot.plan.request_id:
+        return "Download request/preflight state is inconsistent."
+
+    if request.workflow_kind is not DownloadWorkflowKind.DOWNLOAD_DATA:
+        return f"Unsupported workflow kind: {request.workflow_kind.value}."
+    if snapshot.plan.workflow_kind != request.workflow_kind.value:
+        return "Download plan/request workflow state is inconsistent."
+
+    if preflight.can_run is not True:
+        return "Structural preflight failed."
+
+    if request.timeframe_mode is not DownloadTimeframeMode.EXPLICIT:
+        return "Timeframe expansion is unresolved."
+
+    item_ids = tuple(
+        item.item_id for item in download_manager.list_items(request.request_id)
+    )
+    if not item_ids:
+        return "Explicit timeframe mode has no stored items."
+    if snapshot.plan.item_ids != item_ids:
+        return "Download plan/item state is inconsistent."
+    return None
 
 
 def _snapshot_with_phase(
