@@ -80,7 +80,7 @@ def test_main_window_accepts_injected_settings_inspector_factory(
 
     assert window.settings_inspector_window is None
     assert window.action_for_id("main_window.open_settings_inspector").text() == (
-        "Open Settings Inspector"
+        "Settings"
     )
 
     _dispose(qapplication, window, *created)

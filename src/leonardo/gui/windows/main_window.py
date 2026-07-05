@@ -6,8 +6,18 @@ from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGridLayout,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QPushButton,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import (
@@ -28,11 +38,27 @@ _MAIN_WINDOW_METADATA_PATH = (
 RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
 SettingsInspectorFactory = Callable[[], QWidget]
+_PLACEHOLDER_MAIN_WINDOW_ACTION_IDS = frozenset(
+    (
+        "main_window.download_data",
+        "main_window.ohlcv_maintenance",
+        "main_window.open_analysis_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_research_suite",
+        "main_window.open_trading_suite",
+    )
+)
 _TRACKED_MAIN_WINDOW_ACTION_IDS = frozenset(
     (
         "main_window.open_runtime_manager",
         "main_window.open_settings_inspector",
     )
+) | _PLACEHOLDER_MAIN_WINDOW_ACTION_IDS
+_PLACEHOLDER_BUTTON_ACTION_IDS = (
+    "main_window.open_trading_suite",
+    "main_window.open_research_suite",
+    "main_window.open_data_manager_suite",
+    "main_window.open_analysis_suite",
 )
 
 
@@ -63,6 +89,8 @@ class LeonardoMainWindow(QMainWindow):
         runtime_snapshot_provider: RuntimeSnapshotProvider | None = None,
         settings_inspector_factory: SettingsInspectorFactory | None = None,
         action_observer: GuiActionObserver | None = None,
+        username: str = "admin-dev",
+        version_label: str = "v0.2",
     ) -> None:
         super().__init__()
         self._profile = profile if profile is not None else load_main_window_profile()
@@ -84,6 +112,8 @@ class LeonardoMainWindow(QMainWindow):
             raise TypeError("action_observer must expose callable record_action")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
+        self._menus: dict[str, QMenu] = {}
+        self._placeholder_buttons: dict[str, QPushButton] = {}
         self._last_local_action_id = ""
         self._action_observer = action_observer
         self._runtime_manager_window_factory = runtime_manager_window_factory
@@ -91,6 +121,9 @@ class LeonardoMainWindow(QMainWindow):
         self._runtime_manager_window: QWidget | None = None
         self._settings_inspector_factory = settings_inspector_factory
         self._settings_inspector_window: QWidget | None = None
+        self._username = _string_or_fallback(username, "admin-dev")
+        self._version_label = _string_or_fallback(version_label, "v0.2")
+        self._central_message_label: QLabel | None = None
         self._apply_profile_metadata()
         self._build_menu_bar()
         self._build_central_placeholder()
@@ -145,6 +178,14 @@ class LeonardoMainWindow(QMainWindow):
         except KeyError as error:
             raise KeyError(f"Unknown Main Window action: {action_id}") from error
 
+    def placeholder_button_for_id(self, action_id: str) -> QPushButton:
+        """Return a central placeholder button by stable action ID."""
+
+        try:
+            return self._placeholder_buttons[action_id]
+        except KeyError as error:
+            raise KeyError(f"Unknown Main Window placeholder button: {action_id}") from error
+
     def apply_effective_profile(self, profile: EffectiveGuiMetadataProfile) -> None:
         """
         Apply safe live visual settings from a Main Window effective profile.
@@ -192,8 +233,8 @@ class LeonardoMainWindow(QMainWindow):
         self.setFont(font)
 
     def _build_menu_bar(self) -> None:
-        menu = self.menuBar().addMenu("Shell")
-        menu.setObjectName("main_window.menu_bar")
+        menu_bar = self.menuBar()
+        menu_bar.setObjectName("main_window.menu_bar")
         for action_id, action_metadata in _sorted_metadata_items(
             _mapping_at(self._profile.values, "actions")
         ):
@@ -201,7 +242,23 @@ class LeonardoMainWindow(QMainWindow):
             action.setObjectName(action_id)
             action.triggered.connect(partial(self._handle_shell_action, action_id))
             self._actions[action_id] = action
-            menu.addAction(action)
+
+        file_menu = self._add_menu("file", "File")
+        file_menu.addAction(self.action_for_id("main_window.open_runtime_manager"))
+        file_menu.addAction(self.action_for_id("main_window.open_settings_inspector"))
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_for_id("main_window.exit"))
+
+        download_menu = self._add_menu("download_manager", "Download Manager")
+        download_menu.addAction(self.action_for_id("main_window.download_data"))
+        download_menu.addAction(self.action_for_id("main_window.ohlcv_maintenance"))
+
+        self._add_menu("connections", "Connections")
+        self._add_menu("user", "User")
+
+        username_label = QLabel(self._username, menu_bar)
+        username_label.setObjectName("main_window.username_label")
+        menu_bar.setCornerWidget(username_label, Qt.Corner.TopRightCorner)
 
     def _build_central_placeholder(self) -> None:
         central = QWidget()
@@ -209,15 +266,37 @@ class LeonardoMainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         title_label = QLabel(self.metadata_title)
         title_label.setObjectName("main_window.title_label")
-        placeholder = QLabel("Leonardo shell metadata pilot")
+        placeholder = QLabel("Select a suite placeholder.")
         placeholder.setObjectName("main_window.placeholder_label")
+        self._central_message_label = placeholder
+        button_grid = QGridLayout()
+        for index, action_id in enumerate(_PLACEHOLDER_BUTTON_ACTION_IDS):
+            button = QPushButton(self.action_for_id(action_id).text())
+            button.setObjectName(action_id)
+            button.setMinimumHeight(96)
+            button.clicked.connect(partial(self._handle_shell_action, action_id))
+            self._placeholder_buttons[action_id] = button
+            button_grid.addWidget(button, index // 2, index % 2)
+
         layout.addWidget(title_label)
         layout.addWidget(placeholder)
+        layout.addLayout(button_grid)
         self.setCentralWidget(central)
 
     def _build_status_bar(self) -> None:
-        self.statusBar().setObjectName("main_window.status_bar")
-        self.statusBar().showMessage("Ready")
+        status_bar = QStatusBar()
+        status_bar.setObjectName("main_window.status_bar")
+        version = QLabel(self._version_label)
+        version.setObjectName("main_window.version_label")
+        status_bar.addPermanentWidget(version)
+        self.setStatusBar(status_bar)
+        status_bar.showMessage("Ready")
+
+    def _add_menu(self, menu_id: str, label: str) -> QMenu:
+        menu = self.menuBar().addMenu(label)
+        menu.setObjectName(f"main_window.menu.{menu_id}")
+        self._menus[menu_id] = menu
+        return menu
 
     def _handle_shell_action(self, action_id: str) -> None:
         self._last_local_action_id = action_id
@@ -236,6 +315,9 @@ class LeonardoMainWindow(QMainWindow):
         if action_id == "main_window.open_runtime_manager":
             self._open_runtime_manager_window()
             return
+        if action_id in _PLACEHOLDER_MAIN_WINDOW_ACTION_IDS:
+            self._show_placeholder_action(action_id)
+            return
         self.statusBar().showMessage(f"Unhandled local shell action: {action_id}")
 
     def _record_action(self, action_id: str) -> bool:
@@ -249,6 +331,13 @@ class LeonardoMainWindow(QMainWindow):
             window_id=MAIN_WINDOW_METADATA_ID,
         )
         return decision.allowed
+
+    def _show_placeholder_action(self, action_id: str) -> None:
+        label = self.action_for_id(action_id).text()
+        message = f"{label} placeholder selected."
+        if self._central_message_label is not None:
+            self._central_message_label.setText(message)
+        self.statusBar().showMessage(message)
 
     def _open_runtime_manager_window(self) -> None:
         created = False
@@ -311,6 +400,12 @@ def _mapping_at(values: Mapping[str, object], key: str) -> Mapping[str, object]:
 
 def _string_value(values: Mapping[str, object], key: str, fallback: str) -> str:
     value = values.get(key)
+    if isinstance(value, str) and value:
+        return value
+    return fallback
+
+
+def _string_or_fallback(value: object, fallback: str) -> str:
     if isinstance(value, str) and value:
         return value
     return fallback

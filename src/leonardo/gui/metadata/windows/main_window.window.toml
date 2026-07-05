@@ -41,10 +41,6 @@ region_id = "menu_bar"
 label = "Menu Bar"
 
 [[regions]]
-region_id = "toolbar"
-label = "Toolbar"
-
-[[regions]]
 region_id = "central"
 label = "Central Content"
 
@@ -52,21 +48,53 @@ label = "Central Content"
 region_id = "status_bar"
 label = "Status Bar"
 
+[[regions]]
+region_id = "user_display"
+label = "User Display"
+
+[[regions]]
+region_id = "version_display"
+label = "Version Display"
+
 [[actions]]
 action_id = "main_window.open_dummy_metadata_test"
 label = "Open Dummy Metadata Test"
 
 [[actions]]
 action_id = "main_window.open_settings_inspector"
-label = "Open Settings Inspector"
+label = "Settings"
 
 [[actions]]
 action_id = "main_window.open_runtime_manager"
-label = "Open Runtime Manager"
+label = "Runtime Manager"
 
 [[actions]]
 action_id = "main_window.exit"
 label = "Exit"
+
+[[actions]]
+action_id = "main_window.download_data"
+label = "Download Data"
+
+[[actions]]
+action_id = "main_window.ohlcv_maintenance"
+label = "OHLCV Maintenance"
+
+[[actions]]
+action_id = "main_window.open_trading_suite"
+label = "Trading Suite"
+
+[[actions]]
+action_id = "main_window.open_research_suite"
+label = "Research Suite"
+
+[[actions]]
+action_id = "main_window.open_data_manager_suite"
+label = "Data Manager Suite"
+
+[[actions]]
+action_id = "main_window.open_analysis_suite"
+label = "Analysis Suite"
 
 [[settings]]
 path = "style.font_size"

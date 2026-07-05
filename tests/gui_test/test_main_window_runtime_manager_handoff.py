@@ -81,7 +81,7 @@ def test_runtime_manager_action_exists_in_metadata_actions(
 
     assert "main_window.open_runtime_manager" in window.action_ids()
     assert window.action_for_id("main_window.open_runtime_manager").text() == (
-        "Open Runtime Manager"
+        "Runtime Manager"
     )
 
     window.deleteLater()

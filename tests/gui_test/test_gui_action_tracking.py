@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget  # noqa: E402
 
+from leonardo.contracts.gui import ActionKind  # noqa: E402
 from leonardo.contracts.identity import (  # noqa: E402
     ActorOrigin,
     Permission,
@@ -72,8 +73,14 @@ def test_composition_registers_first_gui_action_definitions(
     }
 
     assert {
+        "main_window.download_data",
+        "main_window.ohlcv_maintenance",
+        "main_window.open_analysis_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_research_suite",
         "main_window.open_runtime_manager",
         "main_window.open_settings_inspector",
+        "main_window.open_trading_suite",
         "settings_inspector.save",
         "settings_inspector.apply_changes",
         "runtime_manager.refresh_snapshot",
@@ -95,6 +102,19 @@ def test_composition_registers_first_gui_action_definitions(
         Permission.RUNTIME_VIEW,
     )
     assert definitions["runtime_manager.close"].required_permissions == ()
+    for action_id in (
+        "main_window.download_data",
+        "main_window.ohlcv_maintenance",
+        "main_window.open_analysis_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_research_suite",
+        "main_window.open_trading_suite",
+    ):
+        assert definitions[action_id].required_permissions == ()
+        assert definitions[action_id].is_placeholder is True
+    assert definitions["main_window.download_data"].kind is ActionKind.MENU
+    assert definitions["main_window.ohlcv_maintenance"].kind is ActionKind.MENU
+    assert definitions["main_window.open_trading_suite"].kind is ActionKind.BUTTON
 
     _dispose(qapplication, window)
     app.shutdown()
@@ -131,6 +151,51 @@ def test_main_window_tracked_actions_are_recorded(
         window.runtime_manager_window,
         window.settings_inspector_window,
     )
+    app.shutdown()
+
+
+def test_main_window_placeholder_actions_are_recorded_without_permissions(
+    qapplication: QApplication,
+) -> None:
+    app = LeonardoApp()
+    root = GuiCompositionRoot(app.context, track_windows=False)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    window.action_for_id("main_window.ohlcv_maintenance").trigger()
+    window.placeholder_button_for_id("main_window.open_trading_suite").click()
+    window.placeholder_button_for_id("main_window.open_research_suite").click()
+    window.placeholder_button_for_id("main_window.open_data_manager_suite").click()
+    window.placeholder_button_for_id("main_window.open_analysis_suite").click()
+    qapplication.processEvents()
+
+    expected_action_ids = (
+        "main_window.download_data",
+        "main_window.ohlcv_maintenance",
+        "main_window.open_trading_suite",
+        "main_window.open_research_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_analysis_suite",
+    )
+    action_ids = _recent_action_ids(app)
+    audit_action_ids = tuple(
+        event.action_id
+        for event in app.audit_log.snapshot()
+        if event.event_type == "gui.action.triggered"
+    )
+
+    for action_id in expected_action_ids:
+        record = _last_record(app, action_id)
+        assert action_id in action_ids
+        assert action_id in audit_action_ids
+        assert record.window_id == "main_window.window"
+        assert record.actor_id == "admin-dev"
+        assert record.session_id == "session-admin-dev"
+
+    assert window.runtime_manager_window is None
+    assert window.settings_inspector_window is None
+
+    _dispose(qapplication, window)
     app.shutdown()
 
 

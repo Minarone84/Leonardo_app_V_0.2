@@ -57,7 +57,13 @@ def test_main_window_identity_is_discoverable() -> None:
 def test_main_window_required_shell_regions_exist() -> None:
     document = _load_main_window_document()
 
-    assert {"menu_bar", "toolbar", "central", "status_bar"} == {
+    assert {
+        "menu_bar",
+        "central",
+        "status_bar",
+        "user_display",
+        "version_display",
+    } == {
         region.region_id
         for region in document.regions
     }
@@ -67,9 +73,15 @@ def test_main_window_required_shell_actions_exist() -> None:
     document = _load_main_window_document()
 
     assert {
+        "main_window.download_data",
         "main_window.open_dummy_metadata_test",
+        "main_window.ohlcv_maintenance",
+        "main_window.open_analysis_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_research_suite",
         "main_window.open_runtime_manager",
         "main_window.open_settings_inspector",
+        "main_window.open_trading_suite",
         "main_window.exit",
     } == {action.action_id for action in document.actions}
 
