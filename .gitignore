@@ -32,6 +32,7 @@ htmlcov/
 # ----------------------------
 # Runtime output
 # ----------------------------
+runs/
 runs/*.log
 runs/*.tmp
 runs/*.jsonl

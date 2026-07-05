@@ -37,6 +37,11 @@ _RUNTIME_MANAGER_METADATA_PATH = (
 _SUMMARY_TABLE_ID = "runtime_manager.summary_table"
 _SERVICES_TABLE_ID = "runtime_manager.services_table"
 _TASKS_TABLE_ID = "runtime_manager.tasks_table"
+_PROCESSES_TABLE_ID = "runtime_manager.processes_table"
+_CONNECTIONS_TABLE_ID = "runtime_manager.connections_table"
+_WINDOWS_TABLE_ID = "runtime_manager.windows_table"
+_ACTIONS_TABLE_ID = "runtime_manager.actions_table"
+_OPERATIONS_TABLE_ID = "runtime_manager.operations_table"
 _AUDIT_PREVIEW_TABLE_ID = "runtime_manager.audit_preview_table"
 _SECTION_SUMMARY_FIELDS = (
     "app_summary",
@@ -315,6 +320,46 @@ def _rows_by_table(snapshot: object | None) -> dict[str, tuple[Mapping[str, obje
             item_key="task",
             ids_metadata_key="task_ids",
             names_metadata_key="task_names",
+        ),
+        _PROCESSES_TABLE_ID: _section_detail_rows(
+            snapshot,
+            section_id="processes",
+            list_key="processes",
+            item_key="process",
+            ids_metadata_key="process_ids",
+            names_metadata_key="process_labels",
+        ),
+        _CONNECTIONS_TABLE_ID: _section_detail_rows(
+            snapshot,
+            section_id="connections",
+            list_key="connections",
+            item_key="connection",
+            ids_metadata_key="connection_ids",
+            names_metadata_key="connection_labels",
+        ),
+        _WINDOWS_TABLE_ID: _section_detail_rows(
+            snapshot,
+            section_id="windows",
+            list_key="windows",
+            item_key="window",
+            ids_metadata_key="open_window_ids",
+            names_metadata_key=None,
+        ),
+        _ACTIONS_TABLE_ID: _section_detail_rows(
+            snapshot,
+            section_id="actions",
+            list_key="actions",
+            item_key="action",
+            ids_metadata_key="recent_action_ids",
+            names_metadata_key=None,
+        ),
+        _OPERATIONS_TABLE_ID: _section_detail_rows(
+            snapshot,
+            section_id="operations",
+            list_key="operations",
+            item_key="operation",
+            ids_metadata_key="operation_ids",
+            names_metadata_key="operation_labels",
         ),
         _AUDIT_PREVIEW_TABLE_ID: _audit_preview_rows(snapshot),
     }

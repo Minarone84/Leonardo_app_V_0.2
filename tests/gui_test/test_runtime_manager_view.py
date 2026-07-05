@@ -267,6 +267,99 @@ def test_runtime_manager_renders_runtime_snapshot_contract(
     qapplication.processEvents()
 
 
+def test_runtime_manager_renders_all_detail_tabs_from_snapshot_summary_metadata(
+    qapplication: QApplication,
+) -> None:
+    snapshot = RuntimeManagerSnapshot(
+        generated_at_utc=datetime(2026, 7, 2, 12, tzinfo=UTC),
+        app_status="running",
+        session_id="session-admin-dev",
+        user_id="admin-dev",
+        username="Administrator",
+        app_summary=_section("app", "Application running"),
+        session_summary=_section("session", "Session active"),
+        services_summary=_section("services", "No services"),
+        tasks_summary=_section("tasks", "No tasks"),
+        processes_summary=_section(
+            "processes",
+            "1 active process",
+            count=1,
+            metadata={
+                "process_ids": ("process-1",),
+                "process_labels": ("Inspect runtime process",),
+            },
+        ),
+        connections_summary=_section(
+            "connections",
+            "1 connection visible",
+            count=1,
+            metadata={
+                "connection_ids": ("connection-1",),
+                "connection_labels": ("Runtime feed",),
+            },
+        ),
+        windows_summary=_section(
+            "windows",
+            "1 open window",
+            count=1,
+            metadata={"open_window_ids": ("runtime-manager",)},
+        ),
+        actions_summary=_section(
+            "actions",
+            "1 recent action trigger",
+            count=1,
+            metadata={"recent_action_ids": ("runtime.refresh",)},
+        ),
+        operations_summary=_section(
+            "operations",
+            "1 active operation",
+            count=1,
+            metadata={
+                "operation_ids": ("operation-1",),
+                "operation_labels": ("Inspect runtime operation",),
+            },
+        ),
+        audit_summary=_section("audit", "No retained audit events"),
+        contracts_summary=_section("contracts", "No contracts"),
+    )
+    window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=snapshot)
+
+    processes = window.table_for_id("runtime_manager.processes_table")
+    connections = window.table_for_id("runtime_manager.connections_table")
+    windows = window.table_for_id("runtime_manager.windows_table")
+    actions = window.table_for_id("runtime_manager.actions_table")
+    operations = window.table_for_id("runtime_manager.operations_table")
+
+    assert processes.rowCount() == 1
+    assert processes.item(0, 0).text() == "Inspect runtime process"
+    assert processes.item(0, 1).text() == "ok"
+    assert processes.item(0, 2).text() == ""
+    assert processes.item(0, 3).text() == "1 active process"
+
+    assert connections.rowCount() == 1
+    assert connections.item(0, 0).text() == "Runtime feed"
+    assert connections.item(0, 1).text() == "ok"
+    assert connections.item(0, 2).text() == "1 connection visible"
+
+    assert windows.rowCount() == 1
+    assert windows.item(0, 0).text() == "runtime-manager"
+    assert windows.item(0, 1).text() == "ok"
+    assert windows.item(0, 2).text() == "1 open window"
+
+    assert actions.rowCount() == 1
+    assert actions.item(0, 0).text() == "runtime.refresh"
+    assert actions.item(0, 1).text() == "ok"
+    assert actions.item(0, 2).text() == "1 recent action trigger"
+
+    assert operations.rowCount() == 1
+    assert operations.item(0, 0).text() == "Inspect runtime operation"
+    assert operations.item(0, 1).text() == "ok"
+    assert operations.item(0, 2).text() == "1 active operation"
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
 def test_runtime_manager_empty_snapshot_does_not_crash(
     qapplication: QApplication,
 ) -> None:
