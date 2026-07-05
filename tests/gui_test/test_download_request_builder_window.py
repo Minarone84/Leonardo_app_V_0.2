@@ -20,6 +20,7 @@ from leonardo.gui.windows.download_request_builder_window import (  # noqa: E402
     DOWNLOAD_DATA_WORKFLOW_MODE,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
     OHLCV_POLICY_DEFERRED_MESSAGE,
+    OHLCV_SUBMIT_DEFERRED_MESSAGE,
     DownloadRequestBuilderWindow,
 )
 
@@ -122,7 +123,7 @@ def test_builder_displays_common_placeholder_fields(
     qapplication.processEvents()
 
 
-def test_builder_has_only_local_close_button(qapplication: QApplication) -> None:
+def test_builder_has_local_action_buttons(qapplication: QApplication) -> None:
     window = DownloadRequestBuilderWindow()
 
     assert window.findChild(QPushButton, "download_request_builder.close") is not None
@@ -140,7 +141,10 @@ def test_builder_has_only_local_close_button(qapplication: QApplication) -> None
         )
         is not None
     )
-    assert window.findChild(QPushButton, "download_request_builder.submit") is None
+    assert (
+        window.findChild(QPushButton, "download_request_builder.submit_button")
+        is not None
+    )
     assert window.findChild(QPushButton, "download_request_builder.preflight") is None
 
     window.deleteLater()
@@ -169,6 +173,22 @@ def test_builder_preview_result_text_area_is_read_only(
 
     assert preview_result is not None
     assert preview_result.isReadOnly() is True
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_builder_submit_result_text_area_is_read_only(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    submit_result = window.findChild(
+        QTextEdit,
+        "download_request_builder.submit_result_text",
+    )
+
+    assert submit_result is not None
+    assert submit_result.isReadOnly() is True
 
     window.deleteLater()
     qapplication.processEvents()
@@ -271,6 +291,119 @@ def test_preview_callback_exception_renders_safe_error(
     result = _render_preview(window)
 
     assert result == "Preflight preview failed: RuntimeError: preview failed"
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_submit_valid_download_data_draft_calls_callback_once(
+    qapplication: QApplication,
+) -> None:
+    calls: list[object] = []
+
+    def callback(draft: object) -> object:
+        calls.append(draft)
+        return _submit_view()
+
+    window = DownloadRequestBuilderWindow(on_submit_intent=callback)
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_submit(window)
+
+    assert len(calls) == 1
+    assert result.startswith("Download submit result:")
+    assert "Message: Download request submitted." in result
+    assert "Accepted: True" in result
+    assert "Request ID: request-test" in result
+    assert "Status: validated" in result
+    assert "Runtime visible: True" in result
+    assert "Submit issues:\n- none" in result
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_submit_local_validation_errors_block_callback(
+    qapplication: QApplication,
+) -> None:
+    calls = 0
+
+    def callback(draft: object) -> object:
+        nonlocal calls
+        calls += 1
+        return _submit_view()
+
+    window = DownloadRequestBuilderWindow(on_submit_intent=callback)
+
+    result = _render_submit(window)
+
+    assert calls == 0
+    assert "Download submit blocked by local validation issues:" in result
+    assert "ERROR symbols: At least one symbol is required." in result
+    assert (
+        "ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
+        in result
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_submit_ohlcv_mode_blocks_callback_and_shows_deferred_message(
+    qapplication: QApplication,
+) -> None:
+    calls = 0
+
+    def callback(draft: object) -> object:
+        nonlocal calls
+        calls += 1
+        return _submit_view()
+
+    window = DownloadRequestBuilderWindow(
+        OHLCV_MAINTENANCE_WORKFLOW_MODE,
+        on_submit_intent=callback,
+    )
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_submit(window)
+
+    assert calls == 0
+    assert result == OHLCV_SUBMIT_DEFERRED_MESSAGE
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_submit_absent_callback_renders_unavailable_message(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_submit(window)
+
+    assert result == "Download submit is unavailable."
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_submit_callback_exception_renders_safe_error(
+    qapplication: QApplication,
+) -> None:
+    def callback(draft: object) -> object:
+        raise RuntimeError("submit failed")
+
+    window = DownloadRequestBuilderWindow(on_submit_intent=callback)
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_submit(window)
+
+    assert result == "Download submit failed: RuntimeError: submit failed"
 
     window.deleteLater()
     qapplication.processEvents()
@@ -503,7 +636,6 @@ def test_builder_source_has_no_core_or_contract_dependencies() -> None:
         "leonardo.contracts",
         "Download" + "Manager",
         "Download" + "Request(",
-        "submit_" + "request",
         "LeonardoApp",
         "RuntimeManagerBackend",
         "AuditLog",
@@ -584,6 +716,22 @@ def _render_preview(window: DownloadRequestBuilderWindow) -> str:
     return preview_text.toPlainText()
 
 
+def _render_submit(window: DownloadRequestBuilderWindow) -> str:
+    button = window.findChild(
+        QPushButton,
+        "download_request_builder.submit_button",
+    )
+    submit_text = window.findChild(
+        QTextEdit,
+        "download_request_builder.submit_result_text",
+    )
+    assert button is not None
+    assert submit_text is not None
+
+    button.click()
+    return submit_text.toPlainText()
+
+
 def _preview_view() -> SimpleNamespace:
     return SimpleNamespace(
         request_id="preview-test",
@@ -596,4 +744,18 @@ def _preview_view() -> SimpleNamespace:
         websocket_required=False,
         issues=(),
         message="Preflight preview passed.",
+    )
+
+
+def _submit_view() -> SimpleNamespace:
+    return SimpleNamespace(
+        request_id="request-test",
+        accepted=True,
+        status="validated",
+        can_run=True,
+        item_count=1,
+        estimated_items=1,
+        issues=(),
+        message="Download request submitted.",
+        runtime_visible=True,
     )

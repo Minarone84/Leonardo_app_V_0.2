@@ -18,8 +18,10 @@ from leonardo.contracts.downloads import (  # noqa: E402
     DownloadPreflight,
     DownloadRequest,
     DownloadStatus,
+    DownloadTimeframeMode,
 )
 from leonardo.contracts.gui import WindowDefinition  # noqa: E402
+from leonardo.core.app import LeonardoApp  # noqa: E402
 from leonardo.gui.composition import (  # noqa: E402
     GuiCompositionRoot,
     create_main_window_for_context,
@@ -133,6 +135,8 @@ class FakeDownloadManager:
         self.preview_calls = 0
         self.submit_calls = 0
         self.last_preview_request: DownloadRequest | None = None
+        self.last_submit_request: DownloadRequest | None = None
+        self._submitted_requests: dict[str, DownloadRequest] = {}
 
     def preview_request(self, request: DownloadRequest) -> DownloadPreflight:
         self.preview_calls += 1
@@ -156,9 +160,40 @@ class FakeDownloadManager:
             websocket_required=request.websocket_required,
         )
 
-    def submit_request(self, request: object) -> object:
+    def submit_request(self, request: DownloadRequest) -> DownloadPreflight:
         self.submit_calls += 1
-        raise AssertionError("composition must not submit download requests")
+        if request.request_id in self._submitted_requests:
+            raise ValueError(f"Download request already submitted: {request.request_id}")
+        self.last_submit_request = request
+        self._submitted_requests[request.request_id] = request
+        return DownloadPreflight(
+            request_id=request.request_id,
+            status=DownloadStatus.VALIDATED,
+            can_run=True,
+            estimated_symbols=len(request.symbols),
+            estimated_timeframes=len(request.timeframes)
+            if request.timeframes
+            else None,
+            estimated_items=(
+                len(request.symbols) * len(request.timeframes)
+                if request.timeframes
+                else None
+            ),
+            required_connections=(
+                (request.connection_ref,) if request.connection_ref is not None else ()
+            ),
+            websocket_required=request.websocket_required,
+        )
+
+    def list_items(self, request_id: str) -> tuple[object, ...]:
+        request = self._submitted_requests.get(request_id)
+        if request is None or request.timeframe_mode is not DownloadTimeframeMode.EXPLICIT:
+            return ()
+        return tuple(
+            SimpleNamespace(item_id=f"{request_id}:{symbol}:{timeframe}")
+            for symbol in request.symbols
+            for timeframe in request.timeframes
+        )
 
 
 class FakeCoreContext:
@@ -301,6 +336,150 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
     builder.deleteLater()
     window.deleteLater()
     qapplication.processEvents()
+
+
+def test_composition_wires_download_submit_without_preview_call(
+    qapplication: QApplication,
+) -> None:
+    context = FakeCoreContext()
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _set_builder_text(builder, "symbols", "BTCUSDT, ETHUSDT")
+    _set_builder_text(builder, "timeframes", "1m, 5m")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    submit_text = builder.findChild(
+        QTextEdit,
+        "download_request_builder.submit_result_text",
+    )
+
+    assert context.download_manager.submit_calls == 1
+    assert context.download_manager.preview_calls == 0
+    assert context.download_manager.last_submit_request is not None
+    assert context.download_manager.last_submit_request.request_id.startswith(
+        "request-"
+    )
+    assert not context.download_manager.last_submit_request.request_id.startswith(
+        "preview-"
+    )
+    assert context.download_manager.last_submit_request.symbols == (
+        "BTCUSDT",
+        "ETHUSDT",
+    )
+    assert context.download_manager.last_submit_request.timeframes == ("1m", "5m")
+    assert submit_text is not None
+    assert "Download request submitted." in submit_text.toPlainText()
+    assert "Item count: 4" in submit_text.toPlainText()
+    assert "Runtime visible: True" in submit_text.toPlainText()
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_composition_handles_duplicate_download_submit_safely(
+    qapplication: QApplication,
+) -> None:
+    context = FakeCoreContext()
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _set_builder_text(builder, "symbols", "BTCUSDT")
+    _set_builder_text(builder, "timeframes", "1m")
+
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    submit_text = builder.findChild(
+        QTextEdit,
+        "download_request_builder.submit_result_text",
+    )
+
+    assert context.download_manager.submit_calls == 2
+    assert context.download_manager.preview_calls == 0
+    assert submit_text is not None
+    assert "Download request submit rejected." in submit_text.toPlainText()
+    assert "Accepted: False" in submit_text.toPlainText()
+    assert "Runtime visible: False" in submit_text.toPlainText()
+    assert "already submitted" in submit_text.toPlainText()
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_composition_blocks_ohlcv_submit_without_core_call(
+    qapplication: QApplication,
+) -> None:
+    context = FakeCoreContext()
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.ohlcv_maintenance").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _set_builder_text(builder, "symbols", "BTCUSDT")
+    _set_builder_text(builder, "timeframes", "1m")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    submit_text = builder.findChild(
+        QTextEdit,
+        "download_request_builder.submit_result_text",
+    )
+
+    assert context.download_manager.submit_calls == 0
+    assert context.download_manager.preview_calls == 0
+    assert submit_text is not None
+    assert (
+        "OHLCV Maintenance submit is deferred until storage execution and "
+        "maintenance policy are implemented."
+    ) == submit_text.toPlainText()
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_download_submit_state_is_visible_through_runtime_snapshot(
+    qapplication: QApplication,
+) -> None:
+    app = LeonardoApp()
+    context = app.startup()
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _set_builder_text(builder, "symbols", "BTCUSDT, ETHUSDT")
+    _set_builder_text(builder, "timeframes", "1m, 5m")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+
+    summary = app.download_manager.get_summary()
+    snapshot = app.runtime_manager.snapshot()
+
+    assert summary.total_requests == 1
+    assert summary.total_items == 4
+    assert snapshot.downloads_summary.count == 1
+    assert snapshot.downloads_summary.metadata["total_requests"] == 1
+    assert snapshot.downloads_summary.metadata["total_items"] == 4
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+    app.shutdown()
 
 
 def test_window_tracking_reports_lifecycle_only_after_window_events(

@@ -12,8 +12,12 @@ from leonardo.gui.action_observer import (
 )
 from leonardo.gui.download_request_mapper import (
     DownloadPreflightPreviewView,
+    DownloadSubmitResultView,
+    build_download_request_for_submit,
     build_download_request_from_draft,
     build_preflight_preview_view,
+    build_submit_error_view,
+    build_submit_result_view,
 )
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
@@ -215,6 +219,11 @@ class GuiCompositionRoot:
                     if self._download_preview_available()
                     else None
                 ),
+                on_submit_intent=(
+                    self._submit_download_request
+                    if self._download_submit_available()
+                    else None
+                ),
             )
         else:
             self._download_request_builder_window.set_workflow_mode(workflow_mode)
@@ -228,6 +237,10 @@ class GuiCompositionRoot:
         preview = getattr(self._download_manager, "preview_request", None)
         return callable(preview)
 
+    def _download_submit_available(self) -> bool:
+        submit = getattr(self._download_manager, "submit_request", None)
+        return callable(submit)
+
     def _preview_download_request(
         self,
         draft: DownloadRequestDraft,
@@ -238,6 +251,55 @@ class GuiCompositionRoot:
         request = build_download_request_from_draft(draft)
         preflight = preview(request)
         return build_preflight_preview_view(preflight)
+
+    def _submit_download_request(
+        self,
+        draft: DownloadRequestDraft,
+    ) -> DownloadSubmitResultView:
+        if draft.workflow_mode != DOWNLOAD_DATA_WORKFLOW_MODE:
+            return build_submit_error_view(
+                "",
+                (
+                    "OHLCV Maintenance submit is deferred until storage execution "
+                    "and maintenance policy are implemented."
+                ),
+                (),
+            )
+
+        try:
+            request = build_download_request_for_submit(draft)
+        except Exception as error:
+            return build_submit_error_view(
+                "",
+                "Download request submit rejected.",
+                (f"{type(error).__name__}: {error}",),
+            )
+
+        submit = getattr(self._download_manager, "submit_request", None)
+        if not callable(submit):
+            return build_submit_error_view(
+                request.request_id,
+                "Download Manager submit is unavailable.",
+                (),
+            )
+
+        try:
+            preflight = submit(request)
+            item_count = _submitted_item_count(
+                self._download_manager,
+                request.request_id,
+            )
+        except Exception as error:
+            return build_submit_error_view(
+                request.request_id,
+                "Download request submit rejected.",
+                (f"{type(error).__name__}: {error}",),
+            )
+        return build_submit_result_view(
+            request,
+            preflight,
+            item_count=item_count,
+        )
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
         profile = self._load_runtime_manager_profile()
@@ -319,6 +381,13 @@ class GuiCompositionRoot:
         override_result = self._override_store.load(result.document.metadata_id)
         self._override_load_results[result.document.metadata_id] = override_result
         return GuiMetadataResolver().resolve(result.document, override_result.document)
+
+
+def _submitted_item_count(download_manager: object, request_id: str) -> int:
+    list_items = getattr(download_manager, "list_items", None)
+    if not callable(list_items):
+        return 0
+    return len(tuple(list_items(request_id)))
 
 
 def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindow:

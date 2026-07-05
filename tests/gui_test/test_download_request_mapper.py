@@ -12,8 +12,12 @@ from leonardo.contracts.downloads import (
 )
 from leonardo.gui.download_request_mapper import (
     DownloadPreflightPreviewView,
+    DownloadSubmitResultView,
+    build_download_request_for_submit,
     build_download_request_from_draft,
     build_preflight_preview_view,
+    build_submit_error_view,
+    build_submit_result_view,
 )
 from leonardo.gui.windows.download_request_builder_window import (
     DOWNLOAD_DATA_WORKFLOW_MODE,
@@ -58,6 +62,39 @@ def test_mapper_generates_deterministic_preview_ids() -> None:
 
     assert first.request_id == second.request_id
     assert first.request_id != changed.request_id
+
+
+def test_mapper_generates_submit_ids_with_request_prefix() -> None:
+    request = build_download_request_for_submit(_draft())
+
+    assert request.request_id.startswith("request-")
+    assert not request.request_id.startswith("preview-")
+
+
+def test_mapper_generates_deterministic_submit_ids() -> None:
+    first = build_download_request_for_submit(_draft())
+    second = build_download_request_for_submit(_draft())
+    changed = build_download_request_for_submit(_draft(symbols=("SOLUSDT",)))
+
+    assert first.request_id == second.request_id
+    assert first.request_id != changed.request_id
+
+
+def test_mapper_builds_submit_request_from_download_data_draft() -> None:
+    draft = _draft()
+
+    request = build_download_request_for_submit(draft)
+
+    assert request.workflow_kind is DownloadWorkflowKind.DOWNLOAD_DATA
+    assert request.source == "binance"
+    assert request.market == "spot"
+    assert request.symbols == ("BTCUSDT", "ETHUSDT")
+    assert request.timeframe_mode is DownloadTimeframeMode.EXPLICIT
+    assert request.timeframes == ("1m", "5m")
+    assert request.connection_ref == "binance-spot"
+    assert request.websocket_required is True
+    assert request.tags == ("preview",)
+    assert request.metadata["profile"] == "manual"
 
 
 @pytest.mark.parametrize(
@@ -106,6 +143,50 @@ def test_mapper_converts_preflight_to_preview_view() -> None:
         "ERROR timeframes: Explicit timeframe mode requires at least one timeframe.",
     )
     assert view.message == "Preflight preview blocked."
+
+
+def test_mapper_converts_submit_result_to_gui_view() -> None:
+    request = build_download_request_for_submit(_draft())
+    preflight = DownloadPreflight(
+        request_id=request.request_id,
+        status=DownloadStatus.VALIDATED,
+        can_run=True,
+        estimated_items=4,
+        estimated_symbols=2,
+        estimated_timeframes=2,
+    )
+
+    view = build_submit_result_view(request, preflight, item_count=4)
+
+    assert isinstance(view, DownloadSubmitResultView)
+    assert view.request_id == request.request_id
+    assert view.accepted is True
+    assert view.status == "validated"
+    assert view.can_run is True
+    assert view.item_count == 4
+    assert view.estimated_items == 4
+    assert view.issues == ()
+    assert view.message == "Download request submitted."
+    assert view.runtime_visible is True
+
+
+def test_mapper_builds_safe_rejected_submit_result() -> None:
+    view = build_submit_error_view(
+        "request-test",
+        "Download request submit rejected.",
+        ("ValueError: duplicate",),
+    )
+
+    assert isinstance(view, DownloadSubmitResultView)
+    assert view.request_id == "request-test"
+    assert view.accepted is False
+    assert view.status == "rejected"
+    assert view.can_run is False
+    assert view.item_count == 0
+    assert view.estimated_items is None
+    assert view.issues == ("ValueError: duplicate",)
+    assert view.message == "Download request submit rejected."
+    assert view.runtime_visible is False
 
 
 def test_mapper_imports_contracts_but_no_core_or_qt() -> None:

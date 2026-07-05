@@ -37,6 +37,10 @@ OHLCV_DRAFT_SUMMARY_WARNING = (
     "OHLCV naming/storage/maintenance policy is not implemented here. "
     "This is a local draft only."
 )
+OHLCV_SUBMIT_DEFERRED_MESSAGE = (
+    "OHLCV Maintenance submit is deferred until storage execution and "
+    "maintenance policy are implemented."
+)
 
 
 @dataclass(frozen=True)
@@ -156,9 +160,10 @@ class DownloadRequestBuilderWindow(QWidget):
     """
     Shared GUI-only shell for future Download Manager request drafting.
 
-    The shell displays draft fields and workflow-specific messaging only. It
-    does not create request contracts, call Core services, submit preflight, or
-    execute download behavior.
+    The shell displays draft fields and locally formatted result messages. It
+    does not create request contracts, import Core services, or execute download
+    behavior. Core-aware preview and submit behavior is injected through
+    callbacks owned by composition.
     """
 
     def __init__(
@@ -167,6 +172,7 @@ class DownloadRequestBuilderWindow(QWidget):
         *,
         parent: QWidget | None = None,
         on_preview_requested: Callable[[DownloadRequestDraft], object] | None = None,
+        on_submit_intent: Callable[[DownloadRequestDraft], object] | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._workflow_mode = ""
@@ -176,7 +182,9 @@ class DownloadRequestBuilderWindow(QWidget):
         self._ohlcv_policy_note: QLabel | None = None
         self._summary_text: QTextEdit | None = None
         self._preview_result_text: QTextEdit | None = None
+        self._submit_result_text: QTextEdit | None = None
         self._on_preview_requested = on_preview_requested
+        self._on_submit_intent = on_submit_intent
 
         self.setObjectName("download_request_builder_window")
         self.resize(720, 640)
@@ -240,6 +248,8 @@ class DownloadRequestBuilderWindow(QWidget):
             self._summary_text.clear()
         if self._preview_result_text is not None:
             self._preview_result_text.clear()
+        if self._submit_result_text is not None:
+            self._submit_result_text.clear()
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
@@ -278,6 +288,10 @@ class DownloadRequestBuilderWindow(QWidget):
         )
         preview_preflight_button.clicked.connect(self._show_preflight_preview)
 
+        submit_button = QPushButton("Submit")
+        submit_button.setObjectName("download_request_builder.submit_button")
+        submit_button.clicked.connect(self._show_submit_result)
+
         close_button = QPushButton("Close")
         close_button.setObjectName("download_request_builder.close")
         close_button.clicked.connect(self.close)
@@ -294,10 +308,17 @@ class DownloadRequestBuilderWindow(QWidget):
         preview_result_text.setFixedHeight(140)
         self._preview_result_text = preview_result_text
 
+        submit_result_text = QTextEdit()
+        submit_result_text.setObjectName("download_request_builder.submit_result_text")
+        submit_result_text.setReadOnly(True)
+        submit_result_text.setFixedHeight(140)
+        self._submit_result_text = submit_result_text
+
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         buttons.addWidget(draft_summary_button)
         buttons.addWidget(preview_preflight_button)
+        buttons.addWidget(submit_button)
         buttons.addWidget(close_button)
 
         root.addWidget(title_label)
@@ -306,6 +327,7 @@ class DownloadRequestBuilderWindow(QWidget):
         root.addLayout(form)
         root.addWidget(summary_text)
         root.addWidget(preview_result_text)
+        root.addWidget(submit_result_text)
         root.addLayout(buttons)
 
     def _show_draft_summary(self) -> None:
@@ -342,6 +364,33 @@ class DownloadRequestBuilderWindow(QWidget):
             )
             return
         self._preview_result_text.setPlainText(_format_preflight_preview(preview))
+
+    def _show_submit_result(self) -> None:
+        if self._submit_result_text is None:
+            return
+
+        draft = self.current_draft()
+        issues = _validate_draft(draft)
+        if issues:
+            self._submit_result_text.setPlainText(_format_local_submit_blocked(issues))
+            return
+
+        if draft.workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE:
+            self._submit_result_text.setPlainText(OHLCV_SUBMIT_DEFERRED_MESSAGE)
+            return
+
+        if self._on_submit_intent is None:
+            self._submit_result_text.setPlainText("Download submit is unavailable.")
+            return
+
+        try:
+            result = self._on_submit_intent(draft)
+        except Exception as error:
+            self._submit_result_text.setPlainText(
+                "Download submit failed: " f"{type(error).__name__}: {error}"
+            )
+            return
+        self._submit_result_text.setPlainText(_format_submit_result(result))
 
 
 def _build_field_widget(spec: _FieldSpec) -> QWidget:
@@ -528,6 +577,15 @@ def _format_local_preview_blocked(
     return "\n".join(lines)
 
 
+def _format_local_submit_blocked(
+    issues: tuple[DownloadDraftIssue, ...],
+) -> str:
+    lines = ["Download submit blocked by local validation issues:"]
+    for issue in issues:
+        lines.append(f"- {issue.severity.upper()} {issue.field_id}: {issue.message}")
+    return "\n".join(lines)
+
+
 def _format_preflight_preview(preview: object) -> str:
     issues = tuple(getattr(preview, "issues", ()))
     lines = [
@@ -545,6 +603,28 @@ def _format_preflight_preview(preview: object) -> str:
         ),
         f"WebSocket required: {getattr(preview, 'websocket_required', False)}",
         "Core preview issues:",
+    ]
+    if not issues:
+        lines.append("- none")
+    else:
+        for issue in issues:
+            lines.append(f"- {issue}")
+    return "\n".join(lines)
+
+
+def _format_submit_result(result: object) -> str:
+    issues = tuple(getattr(result, "issues", ()))
+    lines = [
+        "Download submit result:",
+        f"Message: {getattr(result, 'message', '')}",
+        f"Accepted: {getattr(result, 'accepted', False)}",
+        f"Request ID: {getattr(result, 'request_id', '')}",
+        f"Status: {getattr(result, 'status', '')}",
+        f"Can run: {getattr(result, 'can_run', False)}",
+        f"Item count: {getattr(result, 'item_count', 0)}",
+        f"Estimated items: {_display_optional(getattr(result, 'estimated_items', None))}",
+        f"Runtime visible: {getattr(result, 'runtime_visible', False)}",
+        "Submit issues:",
     ]
     if not issues:
         lines.append("- none")
