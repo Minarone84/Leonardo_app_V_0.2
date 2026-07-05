@@ -148,6 +148,8 @@ class GuiCompositionRoot:
                 settings_inspector_factory if self._override_store is not None else None
             ),
             action_observer=self._action_observer,
+            on_download_data_requested=_download_data_placeholder_message,
+            on_ohlcv_maintenance_requested=_ohlcv_maintenance_placeholder_message,
         )
         main_window = window
         self._install_tracker(
@@ -253,3 +255,15 @@ def _apply_main_window_settings(
     if metadata_id != MAIN_WINDOW_SETTINGS_PROFILE_ID:
         raise ValueError("Settings apply callback only supports main_window.window")
     target_window.apply_effective_profile(effective_profile)
+
+
+def _download_data_placeholder_message(action_id: str) -> str:
+    if action_id != "main_window.download_data":
+        raise ValueError("Download Data callback received unexpected action ID")
+    return "Download Data placeholder selected."
+
+
+def _ohlcv_maintenance_placeholder_message(action_id: str) -> str:
+    if action_id != "main_window.ohlcv_maintenance":
+        raise ValueError("OHLCV Maintenance callback received unexpected action ID")
+    return "OHLCV Maintenance placeholder selected."

@@ -161,6 +161,8 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     root = GuiCompositionRoot(app.context, track_windows=False)
     window = root.create_main_window()
 
+    initial_download_summary = app.download_manager.get_summary()
+
     window.action_for_id("main_window.download_data").trigger()
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
     window.placeholder_button_for_id("main_window.open_trading_suite").click()
@@ -183,6 +185,12 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
         for event in app.audit_log.snapshot()
         if event.event_type == "gui.action.triggered"
     )
+    download_summary = app.download_manager.get_summary()
+    download_events = tuple(
+        event
+        for event in app.audit_log.snapshot()
+        if event.event_type.startswith("download.")
+    )
 
     for action_id in expected_action_ids:
         record = _last_record(app, action_id)
@@ -194,6 +202,14 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
 
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
+    assert initial_download_summary.total_requests == 0
+    assert initial_download_summary.total_items == 0
+    assert download_summary.total_requests == 0
+    assert download_summary.total_items == 0
+    assert app.download_manager.list_requests() == ()
+    assert app.download_manager.list_preflights() == ()
+    assert app.download_manager.list_items() == ()
+    assert download_events == ()
 
     _dispose(qapplication, window)
     app.shutdown()

@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QAction  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QToolBar  # noqa: E402
 
+from leonardo.gui.action_observer import GuiActionDecision  # noqa: E402
 from leonardo.gui.metadata import (  # noqa: E402
     GuiMetadataOverrideDocument,
     GuiMetadataResolver,
@@ -197,12 +198,123 @@ def test_main_window_placeholder_actions_update_status_without_windows(
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
 
+    window.action_for_id("main_window.ohlcv_maintenance").trigger()
+    qapplication.processEvents()
+
+    assert window.last_local_action_id == "main_window.ohlcv_maintenance"
+    assert window.statusBar().currentMessage() == (
+        "OHLCV Maintenance placeholder selected."
+    )
+    assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
+        "OHLCV Maintenance placeholder selected."
+    )
+    assert window.runtime_manager_window is None
+    assert window.settings_inspector_window is None
+
     window.placeholder_button_for_id("main_window.open_trading_suite").click()
     qapplication.processEvents()
 
     assert window.last_local_action_id == "main_window.open_trading_suite"
     assert window.statusBar().currentMessage() == (
         "Trading Suite placeholder selected."
+    )
+    assert window.runtime_manager_window is None
+    assert window.settings_inspector_window is None
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_download_callbacks_display_returned_messages(
+    qapplication: QApplication,
+) -> None:
+    download_calls: list[str] = []
+    maintenance_calls: list[str] = []
+    window = LeonardoMainWindow(
+        load_main_window_profile(),
+        on_download_data_requested=lambda action_id: (
+            download_calls.append(action_id) or "Download intent callback received."
+        ),
+        on_ohlcv_maintenance_requested=lambda action_id: (
+            maintenance_calls.append(action_id)
+            or "OHLCV maintenance intent callback received."
+        ),
+    )
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+
+    assert download_calls == ["main_window.download_data"]
+    assert window.statusBar().currentMessage() == "Download intent callback received."
+    assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
+        "Download intent callback received."
+    )
+    assert window.runtime_manager_window is None
+    assert window.settings_inspector_window is None
+
+    window.action_for_id("main_window.ohlcv_maintenance").trigger()
+    qapplication.processEvents()
+
+    assert maintenance_calls == ["main_window.ohlcv_maintenance"]
+    assert window.statusBar().currentMessage() == (
+        "OHLCV maintenance intent callback received."
+    )
+    assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
+        "OHLCV maintenance intent callback received."
+    )
+    assert window.runtime_manager_window is None
+    assert window.settings_inspector_window is None
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_download_callback_none_preserves_default_message(
+    qapplication: QApplication,
+) -> None:
+    calls: list[str] = []
+    window = LeonardoMainWindow(
+        load_main_window_profile(),
+        on_download_data_requested=lambda action_id: calls.append(action_id) or None,
+    )
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+
+    assert calls == ["main_window.download_data"]
+    assert window.statusBar().currentMessage() == (
+        "Download Data placeholder selected."
+    )
+    assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
+        "Download Data placeholder selected."
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_download_callback_is_not_called_when_action_denied(
+    qapplication: QApplication,
+) -> None:
+    callback_calls: list[str] = []
+    observer = _DenyingActionObserver()
+    window = LeonardoMainWindow(
+        load_main_window_profile(),
+        action_observer=observer,
+        on_download_data_requested=lambda action_id: (
+            callback_calls.append(action_id) or "should not display"
+        ),
+    )
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+
+    assert observer.action_ids == ["main_window.download_data"]
+    assert callback_calls == []
+    assert window.last_local_action_id == "main_window.download_data"
+    assert window.statusBar().currentMessage() == "Ready"
+    assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
+        "Select a suite placeholder."
     )
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
@@ -316,6 +428,25 @@ def _main_window_profile_with_overrides(
             values=values,
         ),
     )
+
+
+class _DenyingActionObserver:
+    def __init__(self) -> None:
+        self.action_ids: list[str] = []
+
+    def record_action(
+        self,
+        action_id: str,
+        *,
+        window_id: str | None = None,
+        metadata: object = None,
+    ) -> GuiActionDecision:
+        self.action_ids.append(action_id)
+        return GuiActionDecision(
+            action_id=action_id,
+            allowed=False,
+            reason="denied_for_test",
+        )
 
 
 def _qapplication() -> QApplication:

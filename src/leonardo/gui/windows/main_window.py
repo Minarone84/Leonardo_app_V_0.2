@@ -38,6 +38,7 @@ _MAIN_WINDOW_METADATA_PATH = (
 RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
 SettingsInspectorFactory = Callable[[], QWidget]
+DownloadActionIntentCallback = Callable[[str], str | None]
 _PLACEHOLDER_MAIN_WINDOW_ACTION_IDS = frozenset(
     (
         "main_window.download_data",
@@ -89,6 +90,8 @@ class LeonardoMainWindow(QMainWindow):
         runtime_snapshot_provider: RuntimeSnapshotProvider | None = None,
         settings_inspector_factory: SettingsInspectorFactory | None = None,
         action_observer: GuiActionObserver | None = None,
+        on_download_data_requested: DownloadActionIntentCallback | None = None,
+        on_ohlcv_maintenance_requested: DownloadActionIntentCallback | None = None,
         username: str = "admin-dev",
         version_label: str = "v0.2",
     ) -> None:
@@ -110,6 +113,14 @@ class LeonardoMainWindow(QMainWindow):
             getattr(action_observer, "record_action", None)
         ):
             raise TypeError("action_observer must expose callable record_action")
+        if on_download_data_requested is not None and not callable(
+            on_download_data_requested
+        ):
+            raise TypeError("on_download_data_requested must be callable")
+        if on_ohlcv_maintenance_requested is not None and not callable(
+            on_ohlcv_maintenance_requested
+        ):
+            raise TypeError("on_ohlcv_maintenance_requested must be callable")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
         self._menus: dict[str, QMenu] = {}
@@ -121,6 +132,8 @@ class LeonardoMainWindow(QMainWindow):
         self._runtime_manager_window: QWidget | None = None
         self._settings_inspector_factory = settings_inspector_factory
         self._settings_inspector_window: QWidget | None = None
+        self._on_download_data_requested = on_download_data_requested
+        self._on_ohlcv_maintenance_requested = on_ohlcv_maintenance_requested
         self._username = _string_or_fallback(username, "admin-dev")
         self._version_label = _string_or_fallback(version_label, "v0.2")
         self._central_message_label: QLabel | None = None
@@ -333,11 +346,36 @@ class LeonardoMainWindow(QMainWindow):
         return decision.allowed
 
     def _show_placeholder_action(self, action_id: str) -> None:
-        label = self.action_for_id(action_id).text()
-        message = f"{label} placeholder selected."
+        message = self._placeholder_message_for_action(action_id)
         if self._central_message_label is not None:
             self._central_message_label.setText(message)
         self.statusBar().showMessage(message)
+
+    def _placeholder_message_for_action(self, action_id: str) -> str:
+        message = self._default_placeholder_message_for_action(action_id)
+        callback = self._download_action_callback_for_id(action_id)
+        if callback is None:
+            return message
+        callback_message = callback(action_id)
+        if callback_message is None or callback_message == "":
+            return message
+        if not isinstance(callback_message, str):
+            raise TypeError("download action callback must return str or None")
+        return callback_message
+
+    def _default_placeholder_message_for_action(self, action_id: str) -> str:
+        label = self.action_for_id(action_id).text()
+        return f"{label} placeholder selected."
+
+    def _download_action_callback_for_id(
+        self,
+        action_id: str,
+    ) -> DownloadActionIntentCallback | None:
+        if action_id == "main_window.download_data":
+            return self._on_download_data_requested
+        if action_id == "main_window.ohlcv_maintenance":
+            return self._on_ohlcv_maintenance_requested
+        return None
 
     def _open_runtime_manager_window(self) -> None:
         created = False

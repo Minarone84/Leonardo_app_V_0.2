@@ -102,10 +102,20 @@ class FakeWindowRegistry:
                 self._reject_widget(*value.values())
 
 
+class FakeDownloadManager:
+    def __init__(self) -> None:
+        self.submit_calls = 0
+
+    def submit_request(self, request: object) -> object:
+        self.submit_calls += 1
+        raise AssertionError("composition must not submit download requests")
+
+
 class FakeCoreContext:
     def __init__(self) -> None:
         self.runtime_manager = FakeRuntimeManager()
         self.window_registry = FakeWindowRegistry()
+        self.download_manager = FakeDownloadManager()
 
 
 def test_composition_creates_main_window_from_context_without_startup(
@@ -168,6 +178,33 @@ def test_runtime_manager_factory_is_injected_and_uses_snapshot_provider_lazily(
     qapplication.processEvents()
 
 
+def test_composition_injects_inert_download_placeholder_callbacks(
+    qapplication: QApplication,
+) -> None:
+    context = FakeCoreContext()
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+
+    assert window.statusBar().currentMessage() == (
+        "Download Data placeholder selected."
+    )
+    assert context.download_manager.submit_calls == 0
+
+    window.action_for_id("main_window.ohlcv_maintenance").trigger()
+    qapplication.processEvents()
+
+    assert window.statusBar().currentMessage() == (
+        "OHLCV Maintenance placeholder selected."
+    )
+    assert context.download_manager.submit_calls == 0
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
 def test_window_tracking_reports_lifecycle_only_after_window_events(
     qapplication: QApplication,
 ) -> None:
@@ -215,6 +252,8 @@ def test_composition_source_does_not_construct_app_or_qapplication() -> None:
     assert "QApplication" not in source
     assert ".startup(" not in source
     assert ".shutdown(" not in source
+    assert "DownloadRequest" not in source
+    assert ".submit_request(" not in source
 
 
 def test_composed_windows_destroy_cleanly(qapplication: QApplication) -> None:
