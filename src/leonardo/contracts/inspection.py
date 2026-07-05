@@ -214,6 +214,25 @@ def _empty_downloads_summary() -> RuntimeSectionSummary:
     )
 
 
+def _empty_download_execution_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="download_execution",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="0 download execution plans",
+        metadata={
+            "available": False,
+            "total_plans": 0,
+            "active_plan_ids": (),
+            "failed_plan_ids": (),
+            "completed_plan_ids": (),
+            "running_plan_ids": (),
+            "blocked_plan_ids": (),
+            "plan_rows": (),
+        },
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeManagerSnapshot:
     """
@@ -241,6 +260,9 @@ class RuntimeManagerSnapshot:
     contracts_summary: RuntimeSectionSummary
     downloads_summary: RuntimeSectionSummary = field(
         default_factory=_empty_downloads_summary
+    )
+    download_execution_summary: RuntimeSectionSummary = field(
+        default_factory=_empty_download_execution_summary
     )
     recent_audit_events: tuple[AuditEventPreview, ...] = ()
     audit_sink_failures: tuple[AuditSinkFailurePreview, ...] = ()
@@ -270,6 +292,7 @@ class RuntimeManagerSnapshot:
             "actions_summary",
             "operations_summary",
             "downloads_summary",
+            "download_execution_summary",
             "audit_summary",
             "contracts_summary",
         ):
@@ -313,6 +336,7 @@ class RuntimeManagerSnapshot:
             self.actions_summary,
             self.operations_summary,
             self.downloads_summary,
+            self.download_execution_summary,
             self.audit_summary,
             self.contracts_summary,
         )

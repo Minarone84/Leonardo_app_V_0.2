@@ -106,7 +106,10 @@ def test_runtime_manager_snapshot_derives_health_from_sections() -> None:
         "actions",
         "operations",
         "downloads",
+        "download_execution",
         "audit",
         "contracts",
     ]
+    assert snapshot.download_execution_summary.section_id == "download_execution"
+    assert snapshot.download_execution_summary.metadata["available"] is False
     assert snapshot.to_dict()["health"] == "degraded"

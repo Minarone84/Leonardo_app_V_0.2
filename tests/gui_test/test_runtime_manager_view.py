@@ -112,6 +112,7 @@ def test_runtime_manager_metadata_table_ids_are_present(
         "runtime_manager.actions_table",
         "runtime_manager.operations_table",
         "runtime_manager.downloads_table",
+        "runtime_manager.download_execution_table",
         "runtime_manager.audit_preview_table",
     }
 
@@ -148,6 +149,19 @@ def test_runtime_manager_table_headers_come_from_metadata(
     assert window.table_headers("runtime_manager.downloads_table") == (
         "Metric",
         "Value",
+        "Details",
+    )
+    assert window.table_headers("runtime_manager.download_execution_table") == (
+        "Plan ID",
+        "Request ID",
+        "Phase",
+        "Operation ID",
+        "Task ID",
+        "Items",
+        "Preflight Layers",
+        "Progress %",
+        "Outputs",
+        "Errors",
         "Details",
     )
 
@@ -267,7 +281,7 @@ def test_runtime_manager_renders_runtime_snapshot_contract(
     window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=snapshot)
 
     assert window.last_rendered_snapshot_summary["health"] == "ok"
-    assert window.table_for_id("runtime_manager.summary_table").rowCount() == 12
+    assert window.table_for_id("runtime_manager.summary_table").rowCount() == 13
     assert window.table_for_id("runtime_manager.services_table").item(0, 0).text() == (
         "contract-service"
     )
@@ -505,6 +519,77 @@ def test_runtime_manager_renders_download_summary_rows(
     assert table.item(3, 1).text() == "3"
     assert table.item(12, 0).text() == "WebSocket Required"
     assert table.item(12, 1).text() == "1"
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_runtime_manager_renders_download_execution_rows_read_only(
+    qapplication: QApplication,
+) -> None:
+    snapshot = RuntimeManagerSnapshot(
+        generated_at_utc=datetime(2026, 7, 2, 12, tzinfo=UTC),
+        app_status="running",
+        session_id="session-admin-dev",
+        user_id="admin-dev",
+        username="Administrator",
+        app_summary=_section("app", "Application running"),
+        session_summary=_section("session", "Session active"),
+        services_summary=_section("services", "No services"),
+        tasks_summary=_section("tasks", "No tasks"),
+        processes_summary=_section("processes", "No active processes"),
+        connections_summary=_section("connections", "No connections"),
+        windows_summary=_section("windows", "No windows"),
+        actions_summary=_section("actions", "No actions"),
+        operations_summary=_section("operations", "No operations"),
+        download_execution_summary=_section(
+            "download_execution",
+            "1 download execution plan",
+            count=1,
+            metadata={
+                "total_plans": 1,
+                "active_plan_ids": ("execution-plan-req-download",),
+                "failed_plan_ids": (),
+                "completed_plan_ids": (),
+                "running_plan_ids": (),
+                "blocked_plan_ids": (),
+                "plan_rows": (
+                    {
+                        "plan_id": "execution-plan-req-download",
+                        "request_id": "req-download",
+                        "phase": "planned",
+                        "operation_id": "",
+                        "task_id": "",
+                        "item_count": 2,
+                        "preflight_layer_count": 1,
+                        "progress_percent": None,
+                        "output_count": 0,
+                        "error_count": 0,
+                        "details": "connection_refs=binance-spot",
+                    },
+                ),
+            },
+        ),
+        audit_summary=_section("audit", "No retained audit events"),
+        contracts_summary=_section("contracts", "No contracts"),
+    )
+    window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=snapshot)
+    table = window.table_for_id("runtime_manager.download_execution_table")
+
+    assert table.editTriggers() == QTableWidget.EditTrigger.NoEditTriggers
+    assert window.last_rendered_snapshot_summary["download_execution_rows"] == 1
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "execution-plan-req-download"
+    assert table.item(0, 1).text() == "req-download"
+    assert table.item(0, 2).text() == "planned"
+    assert table.item(0, 3).text() == ""
+    assert table.item(0, 4).text() == ""
+    assert table.item(0, 5).text() == "2"
+    assert table.item(0, 6).text() == "1"
+    assert table.item(0, 7).text() == ""
+    assert table.item(0, 8).text() == "0"
+    assert table.item(0, 9).text() == "0"
+    assert table.item(0, 10).text() == "connection_refs=binance-spot"
 
     window.deleteLater()
     qapplication.processEvents()

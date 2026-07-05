@@ -44,6 +44,7 @@ _WINDOWS_TABLE_ID = "runtime_manager.windows_table"
 _ACTIONS_TABLE_ID = "runtime_manager.actions_table"
 _OPERATIONS_TABLE_ID = "runtime_manager.operations_table"
 _DOWNLOADS_TABLE_ID = "runtime_manager.downloads_table"
+_DOWNLOAD_EXECUTION_TABLE_ID = "runtime_manager.download_execution_table"
 _AUDIT_PREVIEW_TABLE_ID = "runtime_manager.audit_preview_table"
 _SECTION_SUMMARY_FIELDS = (
     "app_summary",
@@ -56,6 +57,7 @@ _SECTION_SUMMARY_FIELDS = (
     "actions_summary",
     "operations_summary",
     "downloads_summary",
+    "download_execution_summary",
     "audit_summary",
     "contracts_summary",
 )
@@ -409,6 +411,7 @@ def _rows_by_table(snapshot: object | None) -> dict[str, tuple[Mapping[str, obje
             names_metadata_key="operation_labels",
         ),
         _DOWNLOADS_TABLE_ID: _downloads_rows(snapshot),
+        _DOWNLOAD_EXECUTION_TABLE_ID: _download_execution_rows(snapshot),
         _AUDIT_PREVIEW_TABLE_ID: _audit_preview_rows(snapshot),
     }
 
@@ -515,6 +518,40 @@ def _downloads_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
     )
 
 
+def _download_execution_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
+    section = _section_by_id(snapshot, "download_execution")
+    if section is None:
+        return ()
+
+    metadata = _mapping_at_object(_field(section, "metadata", {}))
+    return tuple(
+        _normalize_download_execution_row(row)
+        for row in _sequence_value(metadata.get("plan_rows"))
+    )
+
+
+def _normalize_download_execution_row(item: object) -> Mapping[str, object]:
+    if isinstance(item, Mapping):
+        return item
+    plan = _field(item, "plan", item)
+    progress = _field(item, "progress", None)
+    return {
+        "plan_id": _field(plan, "plan_id", ""),
+        "request_id": _field(plan, "request_id", ""),
+        "phase": _field(plan, "phase", ""),
+        "operation_id": _field(plan, "operation_id", ""),
+        "task_id": _field(plan, "task_id", ""),
+        "item_count": len(_sequence_value(_field(plan, "item_ids", ()))),
+        "preflight_layer_count": len(
+            _sequence_value(_field(item, "preflight_layers", ()))
+        ),
+        "progress_percent": _field(progress, "percent", ""),
+        "output_count": len(_sequence_value(_field(item, "outputs", ()))),
+        "error_count": len(_sequence_value(_field(item, "errors", ()))),
+        "details": _field(item, "details", ""),
+    }
+
+
 def _details_for(
     metadata: Mapping[str, object],
     keys: Sequence[str],
@@ -539,6 +576,7 @@ def _snapshot_summary(
             "service_rows": 0,
             "task_rows": 0,
             "download_rows": 0,
+            "download_execution_rows": 0,
             "audit_preview_rows": 0,
         }
 
@@ -550,6 +588,9 @@ def _snapshot_summary(
     service_rows = len(rows_by_table.get(_SERVICES_TABLE_ID, ()))
     task_rows = len(rows_by_table.get(_TASKS_TABLE_ID, ()))
     download_rows = len(rows_by_table.get(_DOWNLOADS_TABLE_ID, ()))
+    download_execution_rows = len(
+        rows_by_table.get(_DOWNLOAD_EXECUTION_TABLE_ID, ())
+    )
     audit_rows = len(rows_by_table.get(_AUDIT_PREVIEW_TABLE_ID, ()))
     return {
         "status": "rendered",
@@ -559,6 +600,7 @@ def _snapshot_summary(
         "service_rows": service_rows,
         "task_rows": task_rows,
         "download_rows": download_rows,
+        "download_execution_rows": download_execution_rows,
         "audit_preview_rows": audit_rows,
         "status_message": f"Runtime snapshot rendered: {health}",
     }

@@ -324,6 +324,87 @@ width = 420
 order = 3
 
 [[tables]]
+table_id = "runtime_manager.download_execution_table"
+label = "Download Execution"
+
+[[tables.columns]]
+column_id = "plan_id"
+label = "Plan ID"
+visible = true
+width = 220
+order = 1
+
+[[tables.columns]]
+column_id = "request_id"
+label = "Request ID"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "phase"
+label = "Phase"
+visible = true
+width = 120
+order = 3
+
+[[tables.columns]]
+column_id = "operation_id"
+label = "Operation ID"
+visible = true
+width = 180
+order = 4
+
+[[tables.columns]]
+column_id = "task_id"
+label = "Task ID"
+visible = true
+width = 160
+order = 5
+
+[[tables.columns]]
+column_id = "item_count"
+label = "Items"
+visible = true
+width = 100
+order = 6
+
+[[tables.columns]]
+column_id = "preflight_layer_count"
+label = "Preflight Layers"
+visible = true
+width = 140
+order = 7
+
+[[tables.columns]]
+column_id = "progress_percent"
+label = "Progress %"
+visible = true
+width = 120
+order = 8
+
+[[tables.columns]]
+column_id = "output_count"
+label = "Outputs"
+visible = true
+width = 100
+order = 9
+
+[[tables.columns]]
+column_id = "error_count"
+label = "Errors"
+visible = true
+width = 100
+order = 10
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 420
+order = 11
+
+[[tables]]
 table_id = "runtime_manager.audit_preview_table"
 label = "Audit Preview"
 
@@ -447,16 +528,22 @@ visible = true
 order = 4
 
 [[reports.sections]]
+section_id = "download_execution"
+label = "Download Execution"
+visible = true
+order = 5
+
+[[reports.sections]]
 section_id = "audit_preview"
 label = "Audit Preview"
 visible = true
-order = 5
+order = 6
 
 [[reports.sections]]
 section_id = "diagnostics"
 label = "Diagnostics"
 visible = true
-order = 6
+order = 7
 
 [[settings]]
 path = "style.font_size"
