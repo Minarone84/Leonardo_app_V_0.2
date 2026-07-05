@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QCheckBox,
     QComboBox,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTextEdit,
 )
@@ -124,8 +125,236 @@ def test_builder_has_only_local_close_button(qapplication: QApplication) -> None
     window = DownloadRequestBuilderWindow()
 
     assert window.findChild(QPushButton, "download_request_builder.close") is not None
+    assert (
+        window.findChild(
+            QPushButton,
+            "download_request_builder.draft_summary_button",
+        )
+        is not None
+    )
     assert window.findChild(QPushButton, "download_request_builder.submit") is None
     assert window.findChild(QPushButton, "download_request_builder.preflight") is None
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_builder_summary_text_area_is_read_only(qapplication: QApplication) -> None:
+    window = DownloadRequestBuilderWindow()
+    summary_text = window.findChild(QTextEdit, "download_request_builder.summary_text")
+
+    assert summary_text is not None
+    assert summary_text.isReadOnly() is True
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_draft_summary_parses_comma_separated_symbols(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT, ETHUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    summary = _render_summary(window)
+
+    assert "Symbols: 2 (BTCUSDT, ETHUSDT)" in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_draft_summary_parses_newline_separated_symbols(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT\nETHUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    summary = _render_summary(window)
+
+    assert "Symbols: 2 (BTCUSDT, ETHUSDT)" in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_draft_summary_parses_timeframes_only_for_explicit_mode(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m\n5m")
+
+    explicit_summary = _render_summary(window)
+    _select_combo_value(window, "timeframe_mode", "all")
+    all_summary = _render_summary(window)
+
+    assert "Explicit timeframes: 2 (1m, 5m)" in explicit_summary
+    assert "Explicit timeframes: 0 (none)" in all_summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_explicit_timeframe_mode_with_empty_timeframes_reports_local_issue(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+
+    summary = _render_summary(window)
+
+    assert (
+        "- ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
+        in summary
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+@pytest.mark.parametrize("timeframe_mode", ("all", "default", "supported"))
+def test_non_explicit_timeframe_modes_do_not_require_timeframes(
+    qapplication: QApplication,
+    timeframe_mode: str,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _select_combo_value(window, "timeframe_mode", timeframe_mode)
+
+    summary = _render_summary(window)
+
+    assert "Local validation issues:\n- none" in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_draft_summary_parses_tags_from_commas_and_newlines(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+    _set_text_field(window, "tags", "alpha, beta\ngamma")
+
+    summary = _render_summary(window)
+
+    assert "Tags: 3 (alpha, beta, gamma)" in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_empty_metadata_is_valid(qapplication: QApplication) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    summary = _render_summary(window)
+
+    assert "Metadata: valid JSON object {}" in summary
+    assert "metadata:" not in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_json_object_metadata_parses_and_appears_in_summary(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+    _set_metadata(window, '{"note": "daily", "source": "manual"}')
+
+    summary = _render_summary(window)
+
+    assert 'Metadata: valid JSON object {"note": "daily", "source": "manual"}' in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_invalid_metadata_reports_local_issue(qapplication: QApplication) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+    _set_metadata(window, "{bad")
+
+    summary = _render_summary(window)
+
+    assert "- ERROR metadata: Invalid metadata JSON:" in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+@pytest.mark.parametrize("metadata", ('["tag"]', '"text"', "3"))
+def test_non_object_metadata_reports_local_issue(
+    qapplication: QApplication,
+    metadata: str,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+    _set_metadata(window, metadata)
+
+    summary = _render_summary(window)
+
+    assert "- ERROR metadata: Metadata must be a JSON object." in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_parseable_start_and_end_are_accepted(qapplication: QApplication) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+    _set_text_field(window, "start", "2026-01-01")
+    _set_text_field(window, "end", "2026-01-02")
+
+    summary = _render_summary(window)
+
+    assert "Start: 2026-01-01" in summary
+    assert "End: 2026-01-02" in summary
+    assert "Local validation issues:\n- none" in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_reversed_start_and_end_report_local_issue(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+    _set_text_field(window, "start", "2026-01-02")
+    _set_text_field(window, "end", "2026-01-01")
+
+    summary = _render_summary(window)
+
+    assert "- ERROR end: End must be greater than or equal to start." in summary
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_ohlcv_draft_summary_includes_deferred_policy_warning(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow(OHLCV_MAINTENANCE_WORKFLOW_MODE)
+
+    summary = _render_summary(window)
+
+    assert (
+        "OHLCV naming/storage/maintenance policy is not implemented here. "
+        "This is a local draft only."
+    ) in summary
 
     window.deleteLater()
     qapplication.processEvents()
@@ -170,3 +399,44 @@ def _qapplication() -> QApplication:
 @pytest.fixture
 def qapplication() -> QApplication:
     return _qapplication()
+
+
+def _set_text_field(
+    window: DownloadRequestBuilderWindow,
+    field_id: str,
+    value: str,
+) -> None:
+    widget = window.field_widget_for_id(field_id)
+    assert isinstance(widget, QLineEdit)
+    widget.setText(value)
+
+
+def _set_metadata(window: DownloadRequestBuilderWindow, value: str) -> None:
+    widget = window.field_widget_for_id("metadata")
+    assert isinstance(widget, QTextEdit)
+    widget.setPlainText(value)
+
+
+def _select_combo_value(
+    window: DownloadRequestBuilderWindow,
+    field_id: str,
+    value: str,
+) -> None:
+    widget = window.field_widget_for_id(field_id)
+    assert isinstance(widget, QComboBox)
+    index = widget.findText(value)
+    assert index >= 0
+    widget.setCurrentIndex(index)
+
+
+def _render_summary(window: DownloadRequestBuilderWindow) -> str:
+    button = window.findChild(
+        QPushButton,
+        "download_request_builder.draft_summary_button",
+    )
+    summary_text = window.findChild(QTextEdit, "download_request_builder.summary_text")
+    assert button is not None
+    assert summary_text is not None
+
+    button.click()
+    return summary_text.toPlainText()

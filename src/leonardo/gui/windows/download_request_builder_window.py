@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from types import MappingProxyType
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -29,6 +33,10 @@ OHLCV_POLICY_DEFERRED_MESSAGE = (
     "OHLCV naming/storage policy is not defined yet. "
     "Submission is intentionally disabled/deferred."
 )
+OHLCV_DRAFT_SUMMARY_WARNING = (
+    "OHLCV naming/storage/maintenance policy is not implemented here. "
+    "This is a local draft only."
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,57 @@ class _FieldSpec:
     widget_kind: str
     options: tuple[str, ...] = ()
     placeholder: str = ""
+
+
+@dataclass(frozen=True)
+class DownloadRequestDraft:
+    """
+    GUI-local draft assembled from visible request-builder fields.
+
+    The draft is a presentation-layer structure only. It is not a Core request
+    contract and is not submitted or preflighted by this window.
+    """
+
+    workflow_mode: str
+    source_provider: str
+    market: str
+    symbols: tuple[str, ...]
+    timeframe_mode: str
+    timeframes: tuple[str, ...]
+    range_mode: str
+    start: str
+    end: str
+    conflict_policy: str
+    priority: str
+    connection_ref: str
+    websocket_required: bool
+    tags: tuple[str, ...]
+    metadata: Mapping[str, object]
+    metadata_parse_error: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "symbols", tuple(self.symbols))
+        object.__setattr__(self, "timeframes", tuple(self.timeframes))
+        object.__setattr__(self, "tags", tuple(self.tags))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata)),
+        )
+
+
+@dataclass(frozen=True)
+class DownloadDraftIssue:
+    """
+    GUI-local validation issue for the local draft summary.
+
+    Issues reported here are non-authoritative and do not replace Core
+    validation or future preflight behavior.
+    """
+
+    field_id: str
+    severity: str
+    message: str
 
 
 _FIELD_SPECS = (
@@ -114,6 +173,7 @@ class DownloadRequestBuilderWindow(QWidget):
         self._title_label: QLabel | None = None
         self._workflow_mode_label: QLabel | None = None
         self._ohlcv_policy_note: QLabel | None = None
+        self._summary_text: QTextEdit | None = None
 
         self.setObjectName("download_request_builder_window")
         self.resize(720, 640)
@@ -168,6 +228,8 @@ class DownloadRequestBuilderWindow(QWidget):
             self._ohlcv_policy_note.setVisible(
                 workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE
             )
+        if self._summary_text is not None:
+            self._summary_text.clear()
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
@@ -194,19 +256,40 @@ class DownloadRequestBuilderWindow(QWidget):
             self._field_widgets[spec.field_id] = widget
             form.addRow(label, widget)
 
+        draft_summary_button = QPushButton("Draft Summary")
+        draft_summary_button.setObjectName(
+            "download_request_builder.draft_summary_button"
+        )
+        draft_summary_button.clicked.connect(self._show_draft_summary)
+
         close_button = QPushButton("Close")
         close_button.setObjectName("download_request_builder.close")
         close_button.clicked.connect(self.close)
 
+        summary_text = QTextEdit()
+        summary_text.setObjectName("download_request_builder.summary_text")
+        summary_text.setReadOnly(True)
+        summary_text.setFixedHeight(190)
+        self._summary_text = summary_text
+
         buttons = QHBoxLayout()
         buttons.addStretch(1)
+        buttons.addWidget(draft_summary_button)
         buttons.addWidget(close_button)
 
         root.addWidget(title_label)
         root.addWidget(workflow_mode_label)
         root.addWidget(ohlcv_note)
         root.addLayout(form)
+        root.addWidget(summary_text)
         root.addLayout(buttons)
+
+    def _show_draft_summary(self) -> None:
+        if self._summary_text is None:
+            return
+        draft = _draft_from_widgets(self._workflow_mode, self._field_widgets)
+        issues = _validate_draft(draft)
+        self._summary_text.setPlainText(_format_draft_summary(draft, issues))
 
 
 def _build_field_widget(spec: _FieldSpec) -> QWidget:
@@ -243,3 +326,197 @@ def _workflow_label(workflow_mode: str) -> str:
         return "OHLCV Maintenance"
     _validate_workflow_mode(workflow_mode)
     return workflow_mode
+
+
+def _draft_from_widgets(
+    workflow_mode: str,
+    field_widgets: Mapping[str, QWidget],
+) -> DownloadRequestDraft:
+    timeframe_mode = _text_field_value(field_widgets["timeframe_mode"])
+    metadata, metadata_parse_error = _parse_metadata(
+        _text_field_value(field_widgets["metadata"])
+    )
+    return DownloadRequestDraft(
+        workflow_mode=workflow_mode,
+        source_provider=_text_field_value(field_widgets["source_provider"]),
+        market=_text_field_value(field_widgets["market"]),
+        symbols=_split_csv_lines(_text_field_value(field_widgets["symbols"])),
+        timeframe_mode=timeframe_mode,
+        timeframes=(
+            _split_csv_lines(_text_field_value(field_widgets["timeframes"]))
+            if timeframe_mode == "explicit"
+            else ()
+        ),
+        range_mode=_text_field_value(field_widgets["range_mode"]),
+        start=_text_field_value(field_widgets["start"]),
+        end=_text_field_value(field_widgets["end"]),
+        conflict_policy=_text_field_value(field_widgets["conflict_policy"]),
+        priority=_text_field_value(field_widgets["priority"]),
+        connection_ref=_text_field_value(field_widgets["connection_ref"]),
+        websocket_required=_checked_field_value(field_widgets["websocket_required"]),
+        tags=_split_csv_lines(_text_field_value(field_widgets["tags"])),
+        metadata=metadata,
+        metadata_parse_error=metadata_parse_error,
+    )
+
+
+def _validate_draft(draft: DownloadRequestDraft) -> tuple[DownloadDraftIssue, ...]:
+    issues: list[DownloadDraftIssue] = []
+    if not draft.symbols:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="symbols",
+                severity="error",
+                message="At least one symbol is required.",
+            )
+        )
+    if draft.timeframe_mode == "explicit" and not draft.timeframes:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="timeframes",
+                severity="error",
+                message="Explicit timeframe mode requires at least one timeframe.",
+            )
+        )
+    if draft.metadata_parse_error is not None:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="metadata",
+                severity="error",
+                message=draft.metadata_parse_error,
+            )
+        )
+
+    start_value, start_error = _parse_iso_like_datetime(draft.start)
+    end_value, end_error = _parse_iso_like_datetime(draft.end)
+    if start_error is not None:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="start",
+                severity="error",
+                message=start_error,
+            )
+        )
+    if end_error is not None:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="end",
+                severity="error",
+                message=end_error,
+            )
+        )
+    if start_value is not None and end_value is not None:
+        try:
+            if start_value > end_value:
+                issues.append(
+                    DownloadDraftIssue(
+                        field_id="end",
+                        severity="error",
+                        message="End must be greater than or equal to start.",
+                    )
+                )
+        except TypeError:
+            issues.append(
+                DownloadDraftIssue(
+                    field_id="end",
+                    severity="error",
+                    message="Start and end must use comparable timezone formats.",
+                )
+            )
+
+    return tuple(issues)
+
+
+def _format_draft_summary(
+    draft: DownloadRequestDraft,
+    issues: tuple[DownloadDraftIssue, ...],
+) -> str:
+    metadata_display = (
+        f"invalid ({draft.metadata_parse_error})"
+        if draft.metadata_parse_error is not None
+        else f"valid JSON object {json.dumps(dict(draft.metadata), sort_keys=True)}"
+    )
+    lines = [
+        f"Workflow mode: {draft.workflow_mode}",
+        f"Source / Provider: {_display_value(draft.source_provider)}",
+        f"Market: {_display_value(draft.market)}",
+        f"Symbols: {len(draft.symbols)} ({_format_sequence(draft.symbols)})",
+        f"Timeframe mode: {draft.timeframe_mode}",
+        f"Explicit timeframes: {len(draft.timeframes)} ({_format_sequence(draft.timeframes)})",
+        f"Range mode: {draft.range_mode}",
+        f"Start: {_display_value(draft.start)}",
+        f"End: {_display_value(draft.end)}",
+        f"Conflict policy: {draft.conflict_policy}",
+        f"Priority: {draft.priority}",
+        f"Connection ref: {_display_value(draft.connection_ref)}",
+        f"WebSocket required: {draft.websocket_required}",
+        f"Tags: {len(draft.tags)} ({_format_sequence(draft.tags)})",
+        f"Metadata: {metadata_display}",
+    ]
+    if draft.workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE:
+        lines.extend(("", f"Warning: {OHLCV_DRAFT_SUMMARY_WARNING}"))
+
+    lines.extend(("", "Local validation issues:"))
+    if not issues:
+        lines.append("- none")
+    else:
+        for issue in issues:
+            lines.append(
+                f"- {issue.severity.upper()} {issue.field_id}: {issue.message}"
+            )
+    return "\n".join(lines)
+
+
+def _text_field_value(widget: QWidget) -> str:
+    if isinstance(widget, QComboBox):
+        return widget.currentText().strip()
+    if isinstance(widget, QTextEdit):
+        return widget.toPlainText().strip()
+    if isinstance(widget, QLineEdit):
+        return widget.text().strip()
+    return ""
+
+
+def _checked_field_value(widget: QWidget) -> bool:
+    return isinstance(widget, QCheckBox) and widget.isChecked()
+
+
+def _split_csv_lines(value: str) -> tuple[str, ...]:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return tuple(
+        part.strip()
+        for part in normalized.replace("\n", ",").split(",")
+        if part.strip()
+    )
+
+
+def _parse_metadata(raw_value: str) -> tuple[Mapping[str, object], str | None]:
+    if not raw_value:
+        return {}, None
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        return {}, f"Invalid metadata JSON: {error.msg}"
+    if not isinstance(parsed, dict):
+        return {}, "Metadata must be a JSON object."
+    return parsed, None
+
+
+def _parse_iso_like_datetime(value: str) -> tuple[datetime | None, str | None]:
+    if not value:
+        return None, None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized), None
+    except ValueError:
+        return None, "Value must be an ISO-like date or datetime."
+
+
+def _display_value(value: str) -> str:
+    return value if value else "none"
+
+
+def _format_sequence(values: tuple[str, ...]) -> str:
+    if not values:
+        return "none"
+    return ", ".join(values)
