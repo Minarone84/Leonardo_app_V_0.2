@@ -62,6 +62,94 @@ def _request_without_symbols() -> DownloadRequest:
     return request
 
 
+def _manager_state(manager: DownloadManager) -> tuple[object, ...]:
+    return (
+        manager.list_requests(),
+        manager.list_preflights(),
+        manager.list_items(),
+        manager.get_summary(),
+    )
+
+
+def test_preview_explicit_request_returns_preflight_without_storing_state() -> None:
+    manager = DownloadManager()
+    request = _request()
+    before_state = _manager_state(manager)
+
+    preflight = manager.preview_request(request)
+
+    assert preflight.status is DownloadStatus.VALIDATED
+    assert preflight.can_run is True
+    assert preflight.required_connections == ("binance-spot",)
+    assert preflight.estimated_items == 4
+    assert preflight.estimated_symbols == 2
+    assert preflight.estimated_timeframes == 2
+    assert preflight.issues == ()
+    assert _manager_state(manager) == before_state
+
+
+def test_preview_all_timeframe_request_returns_unresolved_estimates_only() -> None:
+    manager = DownloadManager()
+    request = _request(
+        request_id="req-all",
+        timeframe_mode=DownloadTimeframeMode.ALL,
+        timeframes=(),
+    )
+    before_state = _manager_state(manager)
+
+    preflight = manager.preview_request(request)
+
+    assert preflight.status is DownloadStatus.VALIDATED
+    assert preflight.can_run is True
+    assert preflight.estimated_symbols == 2
+    assert preflight.estimated_items is None
+    assert preflight.estimated_timeframes is None
+    assert manager.list_items("req-all") == ()
+    assert _manager_state(manager) == before_state
+
+
+def test_preview_invalid_explicit_request_reports_issues_without_storing_state() -> None:
+    manager = DownloadManager()
+    request = _explicit_request_without_timeframes()
+    before_state = _manager_state(manager)
+
+    preflight = manager.preview_request(request)
+
+    assert preflight.status is DownloadStatus.FAILED
+    assert preflight.can_run is False
+    assert preflight.estimated_items == 0
+    assert [issue.code for issue in preflight.issues] == ["missing_timeframes"]
+    assert _manager_state(manager) == before_state
+
+
+def test_preview_duplicate_request_id_reports_issue_without_mutating_state() -> None:
+    manager = DownloadManager()
+    original = _request()
+    duplicate = _request(symbols=("SOLUSDT",), timeframes=("15m",))
+    manager.submit_request(original)
+    before_state = _manager_state(manager)
+
+    preflight = manager.preview_request(duplicate)
+
+    assert preflight.status is DownloadStatus.FAILED
+    assert preflight.can_run is False
+    assert [issue.code for issue in preflight.issues] == ["duplicate_request_id"]
+    assert preflight.issues[0].field == "request_id"
+    assert manager.get_request("req-explicit") is original
+    assert _manager_state(manager) == before_state
+
+
+def test_preview_request_emits_no_audit_events() -> None:
+    audit_log = AuditLog()
+    manager = DownloadManager(audit_log)
+    before_events = audit_log.snapshot()
+
+    preflight = manager.preview_request(_request())
+
+    assert preflight.status is DownloadStatus.VALIDATED
+    assert audit_log.snapshot() == before_events
+
+
 def test_submit_explicit_request_creates_preflight_and_items() -> None:
     manager = DownloadManager()
     request = _request()

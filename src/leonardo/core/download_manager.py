@@ -62,31 +62,50 @@ class DownloadManager:
         if request.request_id in self._request_by_id:
             raise ValueError(f"Download request already submitted: {request.request_id}")
 
-        issues = self._validate_request_structure(request)
-        can_run = not issues
-        preflight = DownloadPreflight(
-            request_id=request.request_id,
-            status=DownloadStatus.VALIDATED if can_run else DownloadStatus.FAILED,
-            can_run=can_run,
-            required_connections=self._required_connections(request),
-            websocket_required=request.websocket_required,
-            websocket_available=None,
-            estimated_items=self._estimated_items(request, can_run=can_run),
-            estimated_symbols=len(request.symbols),
-            estimated_timeframes=self._estimated_timeframes(request),
-            issues=issues,
-            metadata=self._preflight_metadata(request),
+        preflight = self._build_preflight(
+            request,
+            issues=self._validate_request_structure(request),
         )
 
         self._request_by_id[request.request_id] = request
         self._preflight_by_request_id[request.request_id] = preflight
-        if can_run:
+        if preflight.can_run:
             for item in self._expand_items(request):
                 self._item_by_id[item.item_id] = item
 
         self._emit_request_submitted(request)
         self._emit_preflight_completed(request, preflight)
         return preflight
+
+    def preview_request(self, request: DownloadRequest) -> DownloadPreflight:
+        """
+        Return a non-mutating structural preflight preview for a request.
+
+        The preview reports the current structural result that a submit would
+        encounter, including duplicate request identifiers, without storing
+        request state, creating item read models, updating summaries, or
+        emitting audit events.
+        """
+
+        if not isinstance(request, DownloadRequest):
+            raise TypeError("request must be a DownloadRequest")
+        if not isinstance(request.request_id, str) or not request.request_id.strip():
+            raise ValueError("request_id must be a non-empty string")
+
+        issues = list(self._validate_request_structure(request))
+        if request.request_id in self._request_by_id:
+            issues.append(
+                DownloadValidationIssue(
+                    code="duplicate_request_id",
+                    severity=DownloadValidationSeverity.ERROR,
+                    message=(
+                        "Download request already submitted: "
+                        f"{request.request_id}"
+                    ),
+                    field="request_id",
+                )
+            )
+        return self._build_preflight(request, issues=tuple(issues))
 
     def get_request(self, request_id: str) -> DownloadRequest | None:
         """Return a stored request by identifier, if present."""
@@ -220,6 +239,27 @@ class DownloadManager:
                 )
             )
         return tuple(issues)
+
+    def _build_preflight(
+        self,
+        request: DownloadRequest,
+        *,
+        issues: tuple[DownloadValidationIssue, ...],
+    ) -> DownloadPreflight:
+        can_run = not issues
+        return DownloadPreflight(
+            request_id=request.request_id,
+            status=DownloadStatus.VALIDATED if can_run else DownloadStatus.FAILED,
+            can_run=can_run,
+            required_connections=self._required_connections(request),
+            websocket_required=request.websocket_required,
+            websocket_available=None,
+            estimated_items=self._estimated_items(request, can_run=can_run),
+            estimated_symbols=len(request.symbols),
+            estimated_timeframes=self._estimated_timeframes(request),
+            issues=issues,
+            metadata=self._preflight_metadata(request),
+        )
 
     def _expand_items(self, request: DownloadRequest) -> tuple[DownloadRequestItem, ...]:
         if request.timeframe_mode is not DownloadTimeframeMode.EXPLICIT:
