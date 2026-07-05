@@ -175,6 +175,173 @@ def test_plan_creation_without_audit_log_keeps_audit_out_of_band() -> None:
     assert snapshot.plan.request_id == "req-explicit"
 
 
+def test_mark_ready_updates_retained_snapshot_immutably() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    before_state = _download_manager_state(download_manager)
+    manager = DownloadExecutionManager(download_manager)
+    original = manager.create_plan("req-explicit")
+
+    updated = manager.mark_ready(original.plan.plan_id)
+
+    assert updated is not original
+    assert original.plan.phase is DownloadExecutionPhase.PLANNED
+    assert original.progress is not None
+    assert original.progress.phase is DownloadExecutionPhase.PLANNED
+    assert updated.plan.phase is DownloadExecutionPhase.READY
+    assert updated.progress is not None
+    assert updated.progress.phase is DownloadExecutionPhase.READY
+    assert updated.progress.message == (
+        "Download execution plan is ready for future execution."
+    )
+    assert updated.plan.plan_id == original.plan.plan_id
+    assert updated.plan.request_id == original.plan.request_id
+    assert updated.plan.item_ids == original.plan.item_ids
+    assert updated.estimate == original.estimate
+    assert updated.outputs == ()
+    assert updated.errors == ()
+    assert updated.plan.operation_id is None
+    assert updated.plan.task_id is None
+    assert manager.get_snapshot(original.plan.plan_id) is updated
+    assert manager.get_snapshot_for_request("req-explicit") is updated
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_mark_blocked_updates_snapshot_with_reason() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    before_state = _download_manager_state(download_manager)
+    manager = DownloadExecutionManager(download_manager)
+    original = manager.create_plan("req-explicit")
+
+    updated = manager.mark_blocked(
+        original.plan.plan_id,
+        "Storage policy is unresolved.",
+    )
+
+    assert updated is not original
+    assert original.plan.phase is DownloadExecutionPhase.PLANNED
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress.message == "Storage policy is unresolved."
+    assert updated.metadata["lifecycle_reason"] == "Storage policy is unresolved."
+    assert updated.metadata["blocked_reason"] == "Storage policy is unresolved."
+    assert updated.plan.item_ids == original.plan.item_ids
+    assert updated.estimate == original.estimate
+    assert updated.outputs == ()
+    assert updated.errors == ()
+    assert updated.plan.operation_id is None
+    assert updated.plan.task_id is None
+    assert _download_manager_state(download_manager) == before_state
+
+
+def test_mark_lifecycle_unknown_plan_fails_clearly() -> None:
+    manager = DownloadExecutionManager(DownloadManager())
+
+    with pytest.raises(KeyError, match="Download execution plan is not retained"):
+        manager.mark_ready("execution-plan-missing")
+
+
+def test_mark_lifecycle_rejects_non_planned_transitions() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+
+    manager.mark_ready(snapshot.plan.plan_id)
+    with pytest.raises(ValueError, match="only planned plans can transition"):
+        manager.mark_blocked(snapshot.plan.plan_id, "Late blocker.")
+
+    download_manager.submit_request(_request(request_id="req-blocked"))
+    blocked = manager.create_plan("req-blocked")
+    manager.mark_blocked(blocked.plan.plan_id, "Missing storage policy.")
+    with pytest.raises(ValueError, match="only planned plans can transition"):
+        manager.mark_ready(blocked.plan.plan_id)
+
+
+def test_mark_blocked_rejects_empty_reason() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+
+    with pytest.raises(ValueError, match="reason"):
+        manager.mark_blocked(snapshot.plan.plan_id, " ")
+
+
+@pytest.mark.parametrize(
+    "timeframe_mode",
+    (
+        DownloadTimeframeMode.ALL,
+        DownloadTimeframeMode.DEFAULT,
+        DownloadTimeframeMode.SUPPORTED,
+    ),
+)
+def test_unresolved_timeframe_plan_can_be_marked_blocked_without_fake_items(
+    timeframe_mode: DownloadTimeframeMode,
+) -> None:
+    request_id = f"req-{timeframe_mode.value}"
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id=request_id,
+            timeframe_mode=timeframe_mode,
+            timeframes=(),
+        )
+    )
+    manager = DownloadExecutionManager(download_manager)
+    original = manager.create_plan(request_id)
+
+    updated = manager.mark_blocked(
+        original.plan.plan_id,
+        "Timeframe expansion is unresolved.",
+    )
+
+    assert original.plan.phase is DownloadExecutionPhase.PLANNED
+    assert original.plan.item_ids == ()
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.plan.item_ids == ()
+    assert updated.estimate is not None
+    assert updated.estimate.estimated_items is None
+    assert updated.progress is not None
+    assert updated.progress.total_items is None
+    assert download_manager.list_items(request_id) == ()
+
+
+def test_phase_change_emits_optional_audit_event_only_when_injected() -> None:
+    audit_log = AuditLog()
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager, audit_log)
+    snapshot = manager.create_plan("req-explicit")
+    before_events = audit_log.snapshot()
+
+    updated = manager.mark_ready(snapshot.plan.plan_id)
+
+    events = audit_log.snapshot()
+    assert len(events) == len(before_events) + 1
+    assert events[-1].event_type == "download.execution.phase.changed"
+    assert events[-1].payload["plan_id"] == updated.plan.plan_id
+    assert events[-1].payload["request_id"] == "req-explicit"
+    assert events[-1].payload["old_phase"] == "planned"
+    assert events[-1].payload["new_phase"] == "ready"
+    assert events[-1].payload["reason"] == (
+        "Download execution plan is ready for future execution."
+    )
+
+
+def test_phase_change_without_audit_log_keeps_audit_out_of_band() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request())
+    manager = DownloadExecutionManager(download_manager)
+    snapshot = manager.create_plan("req-explicit")
+
+    updated = manager.mark_ready(snapshot.plan.plan_id)
+
+    assert updated.plan.phase is DownloadExecutionPhase.READY
+
+
 def test_manager_constructor_requires_download_manager() -> None:
     with pytest.raises(TypeError, match="download_manager"):
         DownloadExecutionManager(object())  # type: ignore[arg-type]

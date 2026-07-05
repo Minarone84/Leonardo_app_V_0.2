@@ -404,6 +404,74 @@ def test_runtime_manager_snapshot_reflects_download_execution_state_read_only() 
     )
 
 
+def test_runtime_manager_snapshot_reflects_download_execution_ready_phase() -> None:
+    app = LeonardoApp()
+    app.download_manager.submit_request(_download_request())
+    execution_snapshot = app.download_execution_manager.create_plan("req-download")
+    updated = app.download_execution_manager.mark_ready(
+        execution_snapshot.plan.plan_id,
+    )
+    before_state = (
+        app.download_execution_manager.list_snapshots(),
+        app.download_manager.list_requests(),
+        app.download_manager.list_preflights(),
+        app.download_manager.list_items(),
+        app.audit_log.snapshot(),
+    )
+
+    snapshot = app.runtime_manager.snapshot()
+    after_state = (
+        app.download_execution_manager.list_snapshots(),
+        app.download_manager.list_requests(),
+        app.download_manager.list_preflights(),
+        app.download_manager.list_items(),
+        app.audit_log.snapshot(),
+    )
+
+    assert after_state == before_state
+    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == (
+        updated.plan.plan_id,
+    )
+    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == (
+        updated.plan.plan_id,
+    )
+    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == ()
+    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
+        "ready"
+    )
+    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
+        "connection_refs=binance-spot; "
+        "message=Download execution plan is ready for future execution."
+    )
+
+
+def test_runtime_manager_snapshot_reflects_download_execution_blocked_phase() -> None:
+    app = LeonardoApp()
+    app.download_manager.submit_request(_download_request())
+    execution_snapshot = app.download_execution_manager.create_plan("req-download")
+    updated = app.download_execution_manager.mark_blocked(
+        execution_snapshot.plan.plan_id,
+        "Storage policy is unresolved.",
+    )
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == ()
+    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == ()
+    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
+        updated.plan.plan_id,
+    )
+    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
+        "blocked"
+    )
+    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
+        "connection_refs=binance-spot; message=Storage policy is unresolved."
+    )
+
+
 def test_runtime_manager_snapshot_does_not_create_download_execution_plans() -> None:
     app = LeonardoApp()
     app.download_manager.submit_request(_download_request())

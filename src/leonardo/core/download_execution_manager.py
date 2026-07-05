@@ -7,6 +7,7 @@ from leonardo.contracts.download_execution import (
     DownloadExecutionEstimate,
     DownloadExecutionPhase,
     DownloadExecutionPlan,
+    DownloadExecutionProgress,
     DownloadExecutionSnapshot,
     DownloadPreflightLayer,
     DownloadPreflightLayerResult,
@@ -85,6 +86,44 @@ class DownloadExecutionManager:
         self._emit_plan_created(snapshot)
         return snapshot
 
+    def mark_ready(self, plan_id: str) -> DownloadExecutionSnapshot:
+        """
+        Mark a retained planned execution snapshot as ready.
+
+        This method is a non-executing lifecycle classification. It updates the
+        retained immutable read model only; it does not create tasks, create
+        operations, queue work, call adapters, or write outputs.
+        """
+
+        snapshot = self._require_snapshot(plan_id)
+        reason = "Download execution plan is ready for future execution."
+        return self._transition_planned_snapshot(
+            snapshot,
+            DownloadExecutionPhase.READY,
+            reason=reason,
+        )
+
+    def mark_blocked(
+        self,
+        plan_id: str,
+        reason: str,
+    ) -> DownloadExecutionSnapshot:
+        """
+        Mark a retained planned execution snapshot as blocked.
+
+        The reason is stored in read-model fields for Runtime Manager and audit
+        visibility. The method does not execute downloads or create execution
+        artifacts.
+        """
+
+        _validate_reason(reason)
+        snapshot = self._require_snapshot(plan_id)
+        return self._transition_planned_snapshot(
+            snapshot,
+            DownloadExecutionPhase.BLOCKED,
+            reason=reason,
+        )
+
     def get_snapshot(self, plan_id: str) -> DownloadExecutionSnapshot | None:
         """Return a retained execution snapshot by plan identifier, if present."""
 
@@ -109,6 +148,27 @@ class DownloadExecutionManager:
             for plan_id in sorted(self._snapshot_by_plan_id)
         )
 
+    def _require_snapshot(self, plan_id: str) -> DownloadExecutionSnapshot:
+        _validate_plan_id(plan_id)
+        snapshot = self.get_snapshot(plan_id)
+        if snapshot is None:
+            raise KeyError(f"Download execution plan is not retained: {plan_id}")
+        return snapshot
+
+    def _transition_planned_snapshot(
+        self,
+        snapshot: DownloadExecutionSnapshot,
+        new_phase: DownloadExecutionPhase,
+        *,
+        reason: str,
+    ) -> DownloadExecutionSnapshot:
+        _validate_planned_transition(snapshot, new_phase)
+        updated = _snapshot_with_phase(snapshot, new_phase, reason=reason)
+        self._snapshot_by_plan_id[updated.plan.plan_id] = updated
+        self._plan_id_by_request_id[updated.plan.request_id] = updated.plan.plan_id
+        self._emit_phase_changed(snapshot, updated, reason)
+        return updated
+
     def _emit_plan_created(self, snapshot: DownloadExecutionSnapshot) -> None:
         if self._audit_log is None:
             return
@@ -127,10 +187,129 @@ class DownloadExecutionManager:
             )
         )
 
+    def _emit_phase_changed(
+        self,
+        previous: DownloadExecutionSnapshot,
+        updated: DownloadExecutionSnapshot,
+        reason: str,
+    ) -> None:
+        if self._audit_log is None:
+            return
+        self._audit_log.emit(
+            AuditEvent(
+                event_type="download.execution.phase.changed",
+                message="Download execution phase changed.",
+                severity=AuditSeverity.INFO,
+                category=AuditCategory.RUNTIME,
+                payload={
+                    "plan_id": updated.plan.plan_id,
+                    "request_id": updated.plan.request_id,
+                    "old_phase": previous.plan.phase.value,
+                    "new_phase": updated.plan.phase.value,
+                    "reason": reason,
+                },
+            )
+        )
+
 
 def _validate_request_id(request_id: str) -> None:
     if not isinstance(request_id, str) or not request_id.strip():
         raise ValueError("request_id must be a non-empty string")
+
+
+def _validate_plan_id(plan_id: str) -> None:
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        raise ValueError("plan_id must be a non-empty string")
+
+
+def _validate_reason(reason: str) -> None:
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("reason must be a non-empty string")
+
+
+def _validate_planned_transition(
+    snapshot: DownloadExecutionSnapshot,
+    new_phase: DownloadExecutionPhase,
+) -> None:
+    if snapshot.plan.phase is DownloadExecutionPhase.PLANNED:
+        return
+    raise ValueError(
+        "Download execution plan cannot transition from "
+        f"{snapshot.plan.phase.value} to {new_phase.value}; only planned plans "
+        "can transition in this phase."
+    )
+
+
+def _snapshot_with_phase(
+    snapshot: DownloadExecutionSnapshot,
+    phase: DownloadExecutionPhase,
+    *,
+    reason: str,
+) -> DownloadExecutionSnapshot:
+    plan = _plan_with_phase(snapshot.plan, phase)
+    progress = _progress_with_phase(snapshot.progress, plan.request_id, phase, reason)
+    metadata = dict(snapshot.metadata)
+    metadata["lifecycle_reason"] = reason
+    if phase is DownloadExecutionPhase.BLOCKED:
+        metadata["blocked_reason"] = reason
+    return DownloadExecutionSnapshot(
+        plan=plan,
+        preflight_layers=snapshot.preflight_layers,
+        estimate=snapshot.estimate,
+        progress=progress,
+        outputs=snapshot.outputs,
+        errors=snapshot.errors,
+        metadata=metadata,
+    )
+
+
+def _plan_with_phase(
+    plan: DownloadExecutionPlan,
+    phase: DownloadExecutionPhase,
+) -> DownloadExecutionPlan:
+    return DownloadExecutionPlan(
+        plan_id=plan.plan_id,
+        request_id=plan.request_id,
+        workflow_kind=plan.workflow_kind,
+        phase=phase,
+        operation_id=plan.operation_id,
+        task_id=plan.task_id,
+        connection_refs=plan.connection_refs,
+        adapter_ref=plan.adapter_ref,
+        storage_policy_ref=plan.storage_policy_ref,
+        dataset_refs=plan.dataset_refs,
+        item_ids=plan.item_ids,
+        created_at_utc=plan.created_at_utc,
+        metadata=plan.metadata,
+    )
+
+
+def _progress_with_phase(
+    progress: DownloadExecutionProgress | None,
+    request_id: str,
+    phase: DownloadExecutionPhase,
+    message: str,
+) -> DownloadExecutionProgress:
+    base = progress if progress is not None else default_execution_progress(request_id)
+    return DownloadExecutionProgress(
+        request_id=base.request_id,
+        phase=phase,
+        total_items=base.total_items,
+        completed_items=base.completed_items,
+        failed_items=base.failed_items,
+        skipped_items=base.skipped_items,
+        running_items=base.running_items,
+        current_item_id=base.current_item_id,
+        current_symbol=base.current_symbol,
+        current_timeframe=base.current_timeframe,
+        rows_downloaded=base.rows_downloaded,
+        candles_downloaded=base.candles_downloaded,
+        pages_fetched=base.pages_fetched,
+        percent=base.percent,
+        message=message,
+        updated_at_utc=base.updated_at_utc,
+        metadata=base.metadata,
+    )
 
 
 def _plan_id_for_request(request_id: str) -> str:
