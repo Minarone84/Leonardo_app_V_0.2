@@ -38,6 +38,7 @@ class Permission(str, Enum):
     AUDIT_VIEW = "audit:view"
     SERVICE_MANAGE = "service:manage"
     ERROR_VIEW = "error:view"
+    GUI_SETTINGS_MANAGE = "gui_settings:manage"
 
 
 @dataclass(frozen=True)

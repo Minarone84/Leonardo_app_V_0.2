@@ -311,11 +311,13 @@ class SettingsInspectorWindow(QDialog):
         self._refresh_diagnostics(row)
 
     def _handle_save_action(self) -> None:
-        self._record_action("settings_inspector.save")
+        if not self._record_action("settings_inspector.save"):
+            return
         self.save_settings()
 
     def _handle_apply_changes_action(self) -> None:
-        self._record_action("settings_inspector.apply_changes")
+        if not self._record_action("settings_inspector.apply_changes"):
+            return
         self.apply_changes()
 
     def _handle_operation_result(
@@ -430,13 +432,14 @@ class SettingsInspectorWindow(QDialog):
     def _rows(self) -> tuple[GuiSettingsInspectorRow, ...]:
         return self._viewmodel.rows
 
-    def _record_action(self, action_id: str) -> None:
+    def _record_action(self, action_id: str) -> bool:
         if self._action_observer is None:
-            return
-        self._action_observer.record_action(
+            return True
+        decision = self._action_observer.record_action(
             action_id,
             metadata={"target_metadata_id": self._viewmodel.metadata_id},
         )
+        return decision.allowed
 
     def _table_text(self, row: int, column: int) -> str:
         item = self.settings_table.item(row, column)

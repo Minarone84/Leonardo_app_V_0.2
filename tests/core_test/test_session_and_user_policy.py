@@ -27,6 +27,7 @@ def test_user_policy_allows_administrator_all_permissions() -> None:
     policy = UserPolicy()
 
     assert policy.has_permission(session.actor, Permission.SERVICE_MANAGE) is True
+    assert policy.has_permission(session.actor, Permission.GUI_SETTINGS_MANAGE) is True
 
 
 def test_user_policy_requires_explicit_non_admin_permission() -> None:

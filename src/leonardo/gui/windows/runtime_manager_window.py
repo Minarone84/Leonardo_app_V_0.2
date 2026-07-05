@@ -287,11 +287,13 @@ class RuntimeManagerWindow(QWidget):
 
     def _handle_action(self, action_id: str) -> None:
         if action_id == "runtime_manager.refresh_snapshot":
-            self._record_action(action_id)
+            if not self._record_action(action_id):
+                return
             self.refresh_snapshot()
             return
         if action_id == "runtime_manager.close":
-            self._record_action(action_id)
+            if not self._record_action(action_id):
+                return
             self.close()
             return
         self._set_status(f"{action_id} is read-only metadata-only behavior in this phase.")
@@ -300,16 +302,17 @@ class RuntimeManagerWindow(QWidget):
         if self._status_label is not None:
             self._status_label.setText(message)
 
-    def _record_action(self, action_id: str) -> None:
+    def _record_action(self, action_id: str) -> bool:
         if (
             self._action_observer is None
             or action_id not in _TRACKED_RUNTIME_MANAGER_ACTION_IDS
         ):
-            return
-        self._action_observer.record_action(
+            return True
+        decision = self._action_observer.record_action(
             action_id,
             window_id=RUNTIME_MANAGER_METADATA_ID,
         )
+        return decision.allowed
 
 
 def _snapshot_provider_from_backend(backend: object | None) -> SnapshotProvider | None:

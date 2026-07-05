@@ -221,7 +221,8 @@ class LeonardoMainWindow(QMainWindow):
 
     def _handle_shell_action(self, action_id: str) -> None:
         self._last_local_action_id = action_id
-        self._record_action(action_id)
+        if not self._record_action(action_id):
+            return
         if action_id == "main_window.exit":
             self.statusBar().showMessage("Exit requested locally.")
             self.close()
@@ -237,16 +238,17 @@ class LeonardoMainWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"Unhandled local shell action: {action_id}")
 
-    def _record_action(self, action_id: str) -> None:
+    def _record_action(self, action_id: str) -> bool:
         if (
             self._action_observer is None
             or action_id not in _TRACKED_MAIN_WINDOW_ACTION_IDS
         ):
-            return
-        self._action_observer.record_action(
+            return True
+        decision = self._action_observer.record_action(
             action_id,
             window_id=MAIN_WINDOW_METADATA_ID,
         )
+        return decision.allowed
 
     def _open_runtime_manager_window(self) -> None:
         created = False

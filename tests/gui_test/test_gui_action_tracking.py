@@ -1,5 +1,7 @@
 import os
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,10 +9,30 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget  # noqa: E402
 
+from leonardo.contracts.identity import (  # noqa: E402
+    ActorOrigin,
+    Permission,
+    SessionContext,
+    UserRef,
+    UserRole,
+)
 from leonardo.core.app import LeonardoApp  # noqa: E402
+from leonardo.core.action_registry import ActionRegistry  # noqa: E402
+from leonardo.core.audit_log import AuditLog  # noqa: E402
+from leonardo.core.session_manager import SessionManager  # noqa: E402
+from leonardo.core.state_store import StateStore  # noqa: E402
+from leonardo.core.user_policy import UserPolicy  # noqa: E402
+from leonardo.gui.action_observer import build_gui_action_observer  # noqa: E402
 from leonardo.gui.composition import GuiCompositionRoot  # noqa: E402
-from leonardo.gui.metadata import GuiMetadataOverrideStore  # noqa: E402
-from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow  # noqa: E402
+from leonardo.gui.metadata import (  # noqa: E402
+    GuiMetadataOverrideStore,
+    load_metadata_document,
+)
+from leonardo.gui.settings_inspector import GuiSettingsInspectorViewModel  # noqa: E402
+from leonardo.gui.windows.runtime_manager_window import (  # noqa: E402
+    RuntimeManagerWindow,
+    load_runtime_manager_profile,
+)
 from leonardo.gui.windows.settings_inspector_window import (  # noqa: E402
     SettingsInspectorWindow,
 )
@@ -44,6 +66,10 @@ def test_composition_registers_first_gui_action_definitions(
     registered_action_ids = {
         definition.action_id for definition in app.action_registry.list_actions()
     }
+    definitions = {
+        definition.action_id: definition
+        for definition in app.action_registry.list_actions()
+    }
 
     assert {
         "main_window.open_runtime_manager",
@@ -53,6 +79,22 @@ def test_composition_registers_first_gui_action_definitions(
         "runtime_manager.refresh_snapshot",
         "runtime_manager.close",
     } <= registered_action_ids
+    assert definitions[
+        "main_window.open_runtime_manager"
+    ].required_permissions == (Permission.RUNTIME_VIEW,)
+    assert definitions[
+        "main_window.open_settings_inspector"
+    ].required_permissions == (Permission.GUI_SETTINGS_MANAGE,)
+    assert definitions["settings_inspector.save"].required_permissions == (
+        Permission.GUI_SETTINGS_MANAGE,
+    )
+    assert definitions["settings_inspector.apply_changes"].required_permissions == (
+        Permission.GUI_SETTINGS_MANAGE,
+    )
+    assert definitions["runtime_manager.refresh_snapshot"].required_permissions == (
+        Permission.RUNTIME_VIEW,
+    )
+    assert definitions["runtime_manager.close"].required_permissions == ()
 
     _dispose(qapplication, window)
     app.shutdown()
@@ -169,6 +211,120 @@ def test_runtime_manager_refresh_and_close_actions_are_recorded_and_visible(
     app.shutdown()
 
 
+def test_restricted_user_without_runtime_view_cannot_open_or_refresh_runtime_manager(
+    qapplication: QApplication,
+) -> None:
+    context = _policy_context(permissions=())
+    root = GuiCompositionRoot(context, track_windows=False)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.open_runtime_manager").trigger()
+    qapplication.processEvents()
+
+    assert window.runtime_manager_window is None
+    assert "main_window.open_runtime_manager" not in _recent_action_ids(context)
+    denied = _last_audit_event(context, "gui.action.denied")
+    assert denied.action_id == "main_window.open_runtime_manager"
+    assert denied.window_id == "main_window.window"
+    assert denied.actor_id == "restricted-user"
+    assert denied.session_id == "session-restricted-user"
+    assert denied.payload["required_permissions"] == ("runtime:view",)
+    assert denied.payload["reason"] == "missing_permission"
+
+    observer = build_gui_action_observer(context)
+    runtime_window = RuntimeManagerWindow(
+        load_runtime_manager_profile(),
+        snapshot_provider=context.runtime_manager.snapshot,
+        action_observer=observer,
+    )
+    runtime_window.action_button_for_id("runtime_manager.refresh_snapshot").click()
+    qapplication.processEvents()
+
+    assert context.runtime_manager.calls == 0
+    assert runtime_window.refresh_called is False
+    assert "runtime_manager.refresh_snapshot" not in _recent_action_ids(context)
+    denied = _last_audit_event(context, "gui.action.denied")
+    assert denied.action_id == "runtime_manager.refresh_snapshot"
+    assert denied.window_id == "runtime_manager.window"
+    assert denied.payload["required_permissions"] == ("runtime:view",)
+
+    _dispose(qapplication, window, runtime_window)
+
+
+def test_restricted_user_without_gui_settings_manage_cannot_open_save_or_apply_settings(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    context = _policy_context(permissions=(Permission.RUNTIME_VIEW,))
+    store = GuiMetadataOverrideStore(tmp_path / "overrides")
+    root = GuiCompositionRoot(context, track_windows=False, override_store=store)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.open_settings_inspector").trigger()
+    qapplication.processEvents()
+
+    assert window.settings_inspector_window is None
+    assert "main_window.open_settings_inspector" not in _recent_action_ids(context)
+    denied = _last_audit_event(context, "gui.action.denied")
+    assert denied.action_id == "main_window.open_settings_inspector"
+    assert denied.payload["required_permissions"] == ("gui_settings:manage",)
+    assert denied.payload["reason"] == "missing_permission"
+
+    dialog = SettingsInspectorWindow(
+        GuiSettingsInspectorViewModel(_load_main_window_document(), store),
+        on_apply=lambda _metadata_id, _profile: pytest.fail("apply should be denied"),
+        action_observer=build_gui_action_observer(context),
+    )
+
+    assert dialog.set_editor_value("style.font_size", "18") is True
+    dialog.findChild(QPushButton, "settings_inspector.save").click()
+    qapplication.processEvents()
+
+    assert store.path_for("main_window.window").exists() is False
+    assert "settings_inspector.save" not in _recent_action_ids(context)
+    denied = _last_audit_event(context, "gui.action.denied")
+    assert denied.action_id == "settings_inspector.save"
+    assert denied.payload["required_permissions"] == ("gui_settings:manage",)
+
+    dialog.findChild(QPushButton, "settings_inspector.apply_changes").click()
+    qapplication.processEvents()
+
+    assert store.path_for("main_window.window").exists() is False
+    assert "settings_inspector.apply_changes" not in _recent_action_ids(context)
+    denied = _last_audit_event(context, "gui.action.denied")
+    assert denied.action_id == "settings_inspector.apply_changes"
+    assert denied.payload["required_permissions"] == ("gui_settings:manage",)
+
+    _dispose(qapplication, window, dialog)
+
+
+def test_runtime_manager_close_remains_allowed_without_permission(
+    qapplication: QApplication,
+) -> None:
+    context = _policy_context(permissions=())
+    runtime_window = RuntimeManagerWindow(
+        load_runtime_manager_profile(),
+        action_observer=build_gui_action_observer(context),
+    )
+    runtime_window.show()
+    qapplication.processEvents()
+
+    runtime_window.action_button_for_id("runtime_manager.close").click()
+    qapplication.processEvents()
+
+    assert _recent_action_ids(context)[-1] == "runtime_manager.close"
+    assert runtime_window.close_requested_locally is True
+    assert runtime_window.isVisible() is False
+    assert not [
+        event
+        for event in context.audit_log.snapshot()
+        if event.event_type == "gui.action.denied"
+        and event.action_id == "runtime_manager.close"
+    ]
+
+    _dispose(qapplication, runtime_window)
+
+
 def test_action_tracking_keeps_qt_windows_free_of_core_concrete_imports() -> None:
     for path in _WINDOW_SOURCES:
         source = path.read_text(encoding="utf-8")
@@ -180,15 +336,81 @@ def test_action_tracking_keeps_qt_windows_free_of_core_concrete_imports() -> Non
         assert "OperationRegistry" not in source
 
 
-def _recent_action_ids(app: LeonardoApp) -> tuple[str, ...]:
-    return tuple(record.action_id for record in app.action_registry.recent_triggers())
+class _RuntimeSnapshotProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def snapshot(self) -> dict[str, object]:
+        self.calls += 1
+        return {"health": "ok", "sections": (), "recent_audit_events": ()}
 
 
-def _last_record(app: LeonardoApp, action_id: str):
-    for record in reversed(app.action_registry.recent_triggers()):
+def _policy_context(
+    *,
+    permissions: tuple[Permission, ...],
+    is_active: bool = True,
+):
+    audit_log = AuditLog()
+    state_store = StateStore(audit_log)
+    user = UserRef(
+        user_id="restricted-user",
+        username="Restricted User",
+        roles=(UserRole.USER,),
+        permissions=permissions,
+        is_active=is_active,
+    )
+    session = SessionContext(
+        session_id="session-restricted-user",
+        actor=user,
+        origin=ActorOrigin.HUMAN,
+        started_at_utc=datetime(2026, 7, 5, 12, tzinfo=UTC),
+    )
+    return SimpleNamespace(
+        audit_log=audit_log,
+        state_store=state_store,
+        session_manager=SessionManager(
+            audit_log=audit_log,
+            session_context=session,
+        ),
+        user_policy=UserPolicy(),
+        action_registry=ActionRegistry(state_store),
+        runtime_manager=_RuntimeSnapshotProvider(),
+    )
+
+
+def _load_main_window_document():
+    result = load_metadata_document(
+        _REPO_ROOT
+        / "src"
+        / "leonardo"
+        / "gui"
+        / "metadata"
+        / "windows"
+        / "main_window.window.toml"
+    )
+    assert result.document is not None
+    assert result.report.has_errors is False
+    return result.document
+
+
+def _recent_action_ids(context: object) -> tuple[str, ...]:
+    return tuple(
+        record.action_id for record in context.action_registry.recent_triggers()
+    )
+
+
+def _last_record(context: object, action_id: str):
+    for record in reversed(context.action_registry.recent_triggers()):
         if record.action_id == action_id:
             return record
     raise AssertionError(f"Missing action trigger record: {action_id}")
+
+
+def _last_audit_event(context: object, event_type: str):
+    for event in reversed(context.audit_log.snapshot()):
+        if event.event_type == event_type:
+            return event
+    raise AssertionError(f"Missing audit event: {event_type}")
 
 
 def _dispose(qapplication: QApplication, *widgets: QWidget | None) -> None:

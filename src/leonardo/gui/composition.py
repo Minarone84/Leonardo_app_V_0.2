@@ -50,6 +50,8 @@ class GuiCoreContext(Protocol):
     window_registry: object
     action_registry: object
     session_manager: object
+    user_policy: object
+    audit_log: object
 
 
 class GuiCompositionRoot:
