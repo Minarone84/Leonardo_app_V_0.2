@@ -4,9 +4,17 @@ from dataclasses import replace
 import pytest
 
 from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
+from leonardo.contracts.downloads import (
+    DownloadRangeMode,
+    DownloadRequest,
+    DownloadStatus,
+    DownloadTimeframeMode,
+    DownloadWorkflowKind,
+)
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
+from leonardo.core.download_manager import DownloadManager
 
 
 def test_default_config_resolves_runtime_paths_without_creating_directories(tmp_path) -> None:
@@ -115,6 +123,7 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert context.window_registry is app.window_registry
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
+    assert context.download_manager is app.download_manager
     assert context.runtime_manager is app.runtime_manager
     assert app.process_manager.active_processes() == ()
     assert app.connection_registry.connection_states() == ()
@@ -144,10 +153,66 @@ def test_leonardo_app_startup_failure_sets_failed_state_and_routes_error() -> No
     )
 
 
+def test_leonardo_app_exposes_download_manager_without_service_registration() -> None:
+    app = LeonardoApp()
+
+    context = app.startup()
+
+    assert isinstance(app.download_manager, DownloadManager)
+    assert context.download_manager is app.download_manager
+    assert context.download_manager.get_summary().total_requests == 0
+    assert context.service_registry.list_services() == ()
+
+
+def test_download_manager_can_be_used_through_app_context_without_gui(tmp_path) -> None:
+    config = load_default_config(tmp_path)
+    app = LeonardoApp(config)
+
+    context = app.startup()
+    preflight = context.download_manager.submit_request(_download_request())
+    app.shutdown()
+
+    assert preflight.status is DownloadStatus.VALIDATED
+    assert preflight.can_run is True
+    assert context.download_manager.list_requests() == (_download_request(),)
+    assert len(context.download_manager.list_items("req-app-download")) == 2
+    assert not config.paths.runs_dir.exists()
+    assert not config.paths.historical_data_dir.exists()
+    assert not config.paths.tmp_dir.exists()
+    assert config.audit.jsonl_path is not None
+    assert not config.audit.jsonl_path.exists()
+
+
+def test_app_injected_audit_log_receives_download_manager_events() -> None:
+    app = LeonardoApp()
+    context = app.startup()
+
+    context.download_manager.submit_request(_download_request())
+
+    event_types = [event.event_type for event in app.audit_log.snapshot()]
+    assert "download.request.submitted" in event_types
+    assert "download.preflight.completed" in event_types
+
+
 def _audit_event(event_type: str) -> AuditEvent:
     return AuditEvent(
         event_type=event_type,
         message="Runtime audit checked",
         severity=AuditSeverity.INFO,
         category=AuditCategory.RUNTIME,
+    )
+
+
+def _download_request() -> DownloadRequest:
+    return DownloadRequest(
+        request_id="req-app-download",
+        workflow_kind=DownloadWorkflowKind.DOWNLOAD_DATA,
+        source="binance",
+        market="spot",
+        symbols=("BTCUSDT",),
+        timeframe_mode=DownloadTimeframeMode.EXPLICIT,
+        timeframes=("1m", "5m"),
+        range_mode=DownloadRangeMode.LATEST,
+        requested_by="admin-dev",
+        connection_ref="binance-spot",
     )

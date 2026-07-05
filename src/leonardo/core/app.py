@@ -21,6 +21,7 @@ from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
+from leonardo.core.download_manager import DownloadManager
 from leonardo.core.error_router import ErrorRouter
 from leonardo.core.operation_registry import OperationRegistry
 from leonardo.core.process_manager import ProcessManager
@@ -51,6 +52,7 @@ class CoreContext:
     window_registry: WindowRegistry
     action_registry: ActionRegistry
     operation_registry: OperationRegistry
+    download_manager: DownloadManager
     runtime_manager: RuntimeManagerBackend
 
 
@@ -60,7 +62,7 @@ class LeonardoApp:
 
     The skeleton owns construction of Core services and lifecycle state
     transitions. It does not start an async runtime, GUI, process, connection,
-    or domain service.
+    or domain workflow.
     """
 
     def __init__(self, config: AppConfig | None = None) -> None:
@@ -88,6 +90,7 @@ class LeonardoApp:
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
         self.operation_registry = OperationRegistry(self.state_store)
+        self.download_manager = DownloadManager(self.audit_log)
         self.runtime_manager = RuntimeManagerBackend(
             state_store=self.state_store,
             session_manager=self.session_manager,
@@ -116,6 +119,7 @@ class LeonardoApp:
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
+            download_manager=self.download_manager,
             runtime_manager=self.runtime_manager,
         )
 
