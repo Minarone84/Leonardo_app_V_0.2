@@ -13,6 +13,11 @@ from leonardo.gui.composition import (  # noqa: E402
     GuiCompositionRoot,
     create_main_window_for_context,
 )
+from leonardo.gui.windows.download_request_builder_window import (  # noqa: E402
+    DOWNLOAD_DATA_WORKFLOW_MODE,
+    OHLCV_MAINTENANCE_WORKFLOW_MODE,
+    DownloadRequestBuilderWindow,
+)
 from leonardo.gui.windows.main_window import LeonardoMainWindow  # noqa: E402
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow  # noqa: E402
 
@@ -187,20 +192,26 @@ def test_composition_injects_inert_download_placeholder_callbacks(
 
     window.action_for_id("main_window.download_data").trigger()
     qapplication.processEvents()
+    builder = root.download_request_builder_window
 
-    assert window.statusBar().currentMessage() == (
-        "Download Data placeholder selected."
-    )
+    assert isinstance(builder, DownloadRequestBuilderWindow)
+    assert builder.workflow_mode == DOWNLOAD_DATA_WORKFLOW_MODE
+    assert builder.isVisible() is True
+    assert window.statusBar().currentMessage() == "Download Data request builder opened."
     assert context.download_manager.submit_calls == 0
 
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
     qapplication.processEvents()
 
+    assert root.download_request_builder_window is builder
+    assert builder.workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE
     assert window.statusBar().currentMessage() == (
-        "OHLCV Maintenance placeholder selected."
+        "OHLCV Maintenance request builder opened."
     )
     assert context.download_manager.submit_calls == 0
 
+    builder.close()
+    builder.deleteLater()
     window.deleteLater()
     qapplication.processEvents()
 
@@ -252,7 +263,8 @@ def test_composition_source_does_not_construct_app_or_qapplication() -> None:
     assert "QApplication" not in source
     assert ".startup(" not in source
     assert ".shutdown(" not in source
-    assert "DownloadRequest" not in source
+    assert "DownloadRequest(" not in source
+    assert "leonardo.contracts.downloads" not in source
     assert ".submit_request(" not in source
 
 

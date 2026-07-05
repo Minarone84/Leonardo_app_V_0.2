@@ -23,6 +23,11 @@ from leonardo.gui.settings_profiles import (
 )
 from leonardo.gui.settings_inspector import GuiSettingsInspectorViewModel
 from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
+from leonardo.gui.windows.download_request_builder_window import (
+    DOWNLOAD_DATA_WORKFLOW_MODE,
+    OHLCV_MAINTENANCE_WORKFLOW_MODE,
+    DownloadRequestBuilderWindow,
+)
 from leonardo.gui.windows.main_window import (
     LeonardoMainWindow,
     _MAIN_WINDOW_METADATA_PATH,
@@ -104,6 +109,7 @@ class GuiCompositionRoot:
         self._action_observer: GuiActionObserver | None = build_gui_action_observer(
             context
         )
+        self._download_request_builder_window: DownloadRequestBuilderWindow | None = None
 
     @property
     def window_trackers(self) -> Mapping[str, GuiWindowTracker]:
@@ -121,6 +127,12 @@ class GuiCompositionRoot:
         """Return retained override load results by metadata identifier."""
 
         return dict(self._override_load_results)
+
+    @property
+    def download_request_builder_window(self) -> DownloadRequestBuilderWindow | None:
+        """Return the retained Download Request Builder shell, if created."""
+
+        return self._download_request_builder_window
 
     def create_main_window(
         self,
@@ -141,6 +153,28 @@ class GuiCompositionRoot:
                 raise RuntimeError("Main Window is not available for settings apply")
             return self._create_settings_inspector_window(main_window)
 
+        def download_data_requested(action_id: str) -> str:
+            if action_id != "main_window.download_data":
+                raise ValueError("Download Data callback received unexpected action ID")
+            if main_window is None:
+                raise RuntimeError("Main Window is not available for download builder")
+            return self._open_download_request_builder(
+                main_window,
+                DOWNLOAD_DATA_WORKFLOW_MODE,
+            )
+
+        def ohlcv_maintenance_requested(action_id: str) -> str:
+            if action_id != "main_window.ohlcv_maintenance":
+                raise ValueError(
+                    "OHLCV Maintenance callback received unexpected action ID"
+                )
+            if main_window is None:
+                raise RuntimeError("Main Window is not available for download builder")
+            return self._open_download_request_builder(
+                main_window,
+                OHLCV_MAINTENANCE_WORKFLOW_MODE,
+            )
+
         window = LeonardoMainWindow(
             main_profile,
             runtime_manager_window_factory=self._create_runtime_manager_window,
@@ -148,8 +182,8 @@ class GuiCompositionRoot:
                 settings_inspector_factory if self._override_store is not None else None
             ),
             action_observer=self._action_observer,
-            on_download_data_requested=_download_data_placeholder_message,
-            on_ohlcv_maintenance_requested=_ohlcv_maintenance_placeholder_message,
+            on_download_data_requested=download_data_requested,
+            on_ohlcv_maintenance_requested=ohlcv_maintenance_requested,
         )
         main_window = window
         self._install_tracker(
@@ -158,6 +192,24 @@ class GuiCompositionRoot:
             fallback_window_type="main_window",
         )
         return window
+
+    def _open_download_request_builder(
+        self,
+        parent: LeonardoMainWindow,
+        workflow_mode: str,
+    ) -> str:
+        if self._download_request_builder_window is None:
+            self._download_request_builder_window = DownloadRequestBuilderWindow(
+                workflow_mode,
+                parent=parent,
+            )
+        else:
+            self._download_request_builder_window.set_workflow_mode(workflow_mode)
+
+        self._download_request_builder_window.show()
+        self._download_request_builder_window.raise_()
+        self._download_request_builder_window.activateWindow()
+        return f"{self._download_request_builder_window.workflow_label} request builder opened."
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
         profile = self._load_runtime_manager_profile()
@@ -255,15 +307,3 @@ def _apply_main_window_settings(
     if metadata_id != MAIN_WINDOW_SETTINGS_PROFILE_ID:
         raise ValueError("Settings apply callback only supports main_window.window")
     target_window.apply_effective_profile(effective_profile)
-
-
-def _download_data_placeholder_message(action_id: str) -> str:
-    if action_id != "main_window.download_data":
-        raise ValueError("Download Data callback received unexpected action ID")
-    return "Download Data placeholder selected."
-
-
-def _ohlcv_maintenance_placeholder_message(action_id: str) -> str:
-    if action_id != "main_window.ohlcv_maintenance":
-        raise ValueError("OHLCV Maintenance callback received unexpected action ID")
-    return "OHLCV Maintenance placeholder selected."

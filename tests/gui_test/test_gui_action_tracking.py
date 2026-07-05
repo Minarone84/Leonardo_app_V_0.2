@@ -47,6 +47,12 @@ _WINDOW_SOURCES = (
     / "leonardo"
     / "gui"
     / "windows"
+    / "download_request_builder_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
     / "runtime_manager_window.py",
     _REPO_ROOT
     / "src"
@@ -162,6 +168,7 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     window = root.create_main_window()
 
     initial_download_summary = app.download_manager.get_summary()
+    initial_runtime_downloads = app.runtime_manager.snapshot().downloads_summary
 
     window.action_for_id("main_window.download_data").trigger()
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
@@ -186,6 +193,7 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
         if event.event_type == "gui.action.triggered"
     )
     download_summary = app.download_manager.get_summary()
+    runtime_downloads = app.runtime_manager.snapshot().downloads_summary
     download_events = tuple(
         event
         for event in app.audit_log.snapshot()
@@ -202,16 +210,23 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
 
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
+    assert root.download_request_builder_window is not None
+    assert root.download_request_builder_window.workflow_mode == "ohlcv_maintenance"
     assert initial_download_summary.total_requests == 0
     assert initial_download_summary.total_items == 0
     assert download_summary.total_requests == 0
     assert download_summary.total_items == 0
+    assert initial_runtime_downloads.count == 0
+    assert initial_runtime_downloads.metadata["total_requests"] == 0
+    assert runtime_downloads.count == 0
+    assert runtime_downloads.metadata["total_requests"] == 0
+    assert runtime_downloads.metadata["total_items"] == 0
     assert app.download_manager.list_requests() == ()
     assert app.download_manager.list_preflights() == ()
     assert app.download_manager.list_items() == ()
     assert download_events == ()
 
-    _dispose(qapplication, window)
+    _dispose(qapplication, window, root.download_request_builder_window)
     app.shutdown()
 
 
