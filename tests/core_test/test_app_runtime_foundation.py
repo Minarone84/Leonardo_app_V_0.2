@@ -11,6 +11,11 @@ from leonardo.contracts.downloads import (
     DownloadTimeframeMode,
     DownloadWorkflowKind,
 )
+from leonardo.contracts.download_execution import (
+    DownloadExecutionPhase,
+    DownloadPreflightLayer,
+    DownloadPreflightLayerStatus,
+)
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
@@ -186,7 +191,32 @@ def test_leonardo_app_exposes_empty_download_capability_catalog_without_service_
 
     assert isinstance(app.download_capability_catalog, DownloadCapabilityCatalog)
     assert context.download_capability_catalog is app.download_capability_catalog
+    assert (
+        app.download_execution_manager._capability_catalog  # type: ignore[attr-defined]
+        is app.download_capability_catalog
+    )
     assert context.download_capability_catalog.list_providers() == ()
+    assert context.service_registry.list_services() == ()
+
+
+def test_default_empty_app_catalog_blocks_download_execution_readiness() -> None:
+    app = LeonardoApp()
+    context = app.startup()
+    context.download_manager.submit_request(_download_request())
+    before_items = context.download_manager.list_items("req-app-download")
+
+    snapshot = context.download_execution_manager.create_plan("req-app-download")
+    updated = context.download_execution_manager.classify_readiness(
+        snapshot.plan.plan_id,
+    )
+
+    layer = _capability_layer(updated)
+    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert updated.progress is not None
+    assert updated.progress.message == "Unknown provider: binance."
+    assert layer.status is DownloadPreflightLayerStatus.BLOCKED
+    assert layer.issues == ("Unknown provider: binance.",)
+    assert context.download_manager.list_items("req-app-download") == before_items
     assert context.service_registry.list_services() == ()
 
 
@@ -273,3 +303,13 @@ def _download_request() -> DownloadRequest:
         requested_by="admin-dev",
         connection_ref="binance-spot",
     )
+
+
+def _capability_layer(snapshot: object) -> object:
+    layers = tuple(
+        layer
+        for layer in snapshot.preflight_layers
+        if layer.layer is DownloadPreflightLayer.CAPABILITY
+    )
+    assert len(layers) == 1
+    return layers[0]

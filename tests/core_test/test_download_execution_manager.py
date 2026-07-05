@@ -8,6 +8,14 @@ from leonardo.contracts.download_execution import (
     DownloadPreflightLayer,
     DownloadPreflightLayerStatus,
 )
+from leonardo.contracts.download_provider_capabilities import (
+    DownloadProviderCapability,
+    ProviderCapabilityStatus,
+    ProviderDataKind,
+    ProviderMarketCapability,
+    ProviderTimeframeCapability,
+    ProviderTransportKind,
+)
 from leonardo.contracts.downloads import (
     DownloadConflictPolicy,
     DownloadPriority,
@@ -17,6 +25,7 @@ from leonardo.contracts.downloads import (
     DownloadWorkflowKind,
 )
 from leonardo.core.audit_log import AuditLog
+from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_execution_manager import DownloadExecutionManager
 from leonardo.core.download_manager import DownloadManager
 
@@ -347,7 +356,11 @@ def test_classify_readiness_marks_valid_explicit_plan_ready_with_audit() -> None
     download_manager = DownloadManager()
     download_manager.submit_request(_request())
     before_state = _download_manager_state(download_manager)
-    manager = DownloadExecutionManager(download_manager, audit_log)
+    manager = DownloadExecutionManager(
+        download_manager,
+        audit_log,
+        _capability_catalog(),
+    )
     snapshot = manager.create_plan("req-explicit")
     before_events = audit_log.snapshot()
 
@@ -364,6 +377,18 @@ def test_classify_readiness_marks_valid_explicit_plan_ready_with_audit() -> None
     assert updated.errors == ()
     assert updated.plan.operation_id is None
     assert updated.plan.task_id is None
+    layer = _capability_layer(updated)
+    assert layer.status is DownloadPreflightLayerStatus.PASSED
+    assert layer.can_continue is True
+    assert layer.issues == ()
+    assert layer.metadata["provider"] == "binance"
+    assert layer.metadata["market"] == "spot"
+    assert layer.metadata["timeframe_mode"] == "explicit"
+    assert layer.metadata["expanded_timeframes"] == ("1m", "5m")
+    assert dict(layer.metadata["provider_intervals"]) == {
+        "1m": "1m",
+        "5m": "5m",
+    }
     assert manager.get_snapshot(snapshot.plan.plan_id) is updated
     assert _download_manager_state(download_manager) == before_state
 
@@ -403,7 +428,10 @@ def test_classify_readiness_blocks_failed_structural_preflight() -> None:
 def test_classify_readiness_blocks_explicit_mode_without_stored_items() -> None:
     download_manager = DownloadManager()
     download_manager.submit_request(_request())
-    manager = DownloadExecutionManager(download_manager)
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
     snapshot = manager.create_plan("req-explicit")
     download_manager._item_by_id.clear()  # type: ignore[attr-defined]
     before_state = _download_manager_state(download_manager)
@@ -414,6 +442,7 @@ def test_classify_readiness_blocks_explicit_mode_without_stored_items() -> None:
     assert updated.progress is not None
     assert updated.progress.message == "Explicit timeframe mode has no stored items."
     assert updated.plan.item_ids == snapshot.plan.item_ids
+    assert _capability_layer(updated).status is DownloadPreflightLayerStatus.PASSED
     assert download_manager.list_items("req-explicit") == ()
     assert _download_manager_state(download_manager) == before_state
 
@@ -421,7 +450,10 @@ def test_classify_readiness_blocks_explicit_mode_without_stored_items() -> None:
 def test_classify_readiness_blocks_inconsistent_item_state() -> None:
     download_manager = DownloadManager()
     download_manager.submit_request(_request())
-    manager = DownloadExecutionManager(download_manager)
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
     snapshot = manager.create_plan("req-explicit")
     download_manager._item_by_id.pop(  # type: ignore[attr-defined]
         "req-explicit:BTCUSDT:1m"
@@ -434,6 +466,7 @@ def test_classify_readiness_blocks_inconsistent_item_state() -> None:
     assert updated.progress is not None
     assert updated.progress.message == "Download plan/item state is inconsistent."
     assert updated.plan.item_ids == snapshot.plan.item_ids
+    assert _capability_layer(updated).status is DownloadPreflightLayerStatus.PASSED
     assert _download_manager_state(download_manager) == before_state
 
 
@@ -458,21 +491,181 @@ def test_classify_readiness_blocks_unresolved_timeframe_modes_without_fake_items
         )
     )
     before_state = _download_manager_state(download_manager)
-    manager = DownloadExecutionManager(download_manager)
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
     snapshot = manager.create_plan(request_id)
 
     updated = manager.classify_readiness(snapshot.plan.plan_id)
 
+    reason = (
+        "Timeframe expansion is supported by catalog but execution items "
+        "are not materialized yet."
+    )
     assert snapshot.plan.phase is DownloadExecutionPhase.PLANNED
     assert snapshot.plan.item_ids == ()
     assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
     assert updated.progress is not None
-    assert updated.progress.message == "Timeframe expansion is unresolved."
+    assert updated.progress.message == reason
     assert updated.plan.item_ids == ()
     assert updated.estimate is not None
     assert updated.estimate.estimated_items is None
+    layer = _capability_layer(updated)
+    assert layer.status is DownloadPreflightLayerStatus.BLOCKED
+    assert layer.issues == (reason,)
     assert download_manager.list_items(request_id) == ()
     assert _download_manager_state(download_manager) == before_state
+
+
+def test_classify_readiness_blocks_missing_source_with_capability_layer() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(request_id="req-missing-source", source=None)
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
+    snapshot = manager.create_plan("req-missing-source")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(
+        updated,
+        "Download provider source is required for capability preflight.",
+    )
+
+
+def test_classify_readiness_blocks_unknown_provider() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(request_id="req-unknown-provider", source="kraken")
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
+    snapshot = manager.create_plan("req-unknown-provider")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(updated, "Unknown provider: kraken.")
+
+
+def test_classify_readiness_blocks_missing_market_with_capability_layer() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request(request_id="req-missing-market", market=None))
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
+    snapshot = manager.create_plan("req-missing-market")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(
+        updated,
+        "Download market is required for capability preflight.",
+    )
+
+
+def test_classify_readiness_blocks_unknown_market() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(request_id="req-unknown-market", market="margin")
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
+    snapshot = manager.create_plan("req-unknown-market")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(updated, "Unknown provider market: margin.")
+
+
+def test_classify_readiness_blocks_unsupported_market() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request(request_id="req-unsupported-market"))
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(
+            market_status=ProviderCapabilityStatus.UNSUPPORTED,
+        ),
+    )
+    snapshot = manager.create_plan("req-unsupported-market")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(
+        updated,
+        "Provider market is not supported: unsupported.",
+    )
+
+
+def test_classify_readiness_blocks_missing_ohlcv_support() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request(request_id="req-no-ohlcv"))
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(data_kinds=()),
+    )
+    snapshot = manager.create_plan("req-no-ohlcv")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(
+        updated,
+        "Provider market does not support OHLCV data.",
+    )
+
+
+def test_classify_readiness_blocks_unsupported_explicit_timeframe() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id="req-unsupported-timeframe",
+            timeframes=("1m", "1d"),
+        )
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=_capability_catalog(),
+    )
+    snapshot = manager.create_plan("req-unsupported-timeframe")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(updated, "Unsupported timeframe: 1d")
+    assert _capability_layer(updated).metadata["expanded_timeframes"] == ("1m",)
+
+
+def test_classify_readiness_blocks_missing_provider_interval_mapping() -> None:
+    class MissingIntervalCatalog(DownloadCapabilityCatalog):
+        def provider_interval_for_timeframe(
+            self,
+            provider: str,
+            market: str,
+            canonical_timeframe: str,
+        ) -> str | None:
+            return None
+
+    download_manager = DownloadManager()
+    download_manager.submit_request(_request(request_id="req-missing-interval"))
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=MissingIntervalCatalog((_provider_capability(),)),
+    )
+    snapshot = manager.create_plan("req-missing-interval")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(
+        updated,
+        "Provider interval mapping is missing for timeframe: 1m.",
+    )
 
 
 def test_classify_readiness_blocks_unsupported_ohlcv_workflow() -> None:
@@ -622,6 +815,8 @@ def _request(
     *,
     request_id: str = "req-explicit",
     workflow_kind: DownloadWorkflowKind = DownloadWorkflowKind.DOWNLOAD_DATA,
+    source: str | None = "binance",
+    market: str | None = "spot",
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT"),
     timeframe_mode: DownloadTimeframeMode = DownloadTimeframeMode.EXPLICIT,
     timeframes: tuple[str, ...] = ("1m", "5m"),
@@ -631,8 +826,8 @@ def _request(
         request_id=request_id,
         workflow_kind=workflow_kind,
         batch_id="batch-1",
-        source="binance",
-        market="spot",
+        source=source,
+        market=market,
         symbols=symbols,
         timeframe_mode=timeframe_mode,
         timeframes=timeframes,
@@ -644,6 +839,95 @@ def _request(
         connection_ref=connection_ref,
         metadata={"profile": "default"},
     )
+
+
+def _capability_catalog(
+    *,
+    market_status: ProviderCapabilityStatus = ProviderCapabilityStatus.SUPPORTED,
+    data_kinds: tuple[ProviderDataKind, ...] = (ProviderDataKind.OHLCV,),
+) -> DownloadCapabilityCatalog:
+    return DownloadCapabilityCatalog(
+        (
+            _provider_capability(
+                market_status=market_status,
+                data_kinds=data_kinds,
+            ),
+        )
+    )
+
+
+def _provider_capability(
+    *,
+    market_status: ProviderCapabilityStatus = ProviderCapabilityStatus.SUPPORTED,
+    data_kinds: tuple[ProviderDataKind, ...] = (ProviderDataKind.OHLCV,),
+) -> DownloadProviderCapability:
+    return DownloadProviderCapability(
+        provider="binance",
+        display_name="Binance",
+        status=ProviderCapabilityStatus.SUPPORTED,
+        markets=(
+            ProviderMarketCapability(
+                market="spot",
+                status=market_status,
+                data_kinds=data_kinds,
+                timeframes=(
+                    _timeframe("1m"),
+                    _timeframe("5m"),
+                    _timeframe("1h"),
+                    _timeframe(
+                        "1d",
+                        status=ProviderCapabilityStatus.UNSUPPORTED,
+                    ),
+                ),
+                transports=(ProviderTransportKind.REST,),
+                default_transport=ProviderTransportKind.REST,
+                metadata={"default_timeframes": ("5m", "1h")},
+            ),
+        ),
+    )
+
+
+def _timeframe(
+    canonical_timeframe: str,
+    *,
+    status: ProviderCapabilityStatus = ProviderCapabilityStatus.SUPPORTED,
+) -> ProviderTimeframeCapability:
+    return ProviderTimeframeCapability(
+        canonical_timeframe=canonical_timeframe,
+        provider_interval=(
+            canonical_timeframe.lower()
+            if status is ProviderCapabilityStatus.SUPPORTED
+            else ""
+        ),
+        status=status,
+    )
+
+
+def _capability_layer(
+    snapshot: object,
+) -> object:
+    layers = tuple(
+        layer
+        for layer in snapshot.preflight_layers
+        if layer.layer is DownloadPreflightLayer.CAPABILITY
+    )
+    assert len(layers) == 1
+    return layers[0]
+
+
+def _assert_capability_blocked(
+    snapshot: object,
+    reason: str,
+) -> None:
+    assert snapshot.plan.phase is DownloadExecutionPhase.BLOCKED
+    assert snapshot.progress is not None
+    assert snapshot.progress.phase is DownloadExecutionPhase.BLOCKED
+    assert snapshot.progress.message == reason
+    assert snapshot.metadata["blocked_reason"] == reason
+    layer = _capability_layer(snapshot)
+    assert layer.status is DownloadPreflightLayerStatus.BLOCKED
+    assert layer.can_continue is False
+    assert layer.issues == (reason,)
 
 
 def _download_manager_state(manager: DownloadManager) -> tuple[object, ...]:

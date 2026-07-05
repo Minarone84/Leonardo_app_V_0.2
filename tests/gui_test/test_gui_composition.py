@@ -622,15 +622,13 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     assert snapshot.downloads_summary.metadata["total_items"] == 4
     assert snapshot.download_execution_summary.count == 1
     assert snapshot.download_execution_summary.metadata["total_plans"] == 1
-    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == (
+    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == ()
+    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == ()
+    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
         f"execution-plan-{app.download_manager.list_requests()[0].request_id}",
     )
-    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == (
-        f"execution-plan-{app.download_manager.list_requests()[0].request_id}",
-    )
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == ()
     assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
-        "ready"
+        "blocked"
     )
     assert any(
         event.event_type == "download.execution.plan.created"
@@ -638,7 +636,7 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     )
     assert any(
         event.event_type == "download.execution.phase.changed"
-        and event.payload["new_phase"] == "ready"
+        and event.payload["new_phase"] == "blocked"
         for event in app.audit_log.snapshot()
     )
 

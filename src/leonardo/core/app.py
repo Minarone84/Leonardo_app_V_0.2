@@ -99,6 +99,7 @@ class LeonardoApp:
         self.download_execution_manager = DownloadExecutionManager(
             self.download_manager,
             self.audit_log,
+            self.download_capability_catalog,
         )
         self.runtime_manager = RuntimeManagerBackend(
             state_store=self.state_store,

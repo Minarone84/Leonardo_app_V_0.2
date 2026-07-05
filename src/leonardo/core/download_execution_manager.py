@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
 from leonardo.contracts.download_execution import (
     DownloadExecutionEstimate,
@@ -14,6 +16,10 @@ from leonardo.contracts.download_execution import (
     DownloadPreflightLayerStatus,
     default_execution_progress,
 )
+from leonardo.contracts.download_provider_capabilities import (
+    ProviderCapabilityStatus,
+    ProviderDataKind,
+)
 from leonardo.contracts.downloads import (
     DownloadPreflight,
     DownloadRequest,
@@ -21,7 +27,14 @@ from leonardo.contracts.downloads import (
     DownloadWorkflowKind,
 )
 from leonardo.core.audit_log import AuditLog
+from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_manager import DownloadManager
+
+
+@dataclass(frozen=True)
+class _CapabilityReadinessResult:
+    layer: DownloadPreflightLayerResult
+    blocked_reason: str | None
 
 
 class DownloadExecutionManager:
@@ -38,13 +51,26 @@ class DownloadExecutionManager:
         self,
         download_manager: DownloadManager,
         audit_log: AuditLog | None = None,
+        capability_catalog: DownloadCapabilityCatalog | None = None,
     ) -> None:
         if not isinstance(download_manager, DownloadManager):
             raise TypeError("download_manager must be a DownloadManager")
         if audit_log is not None and not isinstance(audit_log, AuditLog):
             raise TypeError("audit_log must be an AuditLog or None")
+        if capability_catalog is not None and not isinstance(
+            capability_catalog,
+            DownloadCapabilityCatalog,
+        ):
+            raise TypeError(
+                "capability_catalog must be a DownloadCapabilityCatalog or None"
+            )
         self._download_manager = download_manager
         self._audit_log = audit_log
+        self._capability_catalog = (
+            capability_catalog
+            if capability_catalog is not None
+            else DownloadCapabilityCatalog()
+        )
         self._snapshot_by_plan_id: dict[str, DownloadExecutionSnapshot] = {}
         self._plan_id_by_request_id: dict[str, str] = {}
 
@@ -95,17 +121,38 @@ class DownloadExecutionManager:
         """
         Classify a retained planned snapshot as ready or blocked.
 
-        The classifier inspects only the current stored Download Manager
-        request, structural preflight, and item read models. It delegates phase
-        mutation to `mark_ready` and `mark_blocked`, so audit behavior and
-        immutable snapshot updates stay centralized.
+        The classifier inspects the current stored Download Manager request,
+        structural preflight, provider capability facts, and item read models.
+        It delegates phase mutation to `mark_ready` and `mark_blocked`, so audit
+        behavior and immutable snapshot updates stay centralized.
         """
 
         snapshot = self._require_snapshot(plan_id)
         _validate_readiness_classification(snapshot)
-        blocked_reason = _readiness_blocker(snapshot, self._download_manager)
+        blocked_reason = _structural_readiness_blocker(
+            snapshot,
+            self._download_manager,
+        )
         if blocked_reason is not None:
             return self.mark_blocked(plan_id, blocked_reason)
+
+        capability_result = _capability_readiness_result(
+            snapshot,
+            self._download_manager,
+            self._capability_catalog,
+        )
+        self._store_snapshot(
+            _snapshot_with_preflight_layer(snapshot, capability_result.layer)
+        )
+        if capability_result.blocked_reason is not None:
+            return self.mark_blocked(plan_id, capability_result.blocked_reason)
+
+        item_blocked_reason = _item_readiness_blocker(
+            self._require_snapshot(plan_id),
+            self._download_manager,
+        )
+        if item_blocked_reason is not None:
+            return self.mark_blocked(plan_id, item_blocked_reason)
         return self.mark_ready(plan_id)
 
     def mark_ready(self, plan_id: str) -> DownloadExecutionSnapshot:
@@ -177,6 +224,10 @@ class DownloadExecutionManager:
             raise KeyError(f"Download execution plan is not retained: {plan_id}")
         return snapshot
 
+    def _store_snapshot(self, snapshot: DownloadExecutionSnapshot) -> None:
+        self._snapshot_by_plan_id[snapshot.plan.plan_id] = snapshot
+        self._plan_id_by_request_id[snapshot.plan.request_id] = snapshot.plan.plan_id
+
     def _transition_planned_snapshot(
         self,
         snapshot: DownloadExecutionSnapshot,
@@ -186,8 +237,7 @@ class DownloadExecutionManager:
     ) -> DownloadExecutionSnapshot:
         _validate_planned_transition(snapshot, new_phase)
         updated = _snapshot_with_phase(snapshot, new_phase, reason=reason)
-        self._snapshot_by_plan_id[updated.plan.plan_id] = updated
-        self._plan_id_by_request_id[updated.plan.request_id] = updated.plan.plan_id
+        self._store_snapshot(updated)
         self._emit_phase_changed(snapshot, updated, reason)
         return updated
 
@@ -272,7 +322,7 @@ def _validate_readiness_classification(snapshot: DownloadExecutionSnapshot) -> N
     )
 
 
-def _readiness_blocker(
+def _structural_readiness_blocker(
     snapshot: DownloadExecutionSnapshot,
     download_manager: DownloadManager,
 ) -> str | None:
@@ -296,6 +346,163 @@ def _readiness_blocker(
     if preflight.can_run is not True:
         return "Structural preflight failed."
 
+    return None
+
+
+def _capability_readiness_result(
+    snapshot: DownloadExecutionSnapshot,
+    download_manager: DownloadManager,
+    capability_catalog: DownloadCapabilityCatalog,
+) -> _CapabilityReadinessResult:
+    request = download_manager.get_request(snapshot.plan.request_id)
+    if request is None:
+        return _blocked_capability("Stored download request is unavailable.")
+
+    metadata: dict[str, object] = {
+        "request_id": request.request_id,
+        "provider": request.source,
+        "market": request.market,
+        "timeframe_mode": request.timeframe_mode.value,
+    }
+
+    if request.source is None:
+        return _blocked_capability(
+            "Download provider source is required for capability preflight.",
+            metadata=metadata,
+        )
+    if request.market is None:
+        return _blocked_capability(
+            "Download market is required for capability preflight.",
+            metadata=metadata,
+        )
+
+    provider = capability_catalog.get_provider(request.source)
+    if provider is None:
+        return _blocked_capability(
+            f"Unknown provider: {request.source.strip().lower()}.",
+            metadata=metadata,
+        )
+    metadata["provider"] = provider.provider
+    if provider.status is not ProviderCapabilityStatus.SUPPORTED:
+        return _blocked_capability(
+            f"Provider is not supported: {provider.status.value}.",
+            metadata=metadata,
+        )
+
+    market = capability_catalog.get_market(provider.provider, request.market)
+    if market is None:
+        return _blocked_capability(
+            f"Unknown provider market: {request.market.strip().lower()}.",
+            metadata=metadata,
+        )
+    metadata["market"] = market.market
+    if market.status is not ProviderCapabilityStatus.SUPPORTED:
+        return _blocked_capability(
+            f"Provider market is not supported: {market.status.value}.",
+            metadata=metadata,
+        )
+    if ProviderDataKind.OHLCV.value not in market.data_kinds:
+        return _blocked_capability(
+            "Provider market does not support OHLCV data.",
+            metadata=metadata,
+        )
+
+    try:
+        expansion = capability_catalog.expand_timeframes(
+            provider.provider,
+            market.market,
+            request.timeframe_mode.value,
+            request.timeframes,
+        )
+    except Exception as exc:
+        return _failed_capability(
+            f"Capability preflight failed: {type(exc).__name__}: {exc}",
+            metadata=metadata,
+        )
+
+    metadata["expanded_timeframes"] = expansion.timeframes
+    if expansion.issues:
+        return _blocked_capability(expansion.issues[0], metadata=metadata)
+    if not expansion.timeframes:
+        return _blocked_capability(
+            "No supported timeframes are declared.",
+            metadata=metadata,
+        )
+    if request.timeframe_mode is not DownloadTimeframeMode.EXPLICIT:
+        return _blocked_capability(
+            "Timeframe expansion is supported by catalog but execution items "
+            "are not materialized yet.",
+            metadata=metadata,
+        )
+
+    provider_intervals: dict[str, str] = {}
+    for timeframe in expansion.timeframes:
+        provider_interval = capability_catalog.provider_interval_for_timeframe(
+            provider.provider,
+            market.market,
+            timeframe,
+        )
+        if provider_interval is None:
+            return _blocked_capability(
+                f"Provider interval mapping is missing for timeframe: {timeframe}.",
+                metadata=metadata,
+            )
+        provider_intervals[timeframe] = provider_interval
+
+    metadata["provider_intervals"] = provider_intervals
+    return _CapabilityReadinessResult(
+        layer=DownloadPreflightLayerResult(
+            layer=DownloadPreflightLayer.CAPABILITY,
+            status=DownloadPreflightLayerStatus.PASSED,
+            can_continue=True,
+            issues=(),
+            metadata=metadata,
+        ),
+        blocked_reason=None,
+    )
+
+
+def _blocked_capability(
+    reason: str,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> _CapabilityReadinessResult:
+    return _CapabilityReadinessResult(
+        layer=DownloadPreflightLayerResult(
+            layer=DownloadPreflightLayer.CAPABILITY,
+            status=DownloadPreflightLayerStatus.BLOCKED,
+            can_continue=False,
+            issues=(reason,),
+            metadata=metadata or {},
+        ),
+        blocked_reason=reason,
+    )
+
+
+def _failed_capability(
+    reason: str,
+    *,
+    metadata: dict[str, object],
+) -> _CapabilityReadinessResult:
+    return _CapabilityReadinessResult(
+        layer=DownloadPreflightLayerResult(
+            layer=DownloadPreflightLayer.CAPABILITY,
+            status=DownloadPreflightLayerStatus.FAILED,
+            can_continue=False,
+            issues=(reason,),
+            metadata=metadata,
+        ),
+        blocked_reason=reason,
+    )
+
+
+def _item_readiness_blocker(
+    snapshot: DownloadExecutionSnapshot,
+    download_manager: DownloadManager,
+) -> str | None:
+    request = download_manager.get_request(snapshot.plan.request_id)
+    if request is None:
+        return "Stored download request is unavailable."
     if request.timeframe_mode is not DownloadTimeframeMode.EXPLICIT:
         return "Timeframe expansion is unresolved."
 
@@ -307,6 +514,31 @@ def _readiness_blocker(
     if snapshot.plan.item_ids != item_ids:
         return "Download plan/item state is inconsistent."
     return None
+
+
+def _snapshot_with_preflight_layer(
+    snapshot: DownloadExecutionSnapshot,
+    layer: DownloadPreflightLayerResult,
+) -> DownloadExecutionSnapshot:
+    layers: list[DownloadPreflightLayerResult] = []
+    found_layer = False
+    for existing in snapshot.preflight_layers:
+        if existing.layer is layer.layer:
+            layers.append(layer)
+            found_layer = True
+        else:
+            layers.append(existing)
+    if not found_layer:
+        layers.append(layer)
+    return DownloadExecutionSnapshot(
+        plan=snapshot.plan,
+        preflight_layers=tuple(layers),
+        estimate=snapshot.estimate,
+        progress=snapshot.progress,
+        outputs=snapshot.outputs,
+        errors=snapshot.errors,
+        metadata=snapshot.metadata,
+    )
 
 
 def _snapshot_with_phase(

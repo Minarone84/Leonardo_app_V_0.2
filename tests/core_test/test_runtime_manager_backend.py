@@ -12,6 +12,10 @@ from leonardo.contracts.downloads import (
     DownloadTimeframeMode,
     DownloadWorkflowKind,
 )
+from leonardo.contracts.download_execution import (
+    DownloadPreflightLayer,
+    DownloadPreflightLayerStatus,
+)
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import RuntimeHealthStatus, RuntimeSectionStatus
 from leonardo.contracts.operations import OperationKind
@@ -469,6 +473,50 @@ def test_runtime_manager_snapshot_reflects_download_execution_blocked_phase() ->
     )
     assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
         "connection_refs=binance-spot; message=Storage policy is unresolved."
+    )
+
+
+def test_runtime_manager_snapshot_reflects_capability_blocked_execution() -> None:
+    app = LeonardoApp()
+    app.download_manager.submit_request(_download_request())
+    execution_snapshot = app.download_execution_manager.create_plan("req-download")
+    updated = app.download_execution_manager.classify_readiness(
+        execution_snapshot.plan.plan_id,
+    )
+    before_state = (
+        app.download_execution_manager.list_snapshots(),
+        app.download_manager.list_requests(),
+        app.download_manager.list_preflights(),
+        app.download_manager.list_items(),
+        app.audit_log.snapshot(),
+    )
+
+    snapshot = app.runtime_manager.snapshot()
+    after_state = (
+        app.download_execution_manager.list_snapshots(),
+        app.download_manager.list_requests(),
+        app.download_manager.list_preflights(),
+        app.download_manager.list_items(),
+        app.audit_log.snapshot(),
+    )
+    capability_layers = tuple(
+        layer
+        for layer in updated.preflight_layers
+        if layer.layer is DownloadPreflightLayer.CAPABILITY
+    )
+
+    assert after_state == before_state
+    assert capability_layers[0].status is DownloadPreflightLayerStatus.BLOCKED
+    assert capability_layers[0].issues == ("Unknown provider: binance.",)
+    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
+        updated.plan.plan_id,
+    )
+    assert snapshot.download_execution_summary.metadata["plan_rows"][0][
+        "preflight_layer_count"
+    ] == 2
+    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
+        "connection_refs=binance-spot; message=Unknown provider: binance."
     )
 
 
