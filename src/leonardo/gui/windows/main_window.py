@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
 
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataResolver,
@@ -27,6 +28,12 @@ _MAIN_WINDOW_METADATA_PATH = (
 RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
 SettingsInspectorFactory = Callable[[], QWidget]
+_TRACKED_MAIN_WINDOW_ACTION_IDS = frozenset(
+    (
+        "main_window.open_runtime_manager",
+        "main_window.open_settings_inspector",
+    )
+)
 
 
 def load_main_window_profile() -> EffectiveGuiMetadataProfile:
@@ -55,6 +62,7 @@ class LeonardoMainWindow(QMainWindow):
         runtime_manager_window_factory: RuntimeManagerWindowFactory | None = None,
         runtime_snapshot_provider: RuntimeSnapshotProvider | None = None,
         settings_inspector_factory: SettingsInspectorFactory | None = None,
+        action_observer: GuiActionObserver | None = None,
     ) -> None:
         super().__init__()
         self._profile = profile if profile is not None else load_main_window_profile()
@@ -70,9 +78,14 @@ class LeonardoMainWindow(QMainWindow):
             settings_inspector_factory
         ):
             raise TypeError("settings_inspector_factory must be callable")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
         self._last_local_action_id = ""
+        self._action_observer = action_observer
         self._runtime_manager_window_factory = runtime_manager_window_factory
         self._runtime_snapshot_provider = runtime_snapshot_provider
         self._runtime_manager_window: QWidget | None = None
@@ -208,6 +221,7 @@ class LeonardoMainWindow(QMainWindow):
 
     def _handle_shell_action(self, action_id: str) -> None:
         self._last_local_action_id = action_id
+        self._record_action(action_id)
         if action_id == "main_window.exit":
             self.statusBar().showMessage("Exit requested locally.")
             self.close()
@@ -222,6 +236,17 @@ class LeonardoMainWindow(QMainWindow):
             self._open_runtime_manager_window()
             return
         self.statusBar().showMessage(f"Unhandled local shell action: {action_id}")
+
+    def _record_action(self, action_id: str) -> None:
+        if (
+            self._action_observer is None
+            or action_id not in _TRACKED_MAIN_WINDOW_ACTION_IDS
+        ):
+            return
+        self._action_observer.record_action(
+            action_id,
+            window_id=MAIN_WINDOW_METADATA_ID,
+        )
 
     def _open_runtime_manager_window(self) -> None:
         created = False

@@ -6,6 +6,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
+from leonardo.gui.action_observer import (
+    GuiActionObserver,
+    build_gui_action_observer,
+)
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataOverrideStore,
@@ -44,6 +48,8 @@ class GuiCoreContext(Protocol):
 
     runtime_manager: RuntimeSnapshotBackend
     window_registry: object
+    action_registry: object
+    session_manager: object
 
 
 class GuiCompositionRoot:
@@ -93,6 +99,9 @@ class GuiCompositionRoot:
         if self._track_windows and self._window_registry is None:
             raise TypeError("context.window_registry is required when tracking windows")
         self._trackers: dict[str, GuiWindowTracker] = {}
+        self._action_observer: GuiActionObserver | None = build_gui_action_observer(
+            context
+        )
 
     @property
     def window_trackers(self) -> Mapping[str, GuiWindowTracker]:
@@ -136,6 +145,7 @@ class GuiCompositionRoot:
             settings_inspector_factory=(
                 settings_inspector_factory if self._override_store is not None else None
             ),
+            action_observer=self._action_observer,
         )
         main_window = window
         self._install_tracker(
@@ -150,6 +160,7 @@ class GuiCompositionRoot:
         window = RuntimeManagerWindow(
             profile,
             snapshot_provider=self._snapshot_provider,
+            action_observer=self._action_observer,
         )
         self._install_tracker(
             window,
@@ -181,6 +192,7 @@ class GuiCompositionRoot:
                     effective_profile,
                 )
             ),
+            action_observer=self._action_observer,
         )
 
     def _install_tracker(

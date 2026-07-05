@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import EffectiveGuiMetadataProfile
 from leonardo.gui.settings_inspector import (
     GuiSettingsInspectorDiagnostic,
@@ -46,17 +47,23 @@ class SettingsInspectorWindow(QDialog):
         *,
         parent: QWidget | None = None,
         on_apply: SettingsApplyCallback | None = None,
+        action_observer: GuiActionObserver | None = None,
     ) -> None:
         if not isinstance(viewmodel, GuiSettingsInspectorViewModel):
             raise TypeError("viewmodel must be a GuiSettingsInspectorViewModel")
         if on_apply is not None and not callable(on_apply):
             raise TypeError("on_apply must be callable or None")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
         super().__init__(parent)
         self.setObjectName("settings_inspector_window")
         self.setWindowTitle(f"Settings Inspector - {viewmodel.metadata_id}")
 
         self._viewmodel = viewmodel
         self._on_apply = on_apply
+        self._action_observer = action_observer
         self._operation_diagnostics: tuple[GuiSettingsInspectorDiagnostic, ...] = ()
         self._saved_profile_pending_apply: EffectiveGuiMetadataProfile | None = None
 
@@ -90,11 +97,11 @@ class SettingsInspectorWindow(QDialog):
 
         self.save_button = QPushButton("Save")
         self.save_button.setObjectName("settings_inspector.save")
-        self.save_button.clicked.connect(self.save_settings)
+        self.save_button.clicked.connect(self._handle_save_action)
 
         self.apply_button = QPushButton("Apply Changes")
         self.apply_button.setObjectName("settings_inspector.apply_changes")
-        self.apply_button.clicked.connect(self.apply_changes)
+        self.apply_button.clicked.connect(self._handle_apply_changes_action)
 
         self.reset_field_button = QPushButton("Reset Field")
         self.reset_field_button.setObjectName("settings_inspector.reset_field")
@@ -303,6 +310,14 @@ class SettingsInspectorWindow(QDialog):
         self._copy_row_value_to_editor(row)
         self._refresh_diagnostics(row)
 
+    def _handle_save_action(self) -> None:
+        self._record_action("settings_inspector.save")
+        self.save_settings()
+
+    def _handle_apply_changes_action(self) -> None:
+        self._record_action("settings_inspector.apply_changes")
+        self.apply_changes()
+
     def _handle_operation_result(
         self,
         result: GuiSettingsInspectorResult,
@@ -414,6 +429,14 @@ class SettingsInspectorWindow(QDialog):
 
     def _rows(self) -> tuple[GuiSettingsInspectorRow, ...]:
         return self._viewmodel.rows
+
+    def _record_action(self, action_id: str) -> None:
+        if self._action_observer is None:
+            return
+        self._action_observer.record_action(
+            action_id,
+            metadata={"target_metadata_id": self._viewmodel.metadata_id},
+        )
 
     def _table_text(self, row: int, column: int) -> str:
         item = self.settings_table.item(row, column)

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataResolver,
@@ -59,6 +60,12 @@ _SECTION_SUMMARY_FIELDS = (
 
 
 SnapshotProvider = Callable[[], object]
+_TRACKED_RUNTIME_MANAGER_ACTION_IDS = frozenset(
+    (
+        "runtime_manager.refresh_snapshot",
+        "runtime_manager.close",
+    )
+)
 
 
 def load_runtime_manager_profile() -> EffectiveGuiMetadataProfile:
@@ -88,6 +95,7 @@ class RuntimeManagerWindow(QWidget):
         snapshot_provider: SnapshotProvider | None = None,
         backend: object | None = None,
         snapshot: object | None = None,
+        action_observer: GuiActionObserver | None = None,
     ) -> None:
         super().__init__()
         self._profile = profile if profile is not None else load_runtime_manager_profile()
@@ -95,12 +103,17 @@ class RuntimeManagerWindow(QWidget):
             raise ValueError("profile must describe runtime_manager.window")
         if snapshot_provider is not None and backend is not None:
             raise ValueError("Provide either snapshot_provider or backend, not both")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
 
         self._snapshot_provider = (
             snapshot_provider
             if snapshot_provider is not None
             else _snapshot_provider_from_backend(backend)
         )
+        self._action_observer = action_observer
         self._actions: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
         self._last_rendered_snapshot_summary: dict[str, object] = {}
@@ -274,9 +287,11 @@ class RuntimeManagerWindow(QWidget):
 
     def _handle_action(self, action_id: str) -> None:
         if action_id == "runtime_manager.refresh_snapshot":
+            self._record_action(action_id)
             self.refresh_snapshot()
             return
         if action_id == "runtime_manager.close":
+            self._record_action(action_id)
             self.close()
             return
         self._set_status(f"{action_id} is read-only metadata-only behavior in this phase.")
@@ -284,6 +299,17 @@ class RuntimeManagerWindow(QWidget):
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:
             self._status_label.setText(message)
+
+    def _record_action(self, action_id: str) -> None:
+        if (
+            self._action_observer is None
+            or action_id not in _TRACKED_RUNTIME_MANAGER_ACTION_IDS
+        ):
+            return
+        self._action_observer.record_action(
+            action_id,
+            window_id=RUNTIME_MANAGER_METADATA_ID,
+        )
 
 
 def _snapshot_provider_from_backend(backend: object | None) -> SnapshotProvider | None:
