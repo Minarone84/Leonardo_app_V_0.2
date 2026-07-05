@@ -103,6 +103,7 @@ class LeonardoApp:
             operation_registry=self.operation_registry,
             audit_log=self.audit_log,
             contract_registry=self.contract_registry,
+            download_manager=self.download_manager,
         )
         self._context = CoreContext(
             config=self.config,

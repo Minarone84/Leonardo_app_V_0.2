@@ -6,6 +6,12 @@ from leonardo.contracts.connections import (
     ConnectionProtocol,
     WebSocketChannelDefinition,
 )
+from leonardo.contracts.downloads import (
+    DownloadRangeMode,
+    DownloadRequest,
+    DownloadTimeframeMode,
+    DownloadWorkflowKind,
+)
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import RuntimeHealthStatus, RuntimeSectionStatus
 from leonardo.contracts.operations import OperationKind
@@ -244,6 +250,85 @@ def test_runtime_manager_snapshot_includes_connection_summary() -> None:
     assert snapshot.connections_summary.metadata["channel_received_count"] == 2
 
 
+def test_runtime_manager_snapshot_includes_empty_download_summary() -> None:
+    app = LeonardoApp()
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.downloads_summary.section_id == "downloads"
+    assert snapshot.downloads_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.downloads_summary.count == 0
+    assert snapshot.downloads_summary.metadata["available"] is True
+    assert snapshot.downloads_summary.metadata["total_requests"] == 0
+    assert snapshot.downloads_summary.metadata["total_items"] == 0
+    assert "downloads" in tuple(
+        section.section_id for section in snapshot.sections
+    )
+
+
+def test_runtime_manager_snapshot_reflects_download_manager_state_read_only() -> None:
+    app = LeonardoApp()
+    app.download_manager.submit_request(
+        _download_request(
+            symbols=("BTCUSDT", "ETHUSDT"),
+            timeframes=("1m", "5m"),
+        )
+    )
+    before_state = (
+        app.download_manager.list_requests(),
+        app.download_manager.list_preflights(),
+        app.download_manager.list_items(),
+        app.download_manager.get_summary(),
+        app.audit_log.snapshot(),
+    )
+
+    snapshot = app.runtime_manager.snapshot()
+    after_state = (
+        app.download_manager.list_requests(),
+        app.download_manager.list_preflights(),
+        app.download_manager.list_items(),
+        app.download_manager.get_summary(),
+        app.audit_log.snapshot(),
+    )
+
+    assert after_state == before_state
+    assert snapshot.downloads_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.downloads_summary.count == 1
+    assert snapshot.downloads_summary.message == "1 download request, 4 items"
+    assert snapshot.downloads_summary.metadata["total_requests"] == 1
+    assert snapshot.downloads_summary.metadata["total_items"] == 4
+    assert snapshot.downloads_summary.metadata["validated_count"] == 5
+    assert snapshot.downloads_summary.metadata["active_request_ids"] == (
+        "req-download",
+    )
+    assert snapshot.downloads_summary.metadata["active_item_ids"] == (
+        "req-download:BTCUSDT:1m",
+        "req-download:BTCUSDT:5m",
+        "req-download:ETHUSDT:1m",
+        "req-download:ETHUSDT:5m",
+    )
+
+
+def test_runtime_manager_snapshot_marks_download_failures_degraded() -> None:
+    app = LeonardoApp()
+    request = _download_request(
+        timeframe_mode=DownloadTimeframeMode.DEFAULT,
+        timeframes=(),
+    )
+    object.__setattr__(request, "timeframe_mode", DownloadTimeframeMode.EXPLICIT)
+
+    app.download_manager.submit_request(request)
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.downloads_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.downloads_summary.metadata["failed_count"] == 1
+    assert snapshot.downloads_summary.metadata["preflight_failed_count"] == 1
+    assert snapshot.downloads_summary.metadata["failed_request_ids"] == (
+        "req-download",
+    )
+
+
 def test_runtime_manager_snapshot_degrades_when_connection_degraded() -> None:
     app = LeonardoApp()
     app.connection_registry.register_connection(
@@ -303,3 +388,23 @@ def test_leonardo_app_exposes_runtime_manager_backend() -> None:
 
     assert isinstance(app.runtime_manager, RuntimeManagerBackend)
     assert app.context.runtime_manager is app.runtime_manager
+
+
+def _download_request(
+    *,
+    symbols: tuple[str, ...] = ("BTCUSDT",),
+    timeframe_mode: DownloadTimeframeMode = DownloadTimeframeMode.EXPLICIT,
+    timeframes: tuple[str, ...] = ("1m",),
+) -> DownloadRequest:
+    return DownloadRequest(
+        request_id="req-download",
+        workflow_kind=DownloadWorkflowKind.DOWNLOAD_DATA,
+        source="binance",
+        market="spot",
+        symbols=symbols,
+        timeframe_mode=timeframe_mode,
+        timeframes=timeframes,
+        range_mode=DownloadRangeMode.LATEST,
+        requested_by="admin-dev",
+        connection_ref="binance-spot",
+    )

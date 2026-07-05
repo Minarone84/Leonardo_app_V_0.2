@@ -36,12 +36,14 @@ _REQUIRED_TABLES = {
     "runtime_manager.windows_table",
     "runtime_manager.actions_table",
     "runtime_manager.operations_table",
+    "runtime_manager.downloads_table",
     "runtime_manager.audit_preview_table",
 }
 _REQUIRED_TABLE_COLUMNS = {
     "runtime_manager.summary_table": {"section", "status", "count", "details"},
     "runtime_manager.services_table": {"service", "status", "details"},
     "runtime_manager.tasks_table": {"task", "status", "started_at", "details"},
+    "runtime_manager.downloads_table": {"metric", "value", "details"},
     "runtime_manager.audit_preview_table": {
         "timestamp",
         "severity",
@@ -148,6 +150,7 @@ def test_runtime_manager_snapshot_report_exists() -> None:
         "summary",
         "services",
         "tasks",
+        "downloads",
         "audit_preview",
         "diagnostics",
     } == {section.section_id for section in report.sections}

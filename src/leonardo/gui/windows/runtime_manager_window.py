@@ -43,6 +43,7 @@ _CONNECTIONS_TABLE_ID = "runtime_manager.connections_table"
 _WINDOWS_TABLE_ID = "runtime_manager.windows_table"
 _ACTIONS_TABLE_ID = "runtime_manager.actions_table"
 _OPERATIONS_TABLE_ID = "runtime_manager.operations_table"
+_DOWNLOADS_TABLE_ID = "runtime_manager.downloads_table"
 _AUDIT_PREVIEW_TABLE_ID = "runtime_manager.audit_preview_table"
 _SECTION_SUMMARY_FIELDS = (
     "app_summary",
@@ -54,8 +55,25 @@ _SECTION_SUMMARY_FIELDS = (
     "windows_summary",
     "actions_summary",
     "operations_summary",
+    "downloads_summary",
     "audit_summary",
     "contracts_summary",
+)
+_DOWNLOAD_METRICS = (
+    ("total_requests", "Total Requests", ("active_request_ids", "failed_request_ids")),
+    ("total_items", "Total Items", ("active_item_ids", "failed_item_ids")),
+    ("requested_count", "Requested", ()),
+    ("validated_count", "Validated", ()),
+    ("queued_count", "Queued", ("queued_request_ids",)),
+    ("running_count", "Running", ()),
+    ("completed_count", "Completed", ()),
+    ("failed_count", "Failed", ("failed_request_ids", "failed_item_ids")),
+    ("cancelled_count", "Cancelled", ()),
+    ("skipped_count", "Skipped", ()),
+    ("partially_completed_count", "Partially Completed", ()),
+    ("preflight_failed_count", "Preflight Failed", ("failed_request_ids",)),
+    ("websocket_required_count", "WebSocket Required", ()),
+    ("connection_blocked_count", "Connection Blocked", ()),
 )
 
 
@@ -390,6 +408,7 @@ def _rows_by_table(snapshot: object | None) -> dict[str, tuple[Mapping[str, obje
             ids_metadata_key="operation_ids",
             names_metadata_key="operation_labels",
         ),
+        _DOWNLOADS_TABLE_ID: _downloads_rows(snapshot),
         _AUDIT_PREVIEW_TABLE_ID: _audit_preview_rows(snapshot),
     }
 
@@ -480,6 +499,34 @@ def _audit_preview_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
     )
 
 
+def _downloads_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
+    section = _section_by_id(snapshot, "downloads")
+    if section is None:
+        return ()
+
+    metadata = _mapping_at_object(_field(section, "metadata", {}))
+    return tuple(
+        {
+            "metric": label,
+            "value": metadata.get(metadata_key, 0),
+            "details": _details_for(metadata, detail_keys),
+        }
+        for metadata_key, label, detail_keys in _DOWNLOAD_METRICS
+    )
+
+
+def _details_for(
+    metadata: Mapping[str, object],
+    keys: Sequence[str],
+) -> str:
+    details: list[str] = []
+    for key in keys:
+        value = metadata.get(key)
+        if value:
+            details.append(f"{key}={_text_value(value)}")
+    return "; ".join(details)
+
+
 def _snapshot_summary(
     snapshot: object | None,
     rows_by_table: Mapping[str, Sequence[Mapping[str, object]]],
@@ -491,6 +538,7 @@ def _snapshot_summary(
             "summary_rows": 0,
             "service_rows": 0,
             "task_rows": 0,
+            "download_rows": 0,
             "audit_preview_rows": 0,
         }
 
@@ -501,6 +549,7 @@ def _snapshot_summary(
     summary_rows = len(rows_by_table.get(_SUMMARY_TABLE_ID, ()))
     service_rows = len(rows_by_table.get(_SERVICES_TABLE_ID, ()))
     task_rows = len(rows_by_table.get(_TASKS_TABLE_ID, ()))
+    download_rows = len(rows_by_table.get(_DOWNLOADS_TABLE_ID, ()))
     audit_rows = len(rows_by_table.get(_AUDIT_PREVIEW_TABLE_ID, ()))
     return {
         "status": "rendered",
@@ -509,6 +558,7 @@ def _snapshot_summary(
         "summary_rows": summary_rows,
         "service_rows": service_rows,
         "task_rows": task_rows,
+        "download_rows": download_rows,
         "audit_preview_rows": audit_rows,
         "status_message": f"Runtime snapshot rendered: {health}",
     }

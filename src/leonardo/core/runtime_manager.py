@@ -28,6 +28,7 @@ from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.audit_log import AuditLog, AuditSinkFailure
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.contract_registry import ContractRegistry
+from leonardo.core.download_manager import DownloadManager
 from leonardo.core.operation_registry import OperationRegistry
 from leonardo.core.process_manager import ProcessManager
 from leonardo.core.service_registry import ServiceRegistry
@@ -60,6 +61,7 @@ class RuntimeManagerBackend:
         operation_registry: OperationRegistry,
         audit_log: AuditLog,
         contract_registry: ContractRegistry,
+        download_manager: DownloadManager | None = None,
         recent_audit_limit: int = 20,
     ) -> None:
         if not isinstance(state_store, StateStore):
@@ -84,6 +86,11 @@ class RuntimeManagerBackend:
             raise TypeError("audit_log must be an AuditLog")
         if not isinstance(contract_registry, ContractRegistry):
             raise TypeError("contract_registry must be a ContractRegistry")
+        if download_manager is not None and not isinstance(
+            download_manager,
+            DownloadManager,
+        ):
+            raise TypeError("download_manager must be a DownloadManager or None")
         if recent_audit_limit < 1:
             raise ValueError("recent_audit_limit must be greater than zero")
 
@@ -98,6 +105,7 @@ class RuntimeManagerBackend:
         self._operation_registry = operation_registry
         self._audit_log = audit_log
         self._contract_registry = contract_registry
+        self._download_manager = download_manager
         self._recent_audit_limit = recent_audit_limit
 
     def snapshot(self) -> RuntimeManagerSnapshot:
@@ -129,6 +137,7 @@ class RuntimeManagerBackend:
             windows_summary=self._windows_summary(),
             actions_summary=self._actions_summary(),
             operations_summary=self._operations_summary(),
+            downloads_summary=self._downloads_summary(),
             audit_summary=self._audit_summary(audit_events, sink_failures),
             contracts_summary=self._contracts_section_summary(contract_summary),
             recent_audit_events=audit_events,
@@ -175,6 +184,11 @@ class RuntimeManagerBackend:
         """Return the active operation section summary."""
 
         return self._operations_summary()
+
+    def downloads_summary(self) -> RuntimeSectionSummary:
+        """Return the Download Manager read-model section summary."""
+
+        return self._downloads_summary()
 
     def audit_summary(self) -> RuntimeSectionSummary:
         """Return the retained audit history section summary."""
@@ -439,6 +453,79 @@ class RuntimeManagerBackend:
             },
         )
 
+    def _downloads_summary(self) -> RuntimeSectionSummary:
+        if self._download_manager is None:
+            return RuntimeSectionSummary(
+                section_id="downloads",
+                status=RuntimeSectionStatus.OK,
+                count=0,
+                message="Download Manager unavailable",
+                metadata={
+                    "available": False,
+                    "total_requests": 0,
+                    "total_items": 0,
+                    "requested_count": 0,
+                    "validated_count": 0,
+                    "queued_count": 0,
+                    "running_count": 0,
+                    "completed_count": 0,
+                    "failed_count": 0,
+                    "cancelled_count": 0,
+                    "skipped_count": 0,
+                    "partially_completed_count": 0,
+                    "preflight_failed_count": 0,
+                    "websocket_required_count": 0,
+                    "connection_blocked_count": 0,
+                    "active_request_ids": (),
+                    "queued_request_ids": (),
+                    "failed_request_ids": (),
+                    "active_item_ids": (),
+                    "failed_item_ids": (),
+                },
+            )
+
+        summary = self._download_manager.get_summary()
+        status = (
+            RuntimeSectionStatus.DEGRADED
+            if (
+                summary.failed_count
+                or summary.preflight_failed_count
+                or summary.connection_blocked_count
+            )
+            else RuntimeSectionStatus.OK
+        )
+        return RuntimeSectionSummary(
+            section_id="downloads",
+            status=status,
+            count=summary.total_requests,
+            message=_download_summary_message(
+                summary.total_requests,
+                summary.total_items,
+            ),
+            metadata={
+                "available": True,
+                "total_requests": summary.total_requests,
+                "total_items": summary.total_items,
+                "requested_count": summary.requested_count,
+                "validated_count": summary.validated_count,
+                "queued_count": summary.queued_count,
+                "running_count": summary.running_count,
+                "completed_count": summary.completed_count,
+                "failed_count": summary.failed_count,
+                "cancelled_count": summary.cancelled_count,
+                "skipped_count": summary.skipped_count,
+                "partially_completed_count": summary.partially_completed_count,
+                "preflight_failed_count": summary.preflight_failed_count,
+                "websocket_required_count": summary.websocket_required_count,
+                "connection_blocked_count": summary.connection_blocked_count,
+                "active_request_ids": summary.active_request_ids,
+                "queued_request_ids": summary.queued_request_ids,
+                "failed_request_ids": summary.failed_request_ids,
+                "active_item_ids": summary.active_item_ids,
+                "failed_item_ids": summary.failed_item_ids,
+            },
+        )
+
     def _audit_summary(
         self,
         audit_events: tuple[AuditEventPreview, ...],
@@ -499,6 +586,12 @@ def _event_preview(event: AuditEvent) -> AuditEventPreview:
         task_id=event.task_id,
         correlation_id=event.correlation_id,
     )
+
+
+def _download_summary_message(total_requests: int, total_items: int) -> str:
+    request_label = "request" if total_requests == 1 else "requests"
+    item_label = "item" if total_items == 1 else "items"
+    return f"{total_requests} download {request_label}, {total_items} {item_label}"
 
 
 def _sink_failure_preview(

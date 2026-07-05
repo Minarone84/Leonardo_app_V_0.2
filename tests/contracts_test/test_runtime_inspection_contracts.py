@@ -105,6 +105,7 @@ def test_runtime_manager_snapshot_derives_health_from_sections() -> None:
         "windows",
         "actions",
         "operations",
+        "downloads",
         "audit",
         "contracts",
     ]

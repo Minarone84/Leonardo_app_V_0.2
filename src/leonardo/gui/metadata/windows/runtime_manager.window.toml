@@ -299,6 +299,31 @@ width = 320
 order = 3
 
 [[tables]]
+table_id = "runtime_manager.downloads_table"
+label = "Downloads"
+
+[[tables.columns]]
+column_id = "metric"
+label = "Metric"
+visible = true
+width = 220
+order = 1
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
+visible = true
+width = 120
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 420
+order = 3
+
+[[tables]]
 table_id = "runtime_manager.audit_preview_table"
 label = "Audit Preview"
 
@@ -416,16 +441,22 @@ visible = true
 order = 3
 
 [[reports.sections]]
+section_id = "downloads"
+label = "Downloads"
+visible = true
+order = 4
+
+[[reports.sections]]
 section_id = "audit_preview"
 label = "Audit Preview"
 visible = true
-order = 4
+order = 5
 
 [[reports.sections]]
 section_id = "diagnostics"
 label = "Diagnostics"
 visible = true
-order = 5
+order = 6
 
 [[settings]]
 path = "style.font_size"

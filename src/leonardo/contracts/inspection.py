@@ -183,6 +183,37 @@ class ContractRegistrySummary:
         }
 
 
+def _empty_downloads_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="downloads",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="0 download requests, 0 items",
+        metadata={
+            "available": False,
+            "total_requests": 0,
+            "total_items": 0,
+            "requested_count": 0,
+            "validated_count": 0,
+            "queued_count": 0,
+            "running_count": 0,
+            "completed_count": 0,
+            "failed_count": 0,
+            "cancelled_count": 0,
+            "skipped_count": 0,
+            "partially_completed_count": 0,
+            "preflight_failed_count": 0,
+            "websocket_required_count": 0,
+            "connection_blocked_count": 0,
+            "active_request_ids": (),
+            "queued_request_ids": (),
+            "failed_request_ids": (),
+            "active_item_ids": (),
+            "failed_item_ids": (),
+        },
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeManagerSnapshot:
     """
@@ -208,6 +239,9 @@ class RuntimeManagerSnapshot:
     operations_summary: RuntimeSectionSummary
     audit_summary: RuntimeSectionSummary
     contracts_summary: RuntimeSectionSummary
+    downloads_summary: RuntimeSectionSummary = field(
+        default_factory=_empty_downloads_summary
+    )
     recent_audit_events: tuple[AuditEventPreview, ...] = ()
     audit_sink_failures: tuple[AuditSinkFailurePreview, ...] = ()
     contract_registry: ContractRegistrySummary = field(
@@ -235,6 +269,7 @@ class RuntimeManagerSnapshot:
             "windows_summary",
             "actions_summary",
             "operations_summary",
+            "downloads_summary",
             "audit_summary",
             "contracts_summary",
         ):
@@ -277,6 +312,7 @@ class RuntimeManagerSnapshot:
             self.windows_summary,
             self.actions_summary,
             self.operations_summary,
+            self.downloads_summary,
             self.audit_summary,
             self.contracts_summary,
         )

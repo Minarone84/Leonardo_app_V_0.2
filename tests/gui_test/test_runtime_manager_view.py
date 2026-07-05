@@ -111,6 +111,7 @@ def test_runtime_manager_metadata_table_ids_are_present(
         "runtime_manager.windows_table",
         "runtime_manager.actions_table",
         "runtime_manager.operations_table",
+        "runtime_manager.downloads_table",
         "runtime_manager.audit_preview_table",
     }
 
@@ -143,6 +144,11 @@ def test_runtime_manager_table_headers_come_from_metadata(
         "Operation ID",
         "Task ID",
         "Correlation ID",
+    )
+    assert window.table_headers("runtime_manager.downloads_table") == (
+        "Metric",
+        "Value",
+        "Details",
     )
 
     window.deleteLater()
@@ -261,7 +267,7 @@ def test_runtime_manager_renders_runtime_snapshot_contract(
     window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=snapshot)
 
     assert window.last_rendered_snapshot_summary["health"] == "ok"
-    assert window.table_for_id("runtime_manager.summary_table").rowCount() == 11
+    assert window.table_for_id("runtime_manager.summary_table").rowCount() == 12
     assert window.table_for_id("runtime_manager.services_table").item(0, 0).text() == (
         "contract-service"
     )
@@ -271,6 +277,10 @@ def test_runtime_manager_renders_runtime_snapshot_contract(
     assert window.table_for_id("runtime_manager.audit_preview_table").item(0, 2).text() == (
         "runtime.checked"
     )
+    downloads_table = window.table_for_id("runtime_manager.downloads_table")
+    assert downloads_table.rowCount() == 14
+    assert downloads_table.item(0, 0).text() == "Total Requests"
+    assert downloads_table.item(0, 1).text() == "0"
 
     window.deleteLater()
     qapplication.processEvents()
@@ -424,6 +434,77 @@ def test_runtime_manager_renders_all_detail_tabs_from_snapshot_summary_metadata(
     assert operations.item(0, 0).text() == "Inspect runtime operation"
     assert operations.item(0, 1).text() == "ok"
     assert operations.item(0, 2).text() == "1 active operation"
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_runtime_manager_renders_download_summary_rows(
+    qapplication: QApplication,
+) -> None:
+    snapshot = RuntimeManagerSnapshot(
+        generated_at_utc=datetime(2026, 7, 2, 12, tzinfo=UTC),
+        app_status="running",
+        session_id="session-admin-dev",
+        user_id="admin-dev",
+        username="Administrator",
+        app_summary=_section("app", "Application running"),
+        session_summary=_section("session", "Session active"),
+        services_summary=_section("services", "No services"),
+        tasks_summary=_section("tasks", "No tasks"),
+        processes_summary=_section("processes", "No active processes"),
+        connections_summary=_section("connections", "No connections"),
+        windows_summary=_section("windows", "No windows"),
+        actions_summary=_section("actions", "No actions"),
+        operations_summary=_section("operations", "No operations"),
+        downloads_summary=_section(
+            "downloads",
+            "1 download request, 2 items",
+            count=1,
+            metadata={
+                "total_requests": 1,
+                "total_items": 2,
+                "requested_count": 0,
+                "validated_count": 3,
+                "queued_count": 0,
+                "running_count": 0,
+                "completed_count": 0,
+                "failed_count": 0,
+                "cancelled_count": 0,
+                "skipped_count": 0,
+                "partially_completed_count": 0,
+                "preflight_failed_count": 0,
+                "websocket_required_count": 1,
+                "connection_blocked_count": 0,
+                "active_request_ids": ("req-download",),
+                "queued_request_ids": (),
+                "failed_request_ids": (),
+                "active_item_ids": (
+                    "req-download:BTCUSDT:1m",
+                    "req-download:BTCUSDT:5m",
+                ),
+                "failed_item_ids": (),
+            },
+        ),
+        audit_summary=_section("audit", "No retained audit events"),
+        contracts_summary=_section("contracts", "No contracts"),
+    )
+    window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=snapshot)
+    table = window.table_for_id("runtime_manager.downloads_table")
+
+    assert table.rowCount() == 14
+    assert table.item(0, 0).text() == "Total Requests"
+    assert table.item(0, 1).text() == "1"
+    assert table.item(0, 2).text() == "active_request_ids=req-download"
+    assert table.item(1, 0).text() == "Total Items"
+    assert table.item(1, 1).text() == "2"
+    assert table.item(1, 2).text() == (
+        "active_item_ids=req-download:BTCUSDT:1m, req-download:BTCUSDT:5m"
+    )
+    assert table.item(3, 0).text() == "Validated"
+    assert table.item(3, 1).text() == "3"
+    assert table.item(12, 0).text() == "WebSocket Required"
+    assert table.item(12, 1).text() == "1"
 
     window.deleteLater()
     qapplication.processEvents()
