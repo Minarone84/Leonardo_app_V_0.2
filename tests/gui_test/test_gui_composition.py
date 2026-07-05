@@ -345,6 +345,9 @@ def test_composition_injects_inert_download_placeholder_callbacks(
     assert isinstance(builder, DownloadRequestBuilderWindow)
     assert builder.workflow_mode == DOWNLOAD_DATA_WORKFLOW_MODE
     assert builder.isVisible() is True
+    assert root.tracker_for("download_request_builder.window") is not None
+    assert "download_request_builder.window" in context.window_registry.definitions
+    assert "download_request_builder.window" in context.window_registry.open_ids
     assert window.statusBar().currentMessage() == "Download Data request builder opened."
     assert context.download_manager.submit_calls == 0
     assert context.download_execution_manager.create_plan_calls == 0
@@ -355,6 +358,7 @@ def test_composition_injects_inert_download_placeholder_callbacks(
 
     assert root.download_request_builder_window is builder
     assert builder.workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE
+    assert "download_request_builder.window" in context.window_registry.open_ids
     assert window.statusBar().currentMessage() == (
         "OHLCV Maintenance request builder opened."
     )
@@ -363,6 +367,9 @@ def test_composition_injects_inert_download_placeholder_callbacks(
     assert context.download_execution_manager.classify_readiness_calls == 0
 
     builder.close()
+    qapplication.processEvents()
+    assert "download_request_builder.window" not in context.window_registry.open_ids
+
     builder.deleteLater()
     window.deleteLater()
     qapplication.processEvents()
@@ -816,10 +823,16 @@ def test_composition_can_disable_window_tracking(qapplication: QApplication) -> 
     window = root.create_main_window()
     window.show()
     qapplication.processEvents()
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
 
     assert root.window_trackers == {}
     assert context.window_registry.calls == []
+    assert root.download_request_builder_window is not None
+    assert root.download_request_builder_window.isVisible() is True
 
+    root.download_request_builder_window.close()
+    root.download_request_builder_window.deleteLater()
     window.close()
     window.deleteLater()
     qapplication.processEvents()

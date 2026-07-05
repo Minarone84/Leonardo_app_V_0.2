@@ -135,6 +135,30 @@ TRACKED_GUI_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         is_placeholder=True,
     ),
     ActionDefinition(
+        action_id="download_request_builder.draft_summary",
+        label="Draft Summary",
+        kind=ActionKind.BUTTON,
+        window_id="download_request_builder.window",
+    ),
+    ActionDefinition(
+        action_id="download_request_builder.preview_preflight",
+        label="Preview Preflight",
+        kind=ActionKind.BUTTON,
+        window_id="download_request_builder.window",
+    ),
+    ActionDefinition(
+        action_id="download_request_builder.submit",
+        label="Submit",
+        kind=ActionKind.BUTTON,
+        window_id="download_request_builder.window",
+    ),
+    ActionDefinition(
+        action_id="download_request_builder.close",
+        label="Close",
+        kind=ActionKind.BUTTON,
+        window_id="download_request_builder.window",
+    ),
+    ActionDefinition(
         action_id="main_window.open_trading_suite",
         label="Trading Suite",
         kind=ActionKind.BUTTON,

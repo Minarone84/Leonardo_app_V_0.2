@@ -18,11 +18,17 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from leonardo.gui.windows.download_request_builder_window import (  # noqa: E402
     DOWNLOAD_DATA_WORKFLOW_MODE,
+    DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
+    DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID,
+    DOWNLOAD_REQUEST_BUILDER_METADATA_ID,
+    DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,
+    DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
     OHLCV_POLICY_DEFERRED_MESSAGE,
     OHLCV_SUBMIT_DEFERRED_MESSAGE,
     DownloadRequestBuilderWindow,
 )
+from leonardo.gui.metadata import GuiMetadataResolver, load_metadata_document  # noqa: E402
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +39,15 @@ _BUILDER_SOURCE = (
     / "gui"
     / "windows"
     / "download_request_builder_window.py"
+)
+_BUILDER_METADATA = (
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "metadata"
+    / "windows"
+    / "download_request_builder.window.toml"
 )
 _EXPECTED_FIELD_LABELS = (
     "Source / Provider",
@@ -50,6 +65,33 @@ _EXPECTED_FIELD_LABELS = (
     "Tags",
     "Metadata",
 )
+_EXPECTED_ACTION_IDS = (
+    DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID,
+    DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,
+    DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
+    DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
+)
+
+
+def test_builder_metadata_loads_stable_identity_and_actions() -> None:
+    result = load_metadata_document(_BUILDER_METADATA)
+
+    assert result.report.has_errors is False
+    assert result.document is not None
+    assert result.document.metadata_id == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
+    assert result.document.title == "Download Request Builder"
+    assert result.document.metadata["window_id"] == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
+    assert result.document.metadata["object_name"] == "download_request_builder_window"
+    assert result.document.metadata["instance_policy"] == "singleton"
+    assert result.document.metadata["description"] == (
+        "Existing builder for Download Data and OHLCV Maintenance drafts."
+    )
+    assert tuple(action.action_id for action in result.document.actions) == (
+        _EXPECTED_ACTION_IDS
+    )
+
+    profile = GuiMetadataResolver().resolve(result.document)
+    assert profile.values["metadata"]["window_id"] == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
 
 
 def test_builder_opens_in_download_data_mode(qapplication: QApplication) -> None:
@@ -126,25 +168,18 @@ def test_builder_displays_common_placeholder_fields(
 def test_builder_has_local_action_buttons(qapplication: QApplication) -> None:
     window = DownloadRequestBuilderWindow()
 
-    assert window.findChild(QPushButton, "download_request_builder.close") is not None
-    assert (
-        window.findChild(
-            QPushButton,
-            "download_request_builder.draft_summary_button",
-        )
-        is not None
-    )
-    assert (
-        window.findChild(
-            QPushButton,
-            "download_request_builder.preview_preflight_button",
-        )
-        is not None
-    )
-    assert (
-        window.findChild(QPushButton, "download_request_builder.submit_button")
-        is not None
-    )
+    buttons = {
+        button.objectName(): button.text()
+        for button in window.findChildren(QPushButton)
+        if button.objectName().startswith("download_request_builder.")
+    }
+
+    assert buttons == {
+        "download_request_builder.draft_summary_button": "Draft Summary",
+        "download_request_builder.preview_preflight_button": "Preview Preflight",
+        "download_request_builder.submit_button": "Submit",
+        "download_request_builder.close": "Close",
+    }
     assert window.findChild(QPushButton, "download_request_builder.preflight") is None
 
     window.deleteLater()
@@ -233,6 +268,64 @@ def test_preview_local_validation_errors_block_callback(
     assert (
         "ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
         in result
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_builder_internal_buttons_record_action_observer(
+    qapplication: QApplication,
+) -> None:
+    observer = _RecordingActionObserver()
+    window = DownloadRequestBuilderWindow(action_observer=observer)
+
+    _render_summary(window)
+    _render_preview(window)
+    _render_submit(window)
+    window.findChild(QPushButton, "download_request_builder.close").click()
+
+    assert tuple(call.action_id for call in observer.calls) == _EXPECTED_ACTION_IDS
+    assert all(
+        call.window_id == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
+        for call in observer.calls
+    )
+    assert all(
+        call.metadata == {"workflow_mode": DOWNLOAD_DATA_WORKFLOW_MODE}
+        for call in observer.calls
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_denied_preview_action_does_not_run_callback(
+    qapplication: QApplication,
+) -> None:
+    calls = 0
+
+    def callback(draft: object) -> object:
+        nonlocal calls
+        calls += 1
+        return _preview_view()
+
+    observer = _RecordingActionObserver(
+        denied_action_ids=(DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,)
+    )
+    window = DownloadRequestBuilderWindow(
+        on_preview_requested=callback,
+        action_observer=observer,
+    )
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_preview(window)
+
+    assert calls == 0
+    assert result == ""
+    assert (
+        observer.calls[-1].action_id
+        == DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID
     )
 
     window.deleteLater()
@@ -651,6 +744,30 @@ def test_builder_source_has_no_core_or_contract_dependencies() -> None:
 
     for token in blocked_tokens:
         assert token not in source
+
+
+class _RecordingActionObserver:
+    def __init__(self, denied_action_ids: tuple[str, ...] = ()) -> None:
+        self._denied_action_ids = set(denied_action_ids)
+        self.calls: list[SimpleNamespace] = []
+
+    def record_action(
+        self,
+        action_id: str,
+        *,
+        window_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> SimpleNamespace:
+        call = SimpleNamespace(
+            action_id=action_id,
+            window_id=window_id,
+            metadata=dict(metadata or {}),
+        )
+        self.calls.append(call)
+        return SimpleNamespace(
+            action_id=action_id,
+            allowed=action_id not in self._denied_action_ids,
+        )
 
 
 def _qapplication() -> QApplication:

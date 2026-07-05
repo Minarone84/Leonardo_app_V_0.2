@@ -1,0 +1,65 @@
+metadata_id = "download_request_builder.window"
+kind = "window"
+schema_version = "1"
+title = "Download Request Builder"
+label = "Download Request Builder"
+
+[metadata]
+contract_id = "download_request_builder.window"
+logical_kind = "download_request_builder"
+owner_area = "download_manager"
+window_id = "download_request_builder.window"
+object_name = "download_request_builder_window"
+test_id = "download_request_builder_window"
+instance_policy = "singleton"
+description = "Existing builder for Download Data and OHLCV Maintenance drafts."
+
+[metadata.geometry_policy]
+start_mode = "windowed"
+minimum_width = 720
+minimum_height = 640
+
+[geometry]
+width = 720
+height = 640
+
+[display]
+visible = true
+enabled = true
+theme = "system"
+
+[style]
+font_size = 14
+density = "comfortable"
+
+[[regions]]
+region_id = "download_request_builder.header"
+label = "Header"
+
+[[regions]]
+region_id = "download_request_builder.form"
+label = "Draft Fields"
+
+[[regions]]
+region_id = "download_request_builder.results"
+label = "Results"
+
+[[regions]]
+region_id = "download_request_builder.actions"
+label = "Actions"
+
+[[actions]]
+action_id = "download_request_builder.draft_summary"
+label = "Draft Summary"
+
+[[actions]]
+action_id = "download_request_builder.preview_preflight"
+label = "Preview Preflight"
+
+[[actions]]
+action_id = "download_request_builder.submit"
+label = "Submit"
+
+[[actions]]
+action_id = "download_request_builder.close"
+label = "Close"

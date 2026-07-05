@@ -79,6 +79,10 @@ def test_composition_registers_first_gui_action_definitions(
     }
 
     assert {
+        "download_request_builder.close",
+        "download_request_builder.draft_summary",
+        "download_request_builder.preview_preflight",
+        "download_request_builder.submit",
         "main_window.download_data",
         "main_window.ohlcv_maintenance",
         "main_window.open_analysis_suite",
@@ -108,6 +112,16 @@ def test_composition_registers_first_gui_action_definitions(
         Permission.RUNTIME_VIEW,
     )
     assert definitions["runtime_manager.close"].required_permissions == ()
+    for action_id in (
+        "download_request_builder.draft_summary",
+        "download_request_builder.preview_preflight",
+        "download_request_builder.submit",
+        "download_request_builder.close",
+    ):
+        assert definitions[action_id].required_permissions == ()
+        assert definitions[action_id].is_placeholder is False
+        assert definitions[action_id].kind is ActionKind.BUTTON
+        assert definitions[action_id].window_id == "download_request_builder.window"
     for action_id in (
         "main_window.download_data",
         "main_window.ohlcv_maintenance",
@@ -227,6 +241,49 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     assert download_events == ()
 
     _dispose(qapplication, window, root.download_request_builder_window)
+    app.shutdown()
+
+
+def test_download_request_builder_internal_actions_are_recorded(
+    qapplication: QApplication,
+) -> None:
+    app = LeonardoApp()
+    root = GuiCompositionRoot(app.context, track_windows=False)
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+
+    for object_name in (
+        "download_request_builder.draft_summary_button",
+        "download_request_builder.preview_preflight_button",
+        "download_request_builder.submit_button",
+        "download_request_builder.close",
+    ):
+        button = builder.findChild(QPushButton, object_name)
+        assert button is not None
+        button.click()
+        qapplication.processEvents()
+
+    for action_id in (
+        "download_request_builder.draft_summary",
+        "download_request_builder.preview_preflight",
+        "download_request_builder.submit",
+        "download_request_builder.close",
+    ):
+        record = _last_record(app, action_id)
+        assert record.window_id == "download_request_builder.window"
+        assert record.actor_id == "admin-dev"
+        assert record.session_id == "session-admin-dev"
+        assert dict(record.metadata) == {"workflow_mode": "download_data"}
+
+    assert app.download_manager.list_requests() == ()
+    assert app.download_manager.list_preflights() == ()
+    assert app.download_manager.list_items() == ()
+
+    _dispose(qapplication, window, builder)
     app.shutdown()
 
 

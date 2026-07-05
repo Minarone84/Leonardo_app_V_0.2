@@ -52,6 +52,14 @@ from leonardo.gui.windows.runtime_manager_window import (
 from leonardo.gui.windows.settings_inspector_window import SettingsInspectorWindow
 
 
+_DOWNLOAD_REQUEST_BUILDER_METADATA_PATH = (
+    Path(__file__).resolve().parent
+    / "metadata"
+    / "windows"
+    / "download_request_builder.window.toml"
+)
+
+
 class RuntimeSnapshotBackend(Protocol):
     """Read-only runtime snapshot provider boundary."""
 
@@ -241,7 +249,14 @@ class GuiCompositionRoot:
                     if self._download_submit_available()
                     else None
                 ),
+                action_observer=self._action_observer,
             )
+            if self._track_windows:
+                self._install_tracker(
+                    self._download_request_builder_window,
+                    self._load_download_request_builder_profile(),
+                    fallback_window_type="download_request_builder",
+                )
         else:
             self._download_request_builder_window.set_workflow_mode(workflow_mode)
 
@@ -370,7 +385,11 @@ class GuiCompositionRoot:
 
     def _install_tracker(
         self,
-        window: RuntimeManagerWindow | LeonardoMainWindow,
+        window: (
+            RuntimeManagerWindow
+            | LeonardoMainWindow
+            | DownloadRequestBuilderWindow
+        ),
         profile: EffectiveGuiMetadataProfile,
         *,
         fallback_window_type: str,
@@ -395,6 +414,15 @@ class GuiCompositionRoot:
         if self._override_store is None:
             return load_runtime_manager_profile()
         return self._load_profile_with_overrides(_RUNTIME_MANAGER_METADATA_PATH)
+
+    def _load_download_request_builder_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            result = load_metadata_document(_DOWNLOAD_REQUEST_BUILDER_METADATA_PATH)
+            if result.document is None or result.report.has_errors:
+                messages = "; ".join(issue.message for issue in result.report.issues)
+                raise ValueError(f"Invalid GUI metadata profile: {messages}")
+            return GuiMetadataResolver().resolve(result.document)
+        return self._load_profile_with_overrides(_DOWNLOAD_REQUEST_BUILDER_METADATA_PATH)
 
     def _load_profile_with_overrides(
         self,

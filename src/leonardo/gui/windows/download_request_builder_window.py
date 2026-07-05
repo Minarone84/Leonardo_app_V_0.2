@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.action_observer import GuiActionObserver
+
 
 DOWNLOAD_DATA_WORKFLOW_MODE = "download_data"
 OHLCV_MAINTENANCE_WORKFLOW_MODE = "ohlcv_maintenance"
@@ -29,6 +31,15 @@ SUPPORTED_WORKFLOW_MODES = (
     DOWNLOAD_DATA_WORKFLOW_MODE,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
 )
+DOWNLOAD_REQUEST_BUILDER_METADATA_ID = "download_request_builder.window"
+DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID = (
+    "download_request_builder.draft_summary"
+)
+DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID = (
+    "download_request_builder.preview_preflight"
+)
+DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID = "download_request_builder.submit"
+DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID = "download_request_builder.close"
 OHLCV_POLICY_DEFERRED_MESSAGE = (
     "OHLCV naming/storage policy is not defined yet. "
     "Submission is intentionally disabled/deferred."
@@ -173,6 +184,7 @@ class DownloadRequestBuilderWindow(QWidget):
         parent: QWidget | None = None,
         on_preview_requested: Callable[[DownloadRequestDraft], object] | None = None,
         on_submit_intent: Callable[[DownloadRequestDraft], object] | None = None,
+        action_observer: GuiActionObserver | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._workflow_mode = ""
@@ -185,6 +197,7 @@ class DownloadRequestBuilderWindow(QWidget):
         self._submit_result_text: QTextEdit | None = None
         self._on_preview_requested = on_preview_requested
         self._on_submit_intent = on_submit_intent
+        self._action_observer = action_observer
 
         self.setObjectName("download_request_builder_window")
         self.resize(720, 640)
@@ -294,7 +307,7 @@ class DownloadRequestBuilderWindow(QWidget):
 
         close_button = QPushButton("Close")
         close_button.setObjectName("download_request_builder.close")
-        close_button.clicked.connect(self.close)
+        close_button.clicked.connect(self._close_requested)
 
         summary_text = QTextEdit()
         summary_text.setObjectName("download_request_builder.summary_text")
@@ -331,6 +344,8 @@ class DownloadRequestBuilderWindow(QWidget):
         root.addLayout(buttons)
 
     def _show_draft_summary(self) -> None:
+        if not self._record_action(DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID):
+            return
         if self._summary_text is None:
             return
         draft = self.current_draft()
@@ -338,6 +353,8 @@ class DownloadRequestBuilderWindow(QWidget):
         self._summary_text.setPlainText(_format_draft_summary(draft, issues))
 
     def _show_preflight_preview(self) -> None:
+        if not self._record_action(DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID):
+            return
         if self._preview_result_text is None:
             return
 
@@ -366,6 +383,8 @@ class DownloadRequestBuilderWindow(QWidget):
         self._preview_result_text.setPlainText(_format_preflight_preview(preview))
 
     def _show_submit_result(self) -> None:
+        if not self._record_action(DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID):
+            return
         if self._submit_result_text is None:
             return
 
@@ -391,6 +410,22 @@ class DownloadRequestBuilderWindow(QWidget):
             )
             return
         self._submit_result_text.setPlainText(_format_submit_result(result))
+
+    def _close_requested(self) -> None:
+        if not self._record_action(DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID):
+            return
+        self.close()
+
+    def _record_action(self, action_id: str) -> bool:
+        if self._action_observer is None:
+            return True
+
+        decision = self._action_observer.record_action(
+            action_id,
+            window_id=DOWNLOAD_REQUEST_BUILDER_METADATA_ID,
+            metadata={"workflow_mode": self._workflow_mode},
+        )
+        return decision.allowed
 
 
 def _build_field_widget(spec: _FieldSpec) -> QWidget:
