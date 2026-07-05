@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -166,6 +166,7 @@ class DownloadRequestBuilderWindow(QWidget):
         workflow_mode: str = DOWNLOAD_DATA_WORKFLOW_MODE,
         *,
         parent: QWidget | None = None,
+        on_preview_requested: Callable[[DownloadRequestDraft], object] | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._workflow_mode = ""
@@ -174,6 +175,8 @@ class DownloadRequestBuilderWindow(QWidget):
         self._workflow_mode_label: QLabel | None = None
         self._ohlcv_policy_note: QLabel | None = None
         self._summary_text: QTextEdit | None = None
+        self._preview_result_text: QTextEdit | None = None
+        self._on_preview_requested = on_preview_requested
 
         self.setObjectName("download_request_builder_window")
         self.resize(720, 640)
@@ -213,6 +216,11 @@ class DownloadRequestBuilderWindow(QWidget):
             return ()
         return tuple(widget.itemText(index) for index in range(widget.count()))
 
+    def current_draft(self) -> DownloadRequestDraft:
+        """Return the current parsed GUI-local draft."""
+
+        return _draft_from_widgets(self._workflow_mode, self._field_widgets)
+
     def set_workflow_mode(self, workflow_mode: str) -> None:
         """Switch the shell between supported GUI-local workflow modes."""
 
@@ -230,6 +238,8 @@ class DownloadRequestBuilderWindow(QWidget):
             )
         if self._summary_text is not None:
             self._summary_text.clear()
+        if self._preview_result_text is not None:
+            self._preview_result_text.clear()
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
@@ -262,6 +272,12 @@ class DownloadRequestBuilderWindow(QWidget):
         )
         draft_summary_button.clicked.connect(self._show_draft_summary)
 
+        preview_preflight_button = QPushButton("Preview Preflight")
+        preview_preflight_button.setObjectName(
+            "download_request_builder.preview_preflight_button"
+        )
+        preview_preflight_button.clicked.connect(self._show_preflight_preview)
+
         close_button = QPushButton("Close")
         close_button.setObjectName("download_request_builder.close")
         close_button.clicked.connect(self.close)
@@ -272,9 +288,16 @@ class DownloadRequestBuilderWindow(QWidget):
         summary_text.setFixedHeight(190)
         self._summary_text = summary_text
 
+        preview_result_text = QTextEdit()
+        preview_result_text.setObjectName("download_request_builder.preview_result_text")
+        preview_result_text.setReadOnly(True)
+        preview_result_text.setFixedHeight(140)
+        self._preview_result_text = preview_result_text
+
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         buttons.addWidget(draft_summary_button)
+        buttons.addWidget(preview_preflight_button)
         buttons.addWidget(close_button)
 
         root.addWidget(title_label)
@@ -282,14 +305,43 @@ class DownloadRequestBuilderWindow(QWidget):
         root.addWidget(ohlcv_note)
         root.addLayout(form)
         root.addWidget(summary_text)
+        root.addWidget(preview_result_text)
         root.addLayout(buttons)
 
     def _show_draft_summary(self) -> None:
         if self._summary_text is None:
             return
-        draft = _draft_from_widgets(self._workflow_mode, self._field_widgets)
+        draft = self.current_draft()
         issues = _validate_draft(draft)
         self._summary_text.setPlainText(_format_draft_summary(draft, issues))
+
+    def _show_preflight_preview(self) -> None:
+        if self._preview_result_text is None:
+            return
+
+        draft = self.current_draft()
+        issues = _validate_draft(draft)
+        if issues:
+            self._preview_result_text.setPlainText(
+                _format_local_preview_blocked(issues)
+            )
+            return
+
+        if self._on_preview_requested is None:
+            self._preview_result_text.setPlainText(
+                "Preflight preview is unavailable."
+            )
+            return
+
+        try:
+            preview = self._on_preview_requested(draft)
+        except Exception as error:
+            self._preview_result_text.setPlainText(
+                "Preflight preview failed: "
+                f"{type(error).__name__}: {error}"
+            )
+            return
+        self._preview_result_text.setPlainText(_format_preflight_preview(preview))
 
 
 def _build_field_widget(spec: _FieldSpec) -> QWidget:
@@ -467,6 +519,41 @@ def _format_draft_summary(
     return "\n".join(lines)
 
 
+def _format_local_preview_blocked(
+    issues: tuple[DownloadDraftIssue, ...],
+) -> str:
+    lines = ["Preflight preview blocked by local validation issues:"]
+    for issue in issues:
+        lines.append(f"- {issue.severity.upper()} {issue.field_id}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _format_preflight_preview(preview: object) -> str:
+    issues = tuple(getattr(preview, "issues", ()))
+    lines = [
+        "Preflight preview result:",
+        f"Message: {getattr(preview, 'message', '')}",
+        f"Request ID: {getattr(preview, 'request_id', '')}",
+        f"Status: {getattr(preview, 'status', '')}",
+        f"Can run: {getattr(preview, 'can_run', False)}",
+        f"Estimated symbols: {_display_optional(getattr(preview, 'estimated_symbols', None))}",
+        f"Estimated timeframes: {_display_optional(getattr(preview, 'estimated_timeframes', None))}",
+        f"Estimated items: {_display_optional(getattr(preview, 'estimated_items', None))}",
+        (
+            "Required connections: "
+            f"{_format_sequence(tuple(getattr(preview, 'required_connections', ())))}"
+        ),
+        f"WebSocket required: {getattr(preview, 'websocket_required', False)}",
+        "Core preview issues:",
+    ]
+    if not issues:
+        lines.append("- none")
+    else:
+        for issue in issues:
+            lines.append(f"- {issue}")
+    return "\n".join(lines)
+
+
 def _text_field_value(widget: QWidget) -> str:
     if isinstance(widget, QComboBox):
         return widget.currentText().strip()
@@ -514,6 +601,10 @@ def _parse_iso_like_datetime(value: str) -> tuple[datetime | None, str | None]:
 
 def _display_value(value: str) -> str:
     return value if value else "none"
+
+
+def _display_optional(value: object) -> str:
+    return "unresolved" if value is None else str(value)
 
 
 def _format_sequence(values: tuple[str, ...]) -> str:

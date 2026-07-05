@@ -6,8 +6,19 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QLineEdit,
+    QPushButton,
+    QTextEdit,
+    QWidget,
+)
 
+from leonardo.contracts.downloads import (  # noqa: E402
+    DownloadPreflight,
+    DownloadRequest,
+    DownloadStatus,
+)
 from leonardo.contracts.gui import WindowDefinition  # noqa: E402
 from leonardo.gui.composition import (  # noqa: E402
     GuiCompositionRoot,
@@ -41,6 +52,16 @@ class FakeRuntimeManager:
                     "count": 1,
                     "message": "1 service visible",
                     "metadata": {"service_ids": ("runtime-service",)},
+                },
+                {
+                    "section_id": "downloads",
+                    "status": "ok",
+                    "count": 0,
+                    "message": "0 download requests, 0 items",
+                    "metadata": {
+                        "total_requests": 0,
+                        "total_items": 0,
+                    },
                 },
             ),
             "recent_audit_events": (),
@@ -109,7 +130,31 @@ class FakeWindowRegistry:
 
 class FakeDownloadManager:
     def __init__(self) -> None:
+        self.preview_calls = 0
         self.submit_calls = 0
+        self.last_preview_request: DownloadRequest | None = None
+
+    def preview_request(self, request: DownloadRequest) -> DownloadPreflight:
+        self.preview_calls += 1
+        self.last_preview_request = request
+        return DownloadPreflight(
+            request_id=request.request_id,
+            status=DownloadStatus.VALIDATED,
+            can_run=True,
+            estimated_symbols=len(request.symbols),
+            estimated_timeframes=len(request.timeframes)
+            if request.timeframes
+            else None,
+            estimated_items=(
+                len(request.symbols) * len(request.timeframes)
+                if request.timeframes
+                else None
+            ),
+            required_connections=(
+                (request.connection_ref,) if request.connection_ref is not None else ()
+            ),
+            websocket_required=request.websocket_required,
+        )
 
     def submit_request(self, request: object) -> object:
         self.submit_calls += 1
@@ -216,6 +261,48 @@ def test_composition_injects_inert_download_placeholder_callbacks(
     qapplication.processEvents()
 
 
+def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
+    qapplication: QApplication,
+) -> None:
+    context = FakeCoreContext()
+    root = GuiCompositionRoot(context)
+    window = root.create_main_window()
+    before_snapshot = context.runtime_manager.snapshot()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _set_builder_text(builder, "symbols", "BTCUSDT, ETHUSDT")
+    _set_builder_text(builder, "timeframes", "1m, 5m")
+    _click_builder_button(builder, "download_request_builder.preview_preflight_button")
+    after_snapshot = context.runtime_manager.snapshot()
+    preview_text = builder.findChild(
+        QTextEdit,
+        "download_request_builder.preview_result_text",
+    )
+
+    assert context.download_manager.preview_calls == 1
+    assert context.download_manager.submit_calls == 0
+    assert context.download_manager.last_preview_request is not None
+    assert context.download_manager.last_preview_request.request_id.startswith(
+        "preview-"
+    )
+    assert context.download_manager.last_preview_request.symbols == (
+        "BTCUSDT",
+        "ETHUSDT",
+    )
+    assert context.download_manager.last_preview_request.timeframes == ("1m", "5m")
+    assert preview_text is not None
+    assert "Preflight preview passed." in preview_text.toPlainText()
+    assert before_snapshot == after_snapshot
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+
+
 def test_window_tracking_reports_lifecycle_only_after_window_events(
     qapplication: QApplication,
 ) -> None:
@@ -296,3 +383,22 @@ def _qapplication() -> QApplication:
 @pytest.fixture
 def qapplication() -> QApplication:
     return _qapplication()
+
+
+def _set_builder_text(
+    builder: DownloadRequestBuilderWindow,
+    field_id: str,
+    value: str,
+) -> None:
+    widget = builder.field_widget_for_id(field_id)
+    assert isinstance(widget, QLineEdit)
+    widget.setText(value)
+
+
+def _click_builder_button(
+    builder: DownloadRequestBuilderWindow,
+    object_name: str,
+) -> None:
+    button = builder.findChild(QPushButton, object_name)
+    assert button is not None
+    button.click()

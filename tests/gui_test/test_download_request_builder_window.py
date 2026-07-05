@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -132,6 +133,13 @@ def test_builder_has_only_local_close_button(qapplication: QApplication) -> None
         )
         is not None
     )
+    assert (
+        window.findChild(
+            QPushButton,
+            "download_request_builder.preview_preflight_button",
+        )
+        is not None
+    )
     assert window.findChild(QPushButton, "download_request_builder.submit") is None
     assert window.findChild(QPushButton, "download_request_builder.preflight") is None
 
@@ -145,6 +153,124 @@ def test_builder_summary_text_area_is_read_only(qapplication: QApplication) -> N
 
     assert summary_text is not None
     assert summary_text.isReadOnly() is True
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_builder_preview_result_text_area_is_read_only(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    preview_result = window.findChild(
+        QTextEdit,
+        "download_request_builder.preview_result_text",
+    )
+
+    assert preview_result is not None
+    assert preview_result.isReadOnly() is True
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_builder_exposes_current_draft(qapplication: QApplication) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT, ETHUSDT")
+    _set_text_field(window, "timeframes", "1m\n5m")
+    _set_text_field(window, "tags", "preview, smoke")
+    _set_metadata(window, '{"profile": "manual"}')
+
+    draft = window.current_draft()
+
+    assert draft.workflow_mode == DOWNLOAD_DATA_WORKFLOW_MODE
+    assert draft.symbols == ("BTCUSDT", "ETHUSDT")
+    assert draft.timeframes == ("1m", "5m")
+    assert draft.tags == ("preview", "smoke")
+    assert draft.metadata["profile"] == "manual"
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_preview_local_validation_errors_block_callback(
+    qapplication: QApplication,
+) -> None:
+    calls = 0
+
+    def callback(draft: object) -> object:
+        nonlocal calls
+        calls += 1
+        return _preview_view()
+
+    window = DownloadRequestBuilderWindow(on_preview_requested=callback)
+
+    result = _render_preview(window)
+
+    assert calls == 0
+    assert "Preflight preview blocked by local validation issues:" in result
+    assert "ERROR symbols: At least one symbol is required." in result
+    assert (
+        "ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
+        in result
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_preview_valid_draft_calls_callback_once(qapplication: QApplication) -> None:
+    calls: list[object] = []
+
+    def callback(draft: object) -> object:
+        calls.append(draft)
+        return _preview_view()
+
+    window = DownloadRequestBuilderWindow(on_preview_requested=callback)
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_preview(window)
+
+    assert len(calls) == 1
+    assert result.startswith("Preflight preview result:")
+    assert "Message: Preflight preview passed." in result
+    assert "Request ID: preview-test" in result
+    assert "Status: validated" in result
+    assert "Core preview issues:\n- none" in result
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_preview_absent_callback_renders_unavailable_message(
+    qapplication: QApplication,
+) -> None:
+    window = DownloadRequestBuilderWindow()
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_preview(window)
+
+    assert result == "Preflight preview is unavailable."
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_preview_callback_exception_renders_safe_error(
+    qapplication: QApplication,
+) -> None:
+    def callback(draft: object) -> object:
+        raise RuntimeError("preview failed")
+
+    window = DownloadRequestBuilderWindow(on_preview_requested=callback)
+    _set_text_field(window, "symbols", "BTCUSDT")
+    _set_text_field(window, "timeframes", "1m")
+
+    result = _render_preview(window)
+
+    assert result == "Preflight preview failed: RuntimeError: preview failed"
 
     window.deleteLater()
     qapplication.processEvents()
@@ -440,3 +566,34 @@ def _render_summary(window: DownloadRequestBuilderWindow) -> str:
 
     button.click()
     return summary_text.toPlainText()
+
+
+def _render_preview(window: DownloadRequestBuilderWindow) -> str:
+    button = window.findChild(
+        QPushButton,
+        "download_request_builder.preview_preflight_button",
+    )
+    preview_text = window.findChild(
+        QTextEdit,
+        "download_request_builder.preview_result_text",
+    )
+    assert button is not None
+    assert preview_text is not None
+
+    button.click()
+    return preview_text.toPlainText()
+
+
+def _preview_view() -> SimpleNamespace:
+    return SimpleNamespace(
+        request_id="preview-test",
+        status="validated",
+        can_run=True,
+        estimated_symbols=1,
+        estimated_timeframes=1,
+        estimated_items=1,
+        required_connections=(),
+        websocket_required=False,
+        issues=(),
+        message="Preflight preview passed.",
+    )

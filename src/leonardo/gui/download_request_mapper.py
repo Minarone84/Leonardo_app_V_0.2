@@ -1,0 +1,173 @@
+"""Map GUI-local download drafts to Download Manager contracts."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Protocol
+
+from leonardo.contracts.downloads import (
+    DownloadConflictPolicy,
+    DownloadPreflight,
+    DownloadPriority,
+    DownloadRangeMode,
+    DownloadRequest,
+    DownloadTimeframeMode,
+    DownloadValidationIssue,
+    DownloadWorkflowKind,
+)
+
+
+@dataclass(frozen=True)
+class DownloadPreflightPreviewView:
+    """
+    GUI-safe read model for displaying a Core preflight preview.
+
+    The view carries serializable values only. It does not expose Core services
+    or mutable Download Manager state to widgets.
+    """
+
+    request_id: str
+    status: str
+    can_run: bool
+    estimated_symbols: int | None
+    estimated_timeframes: int | None
+    estimated_items: int | None
+    required_connections: tuple[str, ...]
+    websocket_required: bool
+    issues: tuple[str, ...]
+    message: str
+
+
+class DownloadRequestDraftLike(Protocol):
+    """Attribute contract consumed from GUI-local download request drafts."""
+
+    workflow_mode: str
+    source_provider: str
+    market: str
+    symbols: tuple[str, ...]
+    timeframe_mode: str
+    timeframes: tuple[str, ...]
+    range_mode: str
+    start: str
+    end: str
+    conflict_policy: str
+    priority: str
+    connection_ref: str
+    websocket_required: bool
+    tags: tuple[str, ...]
+    metadata: Mapping[str, object]
+
+
+def build_download_request_from_draft(
+    draft: DownloadRequestDraftLike,
+) -> DownloadRequest:
+    """
+    Convert a GUI-local download draft into a Core download request contract.
+
+    The generated request identifier is preview-scoped and deterministic for
+    normalized draft content. It is not a final submit identifier.
+    """
+
+    payload = _normalized_payload(draft)
+    return DownloadRequest(
+        request_id=_preview_request_id(payload),
+        workflow_kind=DownloadWorkflowKind(payload["workflow_kind"]),
+        source=payload["source"],
+        market=payload["market"],
+        symbols=tuple(payload["symbols"]),
+        timeframe_mode=DownloadTimeframeMode(payload["timeframe_mode"]),
+        timeframes=tuple(payload["timeframes"]),
+        range_mode=DownloadRangeMode(payload["range_mode"]),
+        start=payload["start"],
+        end=payload["end"],
+        conflict_policy=DownloadConflictPolicy(payload["conflict_policy"]),
+        priority=DownloadPriority(payload["priority"]),
+        connection_ref=payload["connection_ref"],
+        websocket_required=bool(payload["websocket_required"]),
+        tags=tuple(payload["tags"]),
+        metadata=payload["metadata"],
+    )
+
+
+def build_preflight_preview_view(
+    preflight: DownloadPreflight,
+) -> DownloadPreflightPreviewView:
+    """Convert a Core preflight contract into a GUI-safe display view."""
+
+    if not isinstance(preflight, DownloadPreflight):
+        raise TypeError("preflight must be a DownloadPreflight")
+    return DownloadPreflightPreviewView(
+        request_id=preflight.request_id,
+        status=preflight.status.value,
+        can_run=preflight.can_run,
+        estimated_symbols=preflight.estimated_symbols,
+        estimated_timeframes=preflight.estimated_timeframes,
+        estimated_items=preflight.estimated_items,
+        required_connections=preflight.required_connections,
+        websocket_required=preflight.websocket_required,
+        issues=tuple(_format_issue(issue) for issue in preflight.issues),
+        message=(
+            "Preflight preview passed."
+            if preflight.can_run
+            else "Preflight preview blocked."
+        ),
+    )
+
+
+def _normalized_payload(draft: DownloadRequestDraftLike) -> dict[str, object]:
+    timeframe_mode = draft.timeframe_mode
+    return {
+        "workflow_kind": draft.workflow_mode,
+        "source": _optional_text(draft.source_provider),
+        "market": _optional_text(draft.market),
+        "symbols": tuple(draft.symbols),
+        "timeframe_mode": timeframe_mode,
+        "timeframes": tuple(draft.timeframes) if timeframe_mode == "explicit" else (),
+        "range_mode": draft.range_mode,
+        "start": _optional_text(draft.start),
+        "end": _optional_text(draft.end),
+        "conflict_policy": draft.conflict_policy,
+        "priority": draft.priority,
+        "connection_ref": _optional_text(draft.connection_ref),
+        "websocket_required": draft.websocket_required,
+        "tags": tuple(draft.tags),
+        "metadata": _json_safe(draft.metadata),
+    }
+
+
+def _preview_request_id(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        _json_safe(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()[:12]
+    return f"preview-{digest}"
+
+
+def _optional_text(value: str) -> str | None:
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("Select ") or stripped.startswith("No connection selected"):
+        return None
+    return stripped
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_safe(item)
+            for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
+        }
+    if isinstance(value, tuple | list):
+        return tuple(_json_safe(item) for item in value)
+    return value
+
+
+def _format_issue(issue: DownloadValidationIssue) -> str:
+    field = f" {issue.field}" if issue.field is not None else ""
+    return f"{issue.severity.value.upper()}{field}: {issue.message}"

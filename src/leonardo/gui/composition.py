@@ -10,6 +10,11 @@ from leonardo.gui.action_observer import (
     GuiActionObserver,
     build_gui_action_observer,
 )
+from leonardo.gui.download_request_mapper import (
+    DownloadPreflightPreviewView,
+    build_download_request_from_draft,
+    build_preflight_preview_view,
+)
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataOverrideStore,
@@ -26,6 +31,7 @@ from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
 from leonardo.gui.windows.download_request_builder_window import (
     DOWNLOAD_DATA_WORKFLOW_MODE,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
+    DownloadRequestDraft,
     DownloadRequestBuilderWindow,
 )
 from leonardo.gui.windows.main_window import (
@@ -57,6 +63,7 @@ class GuiCoreContext(Protocol):
     session_manager: object
     user_policy: object
     audit_log: object
+    download_manager: object
 
 
 class GuiCompositionRoot:
@@ -110,6 +117,7 @@ class GuiCompositionRoot:
             context
         )
         self._download_request_builder_window: DownloadRequestBuilderWindow | None = None
+        self._download_manager = getattr(context, "download_manager", None)
 
     @property
     def window_trackers(self) -> Mapping[str, GuiWindowTracker]:
@@ -202,6 +210,11 @@ class GuiCompositionRoot:
             self._download_request_builder_window = DownloadRequestBuilderWindow(
                 workflow_mode,
                 parent=parent,
+                on_preview_requested=(
+                    self._preview_download_request
+                    if self._download_preview_available()
+                    else None
+                ),
             )
         else:
             self._download_request_builder_window.set_workflow_mode(workflow_mode)
@@ -210,6 +223,21 @@ class GuiCompositionRoot:
         self._download_request_builder_window.raise_()
         self._download_request_builder_window.activateWindow()
         return f"{self._download_request_builder_window.workflow_label} request builder opened."
+
+    def _download_preview_available(self) -> bool:
+        preview = getattr(self._download_manager, "preview_request", None)
+        return callable(preview)
+
+    def _preview_download_request(
+        self,
+        draft: DownloadRequestDraft,
+    ) -> DownloadPreflightPreviewView:
+        preview = getattr(self._download_manager, "preview_request", None)
+        if not callable(preview):
+            raise RuntimeError("Download Manager preview is unavailable")
+        request = build_download_request_from_draft(draft)
+        preflight = preview(request)
+        return build_preflight_preview_view(preflight)
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
         profile = self._load_runtime_manager_profile()
