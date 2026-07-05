@@ -437,6 +437,15 @@ def _audit_preview_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
             "severity": _text_value(_field(event, "severity", "")),
             "event_type": _text_value(_field(event, "event_type", "")),
             "message": _text_value(_field(event, "message", "")),
+            "event_id": _text_value(_field(event, "event_id", "")),
+            "category": _text_value(_field(event, "category", "")),
+            "actor_id": _text_value(_field(event, "actor_id", "")),
+            "session_id": _text_value(_field(event, "session_id", "")),
+            "window_id": _text_value(_field(event, "window_id", "")),
+            "action_id": _text_value(_field(event, "action_id", "")),
+            "operation_id": _text_value(_field(event, "operation_id", "")),
+            "task_id": _text_value(_field(event, "task_id", "")),
+            "correlation_id": _text_value(_field(event, "correlation_id", "")),
         }
         for event in events
     )

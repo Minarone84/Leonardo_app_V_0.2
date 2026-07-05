@@ -47,6 +47,15 @@ _REQUIRED_TABLE_COLUMNS = {
         "severity",
         "event_type",
         "message",
+        "event_id",
+        "category",
+        "actor_id",
+        "session_id",
+        "window_id",
+        "action_id",
+        "operation_id",
+        "task_id",
+        "correlation_id",
     },
 }
 _UNSAFE_SETTING_PATH_PREFIXES = (

@@ -134,6 +134,15 @@ def test_runtime_manager_table_headers_come_from_metadata(
         "Severity",
         "Event Type",
         "Message",
+        "Event ID",
+        "Category",
+        "Actor ID",
+        "Session ID",
+        "Window ID",
+        "Action ID",
+        "Operation ID",
+        "Task ID",
+        "Correlation ID",
     )
 
     window.deleteLater()
@@ -262,6 +271,66 @@ def test_runtime_manager_renders_runtime_snapshot_contract(
     assert window.table_for_id("runtime_manager.audit_preview_table").item(0, 2).text() == (
         "runtime.checked"
     )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_runtime_manager_audit_preview_renders_existing_context_fields(
+    qapplication: QApplication,
+) -> None:
+    snapshot = RuntimeManagerSnapshot(
+        generated_at_utc=datetime(2026, 7, 2, 12, tzinfo=UTC),
+        app_status="running",
+        session_id="session-admin-dev",
+        user_id="admin-dev",
+        username="Administrator",
+        app_summary=_section("app", "Application running"),
+        session_summary=_section("session", "Session active"),
+        services_summary=_section("services", "No services"),
+        tasks_summary=_section("tasks", "No tasks"),
+        processes_summary=_section("processes", "No active processes"),
+        connections_summary=_section("connections", "No connections"),
+        windows_summary=_section("windows", "No windows"),
+        actions_summary=_section("actions", "No actions"),
+        operations_summary=_section("operations", "No operations"),
+        audit_summary=_section("audit", "1 retained audit event", count=1),
+        contracts_summary=_section("contracts", "No contracts"),
+        recent_audit_events=(
+            AuditEventPreview(
+                event_id="event-1",
+                timestamp_utc=datetime(2026, 7, 2, 12, tzinfo=UTC),
+                severity="info",
+                category="runtime",
+                event_type="runtime.checked",
+                message="Runtime checked",
+                actor_id="admin-dev",
+                session_id="session-admin-dev",
+                window_id="runtime-manager",
+                action_id="runtime.refresh",
+                operation_id="operation-1",
+                task_id="task-1",
+                correlation_id="correlation-1",
+            ),
+        ),
+    )
+    window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=snapshot)
+    table = window.table_for_id("runtime_manager.audit_preview_table")
+
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "2026-07-02T12:00:00+00:00"
+    assert table.item(0, 1).text() == "info"
+    assert table.item(0, 2).text() == "runtime.checked"
+    assert table.item(0, 3).text() == "Runtime checked"
+    assert table.item(0, 4).text() == "event-1"
+    assert table.item(0, 5).text() == "runtime"
+    assert table.item(0, 6).text() == "admin-dev"
+    assert table.item(0, 7).text() == "session-admin-dev"
+    assert table.item(0, 8).text() == "runtime-manager"
+    assert table.item(0, 9).text() == "runtime.refresh"
+    assert table.item(0, 10).text() == "operation-1"
+    assert table.item(0, 11).text() == "task-1"
+    assert table.item(0, 12).text() == "correlation-1"
 
     window.deleteLater()
     qapplication.processEvents()

@@ -19,6 +19,12 @@ sink failures are not recursively emitted as audit events.
 `AuditLog.flush()` and `AuditLog.close()` are idempotent. `LeonardoApp` closes
 the audit log during shutdown.
 
+Dev-only durable audit history is opt-in through `AppConfig.audit`.
+`load_default_config()` resolves the default JSONL path as
+`runs/audit.jsonl`, but leaves `jsonl_enabled` disabled. Enabling
+`jsonl_enabled` composes the in-memory sink with `JsonlAuditSink`; it does not
+introduce a production path policy.
+
 SQLite/searchable audit storage, Runtime Manager GUI, GUI action logging, window
 and action registries, and old Leonardo audit dependencies are not implemented
 in this phase.

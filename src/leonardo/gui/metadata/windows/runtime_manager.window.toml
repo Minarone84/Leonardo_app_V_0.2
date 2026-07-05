@@ -330,6 +330,69 @@ visible = true
 width = 360
 order = 4
 
+[[tables.columns]]
+column_id = "event_id"
+label = "Event ID"
+visible = true
+width = 180
+order = 5
+
+[[tables.columns]]
+column_id = "category"
+label = "Category"
+visible = true
+width = 120
+order = 6
+
+[[tables.columns]]
+column_id = "actor_id"
+label = "Actor ID"
+visible = true
+width = 140
+order = 7
+
+[[tables.columns]]
+column_id = "session_id"
+label = "Session ID"
+visible = true
+width = 160
+order = 8
+
+[[tables.columns]]
+column_id = "window_id"
+label = "Window ID"
+visible = true
+width = 180
+order = 9
+
+[[tables.columns]]
+column_id = "action_id"
+label = "Action ID"
+visible = true
+width = 200
+order = 10
+
+[[tables.columns]]
+column_id = "operation_id"
+label = "Operation ID"
+visible = true
+width = 180
+order = 11
+
+[[tables.columns]]
+column_id = "task_id"
+label = "Task ID"
+visible = true
+width = 160
+order = 12
+
+[[tables.columns]]
+column_id = "correlation_id"
+label = "Correlation ID"
+visible = true
+width = 180
+order = 13
+
 [[reports]]
 report_id = "runtime_manager.snapshot_report"
 label = "Snapshot Report"

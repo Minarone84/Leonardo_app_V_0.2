@@ -1,6 +1,9 @@
+import json
+from dataclasses import replace
+
 import pytest
 
-from leonardo.contracts.audit import AuditCategory
+from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
@@ -15,6 +18,64 @@ def test_default_config_resolves_runtime_paths_without_creating_directories(tmp_
     assert config.paths.tmp_dir == tmp_path / "tmp"
     assert config.audit.jsonl_path == tmp_path / "runs" / "audit.jsonl"
     assert not config.paths.runs_dir.exists()
+
+
+def test_default_config_keeps_durable_audit_disabled(tmp_path) -> None:
+    config = load_default_config(tmp_path)
+    app = LeonardoApp(config)
+    event = _audit_event("runtime.memory_only_checked")
+
+    app.audit_log.emit(event)
+    app.shutdown()
+
+    assert event in app.audit_log.snapshot()
+    assert config.audit.jsonl_path is not None
+    assert not config.audit.jsonl_path.exists()
+    assert not config.paths.runs_dir.exists()
+
+
+def test_dev_config_writes_jsonl_audit_under_runs_dir(tmp_path) -> None:
+    default_config = load_default_config(tmp_path)
+    config = replace(
+        default_config,
+        audit=replace(default_config.audit, jsonl_enabled=True),
+    )
+
+    assert config.audit.jsonl_path == config.paths.runs_dir / "audit.jsonl"
+    assert not config.paths.runs_dir.exists()
+
+    app = LeonardoApp(config)
+    event = _audit_event("runtime.dev_jsonl_checked")
+
+    app.audit_log.emit(event)
+    app.shutdown()
+
+    assert event in app.audit_log.snapshot()
+    assert config.audit.jsonl_path is not None
+    payloads = [
+        json.loads(line)
+        for line in config.audit.jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(payload["event_id"] == event.event_id for payload in payloads)
+    assert any(payload["event_type"] == event.event_type for payload in payloads)
+
+
+def test_durable_audit_requires_explicit_jsonl_path(tmp_path) -> None:
+    default_config = load_default_config(tmp_path)
+    config = replace(
+        default_config,
+        audit=replace(
+            default_config.audit,
+            jsonl_enabled=True,
+            jsonl_path=None,
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="audit.jsonl_path must be configured when JSONL audit is enabled",
+    ):
+        LeonardoApp(config)
 
 
 def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
@@ -80,4 +141,13 @@ def test_leonardo_app_startup_failure_sets_failed_state_and_routes_error() -> No
         event.category is AuditCategory.ERROR
         and event.event_type == "error.reported"
         for event in app.audit_log.snapshot()
+    )
+
+
+def _audit_event(event_type: str) -> AuditEvent:
+    return AuditEvent(
+        event_type=event_type,
+        message="Runtime audit checked",
+        severity=AuditSeverity.INFO,
+        category=AuditCategory.RUNTIME,
     )
