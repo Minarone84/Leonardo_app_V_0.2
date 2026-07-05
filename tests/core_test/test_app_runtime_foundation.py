@@ -14,6 +14,7 @@ from leonardo.contracts.downloads import (
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
+from leonardo.core.download_execution_manager import DownloadExecutionManager
 from leonardo.core.download_manager import DownloadManager
 
 
@@ -124,6 +125,7 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
     assert context.download_manager is app.download_manager
+    assert context.download_execution_manager is app.download_execution_manager
     assert context.runtime_manager is app.runtime_manager
     assert app.process_manager.active_processes() == ()
     assert app.connection_registry.connection_states() == ()
@@ -164,6 +166,17 @@ def test_leonardo_app_exposes_download_manager_without_service_registration() ->
     assert context.service_registry.list_services() == ()
 
 
+def test_leonardo_app_exposes_download_execution_manager_without_service_registration() -> None:
+    app = LeonardoApp()
+
+    context = app.startup()
+
+    assert isinstance(app.download_execution_manager, DownloadExecutionManager)
+    assert context.download_execution_manager is app.download_execution_manager
+    assert context.download_execution_manager.list_snapshots() == ()
+    assert context.service_registry.list_services() == ()
+
+
 def test_download_manager_can_be_used_through_app_context_without_gui(tmp_path) -> None:
     config = load_default_config(tmp_path)
     app = LeonardoApp(config)
@@ -183,6 +196,26 @@ def test_download_manager_can_be_used_through_app_context_without_gui(tmp_path) 
     assert not config.audit.jsonl_path.exists()
 
 
+def test_download_execution_manager_uses_app_owned_download_manager() -> None:
+    app = LeonardoApp()
+    context = app.startup()
+
+    preflight = app.download_manager.submit_request(_download_request())
+    snapshot = context.download_execution_manager.create_plan("req-app-download")
+
+    assert preflight.can_run is True
+    assert snapshot.plan.request_id == "req-app-download"
+    assert snapshot.plan.item_ids == (
+        "req-app-download:BTCUSDT:1m",
+        "req-app-download:BTCUSDT:5m",
+    )
+    assert snapshot.estimate is not None
+    assert snapshot.estimate.estimated_items == 2
+    assert app.download_execution_manager.get_snapshot(
+        "execution-plan-req-app-download",
+    ) is snapshot
+
+
 def test_app_injected_audit_log_receives_download_manager_events() -> None:
     app = LeonardoApp()
     context = app.startup()
@@ -192,6 +225,17 @@ def test_app_injected_audit_log_receives_download_manager_events() -> None:
     event_types = [event.event_type for event in app.audit_log.snapshot()]
     assert "download.request.submitted" in event_types
     assert "download.preflight.completed" in event_types
+
+
+def test_app_injected_audit_log_receives_download_execution_plan_event() -> None:
+    app = LeonardoApp()
+    context = app.startup()
+
+    context.download_manager.submit_request(_download_request())
+    context.download_execution_manager.create_plan("req-app-download")
+
+    event_types = [event.event_type for event in app.audit_log.snapshot()]
+    assert "download.execution.plan.created" in event_types
 
 
 def _audit_event(event_type: str) -> AuditEvent:
