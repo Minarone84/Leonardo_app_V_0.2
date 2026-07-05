@@ -1,10 +1,22 @@
+import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from leonardo.contracts.download_provider_capabilities import (
+    DownloadProviderCapability,
     ProviderCapabilityStatus,
     ProviderDataKind,
     ProviderTransportKind,
+    provider_interval_for_timeframe,
+    supported_timeframes,
+)
+from leonardo.connection.exchange.metadata_loader import (
+    bybit_metadata_to_provider_capability,
+    load_bybit_exchange_metadata,
+    load_default_exchange_capabilities,
+    load_exchange_metadata,
 )
 
 
@@ -19,6 +31,9 @@ _METADATA_PATH = (
     / "bybit.exchange.json"
 )
 _DOC_PATH = _REPO_ROOT / "docs" / "contracts_docs" / "BYBIT_EXCHANGE_METADATA.md"
+_LOADER_PATH = (
+    _REPO_ROOT / "src" / "leonardo" / "connection" / "exchange" / "metadata_loader.py"
+)
 
 _EXPECTED_TOP_LEVEL_KEYS = {
     "schema_version",
@@ -68,12 +83,48 @@ _EXPECTED_INTERVALS = {
     "1w": "W",
     "1M": "M",
 }
+_EXPECTED_CAPABILITY_TIMEFRAMES = tuple(
+    timeframe for timeframe in _EXPECTED_TIMEFRAMES if timeframe != "1M"
+)
+_EXPECTED_CAPABILITY_INTERVALS = {
+    timeframe: interval
+    for timeframe, interval in _EXPECTED_INTERVALS.items()
+    if timeframe != "1M"
+}
 
 
 def test_bybit_metadata_json_loads() -> None:
     metadata = _load_metadata()
 
     assert metadata["exchange_id"] == "bybit"
+
+
+def test_bybit_metadata_loads_through_loader() -> None:
+    metadata = load_bybit_exchange_metadata()
+
+    assert metadata["exchange_id"] == "bybit"
+    assert metadata["provider"] == "bybit"
+
+
+def test_exchange_metadata_loader_rejects_unknown_exchange_id() -> None:
+    with pytest.raises(KeyError, match="kraken"):
+        load_exchange_metadata("kraken")
+
+
+def test_default_exchange_capabilities_contain_exactly_bybit_for_now() -> None:
+    capabilities = load_default_exchange_capabilities()
+
+    assert len(capabilities) == 1
+    assert capabilities[0].provider == "bybit"
+
+
+def test_bybit_metadata_converts_to_provider_capability() -> None:
+    capability = bybit_metadata_to_provider_capability(load_bybit_exchange_metadata())
+
+    assert isinstance(capability, DownloadProviderCapability)
+    assert capability.provider == "bybit"
+    assert capability.display_name == "Bybit"
+    assert capability.status is ProviderCapabilityStatus.SUPPORTED
 
 
 def test_metadata_required_top_level_keys() -> None:
@@ -170,6 +221,52 @@ def test_timeframe_aliases() -> None:
     metadata = _load_metadata()
 
     assert metadata["timeframe_aliases"] == {"60m": "1h"}
+
+
+def test_converted_markets_include_supported_regular_ohlcv_markets() -> None:
+    capability = bybit_metadata_to_provider_capability(load_bybit_exchange_metadata())
+    markets = {market.market: market for market in capability.markets}
+
+    assert {"spot", "linear", "inverse"}.issubset(markets)
+    for market_id in ("spot", "linear", "inverse"):
+        market = markets[market_id]
+        assert market.status is ProviderCapabilityStatus.SUPPORTED
+        assert market.data_kinds == (ProviderDataKind.OHLCV.value,)
+        assert market.default_transport == ProviderTransportKind.REST.value
+        assert market.transports == (
+            ProviderTransportKind.REST.value,
+            ProviderTransportKind.WEBSOCKET.value,
+        )
+
+
+def test_converted_options_market_is_not_regular_ohlcv_supported() -> None:
+    capability = bybit_metadata_to_provider_capability(load_bybit_exchange_metadata())
+    markets = {market.market: market for market in capability.markets}
+
+    assert markets["options"].status is ProviderCapabilityStatus.UNSUPPORTED
+    assert markets["options"].data_kinds == ()
+    assert supported_timeframes(markets["options"]) == ()
+
+
+def test_converted_supported_timeframes_match_contract_compatible_metadata() -> None:
+    capability = bybit_metadata_to_provider_capability(load_bybit_exchange_metadata())
+    markets = {market.market: market for market in capability.markets}
+
+    for market_id in ("spot", "linear", "inverse"):
+        assert supported_timeframes(markets[market_id]) == (
+            _EXPECTED_CAPABILITY_TIMEFRAMES
+        )
+    assert capability.metadata["deferred_timeframes"] == ("1M",)
+
+
+def test_converted_interval_mappings_match_contract_compatible_metadata() -> None:
+    capability = bybit_metadata_to_provider_capability(load_bybit_exchange_metadata())
+    spot = {market.market: market for market in capability.markets}["spot"]
+
+    assert {
+        timeframe: provider_interval_for_timeframe(spot, timeframe)
+        for timeframe in _EXPECTED_CAPABILITY_TIMEFRAMES
+    } == _EXPECTED_CAPABILITY_INTERVALS
 
 
 def test_kline_endpoint_limits_and_response_order() -> None:
@@ -274,6 +371,50 @@ def test_metadata_file_is_static_json_only() -> None:
     assert all(token not in source for token in blocked_tokens)
 
 
+def test_metadata_loader_imports_no_gui_or_runtime_execution_owners() -> None:
+    source = _LOADER_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_modules = _imported_modules(tree)
+
+    blocked_tokens = (
+        "leonardo.gui",
+        "leonardo.core.task_manager",
+        "leonardo.core.operation_registry",
+        "leonardo.core.process_manager",
+        "leonardo.core.connection_registry",
+        "adapter",
+    )
+
+    for token in blocked_tokens:
+        assert all(token not in module for module in imported_modules)
+
+
+def test_metadata_loader_has_no_network_process_or_file_write_behavior() -> None:
+    source = _LOADER_PATH.read_text(encoding="utf-8")
+    blocked_tokens = (
+        "re" + "quests",
+        "aio" + "http",
+        "web" + "sockets",
+        "soc" + "ket.",
+        "sub" + "process",
+        "shell" + "=True",
+        "op" + "en(",
+        "wr" + "ite(",
+        "mk" + "dir",
+        "un" + "link",
+        "re" + "name",
+        "re" + "place",
+        "pan" + "das",
+        "py" + "arrow",
+        "fast" + "parquet",
+        "to" + "_csv",
+        "to" + "_parquet",
+    )
+
+    for token in blocked_tokens:
+        assert token not in source
+
+
 def test_docs_file_exists_and_describes_boundaries() -> None:
     source = _DOC_PATH.read_text(encoding="utf-8")
 
@@ -299,3 +440,13 @@ def _walk_values(value: object) -> tuple[object, ...]:
         for item in value:
             values.extend(_walk_values(item))
     return tuple(values)
+
+
+def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
+    modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            modules.append(node.module or "")
+    return tuple(modules)

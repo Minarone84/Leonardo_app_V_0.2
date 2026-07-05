@@ -12,6 +12,7 @@ from leonardo.contracts.download_provider_capabilities import (
     ProviderTransportKind,
     TimeframeExpansionResult,
 )
+from leonardo.connection.exchange.metadata_loader import load_default_exchange_capabilities
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 
 
@@ -123,6 +124,41 @@ def test_provider_interval_for_timeframe_returns_none_for_unsupported_or_missing
     assert catalog.provider_interval_for_timeframe("binance", "spot", "1d") is None
     assert catalog.provider_interval_for_timeframe("binance", "margin", "1m") is None
     assert catalog.provider_interval_for_timeframe("kraken", "spot", "1m") is None
+
+
+def test_default_exchange_capabilities_catalog_contains_bybit_only() -> None:
+    catalog = DownloadCapabilityCatalog(load_default_exchange_capabilities())
+
+    assert tuple(provider.provider for provider in catalog.list_providers()) == (
+        "bybit",
+    )
+
+
+def test_default_exchange_capabilities_catalog_exposes_bybit_timeframes() -> None:
+    catalog = DownloadCapabilityCatalog(load_default_exchange_capabilities())
+
+    assert catalog.supported_timeframes("bybit", "spot") == (
+        "1m",
+        "3m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "4h",
+        "6h",
+        "12h",
+        "1d",
+        "1w",
+    )
+
+
+def test_default_exchange_capabilities_catalog_maps_bybit_intervals() -> None:
+    catalog = DownloadCapabilityCatalog(load_default_exchange_capabilities())
+
+    assert catalog.provider_interval_for_timeframe("bybit", "spot", "1h") == "60"
+    assert catalog.provider_interval_for_timeframe("bybit", "spot", "1w") == "W"
+    assert "1M" not in catalog.supported_timeframes("bybit", "spot")
 
 
 def test_expand_timeframes_explicit_supported_values() -> None:

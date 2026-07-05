@@ -24,6 +24,7 @@ from leonardo.contracts.downloads import (
     DownloadTimeframeMode,
     DownloadWorkflowKind,
 )
+from leonardo.connection.exchange.metadata_loader import load_default_exchange_capabilities
 from leonardo.core.audit_log import AuditLog
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_execution_manager import DownloadExecutionManager
@@ -639,6 +640,88 @@ def test_classify_readiness_blocks_unsupported_explicit_timeframe() -> None:
     updated = manager.classify_readiness(snapshot.plan.plan_id)
 
     _assert_capability_blocked(updated, "Unsupported timeframe: 1d")
+    assert _capability_layer(updated).metadata["expanded_timeframes"] == ("1m",)
+
+
+def test_classify_readiness_marks_valid_bybit_plan_ready_with_default_capabilities() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id="req-bybit-ready",
+            source="bybit",
+            market="spot",
+            timeframes=("1m", "1h"),
+            connection_ref="bybit-spot",
+        )
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=DownloadCapabilityCatalog(
+            load_default_exchange_capabilities()
+        ),
+    )
+    snapshot = manager.create_plan("req-bybit-ready")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    layer = _capability_layer(updated)
+    assert updated.plan.phase is DownloadExecutionPhase.READY
+    assert layer.status is DownloadPreflightLayerStatus.PASSED
+    assert layer.metadata["provider"] == "bybit"
+    assert dict(layer.metadata["provider_intervals"]) == {
+        "1m": "1",
+        "1h": "60",
+    }
+
+
+def test_classify_readiness_blocks_bybit_options_market_with_default_capabilities() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id="req-bybit-options",
+            source="bybit",
+            market="options",
+            connection_ref="bybit-options",
+        )
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=DownloadCapabilityCatalog(
+            load_default_exchange_capabilities()
+        ),
+    )
+    snapshot = manager.create_plan("req-bybit-options")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(
+        updated,
+        "Provider market is not supported: unsupported.",
+    )
+
+
+def test_classify_readiness_blocks_bybit_unsupported_timeframe_with_default_capabilities() -> None:
+    download_manager = DownloadManager()
+    download_manager.submit_request(
+        _request(
+            request_id="req-bybit-unsupported-timeframe",
+            source="bybit",
+            market="spot",
+            timeframes=("1m", "2d"),
+            connection_ref="bybit-spot",
+        )
+    )
+    manager = DownloadExecutionManager(
+        download_manager,
+        capability_catalog=DownloadCapabilityCatalog(
+            load_default_exchange_capabilities()
+        ),
+    )
+    snapshot = manager.create_plan("req-bybit-unsupported-timeframe")
+
+    updated = manager.classify_readiness(snapshot.plan.plan_id)
+
+    _assert_capability_blocked(updated, "Unsupported timeframe: 2d")
     assert _capability_layer(updated).metadata["expanded_timeframes"] == ("1m",)
 
 

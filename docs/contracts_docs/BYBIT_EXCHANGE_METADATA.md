@@ -4,10 +4,13 @@
 Leonardo V2 exchange metadata file. It records static Bybit capability facts for
 future catalog loading and preflight decisions.
 
-This phase adds metadata only. It does not implement a REST client, WebSocket
-client, exchange adapter, metadata loader, catalog population, credential
-handling, storage writer, Core behavior, GUI behavior, or Runtime Manager
+The metadata remains a static fact file. The local metadata loader can convert
+it into `DownloadProviderCapability` facts for `DownloadCapabilityCatalog`
+preflight, but it does not implement a REST client, WebSocket client, exchange
+adapter, credential handling, storage writer, GUI behavior, or Runtime Manager
 behavior.
+
+It does not implement a REST client or any network execution behavior.
 
 ## Policy Source
 
@@ -68,9 +71,14 @@ Alias:
 
 - `60m -> 1h`
 
-The monthly `1M` value is retained exactly in metadata. A later loader/catalog
-phase must decide how monthly intervals map into provider capability contracts
-without confusing `1M` with minute-based `1m`.
+The monthly `1M` value is retained exactly in metadata. The current provider
+capability contract accepts `m`, `h`, `d`, and `w` units only, so the loader
+preserves `1M` as deferred metadata instead of normalizing it into minute-based
+`1m`.
+
+Request-time monthly execution remains unsupported in this contract shape. A
+future contract phase must add a distinct month token before `1M` can be used
+without colliding with the existing case-insensitive minute normalization.
 
 ## Kline Policy
 
@@ -101,7 +109,7 @@ WebSocket transport by default.
 
 ## Future Work
 
-A later phase may add a pure loader that converts this static JSON into
-`DownloadProviderCapability` values and then populates `DownloadCapabilityCatalog`.
-That phase must remain separate from adapter/client execution and must handle
-the `1M` monthly interval deliberately.
+A later phase may add adapter/client execution that consumes the capability
+facts. That phase must remain separate from static metadata loading and must
+handle the `1M` monthly interval deliberately if monthly execution becomes
+supported.

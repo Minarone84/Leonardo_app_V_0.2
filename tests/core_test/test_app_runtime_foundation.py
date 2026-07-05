@@ -184,10 +184,11 @@ def test_leonardo_app_exposes_download_execution_manager_without_service_registr
     assert context.service_registry.list_services() == ()
 
 
-def test_leonardo_app_exposes_empty_download_capability_catalog_without_service_registration() -> None:
+def test_leonardo_app_exposes_populated_download_capability_catalog_without_service_registration() -> None:
     app = LeonardoApp()
 
     context = app.startup()
+    providers = context.download_capability_catalog.list_providers()
 
     assert isinstance(app.download_capability_catalog, DownloadCapabilityCatalog)
     assert context.download_capability_catalog is app.download_capability_catalog
@@ -195,11 +196,28 @@ def test_leonardo_app_exposes_empty_download_capability_catalog_without_service_
         app.download_execution_manager._capability_catalog  # type: ignore[attr-defined]
         is app.download_capability_catalog
     )
-    assert context.download_capability_catalog.list_providers() == ()
+    assert tuple(provider.provider for provider in providers) == ("bybit",)
+    assert context.download_capability_catalog.supported_timeframes(
+        "bybit",
+        "spot",
+    ) == (
+        "1m",
+        "3m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "4h",
+        "6h",
+        "12h",
+        "1d",
+        "1w",
+    )
     assert context.service_registry.list_services() == ()
 
 
-def test_default_empty_app_catalog_blocks_download_execution_readiness() -> None:
+def test_default_app_catalog_blocks_unknown_download_provider_readiness() -> None:
     app = LeonardoApp()
     context = app.startup()
     context.download_manager.submit_request(_download_request())
@@ -218,6 +236,32 @@ def test_default_empty_app_catalog_blocks_download_execution_readiness() -> None
     assert layer.issues == ("Unknown provider: binance.",)
     assert context.download_manager.list_items("req-app-download") == before_items
     assert context.service_registry.list_services() == ()
+
+
+def test_default_app_catalog_classifies_valid_bybit_download_ready() -> None:
+    app = LeonardoApp()
+    context = app.startup()
+    context.download_manager.submit_request(
+        _download_request(
+            source="bybit",
+            connection_ref="bybit-spot",
+        )
+    )
+
+    snapshot = context.download_execution_manager.create_plan("req-app-download")
+    updated = context.download_execution_manager.classify_readiness(
+        snapshot.plan.plan_id,
+    )
+
+    layer = _capability_layer(updated)
+    assert updated.plan.phase is DownloadExecutionPhase.READY
+    assert layer.status is DownloadPreflightLayerStatus.PASSED
+    assert layer.metadata["provider"] == "bybit"
+    assert layer.metadata["market"] == "spot"
+    assert dict(layer.metadata["provider_intervals"]) == {
+        "1m": "1",
+        "5m": "5",
+    }
 
 
 def test_download_manager_can_be_used_through_app_context_without_gui(tmp_path) -> None:
@@ -290,18 +334,24 @@ def _audit_event(event_type: str) -> AuditEvent:
     )
 
 
-def _download_request() -> DownloadRequest:
+def _download_request(
+    *,
+    source: str = "binance",
+    market: str = "spot",
+    timeframes: tuple[str, ...] = ("1m", "5m"),
+    connection_ref: str = "binance-spot",
+) -> DownloadRequest:
     return DownloadRequest(
         request_id="req-app-download",
         workflow_kind=DownloadWorkflowKind.DOWNLOAD_DATA,
-        source="binance",
-        market="spot",
+        source=source,
+        market=market,
         symbols=("BTCUSDT",),
         timeframe_mode=DownloadTimeframeMode.EXPLICIT,
-        timeframes=("1m", "5m"),
+        timeframes=timeframes,
         range_mode=DownloadRangeMode.LATEST,
         requested_by="admin-dev",
-        connection_ref="binance-spot",
+        connection_ref=connection_ref,
     )
 
 

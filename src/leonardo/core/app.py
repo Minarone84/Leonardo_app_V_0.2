@@ -11,6 +11,7 @@ from leonardo.contracts.kernel import (
     ContractStatus,
 )
 from leonardo.contracts.runtime import AppLifecycleStatus
+from leonardo.connection.exchange.metadata_loader import load_default_exchange_capabilities
 from leonardo.core.audit_log import (
     AuditLog,
     CompositeAuditSink,
@@ -94,7 +95,9 @@ class LeonardoApp:
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
         self.operation_registry = OperationRegistry(self.state_store)
-        self.download_capability_catalog = DownloadCapabilityCatalog()
+        self.download_capability_catalog = DownloadCapabilityCatalog(
+            load_default_exchange_capabilities()
+        )
         self.download_manager = DownloadManager(self.audit_log)
         self.download_execution_manager = DownloadExecutionManager(
             self.download_manager,
