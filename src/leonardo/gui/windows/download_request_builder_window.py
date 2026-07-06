@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +12,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -52,15 +52,6 @@ OHLCV_SUBMIT_DEFERRED_MESSAGE = (
     "OHLCV Maintenance submit is deferred until storage execution and "
     "maintenance policy are implemented."
 )
-
-
-@dataclass(frozen=True)
-class _FieldSpec:
-    field_id: str
-    label: str
-    widget_kind: str
-    options: tuple[str, ...] = ()
-    placeholder: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,56 +105,41 @@ class DownloadDraftIssue:
     message: str
 
 
-_FIELD_SPECS = (
-    _FieldSpec(
-        "source_provider",
-        "Source / Provider",
-        "combo",
-        options=("Select provider (catalog pending)",),
-    ),
-    _FieldSpec(
-        "market",
-        "Market",
-        "combo",
-        options=("Select market (catalog pending)",),
-    ),
-    _FieldSpec("symbols", "Symbols", "line", placeholder="BTCUSDT, ETHUSDT"),
-    _FieldSpec(
-        "timeframe_mode",
-        "Timeframe Mode",
-        "combo",
-        options=("explicit", "all", "default", "supported"),
-    ),
-    _FieldSpec("timeframes", "Timeframes", "line", placeholder="1m, 5m, 1h"),
-    _FieldSpec(
-        "range_mode",
-        "Range Mode",
-        "combo",
-        options=("explicit", "latest", "missing_only", "full_history"),
-    ),
-    _FieldSpec("start", "Start", "line", placeholder="YYYY-MM-DD or timestamp"),
-    _FieldSpec("end", "End", "line", placeholder="YYYY-MM-DD or timestamp"),
-    _FieldSpec(
-        "conflict_policy",
-        "Conflict Policy",
-        "combo",
-        options=("skip_existing", "overwrite", "append", "merge", "repair_gaps"),
-    ),
-    _FieldSpec(
-        "priority",
-        "Priority",
-        "combo",
-        options=("low", "normal", "high"),
-    ),
-    _FieldSpec(
-        "connection_ref",
-        "Connection Ref",
-        "combo",
-        options=("No connection selected (catalog pending)",),
-    ),
-    _FieldSpec("websocket_required", "WebSocket Required", "checkbox"),
-    _FieldSpec("tags", "Tags", "line", placeholder="comma-separated tags"),
-    _FieldSpec("metadata", "Metadata", "text", placeholder="draft metadata"),
+@dataclass(frozen=True)
+class DownloadRequestBuilderOptions:
+    """
+    GUI-safe catalog facts used to populate the Download Data layout.
+
+    Composition supplies these plain values from Core/catalog state. The widget
+    does not import Core services, exchange metadata loaders, or contracts.
+    """
+
+    exchanges: tuple[str, ...] = ()
+    markets: tuple[str, ...] = ()
+    timeframes: tuple[str, ...] = ()
+    default_limit: int = 200
+    max_limit: int | None = 1000
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "exchanges", _normalize_option_tuple(self.exchanges))
+        object.__setattr__(self, "markets", _normalize_option_tuple(self.markets))
+        object.__setattr__(self, "timeframes", _normalize_option_tuple(self.timeframes))
+        if type(self.default_limit) is not int or self.default_limit < 1:
+            raise ValueError("default_limit must be a positive integer")
+        if self.max_limit is not None and (
+            type(self.max_limit) is not int or self.max_limit < self.default_limit
+        ):
+            raise ValueError("max_limit must be None or greater than default_limit")
+
+
+_VISIBLE_FIELD_LABELS = (
+    "Exchange",
+    "Market Type",
+    "Symbol",
+    "Timeframes",
+    "Start",
+    "End",
+    "Limit",
 )
 
 
@@ -185,16 +161,16 @@ class DownloadRequestBuilderWindow(QWidget):
         on_preview_requested: Callable[[DownloadRequestDraft], object] | None = None,
         on_submit_intent: Callable[[DownloadRequestDraft], object] | None = None,
         action_observer: GuiActionObserver | None = None,
+        options: DownloadRequestBuilderOptions | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._workflow_mode = ""
         self._field_widgets: dict[str, QWidget] = {}
+        self._timeframe_checkboxes: dict[str, QCheckBox] = {}
+        self._options = options if options is not None else DownloadRequestBuilderOptions()
         self._title_label: QLabel | None = None
-        self._workflow_mode_label: QLabel | None = None
         self._ohlcv_policy_note: QLabel | None = None
         self._summary_text: QTextEdit | None = None
-        self._preview_result_text: QTextEdit | None = None
-        self._submit_result_text: QTextEdit | None = None
         self._on_preview_requested = on_preview_requested
         self._on_submit_intent = on_submit_intent
         self._action_observer = action_observer
@@ -219,7 +195,7 @@ class DownloadRequestBuilderWindow(QWidget):
     def field_labels(self) -> tuple[str, ...]:
         """Return visible request-builder field labels in display order."""
 
-        return tuple(spec.label for spec in _FIELD_SPECS)
+        return _VISIBLE_FIELD_LABELS
 
     def field_widget_for_id(self, field_id: str) -> QWidget:
         """Return a draft field widget by stable GUI field identifier."""
@@ -237,6 +213,23 @@ class DownloadRequestBuilderWindow(QWidget):
             return ()
         return tuple(widget.itemText(index) for index in range(widget.count()))
 
+    def selected_timeframes(self) -> tuple[str, ...]:
+        """Return selected explicit timeframe values in display order."""
+
+        return tuple(
+            timeframe
+            for timeframe, checkbox in self._timeframe_checkboxes.items()
+            if checkbox.isChecked()
+        )
+
+    def timeframe_checkbox_for_value(self, timeframe: str) -> QCheckBox:
+        """Return a timeframe checkbox by canonical display value."""
+
+        try:
+            return self._timeframe_checkboxes[timeframe]
+        except KeyError as error:
+            raise KeyError(f"Unknown Download Data timeframe: {timeframe}") from error
+
     def current_draft(self) -> DownloadRequestDraft:
         """Return the current parsed GUI-local draft."""
 
@@ -248,21 +241,15 @@ class DownloadRequestBuilderWindow(QWidget):
         _validate_workflow_mode(workflow_mode)
         self._workflow_mode = workflow_mode
         workflow_label = _workflow_label(workflow_mode)
-        self.setWindowTitle(f"{workflow_label} Request Builder")
+        self.setWindowTitle(workflow_label)
         if self._title_label is not None:
-            self._title_label.setText(f"{workflow_label} Request Builder")
-        if self._workflow_mode_label is not None:
-            self._workflow_mode_label.setText(f"Workflow mode: {workflow_mode}")
+            self._title_label.setText(workflow_label)
         if self._ohlcv_policy_note is not None:
             self._ohlcv_policy_note.setVisible(
                 workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE
             )
         if self._summary_text is not None:
             self._summary_text.clear()
-        if self._preview_result_text is not None:
-            self._preview_result_text.clear()
-        if self._submit_result_text is not None:
-            self._submit_result_text.clear()
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
@@ -271,10 +258,6 @@ class DownloadRequestBuilderWindow(QWidget):
         title_label.setObjectName("download_request_builder.title_label")
         self._title_label = title_label
 
-        workflow_mode_label = QLabel("")
-        workflow_mode_label.setObjectName("download_request_builder.workflow_mode_label")
-        self._workflow_mode_label = workflow_mode_label
-
         ohlcv_note = QLabel(OHLCV_POLICY_DEFERRED_MESSAGE)
         ohlcv_note.setObjectName("download_request_builder.ohlcv_policy_note")
         ohlcv_note.setWordWrap(True)
@@ -282,26 +265,66 @@ class DownloadRequestBuilderWindow(QWidget):
 
         form = QFormLayout()
         form.setObjectName("download_request_builder.form")
-        for spec in _FIELD_SPECS:
-            label = QLabel(spec.label)
-            label.setObjectName(f"download_request_builder.{spec.field_id}.label")
-            widget = _build_field_widget(spec)
-            self._field_widgets[spec.field_id] = widget
-            form.addRow(label, widget)
 
-        draft_summary_button = QPushButton("Draft Summary")
-        draft_summary_button.setObjectName(
-            "download_request_builder.draft_summary_button"
+        exchange = QComboBox()
+        exchange.setObjectName("download_request_builder.exchange")
+        exchange.addItems(self._options.exchanges)
+        self._field_widgets["exchange"] = exchange
+        self._field_widgets["source_provider"] = exchange
+        form.addRow(_field_label("exchange", "Exchange"), exchange)
+
+        market = QComboBox()
+        market.setObjectName("download_request_builder.market")
+        market.addItems(self._options.markets)
+        self._field_widgets["market"] = market
+        form.addRow(_field_label("market", "Market Type"), market)
+
+        symbol = QLineEdit()
+        symbol.setObjectName("download_request_builder.symbol")
+        symbol.setPlaceholderText("BTCUSDT")
+        self._field_widgets["symbol"] = symbol
+        self._field_widgets["symbols"] = symbol
+        form.addRow(_field_label("symbol", "Symbol"), symbol)
+
+        timeframe_grid = QWidget()
+        timeframe_grid.setObjectName("download_request_builder.timeframes")
+        grid = QGridLayout(timeframe_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(4)
+        for index, timeframe in enumerate(self._options.timeframes):
+            checkbox = QCheckBox(timeframe)
+            checkbox.setObjectName(f"download_request_builder.timeframe.{timeframe}")
+            self._timeframe_checkboxes[timeframe] = checkbox
+            grid.addWidget(checkbox, index // 3, index % 3)
+        self._field_widgets["timeframes"] = timeframe_grid
+        form.addRow(_field_label("timeframes", "Timeframes"), timeframe_grid)
+
+        start = QLineEdit()
+        start.setObjectName("download_request_builder.start")
+        start.setPlaceholderText("YYYY-MM-DD or timestamp")
+        self._field_widgets["start"] = start
+        form.addRow(_field_label("start", "Start"), start)
+
+        end = QLineEdit()
+        end.setObjectName("download_request_builder.end")
+        end.setPlaceholderText("YYYY-MM-DD or timestamp")
+        self._field_widgets["end"] = end
+        form.addRow(_field_label("end", "End"), end)
+
+        limit = QLineEdit(str(self._options.default_limit))
+        limit.setObjectName("download_request_builder.limit")
+        limit.setProperty("download_request_builder.limit_max", self._options.max_limit)
+        max_label = (
+            f"1-{self._options.max_limit}"
+            if self._options.max_limit is not None
+            else "positive integer"
         )
-        draft_summary_button.clicked.connect(self._show_draft_summary)
+        limit.setPlaceholderText(f"Page limit ({max_label})")
+        self._field_widgets["limit"] = limit
+        form.addRow(_field_label("limit", "Limit"), limit)
 
-        preview_preflight_button = QPushButton("Preview Preflight")
-        preview_preflight_button.setObjectName(
-            "download_request_builder.preview_preflight_button"
-        )
-        preview_preflight_button.clicked.connect(self._show_preflight_preview)
-
-        submit_button = QPushButton("Submit")
+        submit_button = QPushButton("Start")
         submit_button.setObjectName("download_request_builder.submit_button")
         submit_button.clicked.connect(self._show_submit_result)
 
@@ -310,37 +333,20 @@ class DownloadRequestBuilderWindow(QWidget):
         close_button.clicked.connect(self._close_requested)
 
         summary_text = QTextEdit()
-        summary_text.setObjectName("download_request_builder.summary_text")
+        summary_text.setObjectName("download_request_builder.status_summary")
         summary_text.setReadOnly(True)
         summary_text.setFixedHeight(190)
         self._summary_text = summary_text
 
-        preview_result_text = QTextEdit()
-        preview_result_text.setObjectName("download_request_builder.preview_result_text")
-        preview_result_text.setReadOnly(True)
-        preview_result_text.setFixedHeight(140)
-        self._preview_result_text = preview_result_text
-
-        submit_result_text = QTextEdit()
-        submit_result_text.setObjectName("download_request_builder.submit_result_text")
-        submit_result_text.setReadOnly(True)
-        submit_result_text.setFixedHeight(140)
-        self._submit_result_text = submit_result_text
-
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        buttons.addWidget(draft_summary_button)
-        buttons.addWidget(preview_preflight_button)
         buttons.addWidget(submit_button)
         buttons.addWidget(close_button)
 
         root.addWidget(title_label)
-        root.addWidget(workflow_mode_label)
         root.addWidget(ohlcv_note)
         root.addLayout(form)
         root.addWidget(summary_text)
-        root.addWidget(preview_result_text)
-        root.addWidget(submit_result_text)
         root.addLayout(buttons)
 
     def _show_draft_summary(self) -> None:
@@ -355,19 +361,19 @@ class DownloadRequestBuilderWindow(QWidget):
     def _show_preflight_preview(self) -> None:
         if not self._record_action(DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID):
             return
-        if self._preview_result_text is None:
+        if self._summary_text is None:
             return
 
         draft = self.current_draft()
         issues = _validate_draft(draft)
         if issues:
-            self._preview_result_text.setPlainText(
+            self._summary_text.setPlainText(
                 _format_local_preview_blocked(issues)
             )
             return
 
         if self._on_preview_requested is None:
-            self._preview_result_text.setPlainText(
+            self._summary_text.setPlainText(
                 "Preflight preview is unavailable."
             )
             return
@@ -375,41 +381,41 @@ class DownloadRequestBuilderWindow(QWidget):
         try:
             preview = self._on_preview_requested(draft)
         except Exception as error:
-            self._preview_result_text.setPlainText(
+            self._summary_text.setPlainText(
                 "Preflight preview failed: "
                 f"{type(error).__name__}: {error}"
             )
             return
-        self._preview_result_text.setPlainText(_format_preflight_preview(preview))
+        self._summary_text.setPlainText(_format_preflight_preview(preview))
 
     def _show_submit_result(self) -> None:
         if not self._record_action(DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID):
             return
-        if self._submit_result_text is None:
+        if self._summary_text is None:
             return
 
         draft = self.current_draft()
         issues = _validate_draft(draft)
         if issues:
-            self._submit_result_text.setPlainText(_format_local_submit_blocked(issues))
+            self._summary_text.setPlainText(_format_local_submit_blocked(issues))
             return
 
         if draft.workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE:
-            self._submit_result_text.setPlainText(OHLCV_SUBMIT_DEFERRED_MESSAGE)
+            self._summary_text.setPlainText(OHLCV_SUBMIT_DEFERRED_MESSAGE)
             return
 
         if self._on_submit_intent is None:
-            self._submit_result_text.setPlainText("Download submit is unavailable.")
+            self._summary_text.setPlainText("Download start is unavailable.")
             return
 
         try:
             result = self._on_submit_intent(draft)
         except Exception as error:
-            self._submit_result_text.setPlainText(
-                "Download submit failed: " f"{type(error).__name__}: {error}"
+            self._summary_text.setPlainText(
+                "Download start failed: " f"{type(error).__name__}: {error}"
             )
             return
-        self._submit_result_text.setPlainText(_format_submit_result(result))
+        self._summary_text.setPlainText(_format_submit_result(result))
 
     def _close_requested(self) -> None:
         if not self._record_action(DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID):
@@ -426,24 +432,6 @@ class DownloadRequestBuilderWindow(QWidget):
             metadata={"workflow_mode": self._workflow_mode},
         )
         return decision.allowed
-
-
-def _build_field_widget(spec: _FieldSpec) -> QWidget:
-    object_name = f"download_request_builder.{spec.field_id}"
-    if spec.widget_kind == "combo":
-        widget = QComboBox()
-        widget.addItems(spec.options)
-    elif spec.widget_kind == "checkbox":
-        widget = QCheckBox("Require WebSocket-capable connection")
-    elif spec.widget_kind == "text":
-        widget = QTextEdit()
-        widget.setPlaceholderText(spec.placeholder)
-        widget.setFixedHeight(72)
-    else:
-        widget = QLineEdit()
-        widget.setPlaceholderText(spec.placeholder)
-    widget.setObjectName(object_name)
-    return widget
 
 
 def _validate_workflow_mode(workflow_mode: str) -> None:
@@ -468,32 +456,78 @@ def _draft_from_widgets(
     workflow_mode: str,
     field_widgets: Mapping[str, QWidget],
 ) -> DownloadRequestDraft:
-    timeframe_mode = _text_field_value(field_widgets["timeframe_mode"])
-    metadata, metadata_parse_error = _parse_metadata(
-        _text_field_value(field_widgets["metadata"])
+    timeframes = _selected_timeframes(field_widgets["timeframes"])
+    limit_widget = field_widgets["limit"]
+    limit_value, limit_error = _parse_limit(
+        _text_field_value(limit_widget),
+        max_limit=_limit_max(limit_widget),
     )
+    metadata = {"limit": limit_value} if limit_value is not None else {}
+    range_mode = "explicit"
     return DownloadRequestDraft(
         workflow_mode=workflow_mode,
         source_provider=_text_field_value(field_widgets["source_provider"]),
         market=_text_field_value(field_widgets["market"]),
-        symbols=_split_csv_lines(_text_field_value(field_widgets["symbols"])),
-        timeframe_mode=timeframe_mode,
-        timeframes=(
-            _split_csv_lines(_text_field_value(field_widgets["timeframes"]))
-            if timeframe_mode == "explicit"
-            else ()
-        ),
-        range_mode=_text_field_value(field_widgets["range_mode"]),
+        symbols=_single_symbol_tuple(_text_field_value(field_widgets["symbols"])),
+        timeframe_mode="explicit",
+        timeframes=timeframes,
+        range_mode=range_mode,
         start=_text_field_value(field_widgets["start"]),
         end=_text_field_value(field_widgets["end"]),
-        conflict_policy=_text_field_value(field_widgets["conflict_policy"]),
-        priority=_text_field_value(field_widgets["priority"]),
-        connection_ref=_text_field_value(field_widgets["connection_ref"]),
-        websocket_required=_checked_field_value(field_widgets["websocket_required"]),
-        tags=_split_csv_lines(_text_field_value(field_widgets["tags"])),
+        conflict_policy="skip_existing",
+        priority="normal",
+        connection_ref="",
+        websocket_required=False,
+        tags=(),
         metadata=metadata,
-        metadata_parse_error=metadata_parse_error,
+        metadata_parse_error=limit_error,
     )
+
+
+def _field_label(field_id: str, label_text: str) -> QLabel:
+    label = QLabel(label_text)
+    label.setObjectName(f"download_request_builder.{field_id}.label")
+    return label
+
+
+def _normalize_option_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise TypeError("option values must be strings")
+        candidate = value.strip()
+        if candidate and candidate not in seen:
+            normalized.append(candidate)
+            seen.add(candidate)
+    return tuple(normalized)
+
+
+def _selected_timeframes(widget: QWidget) -> tuple[str, ...]:
+    return tuple(
+        checkbox.text().strip()
+        for checkbox in widget.findChildren(QCheckBox)
+        if checkbox.isChecked() and checkbox.text().strip()
+    )
+
+
+def _parse_limit(value: str, *, max_limit: int | None) -> tuple[int | None, str | None]:
+    if not value:
+        return None, "Limit is required."
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None, "Limit must be a positive integer."
+    if parsed < 1:
+        return None, "Limit must be a positive integer."
+    if max_limit is not None and parsed > max_limit:
+        return None, f"Limit must be less than or equal to {max_limit}."
+    return parsed, None
+
+
+def _limit_max(widget: QWidget) -> int | None:
+    value = widget.property("download_request_builder.limit_max")
+    return value if isinstance(value, int) else None
 
 
 def _validate_draft(draft: DownloadRequestDraft) -> tuple[DownloadDraftIssue, ...]:
@@ -517,7 +551,7 @@ def _validate_draft(draft: DownloadRequestDraft) -> tuple[DownloadDraftIssue, ..
     if draft.metadata_parse_error is not None:
         issues.append(
             DownloadDraftIssue(
-                field_id="metadata",
+                field_id="limit",
                 severity="error",
                 message=draft.metadata_parse_error,
             )
@@ -567,27 +601,15 @@ def _format_draft_summary(
     draft: DownloadRequestDraft,
     issues: tuple[DownloadDraftIssue, ...],
 ) -> str:
-    metadata_display = (
-        f"invalid ({draft.metadata_parse_error})"
-        if draft.metadata_parse_error is not None
-        else f"valid JSON object {json.dumps(dict(draft.metadata), sort_keys=True)}"
-    )
+    limit_display = _display_optional(dict(draft.metadata).get("limit"))
     lines = [
-        f"Workflow mode: {draft.workflow_mode}",
-        f"Source / Provider: {_display_value(draft.source_provider)}",
-        f"Market: {_display_value(draft.market)}",
-        f"Symbols: {len(draft.symbols)} ({_format_sequence(draft.symbols)})",
-        f"Timeframe mode: {draft.timeframe_mode}",
-        f"Explicit timeframes: {len(draft.timeframes)} ({_format_sequence(draft.timeframes)})",
-        f"Range mode: {draft.range_mode}",
+        f"Exchange: {_display_value(draft.source_provider)}",
+        f"Market Type: {_display_value(draft.market)}",
+        f"Symbol: {_format_sequence(draft.symbols)}",
+        f"Timeframes: {len(draft.timeframes)} ({_format_sequence(draft.timeframes)})",
         f"Start: {_display_value(draft.start)}",
         f"End: {_display_value(draft.end)}",
-        f"Conflict policy: {draft.conflict_policy}",
-        f"Priority: {draft.priority}",
-        f"Connection ref: {_display_value(draft.connection_ref)}",
-        f"WebSocket required: {draft.websocket_required}",
-        f"Tags: {len(draft.tags)} ({_format_sequence(draft.tags)})",
-        f"Metadata: {metadata_display}",
+        f"Limit: {limit_display}",
     ]
     if draft.workflow_mode == OHLCV_MAINTENANCE_WORKFLOW_MODE:
         lines.extend(("", f"Warning: {OHLCV_DRAFT_SUMMARY_WARNING}"))
@@ -615,7 +637,7 @@ def _format_local_preview_blocked(
 def _format_local_submit_blocked(
     issues: tuple[DownloadDraftIssue, ...],
 ) -> str:
-    lines = ["Download submit blocked by local validation issues:"]
+    lines = ["Download start blocked by local validation issues:"]
     for issue in issues:
         lines.append(f"- {issue.severity.upper()} {issue.field_id}: {issue.message}")
     return "\n".join(lines)
@@ -650,7 +672,7 @@ def _format_preflight_preview(preview: object) -> str:
 def _format_submit_result(result: object) -> str:
     issues = tuple(getattr(result, "issues", ()))
     lines = [
-        "Download submit result:",
+        "Download start result:",
         f"Message: {getattr(result, 'message', '')}",
         f"Accepted: {getattr(result, 'accepted', False)}",
         f"Request ID: {getattr(result, 'request_id', '')}",
@@ -703,29 +725,8 @@ def _text_field_value(widget: QWidget) -> str:
     return ""
 
 
-def _checked_field_value(widget: QWidget) -> bool:
-    return isinstance(widget, QCheckBox) and widget.isChecked()
-
-
-def _split_csv_lines(value: str) -> tuple[str, ...]:
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-    return tuple(
-        part.strip()
-        for part in normalized.replace("\n", ",").split(",")
-        if part.strip()
-    )
-
-
-def _parse_metadata(raw_value: str) -> tuple[Mapping[str, object], str | None]:
-    if not raw_value:
-        return {}, None
-    try:
-        parsed = json.loads(raw_value)
-    except json.JSONDecodeError as error:
-        return {}, f"Invalid metadata JSON: {error.msg}"
-    if not isinstance(parsed, dict):
-        return {}, "Metadata must be a JSON object."
-    return parsed, None
+def _single_symbol_tuple(value: str) -> tuple[str, ...]:
+    return (value,) if value else ()
 
 
 def _parse_iso_like_datetime(value: str) -> tuple[datetime | None, str | None]:

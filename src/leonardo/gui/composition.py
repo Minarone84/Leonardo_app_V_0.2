@@ -36,6 +36,7 @@ from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
 from leonardo.gui.windows.download_request_builder_window import (
     DOWNLOAD_DATA_WORKFLOW_MODE,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
+    DownloadRequestBuilderOptions,
     DownloadRequestDraft,
     DownloadRequestBuilderWindow,
 )
@@ -76,6 +77,7 @@ class GuiCoreContext(Protocol):
     session_manager: object
     user_policy: object
     audit_log: object
+    download_capability_catalog: object
     download_manager: object
     download_execution_manager: object
 
@@ -145,6 +147,11 @@ class GuiCompositionRoot:
         self._download_execution_manager = getattr(
             context,
             "download_execution_manager",
+            None,
+        )
+        self._download_capability_catalog = getattr(
+            context,
+            "download_capability_catalog",
             None,
         )
 
@@ -250,6 +257,7 @@ class GuiCompositionRoot:
                     else None
                 ),
                 action_observer=self._action_observer,
+                options=self._download_request_builder_options(),
             )
             if self._track_windows:
                 self._install_tracker(
@@ -272,6 +280,50 @@ class GuiCompositionRoot:
     def _download_submit_available(self) -> bool:
         submit = getattr(self._download_manager, "submit_request", None)
         return callable(submit)
+
+    def _download_request_builder_options(self) -> DownloadRequestBuilderOptions:
+        catalog = self._download_capability_catalog
+        list_providers = getattr(catalog, "list_providers", None)
+        list_markets = getattr(catalog, "list_markets", None)
+        supported_timeframes = getattr(catalog, "supported_timeframes", None)
+        if not (
+            callable(list_providers)
+            and callable(list_markets)
+            and callable(supported_timeframes)
+        ):
+            return DownloadRequestBuilderOptions()
+
+        providers = tuple(list_providers())
+        if not providers:
+            return DownloadRequestBuilderOptions()
+
+        provider = providers[0]
+        provider_id = str(getattr(provider, "provider", "")).strip()
+        display_name = str(getattr(provider, "display_name", "")).strip()
+        exchange = display_name if display_name else provider_id
+
+        markets = tuple(
+            str(getattr(market, "market", "")).strip()
+            for market in list_markets(provider_id)
+            if _is_download_data_market(market)
+        )
+        default_market = markets[0] if markets else ""
+        timeframes = (
+            tuple(supported_timeframes(provider_id, default_market))
+            if default_market
+            else ()
+        )
+
+        rate_limit_policy = getattr(provider, "rate_limit_policy", None)
+        default_limit = getattr(rate_limit_policy, "page_limit_default", None)
+        max_limit = getattr(rate_limit_policy, "page_limit_max", None)
+        return DownloadRequestBuilderOptions(
+            exchanges=(exchange,) if exchange else (),
+            markets=markets,
+            timeframes=timeframes,
+            default_limit=default_limit if isinstance(default_limit, int) else 200,
+            max_limit=max_limit if isinstance(max_limit, int) else 1000,
+        )
 
     def _preview_download_request(
         self,
@@ -443,6 +495,22 @@ def _submitted_item_count(download_manager: object, request_id: str) -> int:
     if not callable(list_items):
         return 0
     return len(tuple(list_items(request_id)))
+
+
+def _is_download_data_market(market: object) -> bool:
+    status = getattr(market, "status", None)
+    status_value = getattr(status, "value", status)
+    timeframes = getattr(market, "timeframes", ())
+    data_kinds = tuple(
+        str(getattr(kind, "value", kind))
+        for kind in getattr(market, "data_kinds", ())
+    )
+    return (
+        status_value == "supported"
+        and bool(tuple(timeframes))
+        and "ohlcv" in data_kinds
+        and bool(str(getattr(market, "market", "")).strip())
+    )
 
 
 def _create_execution_plan(

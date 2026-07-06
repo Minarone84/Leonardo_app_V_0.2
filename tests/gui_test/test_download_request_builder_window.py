@@ -16,19 +16,18 @@ from PySide6.QtWidgets import (  # noqa: E402
     QTextEdit,
 )
 
+from leonardo.gui.metadata import GuiMetadataResolver, load_metadata_document  # noqa: E402
 from leonardo.gui.windows.download_request_builder_window import (  # noqa: E402
     DOWNLOAD_DATA_WORKFLOW_MODE,
     DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
-    DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID,
     DOWNLOAD_REQUEST_BUILDER_METADATA_ID,
-    DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,
     DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
     OHLCV_POLICY_DEFERRED_MESSAGE,
     OHLCV_SUBMIT_DEFERRED_MESSAGE,
+    DownloadRequestBuilderOptions,
     DownloadRequestBuilderWindow,
 )
-from leonardo.gui.metadata import GuiMetadataResolver, load_metadata_document  # noqa: E402
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,15 +48,40 @@ _BUILDER_METADATA = (
     / "windows"
     / "download_request_builder.window.toml"
 )
-_EXPECTED_FIELD_LABELS = (
-    "Source / Provider",
-    "Market",
-    "Symbols",
-    "Timeframe Mode",
+_BYBIT_TIMEFRAMES = (
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "12h",
+    "1d",
+    "1w",
+)
+_BUILDER_OPTIONS = DownloadRequestBuilderOptions(
+    exchanges=("Bybit",),
+    markets=("spot", "linear", "inverse"),
+    timeframes=_BYBIT_TIMEFRAMES,
+    default_limit=200,
+    max_limit=1000,
+)
+_VISIBLE_FIELD_LABELS = (
+    "Exchange",
+    "Market Type",
+    "Symbol",
     "Timeframes",
-    "Range Mode",
     "Start",
     "End",
+    "Limit",
+)
+_BACKEND_LABELS = (
+    "Source / Provider",
+    "Timeframe Mode",
+    "Range Mode",
     "Conflict Policy",
     "Priority",
     "Connection Ref",
@@ -65,29 +89,24 @@ _EXPECTED_FIELD_LABELS = (
     "Tags",
     "Metadata",
 )
-_EXPECTED_ACTION_IDS = (
-    DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID,
-    DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,
-    DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
-    DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
-)
 
 
-def test_builder_metadata_loads_stable_identity_and_actions() -> None:
+def test_builder_metadata_keeps_identity_and_visible_actions() -> None:
     result = load_metadata_document(_BUILDER_METADATA)
 
     assert result.report.has_errors is False
     assert result.document is not None
     assert result.document.metadata_id == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
-    assert result.document.title == "Download Request Builder"
     assert result.document.metadata["window_id"] == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
     assert result.document.metadata["object_name"] == "download_request_builder_window"
     assert result.document.metadata["instance_policy"] == "singleton"
-    assert result.document.metadata["description"] == (
-        "Existing builder for Download Data and OHLCV Maintenance drafts."
-    )
     assert tuple(action.action_id for action in result.document.actions) == (
-        _EXPECTED_ACTION_IDS
+        DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
+        DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
+    )
+    assert tuple(action.label for action in result.document.actions) == (
+        "Start",
+        "Close",
     )
 
     profile = GuiMetadataResolver().resolve(result.document)
@@ -95,79 +114,89 @@ def test_builder_metadata_loads_stable_identity_and_actions() -> None:
 
 
 def test_builder_opens_in_download_data_mode(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow(DOWNLOAD_DATA_WORKFLOW_MODE)
+    window = _builder()
 
     assert window.workflow_mode == "download_data"
     assert window.workflow_label == "Download Data"
-    assert window.windowTitle() == "Download Data Request Builder"
+    assert window.windowTitle() == "Download Data"
     assert window.findChild(QLabel, "download_request_builder.title_label").text() == (
-        "Download Data Request Builder"
+        "Download Data"
     )
-    assert window.findChild(
-        QLabel,
-        "download_request_builder.workflow_mode_label",
-    ).text() == "Workflow mode: download_data"
     assert window.findChild(
         QLabel,
         "download_request_builder.ohlcv_policy_note",
     ).isHidden()
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
 def test_builder_opens_in_ohlcv_maintenance_mode(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow(OHLCV_MAINTENANCE_WORKFLOW_MODE)
+    window = _builder(OHLCV_MAINTENANCE_WORKFLOW_MODE)
     window.show()
     qapplication.processEvents()
     note = window.findChild(QLabel, "download_request_builder.ohlcv_policy_note")
 
     assert window.workflow_mode == "ohlcv_maintenance"
     assert window.workflow_label == "OHLCV Maintenance"
-    assert window.windowTitle() == "OHLCV Maintenance Request Builder"
+    assert window.windowTitle() == "OHLCV Maintenance"
     assert note.text() == OHLCV_POLICY_DEFERRED_MESSAGE
     assert note.isVisible() is True
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_builder_displays_common_placeholder_fields(
+def test_compact_layout_shows_only_user_facing_field_labels(
     qapplication: QApplication,
 ) -> None:
-    window = DownloadRequestBuilderWindow()
+    window = _builder()
+    visible_labels = {
+        label.text()
+        for label in window.findChildren(QLabel)
+        if label.objectName().startswith("download_request_builder.")
+    }
 
-    assert window.field_labels() == _EXPECTED_FIELD_LABELS
-    assert isinstance(window.field_widget_for_id("source_provider"), QComboBox)
-    assert isinstance(window.field_widget_for_id("market"), QComboBox)
-    assert isinstance(window.field_widget_for_id("timeframe_mode"), QComboBox)
-    assert isinstance(window.field_widget_for_id("range_mode"), QComboBox)
-    assert isinstance(window.field_widget_for_id("conflict_policy"), QComboBox)
-    assert isinstance(window.field_widget_for_id("priority"), QComboBox)
-    assert isinstance(window.field_widget_for_id("connection_ref"), QComboBox)
-    assert isinstance(window.field_widget_for_id("websocket_required"), QCheckBox)
-    assert isinstance(window.field_widget_for_id("metadata"), QTextEdit)
+    assert set(_VISIBLE_FIELD_LABELS) <= visible_labels
+    for backend_label in _BACKEND_LABELS:
+        assert backend_label not in visible_labels
 
-    assert window.option_values_for_id("timeframe_mode") == (
-        "explicit",
-        "all",
-        "default",
-        "supported",
-    )
-    assert window.option_values_for_id("range_mode") == (
-        "explicit",
-        "latest",
-        "missing_only",
-        "full_history",
-    )
-
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_builder_has_local_action_buttons(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
+def test_catalog_options_populate_exchange_market_and_timeframes(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
 
+    assert window.field_labels() == _VISIBLE_FIELD_LABELS
+    assert window.option_values_for_id("exchange") == ("Bybit",)
+    assert window.option_values_for_id("source_provider") == ("Bybit",)
+    assert window.option_values_for_id("market") == ("spot", "linear", "inverse")
+    assert "options" not in window.option_values_for_id("market")
+    assert tuple(
+        checkbox.text()
+        for checkbox in window.findChildren(QCheckBox)
+        if checkbox.objectName().startswith("download_request_builder.timeframe.")
+    ) == _BYBIT_TIMEFRAMES
+    assert window.findChild(QCheckBox, "download_request_builder.timeframe.1M") is None
+
+    _dispose(qapplication, window)
+
+
+def test_timeframe_checkboxes_are_arranged_in_three_columns(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+    grid = window.field_widget_for_id("timeframes").layout()
+    assert grid is not None
+
+    assert grid.columnCount() == 3
+    assert grid.rowCount() == 4
+
+    _dispose(qapplication, window)
+
+
+def test_no_unapproved_visible_buttons_or_controls(qapplication: QApplication) -> None:
+    window = _builder()
     buttons = {
         button.objectName(): button.text()
         for button in window.findChildren(QPushButton)
@@ -175,80 +204,71 @@ def test_builder_has_local_action_buttons(qapplication: QApplication) -> None:
     }
 
     assert buttons == {
-        "download_request_builder.draft_summary_button": "Draft Summary",
-        "download_request_builder.preview_preflight_button": "Preview Preflight",
-        "download_request_builder.submit_button": "Submit",
+        "download_request_builder.submit_button": "Start",
         "download_request_builder.close": "Close",
     }
+    assert window.findChild(QPushButton, "download_request_builder.select_all") is None
+    assert window.findChild(QPushButton, "download_request_builder.clear") is None
+    assert window.findChild(QPushButton, "download_request_builder.stop") is None
+    assert (
+        window.findChild(QPushButton, "download_request_builder.ohlcv_maintenance")
+        is None
+    )
     assert window.findChild(QPushButton, "download_request_builder.preflight") is None
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_builder_summary_text_area_is_read_only(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
-    summary_text = window.findChild(QTextEdit, "download_request_builder.summary_text")
+def test_status_area_is_read_only(qapplication: QApplication) -> None:
+    window = _builder()
+    status = _status_area(window)
 
-    assert summary_text is not None
-    assert summary_text.isReadOnly() is True
+    assert status.isReadOnly() is True
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_builder_preview_result_text_area_is_read_only(
+def test_visible_fields_map_to_explicit_draft_with_hidden_defaults(
     qapplication: QApplication,
 ) -> None:
-    window = DownloadRequestBuilderWindow()
-    preview_result = window.findChild(
-        QTextEdit,
-        "download_request_builder.preview_result_text",
-    )
-
-    assert preview_result is not None
-    assert preview_result.isReadOnly() is True
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_builder_submit_result_text_area_is_read_only(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    submit_result = window.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
-
-    assert submit_result is not None
-    assert submit_result.isReadOnly() is True
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_builder_exposes_current_draft(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT, ETHUSDT")
-    _set_text_field(window, "timeframes", "1m\n5m")
-    _set_text_field(window, "tags", "preview, smoke")
-    _set_metadata(window, '{"profile": "manual"}')
+    window = _builder()
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+    _set_text_field(window, "start", "2026-01-01")
+    _set_text_field(window, "end", "2026-01-02")
 
     draft = window.current_draft()
 
-    assert draft.workflow_mode == DOWNLOAD_DATA_WORKFLOW_MODE
-    assert draft.symbols == ("BTCUSDT", "ETHUSDT")
-    assert draft.timeframes == ("1m", "5m")
-    assert draft.tags == ("preview", "smoke")
-    assert draft.metadata["profile"] == "manual"
+    assert draft.source_provider == "Bybit"
+    assert draft.market == "spot"
+    assert draft.symbols == ("BTCUSDT",)
+    assert draft.timeframe_mode == "explicit"
+    assert draft.timeframes == ("1m",)
+    assert draft.range_mode == "explicit"
+    assert draft.start == "2026-01-01"
+    assert draft.end == "2026-01-02"
+    assert draft.conflict_policy == "skip_existing"
+    assert draft.priority == "normal"
+    assert draft.connection_ref == ""
+    assert draft.websocket_required is False
+    assert draft.tags == ()
+    assert dict(draft.metadata) == {"limit": 200}
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_preview_local_validation_errors_block_callback(
+def test_symbol_input_maps_to_one_item_tuple(qapplication: QApplication) -> None:
+    window = _builder()
+    _set_text_field(window, "symbol", "BTCUSDT, ETHUSDT")
+
+    draft = window.current_draft()
+
+    assert draft.symbols == ("BTCUSDT, ETHUSDT",)
+
+    _dispose(qapplication, window)
+
+
+def test_no_selected_timeframes_block_local_start_validation(
     qapplication: QApplication,
 ) -> None:
     calls = 0
@@ -256,36 +276,80 @@ def test_preview_local_validation_errors_block_callback(
     def callback(draft: object) -> object:
         nonlocal calls
         calls += 1
-        return _preview_view()
+        return _submit_view()
 
-    window = DownloadRequestBuilderWindow(on_preview_requested=callback)
+    window = _builder(on_submit_intent=callback)
+    _set_text_field(window, "symbol", "BTCUSDT")
 
-    result = _render_preview(window)
+    result = _render_start(window)
 
     assert calls == 0
-    assert "Preflight preview blocked by local validation issues:" in result
-    assert "ERROR symbols: At least one symbol is required." in result
-    assert (
-        "ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
-        in result
+    assert "Download start blocked by local validation issues:" in result
+    assert "ERROR timeframes: Explicit timeframe mode requires at least one timeframe." in (
+        result
     )
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_builder_internal_buttons_record_action_observer(
+def test_limit_default_and_max_validation(qapplication: QApplication) -> None:
+    window = _builder()
+    limit = window.field_widget_for_id("limit")
+    assert isinstance(limit, QLineEdit)
+
+    assert limit.text() == "200"
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+    _set_text_field(window, "limit", "1001")
+
+    result = _render_start(window)
+
+    assert "ERROR limit: Limit must be less than or equal to 1000." in result
+
+    _dispose(qapplication, window)
+
+
+def test_start_valid_download_data_draft_calls_callback_once(
     qapplication: QApplication,
 ) -> None:
-    observer = _RecordingActionObserver()
-    window = DownloadRequestBuilderWindow(action_observer=observer)
+    calls: list[object] = []
 
-    _render_summary(window)
-    _render_preview(window)
-    _render_submit(window)
+    def callback(draft: object) -> object:
+        calls.append(draft)
+        return _submit_view()
+
+    window = _builder(on_submit_intent=callback)
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    result = _render_start(window)
+
+    assert len(calls) == 1
+    assert calls[0].symbols == ("BTCUSDT",)
+    assert calls[0].timeframes == ("1m",)
+    assert dict(calls[0].metadata) == {"limit": 200}
+    assert result.startswith("Download start result:")
+    assert "Message: Download request submitted." in result
+    assert "Accepted: True" in result
+    assert "Request ID: request-test" in result
+    assert "Execution plan created: yes" in result
+
+    _dispose(qapplication, window)
+
+
+def test_start_action_records_through_observer(qapplication: QApplication) -> None:
+    observer = _RecordingActionObserver()
+    window = _builder(action_observer=observer)
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    _render_start(window)
     window.findChild(QPushButton, "download_request_builder.close").click()
 
-    assert tuple(call.action_id for call in observer.calls) == _EXPECTED_ACTION_IDS
+    assert tuple(call.action_id for call in observer.calls) == (
+        DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
+        DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
+    )
     assert all(
         call.window_id == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
         for call in observer.calls
@@ -295,11 +359,10 @@ def test_builder_internal_buttons_record_action_observer(
         for call in observer.calls
     )
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_denied_preview_action_does_not_run_callback(
+def test_denied_start_action_does_not_run_callback(
     qapplication: QApplication,
 ) -> None:
     calls = 0
@@ -307,123 +370,25 @@ def test_denied_preview_action_does_not_run_callback(
     def callback(draft: object) -> object:
         nonlocal calls
         calls += 1
-        return _preview_view()
+        return _submit_view()
 
     observer = _RecordingActionObserver(
-        denied_action_ids=(DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,)
+        denied_action_ids=(DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,)
     )
-    window = DownloadRequestBuilderWindow(
-        on_preview_requested=callback,
-        action_observer=observer,
-    )
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
+    window = _builder(on_submit_intent=callback, action_observer=observer)
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
 
-    result = _render_preview(window)
+    result = _render_start(window)
 
     assert calls == 0
     assert result == ""
-    assert (
-        observer.calls[-1].action_id
-        == DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID
-    )
+    assert observer.calls[-1].action_id == DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
-def test_preview_valid_draft_calls_callback_once(qapplication: QApplication) -> None:
-    calls: list[object] = []
-
-    def callback(draft: object) -> object:
-        calls.append(draft)
-        return _preview_view()
-
-    window = DownloadRequestBuilderWindow(on_preview_requested=callback)
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_preview(window)
-
-    assert len(calls) == 1
-    assert result.startswith("Preflight preview result:")
-    assert "Message: Preflight preview passed." in result
-    assert "Request ID: preview-test" in result
-    assert "Status: validated" in result
-    assert "Core preview issues:\n- none" in result
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_preview_absent_callback_renders_unavailable_message(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_preview(window)
-
-    assert result == "Preflight preview is unavailable."
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_preview_callback_exception_renders_safe_error(
-    qapplication: QApplication,
-) -> None:
-    def callback(draft: object) -> object:
-        raise RuntimeError("preview failed")
-
-    window = DownloadRequestBuilderWindow(on_preview_requested=callback)
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_preview(window)
-
-    assert result == "Preflight preview failed: RuntimeError: preview failed"
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_submit_valid_download_data_draft_calls_callback_once(
-    qapplication: QApplication,
-) -> None:
-    calls: list[object] = []
-
-    def callback(draft: object) -> object:
-        calls.append(draft)
-        return _submit_view()
-
-    window = DownloadRequestBuilderWindow(on_submit_intent=callback)
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_submit(window)
-
-    assert len(calls) == 1
-    assert result.startswith("Download submit result:")
-    assert "Message: Download request submitted." in result
-    assert "Accepted: True" in result
-    assert "Request ID: request-test" in result
-    assert "Status: validated" in result
-    assert "Runtime visible: True" in result
-    assert "Execution plan created: yes" in result
-    assert "Execution plan ID: execution-plan-request-test" in result
-    assert "Execution plan message: Download execution plan classified as ready." in result
-    assert "Execution plan phase: ready" in result
-    assert "Execution plan ready: yes" in result
-    assert "Execution plan blocked: no" in result
-    assert "Submit issues:\n- none" in result
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_submit_local_validation_errors_block_callback(
+def test_start_ohlcv_mode_blocks_callback_and_shows_deferred_message(
     qapplication: QApplication,
 ) -> None:
     calls = 0
@@ -433,245 +398,22 @@ def test_submit_local_validation_errors_block_callback(
         calls += 1
         return _submit_view()
 
-    window = DownloadRequestBuilderWindow(on_submit_intent=callback)
+    window = _builder(OHLCV_MAINTENANCE_WORKFLOW_MODE, on_submit_intent=callback)
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
 
-    result = _render_submit(window)
-
-    assert calls == 0
-    assert "Download submit blocked by local validation issues:" in result
-    assert "ERROR symbols: At least one symbol is required." in result
-    assert (
-        "ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
-        in result
-    )
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_submit_ohlcv_mode_blocks_callback_and_shows_deferred_message(
-    qapplication: QApplication,
-) -> None:
-    calls = 0
-
-    def callback(draft: object) -> object:
-        nonlocal calls
-        calls += 1
-        return _submit_view()
-
-    window = DownloadRequestBuilderWindow(
-        OHLCV_MAINTENANCE_WORKFLOW_MODE,
-        on_submit_intent=callback,
-    )
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_submit(window)
+    result = _render_start(window)
 
     assert calls == 0
     assert result == OHLCV_SUBMIT_DEFERRED_MESSAGE
 
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_submit_absent_callback_renders_unavailable_message(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_submit(window)
-
-    assert result == "Download submit is unavailable."
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_submit_callback_exception_renders_safe_error(
-    qapplication: QApplication,
-) -> None:
-    def callback(draft: object) -> object:
-        raise RuntimeError("submit failed")
-
-    window = DownloadRequestBuilderWindow(on_submit_intent=callback)
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    result = _render_submit(window)
-
-    assert result == "Download submit failed: RuntimeError: submit failed"
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_draft_summary_parses_comma_separated_symbols(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT, ETHUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    summary = _render_summary(window)
-
-    assert "Symbols: 2 (BTCUSDT, ETHUSDT)" in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_draft_summary_parses_newline_separated_symbols(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT\nETHUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    summary = _render_summary(window)
-
-    assert "Symbols: 2 (BTCUSDT, ETHUSDT)" in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_draft_summary_parses_timeframes_only_for_explicit_mode(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m\n5m")
-
-    explicit_summary = _render_summary(window)
-    _select_combo_value(window, "timeframe_mode", "all")
-    all_summary = _render_summary(window)
-
-    assert "Explicit timeframes: 2 (1m, 5m)" in explicit_summary
-    assert "Explicit timeframes: 0 (none)" in all_summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_explicit_timeframe_mode_with_empty_timeframes_reports_local_issue(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-
-    summary = _render_summary(window)
-
-    assert (
-        "- ERROR timeframes: Explicit timeframe mode requires at least one timeframe."
-        in summary
-    )
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-@pytest.mark.parametrize("timeframe_mode", ("all", "default", "supported"))
-def test_non_explicit_timeframe_modes_do_not_require_timeframes(
-    qapplication: QApplication,
-    timeframe_mode: str,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _select_combo_value(window, "timeframe_mode", timeframe_mode)
-
-    summary = _render_summary(window)
-
-    assert "Local validation issues:\n- none" in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_draft_summary_parses_tags_from_commas_and_newlines(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-    _set_text_field(window, "tags", "alpha, beta\ngamma")
-
-    summary = _render_summary(window)
-
-    assert "Tags: 3 (alpha, beta, gamma)" in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_empty_metadata_is_valid(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-
-    summary = _render_summary(window)
-
-    assert "Metadata: valid JSON object {}" in summary
-    assert "metadata:" not in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_json_object_metadata_parses_and_appears_in_summary(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-    _set_metadata(window, '{"note": "daily", "source": "manual"}')
-
-    summary = _render_summary(window)
-
-    assert 'Metadata: valid JSON object {"note": "daily", "source": "manual"}' in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_invalid_metadata_reports_local_issue(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-    _set_metadata(window, "{bad")
-
-    summary = _render_summary(window)
-
-    assert "- ERROR metadata: Invalid metadata JSON:" in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-@pytest.mark.parametrize("metadata", ('["tag"]', '"text"', "3"))
-def test_non_object_metadata_reports_local_issue(
-    qapplication: QApplication,
-    metadata: str,
-) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
-    _set_metadata(window, metadata)
-
-    summary = _render_summary(window)
-
-    assert "- ERROR metadata: Metadata must be a JSON object." in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
 def test_parseable_start_and_end_are_accepted(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
+    window = _builder()
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
     _set_text_field(window, "start", "2026-01-01")
     _set_text_field(window, "end", "2026-01-02")
 
@@ -681,16 +423,15 @@ def test_parseable_start_and_end_are_accepted(qapplication: QApplication) -> Non
     assert "End: 2026-01-02" in summary
     assert "Local validation issues:\n- none" in summary
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
 def test_reversed_start_and_end_report_local_issue(
     qapplication: QApplication,
 ) -> None:
-    window = DownloadRequestBuilderWindow()
-    _set_text_field(window, "symbols", "BTCUSDT")
-    _set_text_field(window, "timeframes", "1m")
+    window = _builder()
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
     _set_text_field(window, "start", "2026-01-02")
     _set_text_field(window, "end", "2026-01-01")
 
@@ -698,34 +439,16 @@ def test_reversed_start_and_end_report_local_issue(
 
     assert "- ERROR end: End must be greater than or equal to start." in summary
 
-    window.deleteLater()
-    qapplication.processEvents()
-
-
-def test_ohlcv_draft_summary_includes_deferred_policy_warning(
-    qapplication: QApplication,
-) -> None:
-    window = DownloadRequestBuilderWindow(OHLCV_MAINTENANCE_WORKFLOW_MODE)
-
-    summary = _render_summary(window)
-
-    assert (
-        "OHLCV naming/storage/maintenance policy is not implemented here. "
-        "This is a local draft only."
-    ) in summary
-
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
 def test_builder_rejects_unknown_workflow_mode(qapplication: QApplication) -> None:
-    window = DownloadRequestBuilderWindow()
+    window = _builder()
 
     with pytest.raises(ValueError, match="Unsupported"):
         window.set_workflow_mode("unknown")
 
-    window.deleteLater()
-    qapplication.processEvents()
+    _dispose(qapplication, window)
 
 
 def test_builder_source_has_no_core_or_contract_dependencies() -> None:
@@ -770,16 +493,18 @@ class _RecordingActionObserver:
         )
 
 
-def _qapplication() -> QApplication:
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
-
-
-@pytest.fixture
-def qapplication() -> QApplication:
-    return _qapplication()
+def _builder(
+    workflow_mode: str = DOWNLOAD_DATA_WORKFLOW_MODE,
+    *,
+    on_submit_intent=None,
+    action_observer=None,
+) -> DownloadRequestBuilderWindow:
+    return DownloadRequestBuilderWindow(
+        workflow_mode,
+        on_submit_intent=on_submit_intent,
+        action_observer=action_observer,
+        options=_BUILDER_OPTIONS,
+    )
 
 
 def _set_text_field(
@@ -792,82 +517,34 @@ def _set_text_field(
     widget.setText(value)
 
 
-def _set_metadata(window: DownloadRequestBuilderWindow, value: str) -> None:
-    widget = window.field_widget_for_id("metadata")
-    assert isinstance(widget, QTextEdit)
-    widget.setPlainText(value)
-
-
-def _select_combo_value(
+def _check_timeframes(
     window: DownloadRequestBuilderWindow,
-    field_id: str,
-    value: str,
+    *timeframes: str,
 ) -> None:
-    widget = window.field_widget_for_id(field_id)
-    assert isinstance(widget, QComboBox)
-    index = widget.findText(value)
-    assert index >= 0
-    widget.setCurrentIndex(index)
+    for timeframe in timeframes:
+        window.timeframe_checkbox_for_value(timeframe).setChecked(True)
+
+
+def _status_area(window: DownloadRequestBuilderWindow) -> QTextEdit:
+    status = window.findChild(QTextEdit, "download_request_builder.status_summary")
+    assert status is not None
+    return status
 
 
 def _render_summary(window: DownloadRequestBuilderWindow) -> str:
-    button = window.findChild(
-        QPushButton,
-        "download_request_builder.draft_summary_button",
-    )
-    summary_text = window.findChild(QTextEdit, "download_request_builder.summary_text")
-    assert button is not None
-    assert summary_text is not None
-
-    button.click()
-    return summary_text.toPlainText()
+    window._show_draft_summary()
+    return _status_area(window).toPlainText()
 
 
-def _render_preview(window: DownloadRequestBuilderWindow) -> str:
-    button = window.findChild(
-        QPushButton,
-        "download_request_builder.preview_preflight_button",
-    )
-    preview_text = window.findChild(
-        QTextEdit,
-        "download_request_builder.preview_result_text",
-    )
-    assert button is not None
-    assert preview_text is not None
-
-    button.click()
-    return preview_text.toPlainText()
-
-
-def _render_submit(window: DownloadRequestBuilderWindow) -> str:
+def _render_start(window: DownloadRequestBuilderWindow) -> str:
     button = window.findChild(
         QPushButton,
         "download_request_builder.submit_button",
     )
-    submit_text = window.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
     assert button is not None
-    assert submit_text is not None
 
     button.click()
-    return submit_text.toPlainText()
-
-
-def _preview_view() -> SimpleNamespace:
-    return SimpleNamespace(
-        request_id="preview-test",
-        status="validated",
-        can_run=True,
-        estimated_symbols=1,
-        estimated_timeframes=1,
-        estimated_items=1,
-        required_connections=(),
-        websocket_required=False,
-        issues=(),
-        message="Preflight preview passed.",
-    )
+    return _status_area(window).toPlainText()
 
 
 def _submit_view() -> SimpleNamespace:
@@ -888,3 +565,22 @@ def _submit_view() -> SimpleNamespace:
         execution_plan_ready=True,
         execution_plan_blocked=False,
     )
+
+
+def _dispose(qapplication: QApplication, *widgets) -> None:
+    for widget in widgets:
+        widget.close()
+        widget.deleteLater()
+    qapplication.processEvents()
+
+
+def _qapplication() -> QApplication:
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
+
+
+@pytest.fixture
+def qapplication() -> QApplication:
+    return _qapplication()

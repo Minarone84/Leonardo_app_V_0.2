@@ -112,6 +112,7 @@ def test_composition_registers_first_gui_action_definitions(
         Permission.RUNTIME_VIEW,
     )
     assert definitions["runtime_manager.close"].required_permissions == ()
+    assert definitions["download_request_builder.submit"].label == "Start"
     for action_id in (
         "download_request_builder.draft_summary",
         "download_request_builder.preview_preflight",
@@ -257,8 +258,6 @@ def test_download_request_builder_internal_actions_are_recorded(
     assert builder is not None
 
     for object_name in (
-        "download_request_builder.draft_summary_button",
-        "download_request_builder.preview_preflight_button",
         "download_request_builder.submit_button",
         "download_request_builder.close",
     ):
@@ -268,8 +267,6 @@ def test_download_request_builder_internal_actions_are_recorded(
         qapplication.processEvents()
 
     for action_id in (
-        "download_request_builder.draft_summary",
-        "download_request_builder.preview_preflight",
         "download_request_builder.submit",
         "download_request_builder.close",
     ):

@@ -8,7 +8,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
-    QComboBox,
     QLineEdit,
     QPushButton,
     QTextEdit,
@@ -255,6 +254,47 @@ class FakeDownloadExecutionManager:
         return tuple(self._snapshots[plan_id] for plan_id in sorted(self._snapshots))
 
 
+class FakeDownloadCapabilityCatalog:
+    def list_providers(self) -> tuple[SimpleNamespace, ...]:
+        return (
+            SimpleNamespace(
+                provider="bybit",
+                display_name="Bybit",
+                rate_limit_policy=SimpleNamespace(
+                    page_limit_default=200,
+                    page_limit_max=1000,
+                ),
+            ),
+        )
+
+    def list_markets(self, provider: str) -> tuple[SimpleNamespace, ...]:
+        assert provider == "bybit"
+        return (
+            _market("spot"),
+            _market("linear"),
+            _market("inverse"),
+            _market("options", status="unsupported", timeframes=()),
+        )
+
+    def supported_timeframes(self, provider: str, market: str) -> tuple[str, ...]:
+        assert provider == "bybit"
+        assert market in {"spot", "linear", "inverse"}
+        return (
+            "1m",
+            "3m",
+            "5m",
+            "15m",
+            "30m",
+            "1h",
+            "2h",
+            "4h",
+            "6h",
+            "12h",
+            "1d",
+            "1w",
+        )
+
+
 class FakeCoreContext:
     def __init__(
         self,
@@ -263,6 +303,7 @@ class FakeCoreContext:
     ) -> None:
         self.runtime_manager = FakeRuntimeManager()
         self.window_registry = FakeWindowRegistry()
+        self.download_capability_catalog = FakeDownloadCapabilityCatalog()
         self.download_manager = FakeDownloadManager()
         self.download_execution_manager = (
             download_execution_manager
@@ -387,14 +428,11 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT, ETHUSDT")
-    _set_builder_text(builder, "timeframes", "1m, 5m")
-    _click_builder_button(builder, "download_request_builder.preview_preflight_button")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m", "5m")
+    builder._show_preflight_preview()
     after_snapshot = context.runtime_manager.snapshot()
-    preview_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.preview_result_text",
-    )
+    status_text = _builder_status_text(builder)
 
     assert context.download_manager.preview_calls == 1
     assert context.download_manager.submit_calls == 0
@@ -404,13 +442,9 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
     assert context.download_manager.last_preview_request.request_id.startswith(
         "preview-"
     )
-    assert context.download_manager.last_preview_request.symbols == (
-        "BTCUSDT",
-        "ETHUSDT",
-    )
+    assert context.download_manager.last_preview_request.symbols == ("BTCUSDT",)
     assert context.download_manager.last_preview_request.timeframes == ("1m", "5m")
-    assert preview_text is not None
-    assert "Preflight preview passed." in preview_text.toPlainText()
+    assert "Preflight preview passed." in status_text
     assert before_snapshot == after_snapshot
 
     builder.close()
@@ -430,13 +464,10 @@ def test_composition_wires_download_submit_without_preview_call(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT, ETHUSDT")
-    _set_builder_text(builder, "timeframes", "1m, 5m")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m", "5m")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     assert context.download_manager.submit_calls == 1
     assert context.download_manager.preview_calls == 0
@@ -455,23 +486,19 @@ def test_composition_wires_download_submit_without_preview_call(
     assert not context.download_manager.last_submit_request.request_id.startswith(
         "preview-"
     )
-    assert context.download_manager.last_submit_request.symbols == (
-        "BTCUSDT",
-        "ETHUSDT",
-    )
+    assert context.download_manager.last_submit_request.symbols == ("BTCUSDT",)
     assert context.download_manager.last_submit_request.timeframes == ("1m", "5m")
-    assert submit_text is not None
-    assert "Download request submitted." in submit_text.toPlainText()
-    assert "Item count: 4" in submit_text.toPlainText()
-    assert "Runtime visible: True" in submit_text.toPlainText()
-    assert "Execution plan created: yes" in submit_text.toPlainText()
-    assert "Execution plan ID: execution-plan-request-" in submit_text.toPlainText()
+    assert "Download request submitted." in submit_text
+    assert "Item count: 2" in submit_text
+    assert "Runtime visible: True" in submit_text
+    assert "Execution plan created: yes" in submit_text
+    assert "Execution plan ID: execution-plan-request-" in submit_text
     assert "Execution plan message: Download execution plan classified as ready." in (
-        submit_text.toPlainText()
+        submit_text
     )
-    assert "Execution plan phase: ready" in submit_text.toPlainText()
-    assert "Execution plan ready: yes" in submit_text.toPlainText()
-    assert "Execution plan blocked: no" in submit_text.toPlainText()
+    assert "Execution plan phase: ready" in submit_text
+    assert "Execution plan ready: yes" in submit_text
+    assert "Execution plan blocked: no" in submit_text
 
     builder.close()
     builder.deleteLater()
@@ -479,7 +506,7 @@ def test_composition_wires_download_submit_without_preview_call(
     qapplication.processEvents()
 
 
-def test_composition_reports_blocked_readiness_without_fake_item_expansion(
+def test_composition_reports_blocked_readiness_for_explicit_download(
     qapplication: QApplication,
 ) -> None:
     execution_manager = FakeDownloadExecutionManager(
@@ -494,33 +521,34 @@ def test_composition_reports_blocked_readiness_without_fake_item_expansion(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT")
-    _select_builder_combo(builder, "timeframe_mode", "all")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     assert context.download_manager.submit_calls == 1
     assert execution_manager.create_plan_calls == 1
     assert execution_manager.classify_readiness_calls == 1
     assert context.download_manager.last_submit_request is not None
-    assert context.download_manager.last_submit_request.timeframes == ()
-    assert context.download_manager.list_items(
-        context.download_manager.last_submit_request.request_id,
-    ) == ()
-    assert submit_text is not None
-    assert "Accepted: True" in submit_text.toPlainText()
-    assert "Item count: 0" in submit_text.toPlainText()
-    assert "Execution plan created: yes" in submit_text.toPlainText()
-    assert "Execution plan phase: blocked" in submit_text.toPlainText()
-    assert "Execution plan ready: no" in submit_text.toPlainText()
-    assert "Execution plan blocked: yes" in submit_text.toPlainText()
+    assert context.download_manager.last_submit_request.timeframes == ("1m",)
+    assert (
+        len(
+            context.download_manager.list_items(
+                context.download_manager.last_submit_request.request_id,
+            )
+        )
+        == 1
+    )
+    assert "Accepted: True" in submit_text
+    assert "Item count: 1" in submit_text
+    assert "Execution plan created: yes" in submit_text
+    assert "Execution plan phase: blocked" in submit_text
+    assert "Execution plan ready: no" in submit_text
+    assert "Execution plan blocked: yes" in submit_text
     assert (
         "Execution plan message: Download execution plan classified as blocked: "
         "Timeframe expansion is unresolved."
-    ) in submit_text.toPlainText()
+    ) in submit_text
 
     builder.close()
     builder.deleteLater()
@@ -539,28 +567,24 @@ def test_composition_handles_duplicate_download_submit_safely(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT")
-    _set_builder_text(builder, "timeframes", "1m")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m")
 
     _click_builder_button(builder, "download_request_builder.submit_button")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     assert context.download_manager.submit_calls == 2
     assert context.download_manager.preview_calls == 0
     assert context.download_execution_manager.create_plan_calls == 1
     assert context.download_execution_manager.classify_readiness_calls == 1
-    assert submit_text is not None
-    assert "Download request submit rejected." in submit_text.toPlainText()
-    assert "Accepted: False" in submit_text.toPlainText()
-    assert "Runtime visible: False" in submit_text.toPlainText()
-    assert "Execution plan phase: unresolved" in submit_text.toPlainText()
-    assert "Execution plan ready: no" in submit_text.toPlainText()
-    assert "Execution plan blocked: no" in submit_text.toPlainText()
-    assert "already submitted" in submit_text.toPlainText()
+    assert "Download request submit rejected." in submit_text
+    assert "Accepted: False" in submit_text
+    assert "Runtime visible: False" in submit_text
+    assert "Execution plan phase: unresolved" in submit_text
+    assert "Execution plan ready: no" in submit_text
+    assert "Execution plan blocked: no" in submit_text
+    assert "already submitted" in submit_text
 
     builder.close()
     builder.deleteLater()
@@ -579,23 +603,19 @@ def test_composition_blocks_ohlcv_submit_without_core_call(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT")
-    _set_builder_text(builder, "timeframes", "1m")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     assert context.download_manager.submit_calls == 0
     assert context.download_manager.preview_calls == 0
     assert context.download_execution_manager.create_plan_calls == 0
     assert context.download_execution_manager.classify_readiness_calls == 0
-    assert submit_text is not None
     assert (
         "OHLCV Maintenance submit is deferred until storage execution and "
         "maintenance policy are implemented."
-    ) == submit_text.toPlainText()
+    ) == submit_text
 
     builder.close()
     builder.deleteLater()
@@ -615,27 +635,31 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT, ETHUSDT")
-    _set_builder_text(builder, "timeframes", "1m, 5m")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m", "5m")
     _click_builder_button(builder, "download_request_builder.submit_button")
 
     summary = app.download_manager.get_summary()
     snapshot = app.runtime_manager.snapshot()
+    request = app.download_manager.list_requests()[0]
+    plan_id = f"execution-plan-{request.request_id}"
 
     assert summary.total_requests == 1
-    assert summary.total_items == 4
+    assert summary.total_items == 2
     assert snapshot.downloads_summary.count == 1
     assert snapshot.downloads_summary.metadata["total_requests"] == 1
-    assert snapshot.downloads_summary.metadata["total_items"] == 4
+    assert snapshot.downloads_summary.metadata["total_items"] == 2
     assert snapshot.download_execution_summary.count == 1
     assert snapshot.download_execution_summary.metadata["total_plans"] == 1
-    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
-        f"execution-plan-{app.download_manager.list_requests()[0].request_id}",
+    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == (
+        plan_id,
     )
+    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == (
+        plan_id,
+    )
+    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == ()
     assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
-        "blocked"
+        "ready"
     )
     assert any(
         event.event_type == "download.execution.plan.created"
@@ -643,7 +667,7 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     )
     assert any(
         event.event_type == "download.execution.phase.changed"
-        and event.payload["new_phase"] == "blocked"
+        and event.payload["new_phase"] == "ready"
         for event in app.audit_log.snapshot()
     )
 
@@ -654,7 +678,7 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     app.shutdown()
 
 
-def test_download_submit_unresolved_timeframe_is_blocked_in_runtime_snapshot(
+def test_download_submit_without_timeframe_is_locally_blocked_before_runtime_snapshot(
     qapplication: QApplication,
 ) -> None:
     app = LeonardoApp()
@@ -666,38 +690,21 @@ def test_download_submit_unresolved_timeframe_is_blocked_in_runtime_snapshot(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT")
-    _select_builder_combo(builder, "timeframe_mode", "all")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     snapshot = app.runtime_manager.snapshot()
-    request = app.download_manager.list_requests()[0]
-    plan_id = f"execution-plan-{request.request_id}"
-
-    assert app.download_manager.list_items(request.request_id) == ()
-    assert submit_text is not None
-    assert "Accepted: True" in submit_text.toPlainText()
-    assert "Item count: 0" in submit_text.toPlainText()
-    assert "Execution plan phase: blocked" in submit_text.toPlainText()
-    assert "Execution plan ready: no" in submit_text.toPlainText()
-    assert "Execution plan blocked: yes" in submit_text.toPlainText()
+    assert app.download_manager.list_requests() == ()
+    assert app.download_manager.list_items() == ()
+    assert "Download start blocked by local validation issues:" in submit_text
+    assert "ERROR timeframes: Explicit timeframe mode requires at least one timeframe." in (
+        submit_text
+    )
     assert snapshot.download_execution_summary.metadata["active_plan_ids"] == ()
     assert snapshot.download_execution_summary.metadata["running_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
-        plan_id,
-    )
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
-        "blocked"
-    )
-    assert any(
-        event.event_type == "download.execution.phase.changed"
-        and event.payload["new_phase"] == "blocked"
-        for event in app.audit_log.snapshot()
-    )
+    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == ()
+    assert snapshot.download_execution_summary.metadata["plan_rows"] == ()
 
     builder.close()
     builder.deleteLater()
@@ -718,30 +725,26 @@ def test_download_submit_plan_failure_preserves_accepted_submit(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT")
-    _set_builder_text(builder, "timeframes", "1m")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     assert context.download_manager.submit_calls == 1
     assert execution_manager.create_plan_calls == 1
     assert execution_manager.classify_readiness_calls == 0
     assert context.download_manager.last_submit_request is not None
-    assert submit_text is not None
-    assert "Accepted: True" in submit_text.toPlainText()
-    assert "Runtime visible: True" in submit_text.toPlainText()
-    assert "Execution plan created: no" in submit_text.toPlainText()
-    assert "Execution plan ID: unresolved" in submit_text.toPlainText()
-    assert "Execution plan phase: unresolved" in submit_text.toPlainText()
-    assert "Execution plan ready: no" in submit_text.toPlainText()
-    assert "Execution plan blocked: no" in submit_text.toPlainText()
+    assert "Accepted: True" in submit_text
+    assert "Runtime visible: True" in submit_text
+    assert "Execution plan created: no" in submit_text
+    assert "Execution plan ID: unresolved" in submit_text
+    assert "Execution plan phase: unresolved" in submit_text
+    assert "Execution plan ready: no" in submit_text
+    assert "Execution plan blocked: no" in submit_text
     assert (
         "Execution plan message: Download execution plan creation failed: "
         "RuntimeError: plan failed"
-    ) in submit_text.toPlainText()
+    ) in submit_text
 
     builder.close()
     builder.deleteLater()
@@ -761,30 +764,26 @@ def test_download_submit_classification_failure_preserves_created_plan(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
-    _set_builder_text(builder, "symbols", "BTCUSDT")
-    _set_builder_text(builder, "timeframes", "1m")
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
-    submit_text = builder.findChild(
-        QTextEdit,
-        "download_request_builder.submit_result_text",
-    )
+    submit_text = _builder_status_text(builder)
 
     assert context.download_manager.submit_calls == 1
     assert execution_manager.create_plan_calls == 1
     assert execution_manager.classify_readiness_calls == 1
     assert context.download_manager.last_submit_request is not None
-    assert submit_text is not None
-    assert "Accepted: True" in submit_text.toPlainText()
-    assert "Runtime visible: True" in submit_text.toPlainText()
-    assert "Execution plan created: yes" in submit_text.toPlainText()
-    assert "Execution plan ID: execution-plan-request-" in submit_text.toPlainText()
-    assert "Execution plan phase: planned" in submit_text.toPlainText()
-    assert "Execution plan ready: no" in submit_text.toPlainText()
-    assert "Execution plan blocked: no" in submit_text.toPlainText()
+    assert "Accepted: True" in submit_text
+    assert "Runtime visible: True" in submit_text
+    assert "Execution plan created: yes" in submit_text
+    assert "Execution plan ID: execution-plan-request-" in submit_text
+    assert "Execution plan phase: planned" in submit_text
+    assert "Execution plan ready: no" in submit_text
+    assert "Execution plan blocked: no" in submit_text
     assert (
         "Execution plan message: Download execution readiness classification failed: "
         "RuntimeError: classification failed"
-    ) in submit_text.toPlainText()
+    ) in submit_text
 
     builder.close()
     builder.deleteLater()
@@ -890,16 +889,18 @@ def _set_builder_text(
     widget.setText(value)
 
 
-def _select_builder_combo(
+def _check_builder_timeframes(
     builder: DownloadRequestBuilderWindow,
-    field_id: str,
-    value: str,
+    *timeframes: str,
 ) -> None:
-    widget = builder.field_widget_for_id(field_id)
-    assert isinstance(widget, QComboBox)
-    index = widget.findText(value)
-    assert index >= 0
-    widget.setCurrentIndex(index)
+    for timeframe in timeframes:
+        builder.timeframe_checkbox_for_value(timeframe).setChecked(True)
+
+
+def _builder_status_text(builder: DownloadRequestBuilderWindow) -> str:
+    widget = builder.findChild(QTextEdit, "download_request_builder.status_summary")
+    assert widget is not None
+    return widget.toPlainText()
 
 
 def _click_builder_button(
@@ -909,3 +910,20 @@ def _click_builder_button(
     button = builder.findChild(QPushButton, object_name)
     assert button is not None
     button.click()
+
+
+def _market(
+    market: str,
+    *,
+    status: str = "supported",
+    timeframes: tuple[str, ...] = ("1m",),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        market=market,
+        status=SimpleNamespace(value=status),
+        data_kinds=("ohlcv",) if status == "supported" else (),
+        timeframes=tuple(
+            SimpleNamespace(canonical_timeframe=timeframe)
+            for timeframe in timeframes
+        ),
+    )

@@ -148,7 +148,7 @@ TRACKED_GUI_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
     ),
     ActionDefinition(
         action_id="download_request_builder.submit",
-        label="Submit",
+        label="Start",
         kind=ActionKind.BUTTON,
         window_id="download_request_builder.window",
     ),

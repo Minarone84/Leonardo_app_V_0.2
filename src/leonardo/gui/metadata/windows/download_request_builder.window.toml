@@ -38,27 +38,19 @@ label = "Header"
 
 [[regions]]
 region_id = "download_request_builder.form"
-label = "Draft Fields"
+label = "Download Data Fields"
 
 [[regions]]
 region_id = "download_request_builder.results"
-label = "Results"
+label = "Status"
 
 [[regions]]
 region_id = "download_request_builder.actions"
 label = "Actions"
 
 [[actions]]
-action_id = "download_request_builder.draft_summary"
-label = "Draft Summary"
-
-[[actions]]
-action_id = "download_request_builder.preview_preflight"
-label = "Preview Preflight"
-
-[[actions]]
 action_id = "download_request_builder.submit"
-label = "Submit"
+label = "Start"
 
 [[actions]]
 action_id = "download_request_builder.close"
