@@ -176,3 +176,25 @@ def test_connection_registry_snapshots_are_defensive() -> None:
     assert before_definitions == (definition,)
     assert before_states[0].status is ConnectionLifecycleStatus.REGISTERED
     assert registry.connection_states()[0].status is ConnectionLifecycleStatus.DEGRADED
+
+
+def test_connection_registry_shutdown_tracking_marks_active_state_disconnected() -> None:
+    registry, state_store, audit_log = _registry()
+    registry.register_connection(_definition())
+    registry.register_websocket_channel(_channel())
+    registry.mark_connection_connected("connection-1")
+
+    stopped = registry.shutdown_tracking(reason="Test shutdown")
+
+    assert stopped[0].status is ConnectionLifecycleStatus.DISCONNECTED
+    assert state_store.connection_states()[0].status is (
+        ConnectionLifecycleStatus.DISCONNECTED
+    )
+    assert state_store.websocket_channel_states()[0].status is (
+        ConnectionLifecycleStatus.DISCONNECTED
+    )
+    assert [event.event_type for event in audit_log.snapshot()][-3:] == [
+        "connection.lifecycle.disconnect_requested",
+        "connection.channel.status_changed",
+        "connection.lifecycle.disconnected",
+    ]

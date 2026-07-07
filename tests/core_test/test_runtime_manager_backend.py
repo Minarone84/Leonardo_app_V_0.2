@@ -74,6 +74,8 @@ def test_runtime_manager_snapshot_includes_active_task_without_starting_tasks() 
     assert snapshot.tasks_summary.count == 1
     assert snapshot.tasks_summary.metadata["task_ids"] == ("task-1",)
     assert snapshot.tasks_summary.metadata["task_names"] == ("inspect-runtime",)
+    assert snapshot.tasks_summary.metadata["operation_ids"] == (None,)
+    assert snapshot.tasks_summary.metadata["correlation_ids"] == (None,)
 
 
 def test_runtime_manager_snapshot_includes_windows_actions_and_operations() -> None:
@@ -108,6 +110,7 @@ def test_runtime_manager_snapshot_includes_windows_actions_and_operations() -> N
         window_id="runtime-manager",
         action_id="runtime.refresh",
     )
+    app.operation_registry.mark_running(operation.operation_id, task_id="task-1")
 
     snapshot = app.runtime_manager.snapshot()
 
@@ -123,6 +126,7 @@ def test_runtime_manager_snapshot_includes_windows_actions_and_operations() -> N
     assert snapshot.operations_summary.metadata["operation_ids"] == (
         operation.operation_id,
     )
+    assert snapshot.operations_summary.metadata["task_ids"] == ("task-1",)
 
 
 def test_runtime_manager_snapshot_includes_recent_audit_event_previews() -> None:
@@ -195,9 +199,13 @@ def test_runtime_manager_snapshot_includes_contract_registry_summary() -> None:
 
     snapshot = app.runtime_manager.snapshot()
 
-    assert snapshot.contract_registry.total_contracts == 20
-    assert snapshot.contract_registry.active_contracts == 20
-    assert snapshot.contracts_summary.count == 20
+    assert snapshot.contract_registry.total_contracts == 28
+    assert snapshot.contract_registry.active_contracts == 28
+    assert snapshot.contracts_summary.count == 28
+    assert app.contract_registry.get_contract(
+        "leonardo.core_runtime.command",
+        "1.0",
+    ) is not None
 
 
 def test_runtime_manager_snapshot_includes_process_summary() -> None:

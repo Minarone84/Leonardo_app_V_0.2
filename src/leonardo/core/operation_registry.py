@@ -180,6 +180,14 @@ class OperationRegistry:
 
         return self._state_store.operations_state()
 
+    def get_operation(self, operation_id: str) -> OperationRuntimeState | None:
+        """Return an active operation by identifier, if it exists."""
+
+        for state in self._state_store.operations_state():
+            if state.operation_id == operation_id:
+                return state
+        return None
+
     def _transition(
         self,
         operation_id: str,

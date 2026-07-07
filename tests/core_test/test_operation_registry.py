@@ -31,18 +31,29 @@ def test_operation_registry_tracks_requested_running_and_completed_lifecycle() -
         correlation_id="corr-1",
     )
     running = registry.mark_running(requested.operation_id, task_id="task-1")
+    active = registry.get_operation(requested.operation_id)
     completed = registry.mark_completed(requested.operation_id)
 
     assert requested.status is OperationLifecycleStatus.REQUESTED
     assert running.status is OperationLifecycleStatus.RUNNING
+    assert running.task_id == "task-1"
+    assert active == running
     assert completed.status is OperationLifecycleStatus.COMPLETED
+    assert completed.task_id == "task-1"
     assert completed.is_terminal is True
+    assert registry.get_operation(requested.operation_id) is None
     assert state_store.operations_state() == ()
     assert [event.event_type for event in audit_log.snapshot()] == [
         "operation.lifecycle.requested",
         "operation.lifecycle.running",
         "operation.lifecycle.completed",
     ]
+    assert any(
+        event.event_type == "operation.lifecycle.running"
+        and event.payload["task_id"] == "task-1"
+        and event.payload["correlation_id"] == "corr-1"
+        for event in audit_log.snapshot()
+    )
 
 
 def test_operation_registry_removes_blocked_failed_and_cancelled_terminal_states() -> None:

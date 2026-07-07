@@ -10,7 +10,8 @@ from leonardo.contracts.kernel import (
     ContractSchemaKind,
     ContractStatus,
 )
-from leonardo.contracts.runtime import AppLifecycleStatus
+from leonardo.contracts.runtime import AppLifecycleStatus, ServiceLifecycleStatus
+from leonardo.contracts.services import ServiceKind
 from leonardo.connection.exchange.metadata_loader import load_default_exchange_capabilities
 from leonardo.core.audit_log import (
     AuditLog,
@@ -22,6 +23,8 @@ from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
+from leonardo.core.core_runner import CoreRunner
+from leonardo.core.core_runtime_bridge import CoreRuntimeBridge
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_execution_manager import DownloadExecutionManager
 from leonardo.core.download_manager import DownloadManager
@@ -50,6 +53,8 @@ class CoreContext:
     service_registry: ServiceRegistry
     error_router: ErrorRouter
     task_manager: TaskManager
+    core_runner: CoreRunner
+    core_runtime_bridge: CoreRuntimeBridge
     process_manager: ProcessManager
     connection_registry: ConnectionRegistry
     window_registry: WindowRegistry
@@ -86,6 +91,18 @@ class LeonardoApp:
             self.state_store,
             error_router=self.error_router,
         )
+        self.operation_registry = OperationRegistry(self.state_store)
+        self.core_runner = CoreRunner(
+            self.task_manager,
+            error_router=self.error_router,
+        )
+        self.core_runtime_bridge = CoreRuntimeBridge(
+            self.core_runner,
+            operation_registry=self.operation_registry,
+            session_provider=self.session_manager,
+            user_policy=self.user_policy,
+            audit_log=self.audit_log,
+        )
         self.process_manager = ProcessManager(
             self.state_store,
             self.audit_log,
@@ -94,7 +111,6 @@ class LeonardoApp:
         self.connection_registry = ConnectionRegistry(self.state_store)
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
-        self.operation_registry = OperationRegistry(self.state_store)
         self.download_capability_catalog = DownloadCapabilityCatalog(
             load_default_exchange_capabilities()
         )
@@ -129,6 +145,8 @@ class LeonardoApp:
             service_registry=self.service_registry,
             error_router=self.error_router,
             task_manager=self.task_manager,
+            core_runner=self.core_runner,
+            core_runtime_bridge=self.core_runtime_bridge,
             process_manager=self.process_manager,
             connection_registry=self.connection_registry,
             window_registry=self.window_registry,
@@ -174,15 +192,128 @@ class LeonardoApp:
             )
             raise
 
-    def shutdown(self) -> None:
+    def shutdown(
+        self,
+        *,
+        timeout: float = 5.0,
+        reason: str = "Application shutdown requested",
+    ) -> None:
         """Stop the Core runtime foundation. Shutdown is idempotent."""
+
+        if type(timeout) not in (float, int) or timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        if not isinstance(reason, str):
+            raise TypeError("reason must be a string")
 
         status = self.state_store.get_app_status()
         if status is AppLifecycleStatus.STOPPED:
+            self.core_runtime_bridge.shutdown(timeout=timeout)
             return
-        self.state_store.set_app_lifecycle_status(AppLifecycleStatus.STOPPING)
-        self.state_store.set_app_lifecycle_status(AppLifecycleStatus.STOPPED)
-        self.audit_log.close()
+
+        preserve_failed_state = status is AppLifecycleStatus.FAILED
+        if not preserve_failed_state:
+            self.state_store.set_app_lifecycle_status(
+                AppLifecycleStatus.STOPPING,
+                message=reason,
+            )
+
+        try:
+            self._shutdown_runtime_resources(
+                timeout=float(timeout),
+                reason=reason,
+            )
+        except Exception as exc:
+            self.state_store.set_app_lifecycle_status(
+                AppLifecycleStatus.FAILED,
+                message="Application shutdown failed",
+            )
+            self.error_router.route_exception(
+                exc,
+                message="Application shutdown failed",
+                context={
+                    "phase": "shutdown",
+                    "timeout_s": float(timeout),
+                    "reason": reason,
+                },
+            )
+            raise
+        else:
+            if not preserve_failed_state:
+                self.state_store.set_app_lifecycle_status(
+                    AppLifecycleStatus.STOPPED,
+                    message="Application stopped",
+                )
+        finally:
+            self.audit_log.close()
+
+    def _shutdown_runtime_resources(
+        self,
+        *,
+        timeout: float,
+        reason: str,
+    ) -> None:
+        errors: list[tuple[str, Exception]] = []
+
+        shutdown_steps = (
+            (
+                "core_runtime",
+                lambda: self.core_runtime_bridge.shutdown(timeout=timeout),
+            ),
+            ("processes", self.process_manager.stop_all),
+            (
+                "connections",
+                lambda: self.connection_registry.shutdown_tracking(reason=reason),
+            ),
+            ("services", lambda: self._shutdown_lifecycle_services(reason=reason)),
+        )
+        for step_name, shutdown_step in shutdown_steps:
+            try:
+                shutdown_step()
+            except Exception as exc:
+                self.error_router.route_exception(
+                    exc,
+                    message=f"Application shutdown step failed: {step_name}",
+                    context={
+                        "phase": "shutdown",
+                        "step": step_name,
+                        "timeout_s": timeout,
+                        "reason": reason,
+                    },
+                )
+                errors.append((step_name, exc))
+
+        if errors:
+            failed_steps = ", ".join(step_name for step_name, _exc in errors)
+            raise RuntimeError(f"Application shutdown failed: {failed_steps}")
+
+    def _shutdown_lifecycle_services(self, *, reason: str) -> None:
+        service_states = {
+            state.service_id: state
+            for state in self.state_store.runtime_snapshot().service_states
+        }
+        lifecycle_services = self.service_registry.list_services(
+            kind=ServiceKind.LIFECYCLE,
+        )
+        for registered in reversed(lifecycle_services):
+            service_id = registered.descriptor.service_id
+            state = service_states.get(service_id)
+            if state is None:
+                continue
+            if state.status in {
+                ServiceLifecycleStatus.STOPPED,
+                ServiceLifecycleStatus.FAILED,
+            }:
+                continue
+            self.state_store.set_service_lifecycle_status(
+                service_id,
+                ServiceLifecycleStatus.STOPPING,
+                message=f"Service stopping during shutdown: {service_id}",
+            )
+            self.state_store.set_service_lifecycle_status(
+                service_id,
+                ServiceLifecycleStatus.STOPPED,
+                message=f"Service stopped during shutdown: {service_id}. {reason}",
+            )
 
     def _register_runtime_contracts(self) -> None:
         for descriptor in _runtime_contract_descriptors():
@@ -232,6 +363,38 @@ def _runtime_contract_descriptors() -> tuple[ContractDescriptor, ...]:
                 "started_at_utc",
                 "updated_at_utc",
             ),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.metadata",
+            required_fields=("schema_version",),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.command",
+            required_fields=("command_id", "command_type", "metadata"),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.query",
+            required_fields=("query_id", "query_type", "metadata"),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.progress",
+            required_fields=("command_id", "task_id", "message", "metadata"),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.result",
+            required_fields=("command_id", "task_id", "status", "metadata"),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.cancellation_request",
+            required_fields=("task_id", "metadata"),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.cancellation_result",
+            required_fields=("task_id", "requested", "message", "metadata"),
+        ),
+        _descriptor(
+            "leonardo.core_runtime.error",
+            required_fields=("error_type", "message"),
         ),
         _descriptor(
             "leonardo.processes.launch_request",

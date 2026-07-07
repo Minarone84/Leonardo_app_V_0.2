@@ -6,6 +6,7 @@ from datetime import datetime
 
 from leonardo.contracts.connections import (
     ConnectionDefinition,
+    ConnectionLifecycleStatus,
     ConnectionRuntimeState,
     WebSocketChannelDefinition,
     WebSocketChannelRuntimeState,
@@ -279,6 +280,32 @@ class ConnectionRegistry:
         """Return defensive WebSocket channel runtime state snapshots."""
 
         return self._state_store.websocket_channel_states()
+
+    def shutdown_tracking(
+        self,
+        *,
+        reason: str = "Application shutdown",
+    ) -> tuple[ConnectionRuntimeState, ...]:
+        """
+        Mark active tracked connection identities as disconnected.
+
+        The registry owns only runtime observability state. This method does not
+        close provider clients, network streams, or WebSocket transports.
+        """
+
+        stopped: list[ConnectionRuntimeState] = []
+        for state in self.connection_states():
+            if state.status.is_terminal:
+                continue
+            if state.status is not ConnectionLifecycleStatus.DISCONNECT_REQUESTED:
+                self.mark_connection_disconnect_requested(state.connection_id)
+            stopped.append(
+                self.mark_connection_disconnected(
+                    state.connection_id,
+                    message=reason,
+                )
+            )
+        return tuple(stopped)
 
     def _require_definition(self, connection_id: str) -> ConnectionDefinition:
         definition = self._definitions.get(connection_id)

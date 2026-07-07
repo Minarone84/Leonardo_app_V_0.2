@@ -1,9 +1,25 @@
+import asyncio
 import json
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
 from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
+from leonardo.contracts.connections import (
+    ConnectionDefinition,
+    ConnectionDirection,
+    ConnectionKind,
+    ConnectionLifecycleStatus,
+    ConnectionProtocol,
+    WebSocketChannelDefinition,
+)
+from leonardo.contracts.core_runtime import (
+    CoreRuntimeCommand,
+    CoreRuntimeMetadata,
+    CoreRuntimeResult,
+    CoreRuntimeResultStatus,
+)
 from leonardo.contracts.downloads import (
     DownloadRangeMode,
     DownloadRequest,
@@ -16,7 +32,14 @@ from leonardo.contracts.download_execution import (
     DownloadPreflightLayer,
     DownloadPreflightLayerStatus,
 )
+from leonardo.contracts.processes import (
+    ProcessKind,
+    ProcessLaunchRequest,
+    ProcessLifecycleStatus,
+)
 from leonardo.contracts.runtime import AppLifecycleStatus
+from leonardo.contracts.runtime import ServiceLifecycleStatus
+from leonardo.contracts.services import ServiceDescriptor, ServiceKind
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
@@ -159,6 +182,164 @@ def test_leonardo_app_startup_failure_sets_failed_state_and_routes_error() -> No
         event.category is AuditCategory.ERROR
         and event.event_type == "error.reported"
         for event in app.audit_log.snapshot()
+    )
+
+
+def test_leonardo_app_shutdown_cancels_runtime_work_and_rejects_submissions() -> None:
+    app = LeonardoApp()
+    started = Event()
+    results: list[CoreRuntimeResult] = []
+    received = Event()
+
+    async def handler(_command, _progress):
+        started.set()
+        await asyncio.Event().wait()
+
+    def record_result(result: CoreRuntimeResult) -> None:
+        results.append(result)
+        received.set()
+
+    context = app.startup()
+    context.core_runtime_bridge.start()
+    submission = context.core_runtime_bridge.submit_command(
+        _core_command("shutdown-command-1"),
+        handler,
+        result_callback=record_result,
+    )
+    assert started.wait(2)
+
+    app.shutdown(timeout=1.0, reason="test shutdown")
+
+    assert received.wait(2)
+    assert results[0].status is CoreRuntimeResultStatus.CANCELLED
+    assert results[0].metadata.operation_id == submission.metadata.operation_id
+    assert app.state_store.get_app_status() is AppLifecycleStatus.STOPPED
+    assert app.core_runtime_bridge.is_accepting_submissions is False
+    assert app.core_runner.is_running is False
+    event_types = [event.event_type for event in app.audit_log.snapshot()]
+    assert "task.lifecycle.cancelled" in event_types
+    assert "operation.lifecycle.cancelled" in event_types
+    assert event_types[-1] == "app.lifecycle.changed"
+
+    with pytest.raises(RuntimeError, match="not accepting submissions"):
+        app.core_runtime_bridge.submit_command(
+            _core_command("after-shutdown-command-1"),
+            lambda _command, _progress: None,
+        )
+
+
+def test_leonardo_app_shutdown_preserves_failed_startup_state() -> None:
+    class FailingApp(LeonardoApp):
+        def _register_runtime_contracts(self) -> None:
+            raise RuntimeError("contract registration failed")
+
+    app = FailingApp()
+
+    with pytest.raises(RuntimeError, match="contract registration failed"):
+        app.startup()
+
+    app.shutdown()
+
+    assert app.state_store.get_app_status() is AppLifecycleStatus.FAILED
+
+
+def test_leonardo_app_shutdown_reports_structured_runtime_shutdown_failure() -> None:
+    app = LeonardoApp()
+    app.startup()
+
+    def fail_shutdown(*, timeout: float) -> None:
+        raise TimeoutError("task settlement timed out")
+
+    app.core_runtime_bridge.shutdown = fail_shutdown  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="Application shutdown failed"):
+        app.shutdown(timeout=0.1, reason="timeout test")
+
+    assert app.state_store.get_app_status() is AppLifecycleStatus.FAILED
+    assert any(
+        event.category is AuditCategory.ERROR
+        and event.event_type == "error.reported"
+        and event.message == "Application shutdown step failed: core_runtime"
+        for event in app.audit_log.snapshot()
+    )
+    assert any(
+        event.category is AuditCategory.ERROR
+        and event.event_type == "error.reported"
+        and event.message == "Application shutdown failed"
+        for event in app.audit_log.snapshot()
+    )
+
+
+def test_leonardo_app_shutdown_invokes_process_manager_cleanup() -> None:
+    handle = _FakeHandle()
+    app = LeonardoApp()
+    app.process_manager._launcher = _FakeLauncher(handle)  # type: ignore[attr-defined]
+    app.startup()
+    app.process_manager.launch_process(_process_request())
+
+    app.shutdown()
+
+    assert handle.terminated is True
+    process_state = app.state_store.processes_state()[0]
+    assert process_state.status is ProcessLifecycleStatus.STOP_REQUESTED
+
+
+def test_leonardo_app_shutdown_marks_connection_tracking_stopped_only() -> None:
+    app = LeonardoApp()
+    app.startup()
+    app.connection_registry.register_connection(_connection_definition())
+    app.connection_registry.register_websocket_channel(_channel_definition())
+    app.connection_registry.mark_connection_connected("connection-1")
+
+    app.shutdown()
+
+    assert app.connection_registry.connection_states()[0].status is (
+        ConnectionLifecycleStatus.DISCONNECTED
+    )
+    assert app.connection_registry.websocket_channel_states()[0].status is (
+        ConnectionLifecycleStatus.DISCONNECTED
+    )
+    assert any(
+        event.event_type == "connection.lifecycle.disconnected"
+        for event in app.audit_log.snapshot()
+    )
+
+
+def test_leonardo_app_shutdown_stops_lifecycle_services_not_capabilities() -> None:
+    app = LeonardoApp()
+    app.startup()
+    app.service_registry.register_service(
+        ServiceDescriptor(
+            service_id="lifecycle-service",
+            kind=ServiceKind.LIFECYCLE,
+        ),
+        object(),
+    )
+    app.service_registry.register_service(
+        ServiceDescriptor(
+            service_id="capability-provider",
+            kind=ServiceKind.CAPABILITY,
+        ),
+        object(),
+    )
+    app.state_store.register_service_runtime_state(
+        "lifecycle-service",
+        status=ServiceLifecycleStatus.RUNNING,
+    )
+    app.state_store.register_service_runtime_state(
+        "capability-provider",
+        status=ServiceLifecycleStatus.RUNNING,
+    )
+
+    app.shutdown()
+
+    service_states = {
+        state.service_id: state
+        for state in app.state_store.runtime_snapshot().service_states
+    }
+    assert service_states["lifecycle-service"].status is ServiceLifecycleStatus.STOPPED
+    assert service_states["capability-provider"].status is (
+        ServiceLifecycleStatus.RUNNING
     )
 
 
@@ -331,6 +512,74 @@ def _audit_event(event_type: str) -> AuditEvent:
         message="Runtime audit checked",
         severity=AuditSeverity.INFO,
         category=AuditCategory.RUNTIME,
+    )
+
+
+def _core_command(command_id: str) -> CoreRuntimeCommand:
+    return CoreRuntimeCommand(
+        command_id=command_id,
+        command_type="test.shutdown",
+        metadata=CoreRuntimeMetadata(
+            action_id="shutdown.test",
+            window_id="runtime-test",
+            actor_id="admin-dev",
+            session_id="session-admin-dev",
+            source="unit_test",
+            correlation_id="shutdown-corr-1",
+        ),
+    )
+
+
+class _FakeHandle:
+    def __init__(self) -> None:
+        self.pid = 1001
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+class _FakeLauncher:
+    def __init__(self, handle: _FakeHandle) -> None:
+        self._handle = handle
+
+    def start(self, _request: ProcessLaunchRequest) -> _FakeHandle:
+        return self._handle
+
+
+def _process_request() -> ProcessLaunchRequest:
+    return ProcessLaunchRequest(
+        process_id="process-1",
+        label="Shutdown process",
+        command=("python", "-c", "print('ok')"),
+        kind=ProcessKind.UTILITY,
+    )
+
+
+def _connection_definition() -> ConnectionDefinition:
+    return ConnectionDefinition(
+        connection_id="connection-1",
+        label="Shutdown connection",
+        kind=ConnectionKind.EXTERNAL_SERVICE,
+        protocol=ConnectionProtocol.WEBSOCKET,
+        direction=ConnectionDirection.OUTBOUND,
+    )
+
+
+def _channel_definition() -> WebSocketChannelDefinition:
+    return WebSocketChannelDefinition(
+        channel_id="channel-1",
+        connection_id="connection-1",
+        label="Shutdown channel",
     )
 
 

@@ -31,13 +31,66 @@ class UserRole(str, Enum):
 
 
 class Permission(str, Enum):
-    """Permission identifiers used by the initial user policy."""
+    """
+    Stable permission identifiers used by Core authorization policy.
+
+    Values are canonical contract strings. Enum member names are Python-safe
+    identifiers for code references only and must not be treated as user-facing
+    labels.
+    """
 
     RUNTIME_VIEW = "runtime:view"
     RUNTIME_MANAGE = "runtime:manage"
     AUDIT_VIEW = "audit:view"
+    SERVICE_VIEW = "service:view"
     SERVICE_MANAGE = "service:manage"
     ERROR_VIEW = "error:view"
+    TASK_VIEW = "task:view"
+    TASK_MANAGE = "task:manage"
+    OPERATION_VIEW = "operation:view"
+    OPERATION_MANAGE = "operation:manage"
+    PROCESS_VIEW = "process:view"
+    PROCESS_MANAGE = "process:manage"
+    CONNECTION_VIEW = "connection:view"
+    CONNECTION_MANAGE = "connection:manage"
+    SETTINGS_VIEW = "settings:view"
+    SETTINGS_MANAGE = "settings:manage"
+
+    DOWNLOAD_VIEW = "download:view"
+    DOWNLOAD_PREVIEW = "download:preview"
+    DOWNLOAD_SUBMIT = "download:submit"
+    DOWNLOAD_EXECUTE = "download:execute"
+    DOWNLOAD_CANCEL = "download:cancel"
+    DOWNLOAD_MANAGE = "download:manage"
+
+    RESEARCH_VIEW = "research:view"
+    RESEARCH_RUN = "research:run"
+    RESEARCH_SAVE = "research:save"
+    RESEARCH_MANAGE = "research:manage"
+
+    DATA_MANAGER_VIEW = "data_manager:view"
+    DATA_MANAGER_CALCULATE = "data_manager:calculate"
+    DATA_MANAGER_MATERIALIZE = "data_manager:materialize"
+    DATA_MANAGER_UPDATE = "data_manager:update"
+    DATA_MANAGER_DELETE = "data_manager:delete"
+    DATA_MANAGER_MANAGE = "data_manager:manage"
+
+    ANALYSIS_VIEW = "analysis:view"
+    ANALYSIS_RUN = "analysis:run"
+    ANALYSIS_SAVE = "analysis:save"
+    ANALYSIS_DELETE = "analysis:delete"
+    ANALYSIS_MANAGE = "analysis:manage"
+
+    TRADING_VIEW = "trading:view"
+    TRADING_SIMULATE = "trading:simulate"
+    TRADING_EXECUTE = "trading:execute"
+    TRADING_CANCEL = "trading:cancel"
+    TRADING_MANAGE = "trading:manage"
+
+    CONNECTION_CONNECT = "connection:connect"
+    CONNECTION_DISCONNECT = "connection:disconnect"
+    CONNECTION_SUBSCRIBE = "connection:subscribe"
+
     GUI_SETTINGS_MANAGE = "gui_settings:manage"
 
 

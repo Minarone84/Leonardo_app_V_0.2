@@ -337,6 +337,10 @@ class RuntimeManagerBackend:
             metadata={
                 "task_ids": tuple(state.task_id for state in task_states),
                 "task_names": tuple(state.task_name for state in task_states),
+                "operation_ids": tuple(state.operation_id for state in task_states),
+                "correlation_ids": tuple(
+                    state.correlation_id for state in task_states
+                ),
                 "status_counts": dict(sorted(status_counts.items())),
             },
         )
@@ -470,6 +474,10 @@ class RuntimeManagerBackend:
                     state.operation_id for state in operation_states
                 ),
                 "operation_labels": tuple(state.label for state in operation_states),
+                "task_ids": tuple(state.task_id for state in operation_states),
+                "correlation_ids": tuple(
+                    state.correlation_id for state in operation_states
+                ),
                 "status_counts": dict(sorted(status_counts.items())),
             },
         )

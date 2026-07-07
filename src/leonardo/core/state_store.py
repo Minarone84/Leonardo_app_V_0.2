@@ -1170,6 +1170,8 @@ class StateStore:
                     "operation_kind": state.operation_kind,
                     "status": state.status,
                     "label": state.label,
+                    "task_id": state.task_id,
+                    "correlation_id": state.correlation_id,
                     "blockers": tuple(
                         {
                             "code": blocker.code,
