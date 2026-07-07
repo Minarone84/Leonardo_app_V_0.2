@@ -18,6 +18,8 @@ from leonardo.contracts.download_execution import (
 )
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import (
+    DownloadDataRuntimeSummary,
+    DownloadDataRuntimeSummaryStatus,
     ProviderRuntimeSummary,
     ProviderRuntimeSummaryStatus,
     RuntimeHealthStatus,
@@ -464,6 +466,219 @@ def test_runtime_manager_handles_invalid_suite_runtime_summary_provider_output_s
     assert snapshot.suite_runtime_summary.metadata["errors"] == (
         "Suite runtime summary provider returned invalid output",
     )
+
+
+def test_runtime_manager_snapshot_includes_unavailable_download_data_runtime_summary() -> None:
+    app = LeonardoApp()
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.download_data_runtime_summary.section_id == "download_data_runtime"
+    assert snapshot.download_data_runtime_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.download_data_runtime_summary.count == 0
+    assert snapshot.download_data_runtime_summary.message == (
+        "Download Data runtime summaries unavailable"
+    )
+    assert snapshot.download_data_runtime_summary.metadata["available"] is False
+    assert snapshot.download_data_runtime_summary.metadata["summary_count"] == 0
+    assert snapshot.download_data_runtime_summary.metadata["workflow_count"] == 0
+    assert snapshot.download_data_runtime_summary.metadata["degraded"] is False
+    assert "download_data_runtime" in tuple(
+        section.section_id for section in snapshot.sections
+    )
+
+
+def test_runtime_manager_summarizes_injected_download_data_runtime_summaries_read_only() -> None:
+    app = LeonardoApp()
+    complete_summary = DownloadDataRuntimeSummary(
+        workflow_id="download_data",
+        display_name="Download Data",
+        status=DownloadDataRuntimeSummaryStatus.OK,
+        selection_count=1,
+        preflight_count=2,
+        ready_preflight_count=1,
+        blocked_preflight_count=1,
+        running_progress_count=1,
+        completed_progress_count=1,
+        completion_count=1,
+        partial_count=1,
+        failed_count=1,
+        cancelled_count=1,
+        output_ref_count=2,
+        storage_target_count=2,
+        partial_persistence_count=1,
+        expected_total_bars=100,
+        expected_total_steps=10,
+        completed_steps=5,
+        downloaded_bars=50,
+        warning_count=1,
+        warnings=("Partial output requires maintenance.",),
+        last_activity_at="2026-07-07T10:00:00+00:00",
+    )
+    unavailable_summary = DownloadDataRuntimeSummary(
+        workflow_id="download_data_archive",
+        display_name="Download Data Archive",
+        status=DownloadDataRuntimeSummaryStatus.UNAVAILABLE,
+        selection_count=1,
+        preflight_count=1,
+        error_count=1,
+        errors=("download token=tok-123 failed",),
+        degraded=True,
+        unavailable_reason="credential password=hunter2 missing",
+        last_activity_at="2026-07-07T11:00:00+00:00",
+    )
+    summaries = (unavailable_summary, complete_summary)
+    before = tuple(summary.to_dict() for summary in summaries)
+    backend = _runtime_manager_backend(
+        app,
+        download_data_runtime_summary_provider=lambda: summaries,
+    )
+
+    snapshot = backend.snapshot()
+    metadata = snapshot.download_data_runtime_summary.metadata
+
+    assert tuple(summary.to_dict() for summary in summaries) == before
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.download_data_runtime_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.download_data_runtime_summary.count == 2
+    assert snapshot.download_data_runtime_summary.message == (
+        "2 Download Data runtime summaries"
+    )
+    assert metadata["available"] is True
+    assert metadata["summary_count"] == 2
+    assert metadata["workflow_count"] == 2
+    assert metadata["workflow_ids"] == ("download_data", "download_data_archive")
+    assert metadata["selection_count"] == 2
+    assert metadata["preflight_count"] == 3
+    assert metadata["ready_preflight_count"] == 1
+    assert metadata["blocked_preflight_count"] == 1
+    assert metadata["running_progress_count"] == 1
+    assert metadata["completed_progress_count"] == 1
+    assert metadata["completion_count"] == 1
+    assert metadata["partial_count"] == 1
+    assert metadata["failed_count"] == 1
+    assert metadata["cancelled_count"] == 1
+    assert metadata["output_ref_count"] == 2
+    assert metadata["storage_target_count"] == 2
+    assert metadata["partial_persistence_count"] == 1
+    assert metadata["expected_total_bars"] == 100
+    assert metadata["expected_total_steps"] == 10
+    assert metadata["completed_steps"] == 5
+    assert metadata["downloaded_bars"] == 50
+    assert metadata["warning_count"] == 1
+    assert metadata["error_count"] == 1
+    assert metadata["degraded_count"] == 1
+    assert metadata["unavailable_count"] == 1
+    assert metadata["last_activity_at"] == "2026-07-07T11:00:00+00:00"
+    assert metadata["download_data_failed"] is False
+    displayed = " ".join(
+        (
+            *metadata["errors"],
+            *metadata["unavailable_reasons"],
+            *(row["unavailable_reason"] or "" for row in metadata["summary_rows"]),
+        )
+    )
+    assert "[redacted]" in displayed
+    assert "tok-123" not in displayed
+    assert "hunter2" not in displayed
+
+
+def test_runtime_manager_handles_download_data_runtime_summary_provider_failure_safely() -> None:
+    app = LeonardoApp()
+    long_secret = (
+        "password=hunter2 token=tok-123 "
+        "authorization=Bearer abc-456 "
+        + ("x" * 500)
+    )
+
+    def fail() -> tuple[DownloadDataRuntimeSummary, ...]:
+        raise RuntimeError(long_secret)
+
+    backend = _runtime_manager_backend(
+        app,
+        download_data_runtime_summary_provider=fail,
+    )
+
+    snapshot = backend.snapshot()
+    error = snapshot.download_data_runtime_summary.metadata["errors"][0]
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.download_data_runtime_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.download_data_runtime_summary.metadata["available"] is False
+    assert snapshot.download_data_runtime_summary.metadata["download_data_failed"] is True
+    assert "RuntimeError" in error
+    assert "[redacted]" in error
+    assert "hunter2" not in error
+    assert "tok-123" not in error
+    assert "abc-456" not in error
+    assert "x" * 200 not in error
+    assert "Traceback" not in error
+
+
+def test_runtime_manager_handles_invalid_download_data_runtime_summary_provider_output_safely() -> None:
+    app = LeonardoApp()
+    backend = _runtime_manager_backend(
+        app,
+        download_data_runtime_summary_provider=lambda: object(),
+    )
+
+    snapshot = backend.snapshot()
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.download_data_runtime_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.download_data_runtime_summary.metadata["available"] is False
+    assert snapshot.download_data_runtime_summary.metadata["download_data_failed"] is True
+    assert snapshot.download_data_runtime_summary.metadata["error_count"] == 1
+    assert snapshot.download_data_runtime_summary.metadata["errors"] == (
+        "Download Data runtime summary provider returned invalid output",
+    )
+
+
+def test_runtime_manager_download_data_summary_does_not_import_download_data_machinery() -> None:
+    source = (
+        __import__("pathlib")
+        .Path(__file__)
+        .resolve()
+        .parents[2]
+        .joinpath("src", "leonardo", "core", "runtime_manager.py")
+        .read_text(encoding="utf-8")
+    )
+
+    blocked_tokens = (
+        "download_data_boundary_trace",
+        "DownloadDataBoundaryDescriptor",
+        "DownloadDataWorkflowDescriptor",
+        "DownloadDataSelectionDraft",
+        "DownloadDataPreflightSummary",
+        "DownloadDataProgressSummary",
+        "DownloadDataCompletionSummary",
+        "ProviderRegistry",
+        "register_provider",
+        "discover",
+        "pkgutil",
+        "importlib",
+        "os.walk",
+        "Path.rglob",
+        "globals()",
+        "websockets",
+        "import requests",
+        "requests.",
+        "aiohttp",
+        "socket.",
+        "shell=True",
+    )
+    for token in blocked_tokens:
+        assert token not in source
+
+
+def test_leonardo_app_constructs_runtime_manager_without_download_data_provider() -> None:
+    app = LeonardoApp()
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert isinstance(app.runtime_manager, RuntimeManagerBackend)
+    assert snapshot.download_data_runtime_summary.section_id == "download_data_runtime"
+    assert snapshot.download_data_runtime_summary.metadata["available"] is False
 
 
 def test_runtime_manager_snapshot_includes_unavailable_provider_runtime_summary() -> None:
@@ -1227,6 +1442,7 @@ def _runtime_manager_backend(
     object_map_snapshot_provider: object | None = None,
     provider_runtime_summary_provider: object | None = None,
     suite_runtime_summary_provider: object | None = None,
+    download_data_runtime_summary_provider: object | None = None,
 ) -> RuntimeManagerBackend:
     return RuntimeManagerBackend(
         state_store=app.state_store,
@@ -1245,6 +1461,7 @@ def _runtime_manager_backend(
         object_map_snapshot_provider=object_map_snapshot_provider,
         provider_runtime_summary_provider=provider_runtime_summary_provider,
         suite_runtime_summary_provider=suite_runtime_summary_provider,
+        download_data_runtime_summary_provider=download_data_runtime_summary_provider,
     )
 
 

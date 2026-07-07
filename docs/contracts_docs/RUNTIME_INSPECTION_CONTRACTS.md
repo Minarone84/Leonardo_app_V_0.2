@@ -23,6 +23,17 @@ metadata nesting level. Provider metadata values must remain JSON-compatible:
 null, booleans, integers, finite floats, strings, lists or tuples of safe
 values, and string-keyed mappings of safe values.
 
+`DownloadDataRuntimeSummary` is a compact Download Data read model supplied by
+future app composition or Download Data owners. It reports workflow, selection,
+preflight, progress, completion, output, storage-target, partial-persistence,
+step, bar, diagnostic, and last-activity counts. It is frozen and rejects
+sensitive metadata keys such as credentials, tokens, secrets, passwords, API
+keys, authorization material, raw clients, sockets, payloads, raw responses,
+provider objects, adapters, storage writers, and handles at every metadata
+nesting level. Download Data metadata values must remain JSON-compatible: null,
+booleans, integers, finite floats, strings, lists or tuples of safe values, and
+string-keyed mappings of safe values.
+
 `RuntimeHealthStatus` is derived from section statuses. Failed app state maps to
 an error section. Audit sink failures and visible failed or cancellation-requested
 runtime work degrade the relevant section.
@@ -32,5 +43,7 @@ runtime work degrade the relevant section.
 
 These contracts do not define GUI widgets, Qt/PySide objects, command execution,
 provider registries, provider discovery, adapter/client/network/websocket
-execution, subscription execution, task control, ProcessManager behavior, or
-connection/websocket tracking ownership.
+execution, subscription execution, downloader execution, storage writes,
+cancellation behavior, task control, ProcessManager behavior, Data Manager
+integration, app startup behavior, AI helpers, or connection/websocket tracking
+ownership.

@@ -18,6 +18,8 @@ from leonardo.contracts.inspection import (
     AuditEventPreview,
     AuditSinkFailurePreview,
     ContractRegistrySummary,
+    DownloadDataRuntimeSummary,
+    DownloadDataRuntimeSummaryStatus,
     ProviderRuntimeSummary,
     ProviderRuntimeSummaryStatus,
     RuntimeManagerSnapshot,
@@ -103,6 +105,11 @@ class RuntimeManagerBackend:
             tuple[SuiteRuntimeSummary, ...],
         ]
         | None = None,
+        download_data_runtime_summary_provider: Callable[
+            [],
+            tuple[DownloadDataRuntimeSummary, ...],
+        ]
+        | None = None,
         recent_audit_limit: int = 20,
     ) -> None:
         if not isinstance(state_store, StateStore):
@@ -159,6 +166,12 @@ class RuntimeManagerBackend:
             raise TypeError(
                 "suite_runtime_summary_provider must be callable or None"
             )
+        if download_data_runtime_summary_provider is not None and not callable(
+            download_data_runtime_summary_provider
+        ):
+            raise TypeError(
+                "download_data_runtime_summary_provider must be callable or None"
+            )
 
         self._state_store = state_store
         self._session_manager = session_manager
@@ -176,6 +189,9 @@ class RuntimeManagerBackend:
         self._object_map_snapshot_provider = object_map_snapshot_provider
         self._provider_runtime_summary_provider = provider_runtime_summary_provider
         self._suite_runtime_summary_provider = suite_runtime_summary_provider
+        self._download_data_runtime_summary_provider = (
+            download_data_runtime_summary_provider
+        )
         self._recent_audit_limit = recent_audit_limit
 
     def snapshot(self) -> RuntimeManagerSnapshot:
@@ -212,6 +228,7 @@ class RuntimeManagerBackend:
             object_map_summary=self._object_map_summary(),
             provider_runtime_summary=self._provider_runtime_summary(),
             suite_runtime_summary=self._suite_runtime_summary(),
+            download_data_runtime_summary=self._download_data_runtime_summary(),
             audit_summary=self._audit_summary(audit_events, sink_failures),
             contracts_summary=self._contracts_section_summary(contract_summary),
             recent_audit_events=audit_events,
@@ -283,6 +300,11 @@ class RuntimeManagerBackend:
         """Return the optional suite and area runtime section summary."""
 
         return self._suite_runtime_summary()
+
+    def download_data_runtime_summary(self) -> RuntimeSectionSummary:
+        """Return the optional Download Data runtime section summary."""
+
+        return self._download_data_runtime_summary()
 
     def audit_summary(self) -> RuntimeSectionSummary:
         """Return the retained audit history section summary."""
@@ -818,6 +840,47 @@ class RuntimeManagerBackend:
 
         return _suite_runtime_summary_from_summaries(summaries)
 
+    def _download_data_runtime_summary(self) -> RuntimeSectionSummary:
+        if self._download_data_runtime_summary_provider is None:
+            return _empty_download_data_runtime_summary()
+
+        try:
+            summaries = self._download_data_runtime_summary_provider()
+        except Exception as error:  # noqa: BLE001 - read-model boundary.
+            diagnostic = _download_data_runtime_failure_diagnostic(error)
+            return RuntimeSectionSummary(
+                section_id="download_data_runtime",
+                status=RuntimeSectionStatus.DEGRADED,
+                count=0,
+                message="Download Data runtime summary provider failed",
+                metadata={
+                    **_empty_download_data_runtime_metadata(available=False),
+                    "error_count": 1,
+                    "errors": (diagnostic,),
+                    "degraded": True,
+                    "download_data_failed": True,
+                },
+            )
+
+        if not _is_download_data_runtime_summary_tuple(summaries):
+            return RuntimeSectionSummary(
+                section_id="download_data_runtime",
+                status=RuntimeSectionStatus.DEGRADED,
+                count=0,
+                message="Download Data runtime summary provider returned invalid output",
+                metadata={
+                    **_empty_download_data_runtime_metadata(available=False),
+                    "error_count": 1,
+                    "errors": (
+                        "Download Data runtime summary provider returned invalid output",
+                    ),
+                    "degraded": True,
+                    "download_data_failed": True,
+                },
+            )
+
+        return _download_data_runtime_summary_from_summaries(summaries)
+
     def _audit_summary(
         self,
         audit_events: tuple[AuditEventPreview, ...],
@@ -1034,6 +1097,53 @@ def _empty_suite_runtime_metadata(*, available: bool) -> dict[str, object]:
     }
 
 
+def _empty_download_data_runtime_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="download_data_runtime",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Download Data runtime summaries unavailable",
+        metadata=_empty_download_data_runtime_metadata(available=False),
+    )
+
+
+def _empty_download_data_runtime_metadata(*, available: bool) -> dict[str, object]:
+    return {
+        "available": available,
+        "summary_count": 0,
+        "workflow_count": 0,
+        "selection_count": 0,
+        "preflight_count": 0,
+        "ready_preflight_count": 0,
+        "blocked_preflight_count": 0,
+        "running_progress_count": 0,
+        "completed_progress_count": 0,
+        "completion_count": 0,
+        "partial_count": 0,
+        "failed_count": 0,
+        "cancelled_count": 0,
+        "output_ref_count": 0,
+        "storage_target_count": 0,
+        "partial_persistence_count": 0,
+        "expected_total_bars": 0,
+        "expected_total_steps": 0,
+        "completed_steps": 0,
+        "downloaded_bars": 0,
+        "warning_count": 0,
+        "error_count": 0,
+        "degraded_count": 0,
+        "unavailable_count": 0,
+        "workflow_ids": (),
+        "warnings": (),
+        "errors": (),
+        "unavailable_reasons": (),
+        "last_activity_at": None,
+        "summary_rows": (),
+        "degraded": False,
+        "download_data_failed": False,
+    }
+
+
 def _is_suite_runtime_summary_tuple(value: object) -> bool:
     return isinstance(value, tuple) and all(
         isinstance(summary, SuiteRuntimeSummary)
@@ -1044,6 +1154,13 @@ def _is_suite_runtime_summary_tuple(value: object) -> bool:
 def _is_provider_runtime_summary_tuple(value: object) -> bool:
     return isinstance(value, tuple) and all(
         isinstance(summary, ProviderRuntimeSummary)
+        for summary in value
+    )
+
+
+def _is_download_data_runtime_summary_tuple(value: object) -> bool:
+    return isinstance(value, tuple) and all(
+        isinstance(summary, DownloadDataRuntimeSummary)
         for summary in value
     )
 
@@ -1344,6 +1461,199 @@ def _suite_runtime_summary_message(summary_count: int) -> str:
     return f"{summary_count} suite runtime {label}"
 
 
+def _download_data_runtime_summary_from_summaries(
+    summaries: tuple[DownloadDataRuntimeSummary, ...],
+) -> RuntimeSectionSummary:
+    warnings = _sanitized_unique_diagnostics(
+        tuple(
+            warning
+            for summary in summaries
+            for warning in summary.warnings
+        )
+    )
+    errors = _sanitized_unique_diagnostics(
+        tuple(error for summary in summaries for error in summary.errors)
+    )
+    unavailable_reasons = _sanitized_unique_diagnostics(
+        tuple(
+            reason
+            for summary in summaries
+            for reason in (summary.unavailable_reason,)
+            if reason is not None
+        )
+    )
+    degraded_count = sum(
+        1
+        for summary in summaries
+        if _download_data_runtime_summary_is_degraded(summary)
+    )
+    unavailable_count = sum(
+        1
+        for summary in summaries
+        if _download_data_runtime_summary_is_unavailable(summary)
+    )
+    warning_count = sum(
+        _download_data_runtime_warning_count(summary)
+        for summary in summaries
+    )
+    error_count = sum(
+        _download_data_runtime_error_count(summary)
+        for summary in summaries
+    )
+    status = (
+        RuntimeSectionStatus.DEGRADED
+        if degraded_count or error_count
+        else RuntimeSectionStatus.OK
+    )
+    return RuntimeSectionSummary(
+        section_id="download_data_runtime",
+        status=status,
+        count=len(summaries),
+        message=_download_data_runtime_summary_message(len(summaries)),
+        metadata={
+            "available": True,
+            "summary_count": len(summaries),
+            "workflow_count": len(
+                _sorted_unique(summary.workflow_id for summary in summaries)
+            ),
+            "selection_count": sum(summary.selection_count for summary in summaries),
+            "preflight_count": sum(summary.preflight_count for summary in summaries),
+            "ready_preflight_count": sum(
+                summary.ready_preflight_count for summary in summaries
+            ),
+            "blocked_preflight_count": sum(
+                summary.blocked_preflight_count for summary in summaries
+            ),
+            "running_progress_count": sum(
+                summary.running_progress_count for summary in summaries
+            ),
+            "completed_progress_count": sum(
+                summary.completed_progress_count for summary in summaries
+            ),
+            "completion_count": sum(summary.completion_count for summary in summaries),
+            "partial_count": sum(summary.partial_count for summary in summaries),
+            "failed_count": sum(summary.failed_count for summary in summaries),
+            "cancelled_count": sum(summary.cancelled_count for summary in summaries),
+            "output_ref_count": sum(summary.output_ref_count for summary in summaries),
+            "storage_target_count": sum(
+                summary.storage_target_count for summary in summaries
+            ),
+            "partial_persistence_count": sum(
+                summary.partial_persistence_count for summary in summaries
+            ),
+            "expected_total_bars": sum(
+                summary.expected_total_bars for summary in summaries
+            ),
+            "expected_total_steps": sum(
+                summary.expected_total_steps for summary in summaries
+            ),
+            "completed_steps": sum(summary.completed_steps for summary in summaries),
+            "downloaded_bars": sum(summary.downloaded_bars for summary in summaries),
+            "warning_count": warning_count,
+            "error_count": error_count,
+            "degraded_count": degraded_count,
+            "unavailable_count": unavailable_count,
+            "workflow_ids": _sorted_unique(
+                summary.workflow_id for summary in summaries
+            ),
+            "warnings": _bounded_diagnostics(warnings),
+            "errors": _bounded_diagnostics(errors),
+            "unavailable_reasons": _bounded_diagnostics(unavailable_reasons),
+            "last_activity_at": _latest_download_data_runtime_activity(summaries),
+            "summary_rows": tuple(
+                _download_data_runtime_summary_row(summary)
+                for summary in summaries
+            ),
+            "degraded": bool(degraded_count or error_count),
+            "download_data_failed": False,
+        },
+    )
+
+
+def _download_data_runtime_summary_row(
+    summary: DownloadDataRuntimeSummary,
+) -> dict[str, object]:
+    return {
+        "workflow_id": summary.workflow_id,
+        "display_name": summary.display_name,
+        "status": summary.status.value,
+        "selection_count": summary.selection_count,
+        "preflight_count": summary.preflight_count,
+        "ready_preflight_count": summary.ready_preflight_count,
+        "blocked_preflight_count": summary.blocked_preflight_count,
+        "running_progress_count": summary.running_progress_count,
+        "completed_progress_count": summary.completed_progress_count,
+        "completion_count": summary.completion_count,
+        "partial_count": summary.partial_count,
+        "failed_count": summary.failed_count,
+        "cancelled_count": summary.cancelled_count,
+        "output_ref_count": summary.output_ref_count,
+        "storage_target_count": summary.storage_target_count,
+        "partial_persistence_count": summary.partial_persistence_count,
+        "expected_total_bars": summary.expected_total_bars,
+        "expected_total_steps": summary.expected_total_steps,
+        "completed_steps": summary.completed_steps,
+        "downloaded_bars": summary.downloaded_bars,
+        "warning_count": _download_data_runtime_warning_count(summary),
+        "error_count": _download_data_runtime_error_count(summary),
+        "degraded": _download_data_runtime_summary_is_degraded(summary),
+        "unavailable_reason": _bounded_optional_diagnostic(
+            summary.unavailable_reason
+        ),
+        "last_activity_at": summary.last_activity_at,
+    }
+
+
+def _download_data_runtime_summary_is_degraded(
+    summary: DownloadDataRuntimeSummary,
+) -> bool:
+    return (
+        summary.degraded
+        or summary.status
+        in {
+            DownloadDataRuntimeSummaryStatus.DEGRADED,
+            DownloadDataRuntimeSummaryStatus.UNAVAILABLE,
+            DownloadDataRuntimeSummaryStatus.ERROR,
+        }
+        or _download_data_runtime_error_count(summary) > 0
+    )
+
+
+def _download_data_runtime_summary_is_unavailable(
+    summary: DownloadDataRuntimeSummary,
+) -> bool:
+    return (
+        summary.status is DownloadDataRuntimeSummaryStatus.UNAVAILABLE
+        or summary.unavailable_reason is not None
+    )
+
+
+def _download_data_runtime_warning_count(
+    summary: DownloadDataRuntimeSummary,
+) -> int:
+    return max(summary.warning_count, len(summary.warnings))
+
+
+def _download_data_runtime_error_count(summary: DownloadDataRuntimeSummary) -> int:
+    return max(summary.error_count, len(summary.errors))
+
+
+def _latest_download_data_runtime_activity(
+    summaries: tuple[DownloadDataRuntimeSummary, ...],
+) -> str | None:
+    values = tuple(
+        summary.last_activity_at
+        for summary in summaries
+        if summary.last_activity_at is not None
+    )
+    return max(values) if values else None
+
+
+def _download_data_runtime_summary_message(summary_count: int) -> str:
+    label = "summary" if summary_count == 1 else "summaries"
+    return f"{summary_count} Download Data runtime {label}"
+
+
 def _object_map_summary_from_snapshot(
     snapshot: ObjectMapSnapshot,
 ) -> RuntimeSectionSummary:
@@ -1489,6 +1799,15 @@ def _suite_runtime_failure_diagnostic(error: BaseException) -> str:
         max_length=_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH,
     )
     return f"Suite runtime summary provider failed: {error_type}: {message}"
+
+
+def _download_data_runtime_failure_diagnostic(error: BaseException) -> str:
+    error_type = _safe_exception_type_name(error)
+    message = _bounded_text(
+        _sanitize_diagnostic(_exception_message_text(error)),
+        max_length=_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH,
+    )
+    return f"Download Data runtime summary provider failed: {error_type}: {message}"
 
 
 def _safe_exception_type_name(error: BaseException) -> str:

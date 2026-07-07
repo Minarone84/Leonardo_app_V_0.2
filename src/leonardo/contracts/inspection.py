@@ -44,6 +44,15 @@ class ProviderRuntimeSummaryStatus(str, Enum):
     ERROR = "error"
 
 
+class DownloadDataRuntimeSummaryStatus(str, Enum):
+    """Read-only availability status for one Download Data runtime summary."""
+
+    OK = "ok"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+
+
 @dataclass(frozen=True)
 class SuiteRuntimeSummary:
     """
@@ -218,6 +227,132 @@ class ProviderRuntimeSummary:
             "active_subscription_count": self.active_subscription_count,
             "message_trace_count": self.message_trace_count,
             "object_map_section_count": self.object_map_section_count,
+            "warning_count": self.warning_count,
+            "error_count": self.error_count,
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "degraded": self.degraded,
+            "unavailable_reason": self.unavailable_reason,
+            "last_activity_at": self.last_activity_at,
+            "metadata": _plain_value(self.metadata),
+            "docs_refs": list(self.docs_refs),
+            "test_refs": list(self.test_refs),
+        }
+
+
+@dataclass(frozen=True)
+class DownloadDataRuntimeSummary:
+    """
+    Compact read-only Runtime Manager summary for Download Data runtime state.
+
+    The summary is supplied by future app composition or Download Data owners.
+    It carries bounded workflow counts and diagnostics only. It does not contain
+    provider objects, adapters, storage writers, GUI widgets, runtime task
+    objects, transport handles, credentials, raw payloads, or mutable runtime
+    state.
+    """
+
+    workflow_id: str
+    display_name: str
+    status: DownloadDataRuntimeSummaryStatus | str
+    selection_count: int = 0
+    preflight_count: int = 0
+    ready_preflight_count: int = 0
+    blocked_preflight_count: int = 0
+    running_progress_count: int = 0
+    completed_progress_count: int = 0
+    completion_count: int = 0
+    partial_count: int = 0
+    failed_count: int = 0
+    cancelled_count: int = 0
+    output_ref_count: int = 0
+    storage_target_count: int = 0
+    partial_persistence_count: int = 0
+    expected_total_bars: int = 0
+    expected_total_steps: int = 0
+    completed_steps: int = 0
+    downloaded_bars: int = 0
+    warning_count: int = 0
+    error_count: int = 0
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    degraded: bool = False
+    unavailable_reason: str | None = None
+    last_activity_at: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    docs_refs: tuple[str, ...] = ()
+    test_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_string(self.workflow_id, "workflow_id")
+        _validate_non_empty_string(self.display_name, "display_name")
+        object.__setattr__(
+            self,
+            "status",
+            _coerce_download_data_runtime_status(self.status),
+        )
+        for field_name in (
+            "selection_count",
+            "preflight_count",
+            "ready_preflight_count",
+            "blocked_preflight_count",
+            "running_progress_count",
+            "completed_progress_count",
+            "completion_count",
+            "partial_count",
+            "failed_count",
+            "cancelled_count",
+            "output_ref_count",
+            "storage_target_count",
+            "partial_persistence_count",
+            "expected_total_bars",
+            "expected_total_steps",
+            "completed_steps",
+            "downloaded_bars",
+            "warning_count",
+            "error_count",
+        ):
+            _validate_non_negative_int(getattr(self, field_name), field_name)
+        if type(self.degraded) is not bool:
+            raise TypeError("degraded must be a bool")
+        _validate_optional_string(self.unavailable_reason, "unavailable_reason")
+        _validate_optional_string(self.last_activity_at, "last_activity_at")
+        for field_name in ("warnings", "errors", "docs_refs", "test_refs"):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_string_tuple(getattr(self, field_name), field_name),
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            _readonly_download_data_runtime_metadata(self.metadata),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible mapping for this Download Data summary."""
+
+        return {
+            "workflow_id": self.workflow_id,
+            "display_name": self.display_name,
+            "status": self.status.value,
+            "selection_count": self.selection_count,
+            "preflight_count": self.preflight_count,
+            "ready_preflight_count": self.ready_preflight_count,
+            "blocked_preflight_count": self.blocked_preflight_count,
+            "running_progress_count": self.running_progress_count,
+            "completed_progress_count": self.completed_progress_count,
+            "completion_count": self.completion_count,
+            "partial_count": self.partial_count,
+            "failed_count": self.failed_count,
+            "cancelled_count": self.cancelled_count,
+            "output_ref_count": self.output_ref_count,
+            "storage_target_count": self.storage_target_count,
+            "partial_persistence_count": self.partial_persistence_count,
+            "expected_total_bars": self.expected_total_bars,
+            "expected_total_steps": self.expected_total_steps,
+            "completed_steps": self.completed_steps,
+            "downloaded_bars": self.downloaded_bars,
             "warning_count": self.warning_count,
             "error_count": self.error_count,
             "warnings": list(self.warnings),
@@ -532,6 +667,49 @@ def _empty_suite_runtime_summary() -> RuntimeSectionSummary:
     )
 
 
+def _empty_download_data_runtime_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="download_data_runtime",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Download Data runtime summaries unavailable",
+        metadata={
+            "available": False,
+            "summary_count": 0,
+            "workflow_count": 0,
+            "selection_count": 0,
+            "preflight_count": 0,
+            "ready_preflight_count": 0,
+            "blocked_preflight_count": 0,
+            "running_progress_count": 0,
+            "completed_progress_count": 0,
+            "completion_count": 0,
+            "partial_count": 0,
+            "failed_count": 0,
+            "cancelled_count": 0,
+            "output_ref_count": 0,
+            "storage_target_count": 0,
+            "partial_persistence_count": 0,
+            "expected_total_bars": 0,
+            "expected_total_steps": 0,
+            "completed_steps": 0,
+            "downloaded_bars": 0,
+            "warning_count": 0,
+            "error_count": 0,
+            "degraded_count": 0,
+            "unavailable_count": 0,
+            "workflow_ids": (),
+            "warnings": (),
+            "errors": (),
+            "unavailable_reasons": (),
+            "last_activity_at": None,
+            "summary_rows": (),
+            "degraded": False,
+            "download_data_failed": False,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeManagerSnapshot:
     """
@@ -572,6 +750,9 @@ class RuntimeManagerSnapshot:
     suite_runtime_summary: RuntimeSectionSummary = field(
         default_factory=_empty_suite_runtime_summary
     )
+    download_data_runtime_summary: RuntimeSectionSummary = field(
+        default_factory=_empty_download_data_runtime_summary
+    )
     recent_audit_events: tuple[AuditEventPreview, ...] = ()
     audit_sink_failures: tuple[AuditSinkFailurePreview, ...] = ()
     contract_registry: ContractRegistrySummary = field(
@@ -604,6 +785,7 @@ class RuntimeManagerSnapshot:
             "object_map_summary",
             "provider_runtime_summary",
             "suite_runtime_summary",
+            "download_data_runtime_summary",
             "audit_summary",
             "contracts_summary",
         ):
@@ -651,6 +833,7 @@ class RuntimeManagerSnapshot:
             self.object_map_summary,
             self.provider_runtime_summary,
             self.suite_runtime_summary,
+            self.download_data_runtime_summary,
             self.audit_summary,
             self.contracts_summary,
         )
@@ -714,6 +897,22 @@ def _coerce_provider_runtime_status(
     raise TypeError("status must be a ProviderRuntimeSummaryStatus or string")
 
 
+def _coerce_download_data_runtime_status(
+    value: DownloadDataRuntimeSummaryStatus | str,
+) -> DownloadDataRuntimeSummaryStatus:
+    if isinstance(value, DownloadDataRuntimeSummaryStatus):
+        return value
+    if isinstance(value, str):
+        try:
+            return DownloadDataRuntimeSummaryStatus(value)
+        except ValueError as error:
+            allowed = ", ".join(
+                status.value for status in DownloadDataRuntimeSummaryStatus
+            )
+            raise ValueError(f"status must be one of: {allowed}") from error
+    raise TypeError("status must be a DownloadDataRuntimeSummaryStatus or string")
+
+
 def _coerce_utc(value: datetime, field_name: str) -> datetime:
     if not isinstance(value, datetime):
         raise TypeError(f"{field_name} must be a datetime")
@@ -765,6 +964,45 @@ def _readonly_provider_runtime_value(value: object) -> object:
         return _readonly_provider_runtime_metadata(value)
     if isinstance(value, tuple | list):
         return tuple(_readonly_provider_runtime_value(item) for item in value)
+    if callable(value):
+        raise TypeError("metadata values must be JSON-compatible")
+    if isinstance(value, bytes | bytearray | memoryview | set | frozenset):
+        raise TypeError("metadata values must be JSON-compatible")
+    raise TypeError("metadata values must be JSON-compatible")
+
+
+def _readonly_download_data_runtime_metadata(
+    value: Mapping[str, object],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("metadata must be a mapping")
+    normalized: dict[str, object] = {}
+    for key in value:
+        if not isinstance(key, str):
+            raise TypeError("metadata keys must be strings")
+        _validate_download_data_runtime_metadata_key(key)
+        normalized[key] = _readonly_download_data_runtime_value(value[key])
+    return MappingProxyType(normalized)
+
+
+def _validate_download_data_runtime_metadata_key(value: str) -> None:
+    normalized = value.strip().lower()
+    for sensitive in _SENSITIVE_DOWNLOAD_DATA_RUNTIME_METADATA_KEY_PARTS:
+        if sensitive in normalized:
+            raise ValueError("metadata keys must not contain sensitive terms")
+
+
+def _readonly_download_data_runtime_value(value: object) -> object:
+    if value is None or type(value) in (bool, int, str):
+        return value
+    if type(value) is float:
+        if not isfinite(value):
+            raise ValueError("metadata float values must be finite")
+        return value
+    if isinstance(value, Mapping):
+        return _readonly_download_data_runtime_metadata(value)
+    if isinstance(value, tuple | list):
+        return tuple(_readonly_download_data_runtime_value(item) for item in value)
     if callable(value):
         raise TypeError("metadata values must be JSON-compatible")
     if isinstance(value, bytes | bytearray | memoryview | set | frozenset):
@@ -846,4 +1084,24 @@ _SENSITIVE_PROVIDER_RUNTIME_METADATA_KEY_PARTS = (
     "payload",
     "raw_payload",
     "response",
+)
+
+_SENSITIVE_DOWNLOAD_DATA_RUNTIME_METADATA_KEY_PARTS = (
+    "credential",
+    "credentials",
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "authorization",
+    "bearer",
+    "client",
+    "socket",
+    "payload",
+    "raw_payload",
+    "response",
+    "provider",
+    "adapter",
+    "writer",
+    "handle",
 )
