@@ -86,6 +86,38 @@ def test_main_window_required_shell_actions_exist() -> None:
     } == {action.action_id for action in document.actions}
 
 
+def test_main_window_metadata_documents_download_launch_surfaces() -> None:
+    document = _load_main_window_document()
+    launch_surfaces = document.metadata["launch_surfaces"]
+    download_data = launch_surfaces["download_data"]
+    ohlcv_maintenance = launch_surfaces["ohlcv_maintenance"]
+
+    assert document.metadata["menu_bar"]["present"] is True
+    assert "Download Manager" in document.metadata["menu_bar"]["menus"]
+    assert download_data["action_id"] == "main_window.download_data"
+    assert download_data["target_window_id"] == "download_request_builder.window"
+    assert download_data["target_workflow_id"] == "download_data"
+    assert download_data["boundary_id"] == "download_data_boundary"
+    assert download_data["permission_ref"] == "download:view"
+    assert download_data["implementation_status"] == "opens_existing_builder_shell"
+    assert ohlcv_maintenance["action_id"] == "main_window.ohlcv_maintenance"
+    assert ohlcv_maintenance["target_window_id"] == "download_request_builder.window"
+    assert ohlcv_maintenance["target_workflow_id"] == "ohlcv_maintenance"
+    assert ohlcv_maintenance["related_boundary_id"] == "download_data_boundary"
+    assert ohlcv_maintenance["implementation_status"] == "deferred_shell_entry"
+
+
+def test_main_window_metadata_is_inspectable_without_ai_helper_behavior() -> None:
+    document = _load_main_window_document()
+    inspection = document.metadata["ai_inspection"]
+
+    assert inspection["inspectable"] is True
+    assert "normal GUI action observation" in inspection["allowed_path"]
+    assert "Future AI helper work" in inspection["notes"][0]
+    assert document.metadata["documentation"]["docs_refs"]
+    assert document.metadata["documentation"]["test_refs"]
+
+
 def test_main_window_settings_exposure_contains_only_safe_paths() -> None:
     document = _load_main_window_document()
     profile = GuiMetadataResolver().resolve(document)

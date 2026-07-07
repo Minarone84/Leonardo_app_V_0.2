@@ -101,16 +101,139 @@ def test_builder_metadata_keeps_identity_and_visible_actions() -> None:
     assert result.document.metadata["object_name"] == "download_request_builder_window"
     assert result.document.metadata["instance_policy"] == "singleton"
     assert tuple(action.action_id for action in result.document.actions) == (
+        "download_request_builder.draft_summary",
+        "download_request_builder.preview_preflight",
         DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
         DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
     )
     assert tuple(action.label for action in result.document.actions) == (
+        "Draft Summary",
+        "Preview Preflight",
         "Start",
         "Close",
     )
 
     profile = GuiMetadataResolver().resolve(result.document)
     assert profile.values["metadata"]["window_id"] == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
+
+
+def test_builder_metadata_aligns_to_download_data_boundary() -> None:
+    document = _load_builder_document()
+    workflow = document.metadata["download_data_workflow"]
+
+    assert document.metadata["boundary_id"] == "download_data_boundary"
+    assert document.metadata["workflow_id"] == DOWNLOAD_DATA_WORKFLOW_MODE
+    assert document.metadata["object_kind"] == "download_data_selection_shell"
+    assert workflow["boundary_id"] == "download_data_boundary"
+    assert workflow["workflow_id"] == DOWNLOAD_DATA_WORKFLOW_MODE
+    assert workflow["current_shell_stage"] == "selection_draft"
+    assert workflow["current_contract_bridge"] == "DownloadRequestDraft -> DownloadRequest"
+    assert workflow["accepted_sequence"] == (
+        "selection",
+        "selection_recap",
+        "preflight",
+        "process_confirmation",
+        "progress",
+        "final_recap",
+    )
+    assert {
+        "selection_recap",
+        "visible_preflight",
+        "process_confirmation",
+        "progress",
+        "final_recap",
+    }.issubset(set(workflow["not_implemented_stages"]))
+    assert {
+        "DownloadDataSelectionDraft",
+        "DownloadDataSelectionSummary",
+        "DownloadDataPreflightSummary",
+        "DownloadDataProgressSummary",
+        "DownloadDataCompletionSummary",
+    }.issubset(set(workflow["future_contracts"]))
+
+
+def test_builder_metadata_documents_action_descriptors() -> None:
+    document = _load_builder_document()
+    descriptors = {
+        descriptor["action_id"]: descriptor
+        for descriptor in document.metadata["action_descriptors"]
+    }
+
+    assert {
+        "download_request_builder.draft_summary",
+        "download_request_builder.preview_preflight",
+        DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
+        DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
+    } == set(descriptors)
+    assert descriptors["download_request_builder.draft_summary"]["visibility"] == (
+        "internal_not_visible"
+    )
+    assert descriptors["download_request_builder.preview_preflight"]["visibility"] == (
+        "internal_not_visible"
+    )
+    assert descriptors[DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID]["visibility"] == (
+        "visible_button"
+    )
+    assert descriptors[DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID]["permission_ref"] == (
+        "download:submit"
+    )
+
+
+def test_builder_metadata_documents_current_to_future_field_mapping() -> None:
+    document = _load_builder_document()
+    descriptors = {
+        descriptor["current_field"]: descriptor
+        for descriptor in document.metadata["field_descriptors"]
+    }
+
+    assert descriptors["source_provider"]["canonical_download_data_field"] == (
+        "exchange_id"
+    )
+    assert descriptors["source_provider"]["user_label"] == "Exchange"
+    assert descriptors["source_provider"]["current_default_behavior"] == (
+        "existing_shell_default"
+    )
+    assert descriptors["source_provider"]["future_alignment"] == "empty_by_default"
+    assert descriptors["market"]["canonical_download_data_field"] == "market_type"
+    assert descriptors["market"]["user_label"] == "Market Type"
+    assert descriptors["symbols"]["canonical_download_data_field"] == "symbol"
+    assert descriptors["symbols"]["user_label"] == "Asset / Symbol"
+    assert descriptors["symbols"]["current_default_behavior"] == "empty"
+
+
+def test_builder_metadata_declares_non_execution_boundaries() -> None:
+    document = _load_builder_document()
+    guarantees = document.metadata["boundary_guarantees"]
+
+    assert guarantees["no_downloader_execution"] is True
+    assert guarantees["no_provider_api_call"] is True
+    assert guarantees["no_storage_write"] is True
+    assert guarantees["no_cancellation_behavior"] is True
+    assert guarantees["no_data_manager_integration"] is True
+    assert guarantees["no_runtime_manager_control"] is True
+    assert guarantees["no_object_map_service_mutation"] is True
+    assert guarantees["no_ai_helper_implementation"] is True
+    assert {
+        "downloader_execution",
+        "provider_api_call",
+        "storage_write",
+        "cancellation_behavior",
+        "data_manager_integration",
+        "runtime_manager_control",
+        "object_map_service_mutation",
+        "ai_helper_implementation",
+    } == set(guarantees["forbidden_behavior"])
+
+
+def test_builder_metadata_is_ai_helper_inspectable_without_implementation() -> None:
+    document = _load_builder_document()
+    inspection = document.metadata["ai_inspection"]
+
+    assert inspection["inspectable"] is True
+    assert "normal GUI action observation" in inspection["allowed_path"]
+    assert "Future AI helper work" in inspection["notes"][0]
+    assert document.metadata["documentation"]["docs_refs"]
+    assert document.metadata["documentation"]["test_refs"]
 
 
 def test_builder_opens_in_download_data_mode(qapplication: QApplication) -> None:
@@ -467,6 +590,13 @@ def test_builder_source_has_no_core_or_contract_dependencies() -> None:
 
     for token in blocked_tokens:
         assert token not in source
+
+
+def _load_builder_document():
+    result = load_metadata_document(_BUILDER_METADATA)
+    assert result.report.has_errors is False
+    assert result.document is not None
+    return result.document
 
 
 class _RecordingActionObserver:

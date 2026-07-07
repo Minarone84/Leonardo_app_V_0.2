@@ -13,6 +13,185 @@ object_name = "download_request_builder_window"
 test_id = "download_request_builder_window"
 instance_policy = "singleton"
 description = "Existing builder for Download Data and OHLCV Maintenance drafts."
+object_family = "window"
+object_kind = "download_data_selection_shell"
+boundary_id = "download_data_boundary"
+workflow_id = "download_data"
+
+[metadata.download_data_workflow]
+boundary_id = "download_data_boundary"
+workflow_id = "download_data"
+current_shell_stage = "selection_draft"
+current_contract_bridge = "DownloadRequestDraft -> DownloadRequest"
+accepted_sequence = [
+    "selection",
+    "selection_recap",
+    "preflight",
+    "process_confirmation",
+    "progress",
+    "final_recap",
+]
+implemented_stage_notes = [
+    "The current shell renders selection fields and a draft submit action.",
+    "The current shell can format a preflight callback result when called through existing code, but no visible Preview button is exposed.",
+]
+not_implemented_stages = [
+    "selection_recap",
+    "visible_preflight",
+    "process_confirmation",
+    "progress",
+    "final_recap",
+]
+future_contracts = [
+    "DownloadDataSelectionDraft",
+    "DownloadDataSelectionSummary",
+    "DownloadDataPreflightSummary",
+    "DownloadDataProgressSummary",
+    "DownloadDataCompletionSummary",
+]
+
+[metadata.boundary_guarantees]
+no_downloader_execution = true
+no_provider_api_call = true
+no_storage_write = true
+no_cancellation_behavior = true
+no_data_manager_integration = true
+no_runtime_manager_control = true
+no_object_map_service_mutation = true
+no_ai_helper_implementation = true
+forbidden_behavior = [
+    "downloader_execution",
+    "provider_api_call",
+    "storage_write",
+    "cancellation_behavior",
+    "data_manager_integration",
+    "runtime_manager_control",
+    "object_map_service_mutation",
+    "ai_helper_implementation",
+]
+
+[metadata.ai_inspection]
+inspectable = true
+allowed_path = "stable window and action identifiers through normal GUI action observation"
+notes = [
+    "Future AI helper work may inspect field and action metadata but must not mutate GUI state, Core internals, provider state, storage, Data Manager state, Runtime Manager state, or Object Map service state directly.",
+]
+
+[metadata.documentation]
+docs_refs = [
+    "docs/gui_readme.md",
+    "docs/gui_docs/GUI_COMPOSITION.md",
+    "docs/contracts_docs/DOWNLOAD_DATA_BOUNDARY.md",
+    "docs/core_docs/DOWNLOAD_DATA_OBJECT_MAP_PATTERN.md",
+    "docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md",
+]
+test_refs = [
+    "tests/gui_test/test_download_request_builder_window.py",
+    "tests/gui_test/test_download_request_mapper.py",
+    "tests/gui_test/test_gui_composition.py",
+]
+
+[[metadata.action_descriptors]]
+action_id = "download_request_builder.draft_summary"
+label = "Draft Summary"
+purpose = "Existing internal action identifier for formatting the current draft summary."
+workflow_stage = "selection_draft"
+visibility = "internal_not_visible"
+permission_ref = "download:view"
+
+[[metadata.action_descriptors]]
+action_id = "download_request_builder.preview_preflight"
+label = "Preview Preflight"
+purpose = "Existing internal action identifier for formatting an injected preflight preview result."
+workflow_stage = "preflight_preview"
+visibility = "internal_not_visible"
+permission_ref = "download:preview"
+
+[[metadata.action_descriptors]]
+action_id = "download_request_builder.submit"
+label = "Start"
+purpose = "Submit the current Download Request Builder draft through the existing composition bridge."
+workflow_stage = "selection_draft"
+visibility = "visible_button"
+permission_ref = "download:submit"
+
+[[metadata.action_descriptors]]
+action_id = "download_request_builder.close"
+label = "Close"
+purpose = "Close the Download Request Builder window."
+workflow_stage = "window_lifecycle"
+visibility = "visible_button"
+permission_ref = "download:view"
+
+[[metadata.field_descriptors]]
+current_field = "source_provider"
+canonical_download_data_field = "exchange_id"
+user_label = "Exchange"
+owner = "gui_selection_display"
+value_origin = "capability_derived_current_shell_default"
+future_source_of_truth = "provider_or_exchange_capability_metadata"
+current_default_behavior = "existing_shell_default"
+future_alignment = "empty_by_default"
+
+[[metadata.field_descriptors]]
+current_field = "market"
+canonical_download_data_field = "market_type"
+user_label = "Market Type"
+owner = "gui_selection_display"
+value_origin = "capability_derived_current_shell_default"
+future_source_of_truth = "provider_or_exchange_capability_metadata"
+current_default_behavior = "existing_shell_default"
+future_alignment = "empty_by_default"
+
+[[metadata.field_descriptors]]
+current_field = "symbols"
+canonical_download_data_field = "symbol"
+user_label = "Asset / Symbol"
+owner = "gui_selection_display"
+value_origin = "user_input"
+future_source_of_truth = "provider_or_exchange_capability_metadata"
+current_default_behavior = "empty"
+future_alignment = "empty_by_default"
+
+[[metadata.field_descriptors]]
+current_field = "timeframes"
+canonical_download_data_field = "selected_timeframes"
+user_label = "Timeframes"
+owner = "gui_selection_display"
+value_origin = "capability_derived_user_selection"
+future_source_of_truth = "provider_or_exchange_capability_metadata"
+current_default_behavior = "empty"
+future_alignment = "empty_by_default"
+
+[[metadata.field_descriptors]]
+current_field = "start"
+canonical_download_data_field = "requested_start"
+user_label = "Start"
+owner = "gui_selection_display"
+value_origin = "user_input"
+future_source_of_truth = "user_selection"
+current_default_behavior = "empty"
+future_alignment = "empty_by_default"
+
+[[metadata.field_descriptors]]
+current_field = "end"
+canonical_download_data_field = "requested_end"
+user_label = "End"
+owner = "gui_selection_display"
+value_origin = "user_input"
+future_source_of_truth = "user_selection"
+current_default_behavior = "empty"
+future_alignment = "empty_by_default"
+
+[[metadata.field_descriptors]]
+current_field = "metadata.limit"
+canonical_download_data_field = "page_limit"
+user_label = "Limit"
+owner = "gui_selection_display"
+value_origin = "capability_derived_current_shell_default"
+future_source_of_truth = "provider_or_exchange_capability_metadata"
+current_default_behavior = "existing_shell_default"
+future_alignment = "empty_or_policy_default_by_future_decision"
 
 [metadata.geometry_policy]
 start_mode = "windowed"
@@ -47,6 +226,14 @@ label = "Status"
 [[regions]]
 region_id = "download_request_builder.actions"
 label = "Actions"
+
+[[actions]]
+action_id = "download_request_builder.draft_summary"
+label = "Draft Summary"
+
+[[actions]]
+action_id = "download_request_builder.preview_preflight"
+label = "Preview Preflight"
 
 [[actions]]
 action_id = "download_request_builder.submit"
