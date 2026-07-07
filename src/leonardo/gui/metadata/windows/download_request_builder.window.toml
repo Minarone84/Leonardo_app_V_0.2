@@ -128,9 +128,9 @@ current_field = "source_provider"
 canonical_download_data_field = "exchange_id"
 user_label = "Exchange"
 owner = "gui_selection_display"
-value_origin = "capability_derived_current_shell_default"
+value_origin = "user_selection_from_capability_options"
 future_source_of_truth = "provider_or_exchange_capability_metadata"
-current_default_behavior = "existing_shell_default"
+current_default_behavior = "empty"
 future_alignment = "empty_by_default"
 
 [[metadata.field_descriptors]]
@@ -138,9 +138,9 @@ current_field = "market"
 canonical_download_data_field = "market_type"
 user_label = "Market Type"
 owner = "gui_selection_display"
-value_origin = "capability_derived_current_shell_default"
+value_origin = "user_selection_from_capability_options"
 future_source_of_truth = "provider_or_exchange_capability_metadata"
-current_default_behavior = "existing_shell_default"
+current_default_behavior = "empty"
 future_alignment = "empty_by_default"
 
 [[metadata.field_descriptors]]

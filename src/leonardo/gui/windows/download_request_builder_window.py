@@ -269,6 +269,7 @@ class DownloadRequestBuilderWindow(QWidget):
         exchange = QComboBox()
         exchange.setObjectName("download_request_builder.exchange")
         exchange.addItems(self._options.exchanges)
+        exchange.setCurrentIndex(-1)
         self._field_widgets["exchange"] = exchange
         self._field_widgets["source_provider"] = exchange
         form.addRow(_field_label("exchange", "Exchange"), exchange)
@@ -276,6 +277,7 @@ class DownloadRequestBuilderWindow(QWidget):
         market = QComboBox()
         market.setObjectName("download_request_builder.market")
         market.addItems(self._options.markets)
+        market.setCurrentIndex(-1)
         self._field_widgets["market"] = market
         form.addRow(_field_label("market", "Market Type"), market)
 
@@ -532,6 +534,22 @@ def _limit_max(widget: QWidget) -> int | None:
 
 def _validate_draft(draft: DownloadRequestDraft) -> tuple[DownloadDraftIssue, ...]:
     issues: list[DownloadDraftIssue] = []
+    if not draft.source_provider:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="source_provider",
+                severity="error",
+                message="Exchange is required.",
+            )
+        )
+    if not draft.market:
+        issues.append(
+            DownloadDraftIssue(
+                field_id="market",
+                severity="error",
+                message="Market Type is required.",
+            )
+        )
     if not draft.symbols:
         issues.append(
             DownloadDraftIssue(

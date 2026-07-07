@@ -190,12 +190,11 @@ def test_builder_metadata_documents_current_to_future_field_mapping() -> None:
         "exchange_id"
     )
     assert descriptors["source_provider"]["user_label"] == "Exchange"
-    assert descriptors["source_provider"]["current_default_behavior"] == (
-        "existing_shell_default"
-    )
+    assert descriptors["source_provider"]["current_default_behavior"] == "empty"
     assert descriptors["source_provider"]["future_alignment"] == "empty_by_default"
     assert descriptors["market"]["canonical_download_data_field"] == "market_type"
     assert descriptors["market"]["user_label"] == "Market Type"
+    assert descriptors["market"]["current_default_behavior"] == "empty"
     assert descriptors["symbols"]["canonical_download_data_field"] == "symbol"
     assert descriptors["symbols"]["user_label"] == "Asset / Symbol"
     assert descriptors["symbols"]["current_default_behavior"] == "empty"
@@ -294,6 +293,9 @@ def test_catalog_options_populate_exchange_market_and_timeframes(
     assert window.option_values_for_id("exchange") == ("Bybit",)
     assert window.option_values_for_id("source_provider") == ("Bybit",)
     assert window.option_values_for_id("market") == ("spot", "linear", "inverse")
+    assert _combo_current_text(window, "exchange") == ""
+    assert _combo_current_text(window, "source_provider") == ""
+    assert _combo_current_text(window, "market") == ""
     assert "options" not in window.option_values_for_id("market")
     assert tuple(
         checkbox.text()
@@ -301,6 +303,56 @@ def test_catalog_options_populate_exchange_market_and_timeframes(
         if checkbox.objectName().startswith("download_request_builder.timeframe.")
     ) == _BYBIT_TIMEFRAMES
     assert window.findChild(QCheckBox, "download_request_builder.timeframe.1M") is None
+
+    _dispose(qapplication, window)
+
+
+def test_builder_initializes_with_empty_download_data_selection(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    draft = window.current_draft()
+
+    assert draft.source_provider == ""
+    assert draft.market == ""
+    assert draft.symbols == ()
+    assert draft.timeframes == ()
+    assert dict(draft.metadata) == {"limit": 200}
+
+    _dispose(qapplication, window)
+
+
+def test_selecting_exchange_does_not_auto_select_market_or_other_fields(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    _select_combo(window, "exchange", "Bybit")
+    draft = window.current_draft()
+
+    assert draft.source_provider == "Bybit"
+    assert draft.market == ""
+    assert draft.symbols == ()
+    assert draft.timeframes == ()
+    assert window.option_values_for_id("market") == ("spot", "linear", "inverse")
+
+    _dispose(qapplication, window)
+
+
+def test_selecting_market_does_not_invent_symbol_or_timeframes(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    draft = window.current_draft()
+
+    assert draft.source_provider == "Bybit"
+    assert draft.market == "spot"
+    assert draft.symbols == ()
+    assert draft.timeframes == ()
 
     _dispose(qapplication, window)
 
@@ -355,6 +407,8 @@ def test_visible_fields_map_to_explicit_draft_with_hidden_defaults(
     qapplication: QApplication,
 ) -> None:
     window = _builder()
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
     _set_text_field(window, "start", "2026-01-01")
@@ -402,6 +456,8 @@ def test_no_selected_timeframes_block_local_start_validation(
         return _submit_view()
 
     window = _builder(on_submit_intent=callback)
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
 
     result = _render_start(window)
@@ -415,12 +471,62 @@ def test_no_selected_timeframes_block_local_start_validation(
     _dispose(qapplication, window)
 
 
+def test_empty_exchange_blocks_local_start_validation(
+    qapplication: QApplication,
+) -> None:
+    calls = 0
+
+    def callback(draft: object) -> object:
+        nonlocal calls
+        calls += 1
+        return _submit_view()
+
+    window = _builder(on_submit_intent=callback)
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    result = _render_start(window)
+
+    assert calls == 0
+    assert "Download start blocked by local validation issues:" in result
+    assert "ERROR source_provider: Exchange is required." in result
+
+    _dispose(qapplication, window)
+
+
+def test_empty_market_blocks_local_start_validation(
+    qapplication: QApplication,
+) -> None:
+    calls = 0
+
+    def callback(draft: object) -> object:
+        nonlocal calls
+        calls += 1
+        return _submit_view()
+
+    window = _builder(on_submit_intent=callback)
+    _select_combo(window, "exchange", "Bybit")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    result = _render_start(window)
+
+    assert calls == 0
+    assert "Download start blocked by local validation issues:" in result
+    assert "ERROR market: Market Type is required." in result
+
+    _dispose(qapplication, window)
+
+
 def test_limit_default_and_max_validation(qapplication: QApplication) -> None:
     window = _builder()
     limit = window.field_widget_for_id("limit")
     assert isinstance(limit, QLineEdit)
 
     assert limit.text() == "200"
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
     _set_text_field(window, "limit", "1001")
@@ -442,6 +548,8 @@ def test_start_valid_download_data_draft_calls_callback_once(
         return _submit_view()
 
     window = _builder(on_submit_intent=callback)
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
 
@@ -463,6 +571,8 @@ def test_start_valid_download_data_draft_calls_callback_once(
 def test_start_action_records_through_observer(qapplication: QApplication) -> None:
     observer = _RecordingActionObserver()
     window = _builder(action_observer=observer)
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
 
@@ -499,6 +609,8 @@ def test_denied_start_action_does_not_run_callback(
         denied_action_ids=(DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,)
     )
     window = _builder(on_submit_intent=callback, action_observer=observer)
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
 
@@ -522,6 +634,8 @@ def test_start_ohlcv_mode_blocks_callback_and_shows_deferred_message(
         return _submit_view()
 
     window = _builder(OHLCV_MAINTENANCE_WORKFLOW_MODE, on_submit_intent=callback)
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
 
@@ -535,6 +649,8 @@ def test_start_ohlcv_mode_blocks_callback_and_shows_deferred_message(
 
 def test_parseable_start_and_end_are_accepted(qapplication: QApplication) -> None:
     window = _builder()
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
     _set_text_field(window, "start", "2026-01-01")
@@ -553,6 +669,8 @@ def test_reversed_start_and_end_report_local_issue(
     qapplication: QApplication,
 ) -> None:
     window = _builder()
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
     _set_text_field(window, "symbol", "BTCUSDT")
     _check_timeframes(window, "1m")
     _set_text_field(window, "start", "2026-01-02")
@@ -645,6 +763,27 @@ def _set_text_field(
     widget = window.field_widget_for_id(field_id)
     assert isinstance(widget, QLineEdit)
     widget.setText(value)
+
+
+def _select_combo(
+    window: DownloadRequestBuilderWindow,
+    field_id: str,
+    value: str,
+) -> None:
+    widget = window.field_widget_for_id(field_id)
+    assert isinstance(widget, QComboBox)
+    index = widget.findText(value)
+    assert index >= 0
+    widget.setCurrentIndex(index)
+
+
+def _combo_current_text(
+    window: DownloadRequestBuilderWindow,
+    field_id: str,
+) -> str:
+    widget = window.field_widget_for_id(field_id)
+    assert isinstance(widget, QComboBox)
+    return widget.currentText()
 
 
 def _check_timeframes(

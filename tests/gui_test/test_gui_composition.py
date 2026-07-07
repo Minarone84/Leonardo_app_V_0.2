@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QComboBox,
     QLineEdit,
     QPushButton,
     QTextEdit,
@@ -428,6 +429,7 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m", "5m")
     builder._show_preflight_preview()
@@ -464,6 +466,7 @@ def test_composition_wires_download_submit_without_preview_call(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m", "5m")
     _click_builder_button(builder, "download_request_builder.submit_button")
@@ -521,6 +524,7 @@ def test_composition_reports_blocked_readiness_for_explicit_download(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
@@ -567,6 +571,7 @@ def test_composition_handles_duplicate_download_submit_safely(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m")
 
@@ -603,6 +608,7 @@ def test_composition_blocks_ohlcv_submit_without_core_call(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
@@ -635,6 +641,7 @@ def test_download_submit_state_is_visible_through_runtime_snapshot(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m", "5m")
     _click_builder_button(builder, "download_request_builder.submit_button")
@@ -690,6 +697,7 @@ def test_download_submit_without_timeframe_is_locally_blocked_before_runtime_sna
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _click_builder_button(builder, "download_request_builder.submit_button")
     submit_text = _builder_status_text(builder)
@@ -725,6 +733,7 @@ def test_download_submit_plan_failure_preserves_accepted_submit(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
@@ -764,6 +773,7 @@ def test_download_submit_classification_failure_preserves_created_plan(
     qapplication.processEvents()
     builder = root.download_request_builder_window
     assert builder is not None
+    _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m")
     _click_builder_button(builder, "download_request_builder.submit_button")
@@ -887,6 +897,23 @@ def _set_builder_text(
     widget = builder.field_widget_for_id(field_id)
     assert isinstance(widget, QLineEdit)
     widget.setText(value)
+
+
+def _select_download_defaults(builder: DownloadRequestBuilderWindow) -> None:
+    _select_builder_combo(builder, "exchange", "Bybit")
+    _select_builder_combo(builder, "market", "spot")
+
+
+def _select_builder_combo(
+    builder: DownloadRequestBuilderWindow,
+    field_id: str,
+    value: str,
+) -> None:
+    widget = builder.field_widget_for_id(field_id)
+    assert isinstance(widget, QComboBox)
+    index = widget.findText(value)
+    assert index >= 0
+    widget.setCurrentIndex(index)
 
 
 def _check_builder_timeframes(
