@@ -15,6 +15,7 @@ The backend aggregates current runtime truth from existing Core owners:
 - `AuditLog`
 - `ContractRegistry`
 - optional Object Map snapshot provider
+- optional provider runtime summary provider
 - optional suite runtime summary provider
 
 `snapshot()` returns a defensive `RuntimeManagerSnapshot`. The backend reads
@@ -22,6 +23,8 @@ current app lifecycle state, current session identity, service visibility, activ
 tasks, open windows, recent action triggers, active operations, retained audit
 events, audit sink failures, contract registry counts, and an optional compact
 Object Map summary when a read-only `ObjectMapSnapshot` provider is injected.
+It may include an optional compact provider runtime summary when a read-only
+`ProviderRuntimeSummary` provider is injected by app composition.
 It may also include an optional compact suite/area runtime summary when a
 read-only `SuiteRuntimeSummary` provider is injected by app composition.
 
@@ -38,6 +41,21 @@ redacted for read-only Runtime Manager display. GUI display must keep those
 diagnostics read-only and must not repair, retry, execute, cancel, or control
 Object Map provider output.
 
+Provider runtime summary integration is explicit-injection only. Runtime
+Manager consumes an optional callable returning frozen `ProviderRuntimeSummary`
+values. It does not construct provider descriptors, import provider Object Map
+helpers, register providers, discover providers, construct adapters, create
+clients, open network transports, implement websocket behavior, execute
+subscriptions, reconnect providers, or own provider behavior. The compact
+`provider_runtime` section reports provider counts, capability/session/
+subscription/message-trace totals, Object Map section totals, bounded
+diagnostics, degraded/unavailable counts, and last activity metadata.
+
+Provider runtime summaries must not carry credentials, tokens, secrets,
+passwords, API keys, raw clients, sockets, raw payloads, full API responses, or
+large data dumps. Diagnostics are sanitized, deduplicated, and bounded before
+being exposed through Runtime Manager metadata.
+
 Suite runtime summary integration is provider-only. Runtime Manager consumes an
 optional injected callable returning frozen `SuiteRuntimeSummary` values. It
 does not construct suite descriptors, scan modules, import concrete suite
@@ -49,10 +67,12 @@ degraded/unavailable counts, and last activity metadata.
 The backend does not own runtime state. It does not mutate `StateStore`, register
 services, register windows or actions, execute actions, start or cancel tasks,
 create audit files, own Object Map providers, own suite summary providers,
-repair Object Map output, route Object Map interrogation, or perform lifecycle
+own provider summary providers, repair Object Map output, route Object Map
+interrogation, transfer ConnectionRegistry ownership, or perform lifecycle
 transitions.
 
 Runtime Manager display remains read-only. Runtime Manager controls, Object Map
 interrogation routing, provider repair, lifecycle control, Data Manager
 behavior, Analysis Suite behavior, Trading Suite behavior, provider transport,
-suite execution, and old Leonardo code reuse remain outside this backend.
+suite execution, Download Data continuation, concrete suite behavior, adapter
+code, storage writers, and old Leonardo code reuse remain outside this backend.

@@ -283,8 +283,8 @@ def test_runtime_manager_renders_runtime_snapshot_contract(
     assert window.last_rendered_snapshot_summary["health"] == "ok"
     summary_table = window.table_for_id("runtime_manager.summary_table")
     assert summary_table.editTriggers() == QTableWidget.EditTrigger.NoEditTriggers
-    assert window.last_rendered_snapshot_summary["summary_rows"] == 14
-    assert summary_table.rowCount() == 14
+    assert window.last_rendered_snapshot_summary["summary_rows"] == len(snapshot.sections)
+    assert summary_table.rowCount() == len(snapshot.sections)
     assert summary_table.item(11, 0).text() == "object_map"
     assert summary_table.item(11, 1).text() == "ok"
     assert summary_table.item(11, 2).text() == "0"

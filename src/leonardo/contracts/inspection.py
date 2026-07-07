@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
+from math import isfinite
 from types import MappingProxyType
 
 
@@ -27,6 +28,15 @@ class RuntimeSectionStatus(str, Enum):
 
 class SuiteRuntimeSummaryStatus(str, Enum):
     """Read-only availability status for one suite or area summary."""
+
+    OK = "ok"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+
+
+class ProviderRuntimeSummaryStatus(str, Enum):
+    """Read-only availability status for one provider runtime summary."""
 
     OK = "ok"
     DEGRADED = "degraded"
@@ -106,6 +116,107 @@ class SuiteRuntimeSummary:
             "module_count": self.module_count,
             "active_operation_count": self.active_operation_count,
             "active_task_count": self.active_task_count,
+            "object_map_section_count": self.object_map_section_count,
+            "warning_count": self.warning_count,
+            "error_count": self.error_count,
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "degraded": self.degraded,
+            "unavailable_reason": self.unavailable_reason,
+            "last_activity_at": self.last_activity_at,
+            "metadata": _plain_value(self.metadata),
+            "docs_refs": list(self.docs_refs),
+            "test_refs": list(self.test_refs),
+        }
+
+
+@dataclass(frozen=True)
+class ProviderRuntimeSummary:
+    """
+    Compact read-only Runtime Manager summary for a provider boundary.
+
+    The summary is supplied by future app composition or provider owners. It
+    carries bounded provider/session/subscription counts and diagnostics only.
+    It does not contain provider objects, runtime handles, transport clients,
+    credentials, raw message bodies, or mutable runtime state.
+    """
+
+    provider_id: str
+    display_name: str
+    status: ProviderRuntimeSummaryStatus | str
+    provider_kind: str | None = None
+    capability_count: int = 0
+    session_count: int = 0
+    active_session_count: int = 0
+    connected_session_count: int = 0
+    subscription_count: int = 0
+    active_subscription_count: int = 0
+    message_trace_count: int = 0
+    object_map_section_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    degraded: bool = False
+    unavailable_reason: str | None = None
+    last_activity_at: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    docs_refs: tuple[str, ...] = ()
+    test_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_string(self.provider_id, "provider_id")
+        _validate_non_empty_string(self.display_name, "display_name")
+        _validate_optional_string(self.provider_kind, "provider_kind")
+        object.__setattr__(
+            self,
+            "status",
+            _coerce_provider_runtime_status(self.status),
+        )
+        for field_name in (
+            "capability_count",
+            "session_count",
+            "active_session_count",
+            "connected_session_count",
+            "subscription_count",
+            "active_subscription_count",
+            "message_trace_count",
+            "object_map_section_count",
+            "warning_count",
+            "error_count",
+        ):
+            _validate_non_negative_int(getattr(self, field_name), field_name)
+        if type(self.degraded) is not bool:
+            raise TypeError("degraded must be a bool")
+        _validate_optional_string(self.unavailable_reason, "unavailable_reason")
+        _validate_optional_string(self.last_activity_at, "last_activity_at")
+        for field_name in ("warnings", "errors", "docs_refs", "test_refs"):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_string_tuple(getattr(self, field_name), field_name),
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            _readonly_provider_runtime_metadata(self.metadata),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible mapping for this provider runtime summary."""
+
+        return {
+            "provider_id": self.provider_id,
+            "display_name": self.display_name,
+            "status": self.status.value,
+            "provider_kind": self.provider_kind,
+            "capability_count": self.capability_count,
+            "session_count": self.session_count,
+            "active_session_count": self.active_session_count,
+            "connected_session_count": self.connected_session_count,
+            "subscription_count": self.subscription_count,
+            "active_subscription_count": self.active_subscription_count,
+            "message_trace_count": self.message_trace_count,
             "object_map_section_count": self.object_map_section_count,
             "warning_count": self.warning_count,
             "error_count": self.error_count,
@@ -355,6 +466,40 @@ def _empty_object_map_summary() -> RuntimeSectionSummary:
     )
 
 
+def _empty_provider_runtime_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="provider_runtime",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Provider runtime summaries unavailable",
+        metadata={
+            "available": False,
+            "summary_count": 0,
+            "provider_count": 0,
+            "capability_count": 0,
+            "session_count": 0,
+            "active_session_count": 0,
+            "connected_session_count": 0,
+            "subscription_count": 0,
+            "active_subscription_count": 0,
+            "message_trace_count": 0,
+            "object_map_section_count": 0,
+            "warning_count": 0,
+            "error_count": 0,
+            "degraded_count": 0,
+            "unavailable_count": 0,
+            "provider_ids": (),
+            "warnings": (),
+            "errors": (),
+            "unavailable_reasons": (),
+            "last_activity_at": None,
+            "summary_rows": (),
+            "degraded": False,
+            "provider_failed": False,
+        },
+    )
+
+
 def _empty_suite_runtime_summary() -> RuntimeSectionSummary:
     return RuntimeSectionSummary(
         section_id="suite_runtime",
@@ -421,6 +566,9 @@ class RuntimeManagerSnapshot:
     object_map_summary: RuntimeSectionSummary = field(
         default_factory=_empty_object_map_summary
     )
+    provider_runtime_summary: RuntimeSectionSummary = field(
+        default_factory=_empty_provider_runtime_summary
+    )
     suite_runtime_summary: RuntimeSectionSummary = field(
         default_factory=_empty_suite_runtime_summary
     )
@@ -454,6 +602,7 @@ class RuntimeManagerSnapshot:
             "downloads_summary",
             "download_execution_summary",
             "object_map_summary",
+            "provider_runtime_summary",
             "suite_runtime_summary",
             "audit_summary",
             "contracts_summary",
@@ -500,6 +649,7 @@ class RuntimeManagerSnapshot:
             self.downloads_summary,
             self.download_execution_summary,
             self.object_map_summary,
+            self.provider_runtime_summary,
             self.suite_runtime_summary,
             self.audit_summary,
             self.contracts_summary,
@@ -550,6 +700,20 @@ def _coerce_suite_runtime_status(
     raise TypeError("status must be a SuiteRuntimeSummaryStatus or string")
 
 
+def _coerce_provider_runtime_status(
+    value: ProviderRuntimeSummaryStatus | str,
+) -> ProviderRuntimeSummaryStatus:
+    if isinstance(value, ProviderRuntimeSummaryStatus):
+        return value
+    if isinstance(value, str):
+        try:
+            return ProviderRuntimeSummaryStatus(value)
+        except ValueError as error:
+            allowed = ", ".join(status.value for status in ProviderRuntimeSummaryStatus)
+            raise ValueError(f"status must be one of: {allowed}") from error
+    raise TypeError("status must be a ProviderRuntimeSummaryStatus or string")
+
+
 def _coerce_utc(value: datetime, field_name: str) -> datetime:
     if not isinstance(value, datetime):
         raise TypeError(f"{field_name} must be a datetime")
@@ -567,6 +731,45 @@ def _readonly_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
             raise TypeError("metadata keys must be strings")
         normalized[key] = _readonly_value(value[key])
     return MappingProxyType(normalized)
+
+
+def _readonly_provider_runtime_metadata(
+    value: Mapping[str, object],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("metadata must be a mapping")
+    normalized: dict[str, object] = {}
+    for key in value:
+        if not isinstance(key, str):
+            raise TypeError("metadata keys must be strings")
+        _validate_provider_runtime_metadata_key(key)
+        normalized[key] = _readonly_provider_runtime_value(value[key])
+    return MappingProxyType(normalized)
+
+
+def _validate_provider_runtime_metadata_key(value: str) -> None:
+    normalized = value.strip().lower()
+    for sensitive in _SENSITIVE_PROVIDER_RUNTIME_METADATA_KEY_PARTS:
+        if sensitive in normalized:
+            raise ValueError("metadata keys must not contain provider-sensitive terms")
+
+
+def _readonly_provider_runtime_value(value: object) -> object:
+    if value is None or type(value) in (bool, int, str):
+        return value
+    if type(value) is float:
+        if not isfinite(value):
+            raise ValueError("metadata float values must be finite")
+        return value
+    if isinstance(value, Mapping):
+        return _readonly_provider_runtime_metadata(value)
+    if isinstance(value, tuple | list):
+        return tuple(_readonly_provider_runtime_value(item) for item in value)
+    if callable(value):
+        raise TypeError("metadata values must be JSON-compatible")
+    if isinstance(value, bytes | bytearray | memoryview | set | frozenset):
+        raise TypeError("metadata values must be JSON-compatible")
+    raise TypeError("metadata values must be JSON-compatible")
 
 
 def _readonly_value(value: object) -> object:
@@ -627,3 +830,20 @@ def _validate_optional_string(value: str | None, field_name: str) -> None:
     if value is None:
         return
     _validate_non_empty_string(value, field_name)
+
+
+_SENSITIVE_PROVIDER_RUNTIME_METADATA_KEY_PARTS = (
+    "credential",
+    "credentials",
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "authorization",
+    "bearer",
+    "client",
+    "socket",
+    "payload",
+    "raw_payload",
+    "response",
+)

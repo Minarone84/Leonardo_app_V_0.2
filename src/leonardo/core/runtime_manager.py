@@ -18,6 +18,8 @@ from leonardo.contracts.inspection import (
     AuditEventPreview,
     AuditSinkFailurePreview,
     ContractRegistrySummary,
+    ProviderRuntimeSummary,
+    ProviderRuntimeSummaryStatus,
     RuntimeManagerSnapshot,
     RuntimeSectionStatus,
     RuntimeSectionSummary,
@@ -91,6 +93,11 @@ class RuntimeManagerBackend:
         download_manager: DownloadManager | None = None,
         download_execution_manager: DownloadExecutionManager | None = None,
         object_map_snapshot_provider: Callable[[], ObjectMapSnapshot] | None = None,
+        provider_runtime_summary_provider: Callable[
+            [],
+            tuple[ProviderRuntimeSummary, ...],
+        ]
+        | None = None,
         suite_runtime_summary_provider: Callable[
             [],
             tuple[SuiteRuntimeSummary, ...],
@@ -140,6 +147,12 @@ class RuntimeManagerBackend:
             raise TypeError(
                 "object_map_snapshot_provider must be callable or None"
             )
+        if provider_runtime_summary_provider is not None and not callable(
+            provider_runtime_summary_provider
+        ):
+            raise TypeError(
+                "provider_runtime_summary_provider must be callable or None"
+            )
         if suite_runtime_summary_provider is not None and not callable(
             suite_runtime_summary_provider
         ):
@@ -161,6 +174,7 @@ class RuntimeManagerBackend:
         self._download_manager = download_manager
         self._download_execution_manager = download_execution_manager
         self._object_map_snapshot_provider = object_map_snapshot_provider
+        self._provider_runtime_summary_provider = provider_runtime_summary_provider
         self._suite_runtime_summary_provider = suite_runtime_summary_provider
         self._recent_audit_limit = recent_audit_limit
 
@@ -196,6 +210,7 @@ class RuntimeManagerBackend:
             downloads_summary=self._downloads_summary(),
             download_execution_summary=self._download_execution_summary(),
             object_map_summary=self._object_map_summary(),
+            provider_runtime_summary=self._provider_runtime_summary(),
             suite_runtime_summary=self._suite_runtime_summary(),
             audit_summary=self._audit_summary(audit_events, sink_failures),
             contracts_summary=self._contracts_section_summary(contract_summary),
@@ -258,6 +273,11 @@ class RuntimeManagerBackend:
         """Return the optional Object Map inspection section summary."""
 
         return self._object_map_summary()
+
+    def provider_runtime_summary(self) -> RuntimeSectionSummary:
+        """Return the optional provider runtime section summary."""
+
+        return self._provider_runtime_summary()
 
     def suite_runtime_summary(self) -> RuntimeSectionSummary:
         """Return the optional suite and area runtime section summary."""
@@ -716,6 +736,47 @@ class RuntimeManagerBackend:
 
         return _object_map_summary_from_snapshot(snapshot)
 
+    def _provider_runtime_summary(self) -> RuntimeSectionSummary:
+        if self._provider_runtime_summary_provider is None:
+            return _empty_provider_runtime_summary()
+
+        try:
+            summaries = self._provider_runtime_summary_provider()
+        except Exception as error:  # noqa: BLE001 - read-model boundary.
+            diagnostic = _provider_runtime_failure_diagnostic(error)
+            return RuntimeSectionSummary(
+                section_id="provider_runtime",
+                status=RuntimeSectionStatus.DEGRADED,
+                count=0,
+                message="Provider runtime summary provider failed",
+                metadata={
+                    **_empty_provider_runtime_metadata(available=False),
+                    "error_count": 1,
+                    "errors": (diagnostic,),
+                    "degraded": True,
+                    "provider_failed": True,
+                },
+            )
+
+        if not _is_provider_runtime_summary_tuple(summaries):
+            return RuntimeSectionSummary(
+                section_id="provider_runtime",
+                status=RuntimeSectionStatus.DEGRADED,
+                count=0,
+                message="Provider runtime summary provider returned invalid output",
+                metadata={
+                    **_empty_provider_runtime_metadata(available=False),
+                    "error_count": 1,
+                    "errors": (
+                        "Provider runtime summary provider returned invalid output",
+                    ),
+                    "degraded": True,
+                    "provider_failed": True,
+                },
+            )
+
+        return _provider_runtime_summary_from_summaries(summaries)
+
     def _suite_runtime_summary(self) -> RuntimeSectionSummary:
         if self._suite_runtime_summary_provider is None:
             return _empty_suite_runtime_summary()
@@ -899,6 +960,44 @@ def _empty_object_map_metadata(*, available: bool) -> dict[str, object]:
     }
 
 
+def _empty_provider_runtime_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="provider_runtime",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Provider runtime summaries unavailable",
+        metadata=_empty_provider_runtime_metadata(available=False),
+    )
+
+
+def _empty_provider_runtime_metadata(*, available: bool) -> dict[str, object]:
+    return {
+        "available": available,
+        "summary_count": 0,
+        "provider_count": 0,
+        "capability_count": 0,
+        "session_count": 0,
+        "active_session_count": 0,
+        "connected_session_count": 0,
+        "subscription_count": 0,
+        "active_subscription_count": 0,
+        "message_trace_count": 0,
+        "object_map_section_count": 0,
+        "warning_count": 0,
+        "error_count": 0,
+        "degraded_count": 0,
+        "unavailable_count": 0,
+        "provider_ids": (),
+        "warnings": (),
+        "errors": (),
+        "unavailable_reasons": (),
+        "last_activity_at": None,
+        "summary_rows": (),
+        "degraded": False,
+        "provider_failed": False,
+    }
+
+
 def _empty_suite_runtime_summary() -> RuntimeSectionSummary:
     return RuntimeSectionSummary(
         section_id="suite_runtime",
@@ -940,6 +1039,170 @@ def _is_suite_runtime_summary_tuple(value: object) -> bool:
         isinstance(summary, SuiteRuntimeSummary)
         for summary in value
     )
+
+
+def _is_provider_runtime_summary_tuple(value: object) -> bool:
+    return isinstance(value, tuple) and all(
+        isinstance(summary, ProviderRuntimeSummary)
+        for summary in value
+    )
+
+
+def _provider_runtime_summary_from_summaries(
+    summaries: tuple[ProviderRuntimeSummary, ...],
+) -> RuntimeSectionSummary:
+    warnings = _sanitized_unique_diagnostics(
+        tuple(
+            warning
+            for summary in summaries
+            for warning in summary.warnings
+        )
+    )
+    errors = _sanitized_unique_diagnostics(
+        tuple(error for summary in summaries for error in summary.errors)
+    )
+    unavailable_reasons = _sanitized_unique_diagnostics(
+        tuple(
+            reason
+            for summary in summaries
+            for reason in (summary.unavailable_reason,)
+            if reason is not None
+        )
+    )
+    degraded_count = sum(
+        1 for summary in summaries if _provider_runtime_summary_is_degraded(summary)
+    )
+    unavailable_count = sum(
+        1 for summary in summaries if _provider_runtime_summary_is_unavailable(summary)
+    )
+    warning_count = sum(
+        _provider_runtime_warning_count(summary) for summary in summaries
+    )
+    error_count = sum(_provider_runtime_error_count(summary) for summary in summaries)
+    status = (
+        RuntimeSectionStatus.DEGRADED
+        if degraded_count or error_count
+        else RuntimeSectionStatus.OK
+    )
+    return RuntimeSectionSummary(
+        section_id="provider_runtime",
+        status=status,
+        count=len(summaries),
+        message=_provider_runtime_summary_message(len(summaries)),
+        metadata={
+            "available": True,
+            "summary_count": len(summaries),
+            "provider_count": len(_sorted_unique(summary.provider_id for summary in summaries)),
+            "capability_count": sum(summary.capability_count for summary in summaries),
+            "session_count": sum(summary.session_count for summary in summaries),
+            "active_session_count": sum(
+                summary.active_session_count for summary in summaries
+            ),
+            "connected_session_count": sum(
+                summary.connected_session_count for summary in summaries
+            ),
+            "subscription_count": sum(
+                summary.subscription_count for summary in summaries
+            ),
+            "active_subscription_count": sum(
+                summary.active_subscription_count for summary in summaries
+            ),
+            "message_trace_count": sum(
+                summary.message_trace_count for summary in summaries
+            ),
+            "object_map_section_count": sum(
+                summary.object_map_section_count for summary in summaries
+            ),
+            "warning_count": warning_count,
+            "error_count": error_count,
+            "degraded_count": degraded_count,
+            "unavailable_count": unavailable_count,
+            "provider_ids": _sorted_unique(summary.provider_id for summary in summaries),
+            "warnings": _bounded_diagnostics(warnings),
+            "errors": _bounded_diagnostics(errors),
+            "unavailable_reasons": _bounded_diagnostics(unavailable_reasons),
+            "last_activity_at": _latest_provider_runtime_activity(summaries),
+            "summary_rows": tuple(
+                _provider_runtime_summary_row(summary) for summary in summaries
+            ),
+            "degraded": bool(degraded_count or error_count),
+            "provider_failed": False,
+        },
+    )
+
+
+def _provider_runtime_summary_row(
+    summary: ProviderRuntimeSummary,
+) -> dict[str, object]:
+    return {
+        "provider_id": summary.provider_id,
+        "display_name": summary.display_name,
+        "status": summary.status.value,
+        "provider_kind": summary.provider_kind,
+        "capability_count": summary.capability_count,
+        "session_count": summary.session_count,
+        "active_session_count": summary.active_session_count,
+        "connected_session_count": summary.connected_session_count,
+        "subscription_count": summary.subscription_count,
+        "active_subscription_count": summary.active_subscription_count,
+        "message_trace_count": summary.message_trace_count,
+        "object_map_section_count": summary.object_map_section_count,
+        "warning_count": _provider_runtime_warning_count(summary),
+        "error_count": _provider_runtime_error_count(summary),
+        "degraded": _provider_runtime_summary_is_degraded(summary),
+        "unavailable_reason": _bounded_optional_diagnostic(
+            summary.unavailable_reason
+        ),
+        "last_activity_at": summary.last_activity_at,
+    }
+
+
+def _provider_runtime_summary_is_degraded(
+    summary: ProviderRuntimeSummary,
+) -> bool:
+    return (
+        summary.degraded
+        or summary.status
+        in {
+            ProviderRuntimeSummaryStatus.DEGRADED,
+            ProviderRuntimeSummaryStatus.UNAVAILABLE,
+            ProviderRuntimeSummaryStatus.ERROR,
+        }
+        or _provider_runtime_error_count(summary) > 0
+    )
+
+
+def _provider_runtime_summary_is_unavailable(
+    summary: ProviderRuntimeSummary,
+) -> bool:
+    return (
+        summary.status is ProviderRuntimeSummaryStatus.UNAVAILABLE
+        or summary.unavailable_reason is not None
+    )
+
+
+def _provider_runtime_warning_count(summary: ProviderRuntimeSummary) -> int:
+    return max(summary.warning_count, len(summary.warnings))
+
+
+def _provider_runtime_error_count(summary: ProviderRuntimeSummary) -> int:
+    return max(summary.error_count, len(summary.errors))
+
+
+def _latest_provider_runtime_activity(
+    summaries: tuple[ProviderRuntimeSummary, ...],
+) -> str | None:
+    values = tuple(
+        summary.last_activity_at
+        for summary in summaries
+        if summary.last_activity_at is not None
+    )
+    return max(values) if values else None
+
+
+def _provider_runtime_summary_message(summary_count: int) -> str:
+    label = "summary" if summary_count == 1 else "summaries"
+    return f"{summary_count} provider runtime {label}"
 
 
 def _suite_runtime_summary_from_summaries(
@@ -1208,6 +1471,15 @@ def _object_map_failure_diagnostic(error: BaseException) -> str:
         max_length=_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH,
     )
     return f"Object Map snapshot provider failed: {error_type}: {message}"
+
+
+def _provider_runtime_failure_diagnostic(error: BaseException) -> str:
+    error_type = _safe_exception_type_name(error)
+    message = _bounded_text(
+        _sanitize_diagnostic(_exception_message_text(error)),
+        max_length=_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH,
+    )
+    return f"Provider runtime summary provider failed: {error_type}: {message}"
 
 
 def _suite_runtime_failure_diagnostic(error: BaseException) -> str:
