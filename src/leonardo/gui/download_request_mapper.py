@@ -8,6 +8,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from leonardo.contracts.download_data_boundary import (
+    DownloadDataSelectionDraft,
+    DownloadDataSelectionSummary,
+)
 from leonardo.contracts.downloads import (
     DownloadConflictPolicy,
     DownloadPreflight,
@@ -86,6 +90,96 @@ class DownloadRequestDraftLike(Protocol):
     websocket_required: bool
     tags: tuple[str, ...]
     metadata: Mapping[str, object]
+
+
+def download_data_selection_drafts_from_request_draft(
+    draft: DownloadRequestDraftLike,
+) -> tuple[DownloadDataSelectionDraft, ...]:
+    """
+    Convert a GUI-local download request draft into Download Data selections.
+
+    Multi-symbol GUI drafts are split into one canonical Download Data
+    selection per symbol. Missing exchange, market, symbol, or selected
+    timeframe values are represented as incomplete selection drafts rather than
+    being defaulted by the mapper.
+    """
+
+    exchange_id = _optional_text(draft.source_provider)
+    market_type = _optional_text(draft.market)
+    selected_timeframes = _download_data_selected_timeframes(draft)
+    symbols = _download_data_symbols(draft.symbols)
+    warnings = _download_data_selection_warnings(draft, symbols)
+
+    if not symbols:
+        return (
+            _download_data_selection_draft(
+                exchange_id=exchange_id,
+                market_type=market_type,
+                symbol=None,
+                selected_timeframes=selected_timeframes,
+                warnings=warnings,
+            ),
+        )
+
+    return tuple(
+        _download_data_selection_draft(
+            exchange_id=exchange_id,
+            market_type=market_type,
+            symbol=symbol,
+            selected_timeframes=selected_timeframes,
+            warnings=warnings,
+        )
+        for symbol in symbols
+    )
+
+
+def download_data_selection_summary_from_selection_draft(
+    draft: DownloadDataSelectionDraft,
+) -> DownloadDataSelectionSummary:
+    """
+    Convert a complete Download Data selection draft into its recap summary.
+
+    Summaries require a complete selection identity. Incomplete selection drafts
+    raise ``ValueError`` with the missing contract fields named explicitly.
+    """
+
+    if not isinstance(draft, DownloadDataSelectionDraft):
+        raise TypeError("draft must be a DownloadDataSelectionDraft")
+
+    missing_fields = _missing_download_data_selection_fields(
+        draft.exchange_id,
+        draft.market_type,
+        draft.symbol,
+        draft.selected_timeframes,
+    )
+    if missing_fields:
+        missing_text = ", ".join(missing_fields)
+        raise ValueError(f"Download Data selection is incomplete: {missing_text}")
+
+    return DownloadDataSelectionSummary(
+        exchange_id=draft.exchange_id or "",
+        market_type=draft.market_type or "",
+        symbol=draft.symbol or "",
+        selected_timeframes=draft.selected_timeframes,
+        warnings=draft.warnings,
+        blockers=draft.blockers,
+    )
+
+
+def download_data_selection_summaries_from_request_draft(
+    draft: DownloadRequestDraftLike,
+) -> tuple[DownloadDataSelectionSummary, ...]:
+    """
+    Convert a GUI-local draft into complete Download Data selection summaries.
+
+    The conversion intentionally raises on incomplete generated selections,
+    matching the contract that summaries represent recap-ready selection data.
+    """
+
+    return tuple(
+        download_data_selection_summary_from_selection_draft(selection_draft)
+        for selection_draft in download_data_selection_drafts_from_request_draft(draft)
+    )
 
 
 def build_download_request_from_draft(
@@ -258,6 +352,92 @@ def _normalized_payload(draft: DownloadRequestDraftLike) -> dict[str, object]:
         "tags": tuple(draft.tags),
         "metadata": _json_safe(draft.metadata),
     }
+
+
+def _download_data_selection_draft(
+    *,
+    exchange_id: str | None,
+    market_type: str | None,
+    symbol: str | None,
+    selected_timeframes: tuple[str, ...],
+    warnings: tuple[str, ...],
+) -> DownloadDataSelectionDraft:
+    return DownloadDataSelectionDraft(
+        exchange_id=exchange_id,
+        market_type=market_type,
+        symbol=symbol,
+        selected_timeframes=selected_timeframes,
+        warnings=warnings,
+        blockers=_download_data_selection_blockers(
+            exchange_id,
+            market_type,
+            symbol,
+            selected_timeframes,
+        ),
+    )
+
+
+def _download_data_symbols(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(value.strip() for value in values if value.strip())
+
+
+def _download_data_selected_timeframes(
+    draft: DownloadRequestDraftLike,
+) -> tuple[str, ...]:
+    if draft.timeframe_mode != "explicit":
+        return ()
+    return tuple(value.strip() for value in draft.timeframes if value.strip())
+
+
+def _download_data_selection_warnings(
+    draft: DownloadRequestDraftLike,
+    symbols: tuple[str, ...],
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if len(symbols) > 1:
+        warnings.append(
+            "Multiple symbols were split into one Download Data selection per symbol."
+        )
+    if draft.timeframe_mode != "explicit":
+        warnings.append(
+            "Only explicit timeframes map to Download Data selected_timeframes."
+        )
+    return tuple(warnings)
+
+
+def _download_data_selection_blockers(
+    exchange_id: str | None,
+    market_type: str | None,
+    symbol: str | None,
+    selected_timeframes: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        f"{field_name} is required for Download Data selection."
+        for field_name in _missing_download_data_selection_fields(
+            exchange_id,
+            market_type,
+            symbol,
+            selected_timeframes,
+        )
+    )
+
+
+def _missing_download_data_selection_fields(
+    exchange_id: str | None,
+    market_type: str | None,
+    symbol: str | None,
+    selected_timeframes: tuple[str, ...],
+) -> tuple[str, ...]:
+    missing: list[str] = []
+    if exchange_id is None:
+        missing.append("exchange_id")
+    if market_type is None:
+        missing.append("market_type")
+    if symbol is None:
+        missing.append("symbol")
+    if not selected_timeframes:
+        missing.append("selected_timeframes")
+    return tuple(missing)
 
 
 def _preview_request_id(payload: Mapping[str, object]) -> str:

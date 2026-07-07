@@ -2,6 +2,10 @@ from pathlib import Path
 
 import pytest
 
+from leonardo.contracts.download_data_boundary import (
+    DownloadDataSelectionDraft,
+    DownloadDataSelectionSummary,
+)
 from leonardo.contracts.downloads import (
     DownloadPreflight,
     DownloadStatus,
@@ -18,6 +22,9 @@ from leonardo.gui.download_request_mapper import (
     build_preflight_preview_view,
     build_submit_error_view,
     build_submit_result_view,
+    download_data_selection_drafts_from_request_draft,
+    download_data_selection_summaries_from_request_draft,
+    download_data_selection_summary_from_selection_draft,
 )
 from leonardo.gui.windows.download_request_builder_window import (
     DOWNLOAD_DATA_WORKFLOW_MODE,
@@ -95,6 +102,197 @@ def test_mapper_builds_submit_request_from_download_data_draft() -> None:
     assert request.websocket_required is True
     assert request.tags == ("preview",)
     assert request.metadata["profile"] == "manual"
+
+
+def test_mapper_builds_download_data_selection_draft_from_single_symbol_draft() -> None:
+    draft = _draft(symbols=("BTCUSDT",))
+
+    selections = download_data_selection_drafts_from_request_draft(draft)
+
+    assert len(selections) == 1
+    selection = selections[0]
+    assert isinstance(selection, DownloadDataSelectionDraft)
+    assert selection.exchange_id == "binance"
+    assert selection.market_type == "spot"
+    assert selection.symbol == "BTCUSDT"
+    assert selection.selected_timeframes == ("1m", "5m")
+    assert selection.selection_complete is True
+    assert selection.warnings == ()
+    assert selection.blockers == ()
+
+
+def test_mapper_splits_multi_symbol_draft_into_download_data_selections() -> None:
+    selections = download_data_selection_drafts_from_request_draft(_draft())
+
+    assert tuple(selection.symbol for selection in selections) == (
+        "BTCUSDT",
+        "ETHUSDT",
+    )
+    assert all(selection.exchange_id == "binance" for selection in selections)
+    assert all(selection.market_type == "spot" for selection in selections)
+    assert all(selection.selected_timeframes == ("1m", "5m") for selection in selections)
+    assert all(selection.selection_complete is True for selection in selections)
+    assert all(
+        selection.warnings
+        == ("Multiple symbols were split into one Download Data selection per symbol.",)
+        for selection in selections
+    )
+
+
+def test_mapper_represents_zero_symbol_draft_as_incomplete_selection() -> None:
+    selections = download_data_selection_drafts_from_request_draft(_draft(symbols=()))
+
+    assert len(selections) == 1
+    selection = selections[0]
+    assert selection.exchange_id == "binance"
+    assert selection.market_type == "spot"
+    assert selection.symbol is None
+    assert selection.selected_timeframes == ("1m", "5m")
+    assert selection.selection_complete is False
+    assert selection.blockers == ("symbol is required for Download Data selection.",)
+
+
+def test_mapper_supports_empty_exchange_without_inventing_exchange_id() -> None:
+    selections = download_data_selection_drafts_from_request_draft(
+        _draft(symbols=("BTCUSDT",), source_provider=""),
+    )
+
+    selection = selections[0]
+    assert selection.exchange_id is None
+    assert selection.market_type == "spot"
+    assert selection.symbol == "BTCUSDT"
+    assert selection.selection_complete is False
+    assert "exchange_id is required for Download Data selection." in selection.blockers
+
+
+def test_mapper_supports_empty_market_without_inventing_market_type() -> None:
+    selections = download_data_selection_drafts_from_request_draft(
+        _draft(symbols=("BTCUSDT",), market=""),
+    )
+
+    selection = selections[0]
+    assert selection.exchange_id == "binance"
+    assert selection.market_type is None
+    assert selection.symbol == "BTCUSDT"
+    assert selection.selection_complete is False
+    assert "market_type is required for Download Data selection." in selection.blockers
+
+
+def test_mapper_represents_empty_timeframes_as_incomplete_selection() -> None:
+    selections = download_data_selection_drafts_from_request_draft(
+        _draft(symbols=("BTCUSDT",), timeframes=()),
+    )
+
+    selection = selections[0]
+    assert selection.selected_timeframes == ()
+    assert selection.selection_complete is False
+    assert (
+        "selected_timeframes is required for Download Data selection."
+        in selection.blockers
+    )
+
+
+def test_mapper_does_not_select_timeframes_for_unresolved_modes() -> None:
+    selections = download_data_selection_drafts_from_request_draft(
+        _draft(
+            symbols=("BTCUSDT",),
+            timeframe_mode="all",
+            timeframes=("1m", "5m"),
+        ),
+    )
+
+    selection = selections[0]
+    assert selection.selected_timeframes == ()
+    assert selection.selection_complete is False
+    assert (
+        "Only explicit timeframes map to Download Data selected_timeframes."
+        in selection.warnings
+    )
+    assert (
+        "selected_timeframes is required for Download Data selection."
+        in selection.blockers
+    )
+
+
+def test_mapper_preserves_download_data_selection_timeframe_order() -> None:
+    selections = download_data_selection_drafts_from_request_draft(
+        _draft(symbols=("BTCUSDT",), timeframes=(" 5m ", "1m", "")),
+    )
+
+    assert selections[0].selected_timeframes == ("5m", "1m")
+
+
+def test_mapper_converts_complete_selection_draft_to_summary() -> None:
+    selection = download_data_selection_drafts_from_request_draft(
+        _draft(symbols=("BTCUSDT",)),
+    )[0]
+
+    summary = download_data_selection_summary_from_selection_draft(selection)
+
+    assert isinstance(summary, DownloadDataSelectionSummary)
+    assert summary.exchange_id == "binance"
+    assert summary.market_type == "spot"
+    assert summary.symbol == "BTCUSDT"
+    assert summary.selected_timeframes == ("1m", "5m")
+    assert summary.item_count == 2
+    assert summary.warnings == ()
+    assert summary.blockers == ()
+
+
+def test_mapper_rejects_incomplete_selection_summary_conversion() -> None:
+    selection = DownloadDataSelectionDraft(
+        exchange_id="binance",
+        market_type="spot",
+        selected_timeframes=("1m",),
+    )
+
+    with pytest.raises(ValueError, match="symbol"):
+        download_data_selection_summary_from_selection_draft(selection)
+
+
+def test_mapper_builds_selection_summaries_from_multi_symbol_draft() -> None:
+    summaries = download_data_selection_summaries_from_request_draft(_draft())
+
+    assert tuple(summary.symbol for summary in summaries) == (
+        "BTCUSDT",
+        "ETHUSDT",
+    )
+    assert all(summary.selected_timeframes == ("1m", "5m") for summary in summaries)
+    assert all(summary.item_count == 2 for summary in summaries)
+    assert all(
+        summary.warnings
+        == ("Multiple symbols were split into one Download Data selection per symbol.",)
+        for summary in summaries
+    )
+
+
+def test_mapper_selection_adapter_does_not_mutate_source_draft() -> None:
+    draft = _draft(
+        symbols=(" BTCUSDT ", ""),
+        timeframes=("1m", ""),
+        source_provider=" binance ",
+        market=" spot ",
+    )
+    original = (
+        draft.source_provider,
+        draft.market,
+        draft.symbols,
+        draft.timeframes,
+        dict(draft.metadata),
+    )
+
+    selections = download_data_selection_drafts_from_request_draft(draft)
+
+    assert selections[0].exchange_id == "binance"
+    assert selections[0].market_type == "spot"
+    assert selections[0].symbol == "BTCUSDT"
+    assert (
+        draft.source_provider,
+        draft.market,
+        draft.symbols,
+        draft.timeframes,
+        dict(draft.metadata),
+    ) == original
 
 
 @pytest.mark.parametrize(
@@ -238,6 +436,7 @@ def test_mapper_builds_safe_rejected_submit_result() -> None:
 def test_mapper_imports_contracts_but_no_core_or_qt() -> None:
     source = _MAPPER_SOURCE.read_text(encoding="utf-8")
 
+    assert "leonardo.contracts.download_data_boundary" in source
     assert "leonardo.contracts.downloads" in source
     assert "leonardo.core" not in source
     assert "PySide6" not in source
@@ -247,17 +446,29 @@ def test_mapper_imports_contracts_but_no_core_or_qt() -> None:
     assert "RuntimeManager" not in source
 
 
+def test_mapper_does_not_add_later_download_data_stage_adapters() -> None:
+    source = _MAPPER_SOURCE.read_text(encoding="utf-8")
+
+    assert "DownloadDataPreflightSummary" not in source
+    assert "DownloadDataProgressSummary" not in source
+    assert "DownloadDataCompletionSummary" not in source
+    assert "DownloadDataOutputRef" not in source
+    assert "DownloadDataPartialPersistenceSummary" not in source
+
+
 def _draft(
     *,
     workflow_mode: str = DOWNLOAD_DATA_WORKFLOW_MODE,
+    source_provider: str = "binance",
+    market: str = "spot",
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT"),
     timeframe_mode: str = "explicit",
     timeframes: tuple[str, ...] = ("1m", "5m"),
 ) -> DownloadRequestDraft:
     return DownloadRequestDraft(
         workflow_mode=workflow_mode,
-        source_provider="binance",
-        market="spot",
+        source_provider=source_provider,
+        market=market,
         symbols=symbols,
         timeframe_mode=timeframe_mode,
         timeframes=timeframes,
