@@ -167,6 +167,96 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert app.state_store.get_app_status() is AppLifecycleStatus.STOPPED
 
 
+def test_leonardo_app_startup_does_not_start_core_runtime() -> None:
+    app = LeonardoApp()
+
+    context = app.startup()
+
+    assert context.core_runner is app.core_runner
+    assert context.core_runtime_bridge is app.core_runtime_bridge
+    assert app.core_runner.is_running is False
+    assert app.core_runtime_bridge.runner is app.core_runner
+
+    app.shutdown()
+
+
+def test_leonardo_app_start_core_runtime_requires_startup() -> None:
+    app = LeonardoApp()
+
+    with pytest.raises(RuntimeError, match="startup must complete"):
+        app.start_core_runtime()
+
+    assert app.core_runner.is_running is False
+
+    app.shutdown()
+
+
+def test_leonardo_app_start_and_stop_core_runtime_are_idempotent() -> None:
+    app = LeonardoApp()
+    app.startup()
+
+    assert app.start_core_runtime() is app.context
+    app.start_core_runtime()
+    assert app.core_runner.is_running is True
+    assert app.core_runtime_bridge.is_accepting_submissions is True
+
+    app.stop_core_runtime()
+    app.stop_core_runtime()
+
+    assert app.core_runner.is_running is False
+    assert app.core_runtime_bridge.is_accepting_submissions is False
+
+    app.shutdown()
+
+
+def test_leonardo_app_rejects_command_submission_before_core_runtime_start() -> None:
+    app = LeonardoApp()
+    context = app.startup()
+
+    async def handler(_command, _progress):
+        return {"ok": True}
+
+    with pytest.raises(RuntimeError, match="Core runner is not running"):
+        context.core_runtime_bridge.submit_command(
+            _core_command("before-runtime-start-command-1"),
+            handler,
+        )
+
+    assert app.core_runner.is_running is False
+    assert app.task_manager.active_tasks() == ()
+    assert app.operation_registry.active_operations() == ()
+
+    app.shutdown()
+
+
+def test_leonardo_app_accepts_command_after_explicit_core_runtime_start() -> None:
+    app = LeonardoApp()
+    results: list[CoreRuntimeResult] = []
+    received = Event()
+    context = app.startup()
+
+    async def handler(_command, _progress):
+        return {"ok": True}
+
+    def record_result(result: CoreRuntimeResult) -> None:
+        results.append(result)
+        received.set()
+
+    app.start_core_runtime()
+    submission = context.core_runtime_bridge.submit_command(
+        _core_command("after-runtime-start-command-1"),
+        handler,
+        result_callback=record_result,
+    )
+
+    assert received.wait(2)
+    assert results[0].status is CoreRuntimeResultStatus.COMPLETED
+    assert results[0].payload["ok"] is True
+    assert results[0].task_id == submission.task_id
+
+    app.shutdown()
+
+
 def test_leonardo_app_startup_failure_sets_failed_state_and_routes_error() -> None:
     class FailingApp(LeonardoApp):
         def _register_runtime_contracts(self) -> None:
@@ -200,7 +290,7 @@ def test_leonardo_app_shutdown_cancels_runtime_work_and_rejects_submissions() ->
         received.set()
 
     context = app.startup()
-    context.core_runtime_bridge.start()
+    app.start_core_runtime()
     submission = context.core_runtime_bridge.submit_command(
         _core_command("shutdown-command-1"),
         handler,

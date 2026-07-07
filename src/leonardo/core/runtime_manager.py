@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+import re
 
 from leonardo.contracts.audit import AuditEvent
 from leonardo.contracts.connections import ConnectionLifecycleStatus
@@ -21,6 +23,7 @@ from leonardo.contracts.inspection import (
     RuntimeSectionSummary,
 )
 from leonardo.contracts.kernel import ContractStatus
+from leonardo.contracts.object_map import ObjectMapSnapshot
 from leonardo.contracts.operations import OperationLifecycleStatus
 from leonardo.contracts.processes import ProcessLifecycleStatus
 from leonardo.contracts.runtime import (
@@ -42,6 +45,22 @@ from leonardo.core.session_manager import SessionManager
 from leonardo.core.state_store import StateStore
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
+
+
+_MAX_OBJECT_MAP_DIAGNOSTICS = 10
+_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH = 160
+_REDACTED_VALUE = "[redacted]"
+_REDACTED_PATH = "[path]"
+_SENSITIVE_KEY_VALUE_PATTERN = re.compile(
+    r"(?i)((?:['\"])?\b"
+    r"(?:token|secret|password|passwd|api_key|apikey|authorization|bearer|credential)"
+    r"\b(?:['\"])?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
+)
+_BEARER_VALUE_PATTERN = re.compile(
+    r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"
+)
+_WINDOWS_PATH_PATTERN = re.compile(r"\b[A-Za-z]:\\[^\s,;]+")
+_POSIX_PATH_PATTERN = re.compile(r"(?<!\w)/(?:[^/\s,;]+/)+[^\s,;]+")
 
 
 class RuntimeManagerBackend:
@@ -69,6 +88,7 @@ class RuntimeManagerBackend:
         contract_registry: ContractRegistry,
         download_manager: DownloadManager | None = None,
         download_execution_manager: DownloadExecutionManager | None = None,
+        object_map_snapshot_provider: Callable[[], ObjectMapSnapshot] | None = None,
         recent_audit_limit: int = 20,
     ) -> None:
         if not isinstance(state_store, StateStore):
@@ -107,6 +127,12 @@ class RuntimeManagerBackend:
             )
         if recent_audit_limit < 1:
             raise ValueError("recent_audit_limit must be greater than zero")
+        if object_map_snapshot_provider is not None and not callable(
+            object_map_snapshot_provider
+        ):
+            raise TypeError(
+                "object_map_snapshot_provider must be callable or None"
+            )
 
         self._state_store = state_store
         self._session_manager = session_manager
@@ -121,6 +147,7 @@ class RuntimeManagerBackend:
         self._contract_registry = contract_registry
         self._download_manager = download_manager
         self._download_execution_manager = download_execution_manager
+        self._object_map_snapshot_provider = object_map_snapshot_provider
         self._recent_audit_limit = recent_audit_limit
 
     def snapshot(self) -> RuntimeManagerSnapshot:
@@ -154,6 +181,7 @@ class RuntimeManagerBackend:
             operations_summary=self._operations_summary(),
             downloads_summary=self._downloads_summary(),
             download_execution_summary=self._download_execution_summary(),
+            object_map_summary=self._object_map_summary(),
             audit_summary=self._audit_summary(audit_events, sink_failures),
             contracts_summary=self._contracts_section_summary(contract_summary),
             recent_audit_events=audit_events,
@@ -210,6 +238,11 @@ class RuntimeManagerBackend:
         """Return the Download Execution Manager read-model section summary."""
 
         return self._download_execution_summary()
+
+    def object_map_summary(self) -> RuntimeSectionSummary:
+        """Return the optional Object Map inspection section summary."""
+
+        return self._object_map_summary()
 
     def audit_summary(self) -> RuntimeSectionSummary:
         """Return the retained audit history section summary."""
@@ -624,6 +657,45 @@ class RuntimeManagerBackend:
             },
         )
 
+    def _object_map_summary(self) -> RuntimeSectionSummary:
+        if self._object_map_snapshot_provider is None:
+            return _empty_object_map_summary()
+
+        try:
+            snapshot = self._object_map_snapshot_provider()
+        except Exception as error:  # noqa: BLE001 - read-model boundary.
+            diagnostic = _object_map_failure_diagnostic(error)
+            return RuntimeSectionSummary(
+                section_id="object_map",
+                status=RuntimeSectionStatus.DEGRADED,
+                count=0,
+                message="Object Map snapshot provider failed",
+                metadata={
+                    **_empty_object_map_metadata(available=False),
+                    "error_count": 1,
+                    "errors": (diagnostic,),
+                    "degraded": True,
+                    "provider_failed": True,
+                },
+            )
+
+        if not isinstance(snapshot, ObjectMapSnapshot):
+            return RuntimeSectionSummary(
+                section_id="object_map",
+                status=RuntimeSectionStatus.DEGRADED,
+                count=0,
+                message="Object Map snapshot provider returned invalid output",
+                metadata={
+                    **_empty_object_map_metadata(available=False),
+                    "error_count": 1,
+                    "errors": ("Object Map snapshot provider returned invalid output",),
+                    "degraded": True,
+                    "provider_failed": True,
+                },
+            )
+
+        return _object_map_summary_from_snapshot(snapshot)
+
     def _audit_summary(
         self,
         audit_events: tuple[AuditEventPreview, ...],
@@ -733,6 +805,238 @@ def _download_execution_details(snapshot: object) -> str:
     if progress is not None and progress.message:
         details.append(f"message={progress.message}")
     return "; ".join(details)
+
+
+def _empty_object_map_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="object_map",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Object Map unavailable",
+        metadata=_empty_object_map_metadata(available=False),
+    )
+
+
+def _empty_object_map_metadata(*, available: bool) -> dict[str, object]:
+    return {
+        "available": available,
+        "provider_count": 0,
+        "section_count": 0,
+        "object_count": 0,
+        "relationship_count": 0,
+        "family_ids": (),
+        "object_kinds": (),
+        "provider_ids": (),
+        "section_ids": (),
+        "warning_count": 0,
+        "error_count": 0,
+        "blocker_count": 0,
+        "warnings": (),
+        "errors": (),
+        "blockers": (),
+        "degraded": False,
+    }
+
+
+def _object_map_summary_from_snapshot(
+    snapshot: ObjectMapSnapshot,
+) -> RuntimeSectionSummary:
+    summaries = tuple(
+        summary for section in snapshot.sections for summary in section.summaries
+    )
+    relationships = tuple(
+        relationship
+        for section in snapshot.sections
+        for relationship in section.relationships
+    )
+    warnings = _sanitized_unique_diagnostics(
+        (
+            *snapshot.warnings,
+            *(
+                warning
+                for section in snapshot.sections
+                for warning in section.warnings
+            ),
+        )
+    )
+    errors = _sanitized_unique_diagnostics(
+        (
+            *snapshot.errors,
+            *(
+                error
+                for section in snapshot.sections
+                for error in section.errors
+            ),
+        )
+    )
+    blockers = _sanitized_unique_diagnostics(
+        (
+            *snapshot.blockers,
+            *(
+                blocker
+                for section in snapshot.sections
+                for blocker in section.blockers
+            ),
+        )
+    )
+    provider_ids = _sorted_unique(
+        (
+            *(descriptor.provider_id for descriptor in snapshot.provider_descriptors),
+            *(section.provider_id for section in snapshot.sections),
+        )
+    )
+    section_ids = _sorted_unique(section.section_id for section in snapshot.sections)
+    family_ids = _sorted_unique(
+        (
+            *(
+                family_id
+                for descriptor in snapshot.provider_descriptors
+                for family_id in descriptor.family_ids
+            ),
+            *(section.family_id for section in snapshot.sections),
+            *(
+                legend.family_id
+                for section in snapshot.sections
+                for legend in section.legends
+            ),
+        )
+    )
+    object_kinds = _sorted_unique(
+        (
+            *(
+                object_kind
+                for descriptor in snapshot.provider_descriptors
+                for object_kind in descriptor.object_kinds
+            ),
+            *(section.object_kind for section in snapshot.sections),
+            *(summary.object_ref.object_kind for summary in summaries),
+            *(
+                relationship.source_ref.object_kind
+                for relationship in relationships
+            ),
+            *(
+                relationship.target_ref.object_kind
+                for relationship in relationships
+            ),
+        )
+    )
+    degraded = bool(errors or blockers)
+    status = (
+        RuntimeSectionStatus.DEGRADED
+        if degraded
+        else RuntimeSectionStatus.OK
+    )
+    return RuntimeSectionSummary(
+        section_id="object_map",
+        status=status,
+        count=len(summaries),
+        message=_object_map_summary_message(len(summaries), len(snapshot.sections)),
+        metadata={
+            "available": True,
+            "provider_count": len(snapshot.provider_descriptors),
+            "section_count": len(snapshot.sections),
+            "object_count": len(summaries),
+            "relationship_count": len(relationships),
+            "family_ids": family_ids,
+            "object_kinds": object_kinds,
+            "provider_ids": provider_ids,
+            "section_ids": section_ids,
+            "warning_count": len(warnings),
+            "error_count": len(errors),
+            "blocker_count": len(blockers),
+            "warnings": _bounded_diagnostics(warnings),
+            "errors": _bounded_diagnostics(errors),
+            "blockers": _bounded_diagnostics(blockers),
+            "degraded": degraded,
+        },
+    )
+
+
+def _object_map_summary_message(object_count: int, section_count: int) -> str:
+    object_label = "object" if object_count == 1 else "objects"
+    section_label = "section" if section_count == 1 else "sections"
+    return f"{object_count} Object Map {object_label}, {section_count} {section_label}"
+
+
+def _object_map_failure_diagnostic(error: BaseException) -> str:
+    error_type = _safe_exception_type_name(error)
+    message = _bounded_text(
+        _sanitize_diagnostic(_exception_message_text(error)),
+        max_length=_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH,
+    )
+    return f"Object Map snapshot provider failed: {error_type}: {message}"
+
+
+def _safe_exception_type_name(error: BaseException) -> str:
+    name = type(error).__name__
+    return name if name.isidentifier() else "Exception"
+
+
+def _exception_message_text(error: BaseException) -> str:
+    args = getattr(error, "args", ())
+    if not args:
+        return "<no message>"
+    return " ".join(_argument_text(arg) for arg in args)
+
+
+def _argument_text(value: object) -> str:
+    text = str(value)
+    return text if text.strip() else "<blank message>"
+
+
+def _bounded_diagnostics(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        _bounded_text(
+            value,
+            max_length=_MAX_OBJECT_MAP_DIAGNOSTIC_LENGTH,
+        )
+        for value in values[:_MAX_OBJECT_MAP_DIAGNOSTICS]
+    )
+
+
+def _sanitized_unique_diagnostics(values: tuple[str, ...]) -> tuple[str, ...]:
+    return _unique_texts(tuple(_sanitize_diagnostic(value) for value in values))
+
+
+def _sanitize_diagnostic(message: str) -> str:
+    collapsed = " ".join(message.split())
+    redacted = _BEARER_VALUE_PATTERN.sub(f"Bearer {_REDACTED_VALUE}", collapsed)
+    redacted = _SENSITIVE_KEY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{_REDACTED_VALUE}",
+        redacted,
+    )
+    redacted = _WINDOWS_PATH_PATTERN.sub(_REDACTED_PATH, redacted)
+    redacted = _POSIX_PATH_PATTERN.sub(_REDACTED_PATH, redacted)
+    return redacted
+
+
+def _bounded_text(message: str, *, max_length: int) -> str:
+    if len(message) <= max_length:
+        return message
+    suffix = "..."
+    return f"{message[: max_length - len(suffix)].rstrip()}{suffix}"
+
+
+def _unique_texts(values: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return tuple(unique)
+
+
+def _sorted_unique(values: object) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                value
+                for value in values
+                if isinstance(value, str) and value
+            }
+        )
+    )
 
 
 def _sink_failure_preview(

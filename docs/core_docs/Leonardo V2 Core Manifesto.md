@@ -92,6 +92,7 @@ The ownership rule is:
 * `CoreRuntimeBridge` owns GUI/caller-to-Core async command submission.
 * `CoreRunner` owns the persistent Core async runtime loop.
 * `RuntimeManagerBackend` owns read-only runtime inspection only.
+* `ReadOnlyObjectMapService` owns read-only Object Map aggregation only.
 * GUI owns display, input, layout, and local Qt lifetime only.
 * Each suite owns its own domain services, domain contracts, read models, persistence semantics, and object families.
 
@@ -126,7 +127,7 @@ Runtime truth belongs to `StateStore`.
 
 Historical truth belongs to `AuditLog`.
 
-Runtime Manager and future object maps may inspect both, but they must not become controllers.
+Runtime Manager and Object Map may inspect both, but they must not become controllers.
 
 ---
 
@@ -169,6 +170,12 @@ The Core async runtime must support:
 * read-only runtime inspection.
 
 The Core runtime must remain domain-neutral. It may execute submitted handlers, but it must not contain Download, Data Manager, Analysis, Research, Trading, or provider-specific behavior.
+
+`LeonardoApp.startup()` prepares Core state and contracts only. The persistent
+async runtime starts through `LeonardoApp.start_core_runtime()` at an explicit
+app boundary. GUI app runners may call that boundary once during top-level
+application startup. Suites, windows, Runtime Manager, Object Map providers,
+adapters, and domain services must not start the Core runtime independently.
 
 ---
 
@@ -258,6 +265,7 @@ Runtime Manager may show:
 * actions;
 * contracts;
 * audit summaries;
+* Object Map summaries;
 * download read models;
 * suite read models where future providers expose them.
 
@@ -432,6 +440,11 @@ The Object Legend answers:
 The Object Map must be read-only.
 
 The Object Map must not become a global owner.
+
+The current `ReadOnlyObjectMapService` aggregates explicit provider entries
+only. It does not scan modules, register global providers, read source managers
+directly, mutate source objects, repair providers, retry providers, execute
+commands, cancel work, or route interrogation as control behavior.
 
 Each object owner remains the source of truth.
 

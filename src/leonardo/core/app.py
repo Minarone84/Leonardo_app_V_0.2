@@ -192,6 +192,39 @@ class LeonardoApp:
             )
             raise
 
+    def start_core_runtime(self) -> CoreContext:
+        """
+        Start the explicit Core async runtime boundary.
+
+        `LeonardoApp.startup()` prepares Core state and contract registration.
+        The persistent async runner starts only through this explicit app-level
+        boundary, or through direct bridge use in focused Core tests.
+
+        Raises
+        ------
+        RuntimeError
+            Raised when application startup has not completed.
+        """
+
+        if self.state_store.get_app_status() is not AppLifecycleStatus.RUNNING:
+            raise RuntimeError(
+                "Application startup must complete before Core runtime start"
+            )
+        self.core_runtime_bridge.start()
+        return self._context
+
+    def stop_core_runtime(self, *, timeout: float = 5.0) -> None:
+        """
+        Stop the explicit Core async runtime boundary.
+
+        The stop operation is idempotent and remains safe when the async runner
+        was never started.
+        """
+
+        if type(timeout) not in (float, int) or timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        self.core_runtime_bridge.shutdown(timeout=float(timeout))
+
     def shutdown(
         self,
         *,
@@ -207,7 +240,7 @@ class LeonardoApp:
 
         status = self.state_store.get_app_status()
         if status is AppLifecycleStatus.STOPPED:
-            self.core_runtime_bridge.shutdown(timeout=timeout)
+            self.stop_core_runtime(timeout=float(timeout))
             return
 
         preserve_failed_state = status is AppLifecycleStatus.FAILED
@@ -257,7 +290,7 @@ class LeonardoApp:
         shutdown_steps = (
             (
                 "core_runtime",
-                lambda: self.core_runtime_bridge.shutdown(timeout=timeout),
+                lambda: self.stop_core_runtime(timeout=timeout),
             ),
             ("processes", self.process_manager.stop_all),
             (

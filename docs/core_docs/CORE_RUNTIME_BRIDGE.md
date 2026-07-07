@@ -86,14 +86,35 @@ remain traceable without making the bridge a domain owner.
 
 ## Lifecycle
 
-`CoreRunner.start()` creates the persistent Core event loop. Submissions are
-rejected until the runner is running.
+`LeonardoApp` constructs `CoreRunner` and `CoreRuntimeBridge` during application
+composition. `LeonardoApp.startup()` prepares Core state, registers runtime
+contracts, and marks the app runtime state as running. It does not silently
+start the persistent async runner.
+
+The supported app-level start boundary is `LeonardoApp.start_core_runtime()`.
+It requires completed app startup and delegates to `CoreRuntimeBridge.start()`,
+which delegates to `CoreRunner.start()`. `CoreRunner.start()` creates the
+persistent Core event loop. Repeated start calls are idempotent.
+
+Headless Core tools and focused tests may start the bridge explicitly. GUI app
+runners should call the app-level start boundary once during the top-level
+application startup sequence. Suites, windows, Runtime Manager, Object Map
+providers, adapters, and domain services must not start the Core runtime
+independently.
+
+Submissions are rejected until the runner is running. Command submission before
+the explicit start boundary raises `RuntimeError: Core runner is not running`
+from the runner path and creates no TaskManager task or OperationRegistry
+operation.
 
 `CoreRuntimeBridge.shutdown()` stops accepting new submissions before delegating
 to the runner. `CoreRunner.shutdown()` cancels active TaskManager tasks, waits
 for settlement using an explicit timeout, reports shutdown failures through the
 Core error router, and stops the event loop. `LeonardoApp.shutdown()` calls
-bridge shutdown idempotently when the app owns the runner.
+bridge shutdown idempotently when the app owns the runner. Shutdown remains safe
+when the Core async runtime was never started. `LeonardoApp.stop_core_runtime()`
+is the explicit app-level stop boundary for callers that need to stop the async
+runner before full app shutdown.
 
 Application shutdown follows a narrow Core-owned sequence:
 

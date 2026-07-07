@@ -1,31 +1,32 @@
 # Object Map Protocol
 
-The Object Map protocol defines read-only report and query contracts for future
-traceable object inspection. It describes how future object-family owners may
-expose summaries, relationships, legends, and relationship definitions.
+The Object Map protocol defines read-only report and query contracts for
+traceable object inspection. It describes how current trace helpers and future
+object-family owners may expose summaries, relationships, legends, and
+relationship definitions.
 
 The contracts live in `leonardo.contracts.object_map`.
 
 ## Scope
 
-The module exports immutable data contracts only. It does not implement a live
-Object Map service, provider implementation, provider registry, runtime
-discovery, filesystem scanning, Runtime Manager section, GUI behavior, Download
-execution, adapter behavior, storage writer, Data Manager behavior, Analysis
-Suite behavior, or trading behavior.
+The module exports immutable data contracts only. It does not implement provider
+ownership, provider registry, runtime discovery, filesystem scanning, Runtime
+Manager control behavior, GUI behavior, Download execution, adapter behavior,
+storage writer, Data Manager behavior, Analysis Suite behavior, or trading
+behavior. The current read-only aggregation service lives separately in
+`leonardo.core.object_map_service`.
 
 The Object Map protocol does not own objects. It does not mutate objects. It
 does not execute commands. It does not replace domain owners.
 
 ## Contract Shapes
 
-`ObjectMapProviderDescriptor` describes a future read-only provider's declared
-scope. It identifies provider ID, owner, object kinds, family IDs,
-relationship types, read capabilities, related contracts, docs, tests, metadata,
-and extra data. It defaults to `read_only=True` and
-`mutation_forbidden=True`.
+`ObjectMapProviderDescriptor` describes a read-only provider's declared scope.
+It identifies provider ID, owner, object kinds, family IDs, relationship types,
+read capabilities, related contracts, docs, tests, metadata, and extra data. It
+defaults to `read_only=True` and `mutation_forbidden=True`.
 
-`ObjectMapSection` is a read-only report section emitted by a future provider.
+`ObjectMapSection` is a read-only report section emitted by a provider.
 It may contain object summaries, relationship references, family legends,
 relationship definitions, warnings, blockers, errors, metadata, and extra data.
 
@@ -52,7 +53,8 @@ The protocol uses existing traceability contracts:
 Static family descriptors remain in `leonardo.contracts.object_family_legends`.
 Static relationship descriptors remain in
 `leonardo.contracts.object_relationships`. Actual object summaries and
-relationship instances must come from future family owners.
+relationship instances must come from explicit trace helpers or future family
+owners.
 
 ## Ownership Boundary
 
@@ -74,6 +76,12 @@ The concrete GUI action family trace helper is documented in
 `docs/contracts_docs/ACTION_FAMILY_TRACE.md`. It emits read-only sections from
 static action metadata and static GUI action definitions without registering a
 provider or executing actions.
+
+The concrete Core read-only aggregation service is documented in
+`docs/core_docs/OBJECT_MAP_READONLY_SERVICE.md`. Runtime Manager may display its
+snapshots through an injected `ObjectMapSnapshot` provider, but Runtime Manager
+does not own Object Map provider registration, source manager reads, mutation,
+repair, retry, execution, cancellation, or interrogation routing.
 
 ## Validation
 

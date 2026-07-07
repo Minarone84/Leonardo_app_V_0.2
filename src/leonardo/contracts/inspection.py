@@ -233,6 +233,33 @@ def _empty_download_execution_summary() -> RuntimeSectionSummary:
     )
 
 
+def _empty_object_map_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="object_map",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Object Map unavailable",
+        metadata={
+            "available": False,
+            "provider_count": 0,
+            "section_count": 0,
+            "object_count": 0,
+            "relationship_count": 0,
+            "family_ids": (),
+            "object_kinds": (),
+            "provider_ids": (),
+            "section_ids": (),
+            "warning_count": 0,
+            "error_count": 0,
+            "blocker_count": 0,
+            "warnings": (),
+            "errors": (),
+            "blockers": (),
+            "degraded": False,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeManagerSnapshot:
     """
@@ -264,6 +291,9 @@ class RuntimeManagerSnapshot:
     download_execution_summary: RuntimeSectionSummary = field(
         default_factory=_empty_download_execution_summary
     )
+    object_map_summary: RuntimeSectionSummary = field(
+        default_factory=_empty_object_map_summary
+    )
     recent_audit_events: tuple[AuditEventPreview, ...] = ()
     audit_sink_failures: tuple[AuditSinkFailurePreview, ...] = ()
     contract_registry: ContractRegistrySummary = field(
@@ -293,6 +323,7 @@ class RuntimeManagerSnapshot:
             "operations_summary",
             "downloads_summary",
             "download_execution_summary",
+            "object_map_summary",
             "audit_summary",
             "contracts_summary",
         ):
@@ -337,6 +368,7 @@ class RuntimeManagerSnapshot:
             self.operations_summary,
             self.downloads_summary,
             self.download_execution_summary,
+            self.object_map_summary,
             self.audit_summary,
             self.contracts_summary,
         )

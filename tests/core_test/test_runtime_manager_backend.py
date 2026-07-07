@@ -18,10 +18,20 @@ from leonardo.contracts.download_execution import (
 )
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import RuntimeHealthStatus, RuntimeSectionStatus
+from leonardo.contracts.object_map import (
+    ObjectMapProviderDescriptor,
+    ObjectMapSection,
+    ObjectMapSnapshot,
+)
 from leonardo.contracts.operations import OperationKind
 from leonardo.contracts.processes import ProcessKind, ProcessLaunchRequest
 from leonardo.contracts.runtime import AppLifecycleStatus
 from leonardo.contracts.services import ServiceDescriptor, ServiceKind
+from leonardo.contracts.traceable_object import (
+    TraceableObjectRef,
+    TraceableObjectSummary,
+    TraceableRelationshipRef,
+)
 from leonardo.core.app import LeonardoApp
 from leonardo.core.audit_log import AuditLog, CompositeAuditSink, InMemoryAuditSink
 from leonardo.core.runtime_manager import RuntimeManagerBackend
@@ -296,6 +306,227 @@ def test_runtime_manager_snapshot_includes_empty_download_execution_summary() ->
     assert "download_execution" in tuple(
         section.section_id for section in snapshot.sections
     )
+
+
+def test_runtime_manager_snapshot_includes_unavailable_object_map_summary() -> None:
+    app = LeonardoApp()
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.object_map_summary.section_id == "object_map"
+    assert snapshot.object_map_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.object_map_summary.count == 0
+    assert snapshot.object_map_summary.metadata["available"] is False
+    assert snapshot.object_map_summary.metadata["provider_count"] == 0
+    assert snapshot.object_map_summary.metadata["section_count"] == 0
+    assert snapshot.object_map_summary.metadata["degraded"] is False
+    assert "object_map" in tuple(section.section_id for section in snapshot.sections)
+
+
+def test_runtime_manager_summarizes_injected_object_map_snapshot_read_only() -> None:
+    app = LeonardoApp()
+    object_map_snapshot = _object_map_snapshot()
+    before = object_map_snapshot.to_dict()
+    backend = _runtime_manager_backend(
+        app,
+        object_map_snapshot_provider=lambda: object_map_snapshot,
+    )
+
+    snapshot = backend.snapshot()
+
+    assert object_map_snapshot.to_dict() == before
+    assert snapshot.object_map_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.object_map_summary.count == 2
+    assert snapshot.object_map_summary.message == (
+        "2 Object Map objects, 1 section"
+    )
+    assert snapshot.object_map_summary.metadata["available"] is True
+    assert snapshot.object_map_summary.metadata["provider_count"] == 1
+    assert snapshot.object_map_summary.metadata["section_count"] == 1
+    assert snapshot.object_map_summary.metadata["object_count"] == 2
+    assert snapshot.object_map_summary.metadata["relationship_count"] == 1
+    assert snapshot.object_map_summary.metadata["family_ids"] == (
+        "operation",
+        "task",
+    )
+    assert snapshot.object_map_summary.metadata["object_kinds"] == (
+        "operation",
+        "task",
+    )
+    assert snapshot.object_map_summary.metadata["provider_ids"] == (
+        "core.test.object_map",
+    )
+    assert snapshot.object_map_summary.metadata["section_ids"] == (
+        "core.test.object_map.section",
+    )
+
+
+def test_runtime_manager_degrades_when_object_map_snapshot_reports_errors() -> None:
+    app = LeonardoApp()
+    object_map_snapshot = _object_map_snapshot(
+        warnings=("duplicate section",),
+        errors=("provider failed",),
+        blockers=("blocked provider",),
+    )
+    backend = _runtime_manager_backend(
+        app,
+        object_map_snapshot_provider=lambda: object_map_snapshot,
+    )
+
+    snapshot = backend.snapshot()
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.object_map_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.object_map_summary.metadata["warning_count"] == 1
+    assert snapshot.object_map_summary.metadata["error_count"] == 1
+    assert snapshot.object_map_summary.metadata["blocker_count"] == 1
+    assert snapshot.object_map_summary.metadata["warnings"] == ("duplicate section",)
+    assert snapshot.object_map_summary.metadata["errors"] == ("provider failed",)
+    assert snapshot.object_map_summary.metadata["blockers"] == ("blocked provider",)
+    assert snapshot.object_map_summary.metadata["degraded"] is True
+
+
+def test_runtime_manager_counts_full_object_map_diagnostics_but_bounds_display() -> None:
+    app = LeonardoApp()
+    object_map_snapshot = _object_map_snapshot(
+        warnings=_diagnostics("warning", 12),
+        errors=_diagnostics("error", 13),
+        blockers=_diagnostics("blocker", 14),
+    )
+    backend = _runtime_manager_backend(
+        app,
+        object_map_snapshot_provider=lambda: object_map_snapshot,
+    )
+
+    snapshot = backend.snapshot()
+    metadata = snapshot.object_map_summary.metadata
+
+    assert snapshot.object_map_summary.status is RuntimeSectionStatus.DEGRADED
+    assert metadata["warning_count"] == 12
+    assert metadata["error_count"] == 13
+    assert metadata["blocker_count"] == 14
+    assert len(metadata["warnings"]) == 10
+    assert len(metadata["errors"]) == 10
+    assert len(metadata["blockers"]) == 10
+    assert metadata["degraded"] is True
+
+
+def test_runtime_manager_redacts_and_bounds_snapshot_diagnostics() -> None:
+    app = LeonardoApp()
+    long_tail = "x" * 500
+    object_map_snapshot = _object_map_snapshot(
+        warnings=(f"warning password=hunter2 token=tok-123 {long_tail}",),
+        errors=(
+            f"error api_key=api-456 authorization=Bearer auth-789 {long_tail}",
+        ),
+        blockers=(
+            f"blocker credential=cred-000 secret=secret-111 "
+            f"passwd=pass-222 {long_tail}",
+        ),
+    )
+    backend = _runtime_manager_backend(
+        app,
+        object_map_snapshot_provider=lambda: object_map_snapshot,
+    )
+
+    snapshot = backend.snapshot()
+    metadata = snapshot.object_map_summary.metadata
+    displayed = (
+        *metadata["warnings"],
+        *metadata["errors"],
+        *metadata["blockers"],
+    )
+    joined = " ".join(displayed)
+
+    assert metadata["warning_count"] == 1
+    assert metadata["error_count"] == 1
+    assert metadata["blocker_count"] == 1
+    assert all(len(diagnostic) <= 160 for diagnostic in displayed)
+    assert "[redacted]" in joined
+    for sensitive_value in (
+        "hunter2",
+        "tok-123",
+        "api-456",
+        "auth-789",
+        "cred-000",
+        "secret-111",
+        "pass-222",
+    ):
+        assert sensitive_value not in joined
+    assert "x" * 200 not in joined
+
+
+def test_runtime_manager_handles_object_map_snapshot_provider_failure_safely() -> None:
+    app = LeonardoApp()
+    long_secret = (
+        "password=hunter2 token=tok-123 "
+        "authorization=Bearer abc-456 "
+        + ("x" * 500)
+    )
+
+    def fail() -> ObjectMapSnapshot:
+        raise RuntimeError(long_secret)
+
+    backend = _runtime_manager_backend(app, object_map_snapshot_provider=fail)
+
+    snapshot = backend.snapshot()
+    error = snapshot.object_map_summary.metadata["errors"][0]
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.object_map_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.object_map_summary.metadata["available"] is False
+    assert snapshot.object_map_summary.metadata["provider_failed"] is True
+    assert "RuntimeError" in error
+    assert "[redacted]" in error
+    assert "hunter2" not in error
+    assert "tok-123" not in error
+    assert "abc-456" not in error
+    assert "x" * 200 not in error
+    assert "Traceback" not in error
+
+
+def test_runtime_manager_handles_invalid_object_map_snapshot_provider_output_safely() -> None:
+    app = LeonardoApp()
+    backend = _runtime_manager_backend(
+        app,
+        object_map_snapshot_provider=lambda: object(),
+    )
+
+    snapshot = backend.snapshot()
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.object_map_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.object_map_summary.metadata["available"] is False
+    assert snapshot.object_map_summary.metadata["provider_failed"] is True
+    assert snapshot.object_map_summary.metadata["error_count"] == 1
+    assert snapshot.object_map_summary.metadata["errors"] == (
+        "Object Map snapshot provider returned invalid output",
+    )
+
+
+def test_runtime_manager_object_map_summary_does_not_import_trace_providers() -> None:
+    source = (
+        __import__("pathlib")
+        .Path(__file__)
+        .resolve()
+        .parents[2]
+        .joinpath("src", "leonardo", "core", "runtime_manager.py")
+        .read_text(encoding="utf-8")
+    )
+
+    blocked_tokens = (
+        "task_operation_trace",
+        "runtime_registry_trace",
+        "process_connection_trace",
+        "audit_event_trace",
+        "window_trace",
+        "action_trace",
+        "ObjectMapProviderEntry",
+        "build_section",
+        "register_provider",
+    )
+    for token in blocked_tokens:
+        assert token not in source
 
 
 def test_runtime_manager_snapshot_reflects_download_manager_state_read_only() -> None:
@@ -627,3 +858,96 @@ def _download_request(
         requested_by="admin-dev",
         connection_ref="binance-spot",
     )
+
+
+def _runtime_manager_backend(
+    app: LeonardoApp,
+    *,
+    object_map_snapshot_provider: object,
+) -> RuntimeManagerBackend:
+    return RuntimeManagerBackend(
+        state_store=app.state_store,
+        session_manager=app.session_manager,
+        service_registry=app.service_registry,
+        task_manager=app.task_manager,
+        process_manager=app.process_manager,
+        connection_registry=app.connection_registry,
+        window_registry=app.window_registry,
+        action_registry=app.action_registry,
+        operation_registry=app.operation_registry,
+        audit_log=app.audit_log,
+        contract_registry=app.contract_registry,
+        download_manager=app.download_manager,
+        download_execution_manager=app.download_execution_manager,
+        object_map_snapshot_provider=object_map_snapshot_provider,
+    )
+
+
+def _object_map_snapshot(
+    *,
+    warnings: tuple[str, ...] = (),
+    errors: tuple[str, ...] = (),
+    blockers: tuple[str, ...] = (),
+) -> ObjectMapSnapshot:
+    operation_ref = TraceableObjectRef(
+        object_id="operation-1",
+        object_kind="operation",
+        owner_domain="core",
+        owner_component="OperationRegistry",
+    )
+    task_ref = TraceableObjectRef(
+        object_id="task-1",
+        object_kind="task",
+        owner_domain="core",
+        owner_component="TaskManager",
+    )
+    relationship = TraceableRelationshipRef(
+        relationship_id="operation-1.schedules_task.task-1",
+        relationship_type="schedules_task",
+        source_ref=operation_ref,
+        target_ref=task_ref,
+        lifecycle_status="active",
+    )
+    return ObjectMapSnapshot(
+        snapshot_id="test.object_map.snapshot",
+        sections=(
+            ObjectMapSection(
+                section_id="core.test.object_map.section",
+                provider_id="core.test.object_map",
+                owner_domain="core",
+                object_kind=None,
+                family_id=None,
+                summaries=(
+                    TraceableObjectSummary(
+                        object_ref=operation_ref,
+                        lifecycle_status="running",
+                        runtime_or_persistent="runtime",
+                        relationship_refs=(relationship,),
+                    ),
+                    TraceableObjectSummary(
+                        object_ref=task_ref,
+                        lifecycle_status="running",
+                        runtime_or_persistent="runtime",
+                    ),
+                ),
+                relationships=(relationship,),
+            ),
+        ),
+        provider_descriptors=(
+            ObjectMapProviderDescriptor(
+                provider_id="core.test.object_map",
+                owner_domain="core",
+                owner_component="test",
+                object_kinds=("operation", "task"),
+                family_ids=("operation", "task"),
+                relationship_types=("schedules_task",),
+            ),
+        ),
+        warnings=warnings,
+        errors=errors,
+        blockers=blockers,
+    )
+
+
+def _diagnostics(prefix: str, count: int) -> tuple[str, ...]:
+    return tuple(f"{prefix}-{index}" for index in range(count))
