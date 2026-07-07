@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 
 import pytest
@@ -10,6 +11,8 @@ from leonardo.contracts.inspection import (
     RuntimeManagerSnapshot,
     RuntimeSectionStatus,
     RuntimeSectionSummary,
+    SuiteRuntimeSummary,
+    SuiteRuntimeSummaryStatus,
 )
 
 
@@ -45,6 +48,64 @@ def test_runtime_section_summary_rejects_invalid_count() -> None:
             section_id="tasks",
             status=RuntimeSectionStatus.OK,
             count=-1,
+        )
+
+
+def test_suite_runtime_summary_is_frozen_and_serialization_friendly() -> None:
+    summary = SuiteRuntimeSummary(
+        suite_id="data_manager",
+        area_id=None,
+        display_name="Data Manager",
+        status="ok",
+        module_count=2,
+        active_operation_count=1,
+        active_task_count=3,
+        object_map_section_count=1,
+        warnings=("slow provider",),
+        metadata={"source": "test"},
+        docs_refs=["docs/core_docs/SUITE_RUNTIME_SUMMARY.md"],
+    )
+
+    assert summary.status is SuiteRuntimeSummaryStatus.OK
+    assert summary.warnings == ("slow provider",)
+    assert summary.docs_refs == ("docs/core_docs/SUITE_RUNTIME_SUMMARY.md",)
+    assert summary.metadata["source"] == "test"
+    assert summary.to_dict()["status"] == "ok"
+    assert summary.to_dict()["warnings"] == ["slow provider"]
+    with pytest.raises(FrozenInstanceError):
+        summary.display_name = "changed"
+    with pytest.raises(TypeError):
+        summary.metadata["source"] = "changed"
+
+
+def test_suite_runtime_summary_requires_suite_or_area_id() -> None:
+    with pytest.raises(ValueError, match="suite_id or area_id"):
+        SuiteRuntimeSummary(
+            suite_id=None,
+            area_id=None,
+            display_name="Missing Owner",
+            status=SuiteRuntimeSummaryStatus.OK,
+        )
+
+
+def test_suite_runtime_summary_rejects_blank_ids() -> None:
+    with pytest.raises(ValueError, match="suite_id"):
+        SuiteRuntimeSummary(
+            suite_id=" ",
+            area_id=None,
+            display_name="Blank Suite",
+            status=SuiteRuntimeSummaryStatus.OK,
+        )
+
+
+def test_suite_runtime_summary_rejects_negative_counts() -> None:
+    with pytest.raises(ValueError, match="module_count"):
+        SuiteRuntimeSummary(
+            suite_id="data_manager",
+            area_id=None,
+            display_name="Data Manager",
+            status=SuiteRuntimeSummaryStatus.OK,
+            module_count=-1,
         )
 
 
@@ -108,6 +169,7 @@ def test_runtime_manager_snapshot_derives_health_from_sections() -> None:
         "downloads",
         "download_execution",
         "object_map",
+        "suite_runtime",
         "audit",
         "contracts",
     ]
@@ -115,4 +177,6 @@ def test_runtime_manager_snapshot_derives_health_from_sections() -> None:
     assert snapshot.download_execution_summary.metadata["available"] is False
     assert snapshot.object_map_summary.section_id == "object_map"
     assert snapshot.object_map_summary.metadata["available"] is False
+    assert snapshot.suite_runtime_summary.section_id == "suite_runtime"
+    assert snapshot.suite_runtime_summary.metadata["available"] is False
     assert snapshot.to_dict()["health"] == "degraded"

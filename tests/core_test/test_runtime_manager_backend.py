@@ -17,7 +17,12 @@ from leonardo.contracts.download_execution import (
     DownloadPreflightLayerStatus,
 )
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
-from leonardo.contracts.inspection import RuntimeHealthStatus, RuntimeSectionStatus
+from leonardo.contracts.inspection import (
+    RuntimeHealthStatus,
+    RuntimeSectionStatus,
+    SuiteRuntimeSummary,
+    SuiteRuntimeSummaryStatus,
+)
 from leonardo.contracts.object_map import (
     ObjectMapProviderDescriptor,
     ObjectMapSection,
@@ -321,6 +326,169 @@ def test_runtime_manager_snapshot_includes_unavailable_object_map_summary() -> N
     assert snapshot.object_map_summary.metadata["section_count"] == 0
     assert snapshot.object_map_summary.metadata["degraded"] is False
     assert "object_map" in tuple(section.section_id for section in snapshot.sections)
+
+
+def test_runtime_manager_snapshot_includes_unavailable_suite_runtime_summary() -> None:
+    app = LeonardoApp()
+
+    snapshot = app.runtime_manager.snapshot()
+
+    assert snapshot.suite_runtime_summary.section_id == "suite_runtime"
+    assert snapshot.suite_runtime_summary.status is RuntimeSectionStatus.OK
+    assert snapshot.suite_runtime_summary.count == 0
+    assert snapshot.suite_runtime_summary.metadata["available"] is False
+    assert snapshot.suite_runtime_summary.metadata["summary_count"] == 0
+    assert snapshot.suite_runtime_summary.metadata["suite_count"] == 0
+    assert snapshot.suite_runtime_summary.metadata["area_count"] == 0
+    assert snapshot.suite_runtime_summary.metadata["degraded"] is False
+    assert "suite_runtime" in tuple(section.section_id for section in snapshot.sections)
+
+
+def test_runtime_manager_summarizes_injected_suite_runtime_summaries_read_only() -> None:
+    app = LeonardoApp()
+    suite_summary = SuiteRuntimeSummary(
+        suite_id="data_manager",
+        area_id=None,
+        display_name="Data Manager",
+        status=SuiteRuntimeSummaryStatus.OK,
+        module_count=2,
+        active_operation_count=1,
+        active_task_count=3,
+        object_map_section_count=1,
+        warning_count=1,
+        warnings=("Suite summary is incomplete.",),
+        last_activity_at="2026-07-07T10:00:00+00:00",
+    )
+    area_summary = SuiteRuntimeSummary(
+        suite_id=None,
+        area_id="provider_connection",
+        display_name="Provider Connection",
+        status=SuiteRuntimeSummaryStatus.UNAVAILABLE,
+        module_count=1,
+        object_map_section_count=2,
+        error_count=1,
+        errors=("provider token=tok-123 is unavailable",),
+        degraded=True,
+        unavailable_reason="credential password=hunter2 missing",
+        last_activity_at="2026-07-07T11:00:00+00:00",
+    )
+    summaries = (suite_summary, area_summary)
+    before = tuple(summary.to_dict() for summary in summaries)
+    backend = _runtime_manager_backend(
+        app,
+        suite_runtime_summary_provider=lambda: summaries,
+    )
+
+    snapshot = backend.snapshot()
+    metadata = snapshot.suite_runtime_summary.metadata
+
+    assert tuple(summary.to_dict() for summary in summaries) == before
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.suite_runtime_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.suite_runtime_summary.count == 2
+    assert snapshot.suite_runtime_summary.message == "2 suite runtime summaries"
+    assert metadata["available"] is True
+    assert metadata["summary_count"] == 2
+    assert metadata["suite_count"] == 1
+    assert metadata["area_count"] == 1
+    assert metadata["module_count"] == 3
+    assert metadata["active_operation_count"] == 1
+    assert metadata["active_task_count"] == 3
+    assert metadata["object_map_section_count"] == 3
+    assert metadata["warning_count"] == 1
+    assert metadata["error_count"] == 1
+    assert metadata["degraded_count"] == 1
+    assert metadata["unavailable_count"] == 1
+    assert metadata["suite_ids"] == ("data_manager",)
+    assert metadata["area_ids"] == ("provider_connection",)
+    assert metadata["warnings"] == ("Suite summary is incomplete.",)
+    assert metadata["last_activity_at"] == "2026-07-07T11:00:00+00:00"
+    assert metadata["provider_failed"] is False
+    displayed = " ".join(
+        (
+            *metadata["errors"],
+            *metadata["unavailable_reasons"],
+            *(row["unavailable_reason"] or "" for row in metadata["summary_rows"]),
+        )
+    )
+    assert "[redacted]" in displayed
+    assert "tok-123" not in displayed
+    assert "hunter2" not in displayed
+
+
+def test_runtime_manager_handles_suite_runtime_summary_provider_failure_safely() -> None:
+    app = LeonardoApp()
+    long_secret = (
+        "password=hunter2 token=tok-123 "
+        "authorization=Bearer abc-456 "
+        + ("x" * 500)
+    )
+
+    def fail() -> tuple[SuiteRuntimeSummary, ...]:
+        raise RuntimeError(long_secret)
+
+    backend = _runtime_manager_backend(app, suite_runtime_summary_provider=fail)
+
+    snapshot = backend.snapshot()
+    error = snapshot.suite_runtime_summary.metadata["errors"][0]
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.suite_runtime_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.suite_runtime_summary.metadata["available"] is False
+    assert snapshot.suite_runtime_summary.metadata["provider_failed"] is True
+    assert "RuntimeError" in error
+    assert "[redacted]" in error
+    assert "hunter2" not in error
+    assert "tok-123" not in error
+    assert "abc-456" not in error
+    assert "x" * 200 not in error
+    assert "Traceback" not in error
+
+
+def test_runtime_manager_handles_invalid_suite_runtime_summary_provider_output_safely() -> None:
+    app = LeonardoApp()
+    backend = _runtime_manager_backend(
+        app,
+        suite_runtime_summary_provider=lambda: object(),
+    )
+
+    snapshot = backend.snapshot()
+
+    assert snapshot.health is RuntimeHealthStatus.DEGRADED
+    assert snapshot.suite_runtime_summary.status is RuntimeSectionStatus.DEGRADED
+    assert snapshot.suite_runtime_summary.metadata["available"] is False
+    assert snapshot.suite_runtime_summary.metadata["provider_failed"] is True
+    assert snapshot.suite_runtime_summary.metadata["error_count"] == 1
+    assert snapshot.suite_runtime_summary.metadata["errors"] == (
+        "Suite runtime summary provider returned invalid output",
+    )
+
+
+def test_runtime_manager_suite_summary_does_not_import_suite_trace_or_registries() -> None:
+    source = (
+        __import__("pathlib")
+        .Path(__file__)
+        .resolve()
+        .parents[2]
+        .joinpath("src", "leonardo", "core", "runtime_manager.py")
+        .read_text(encoding="utf-8")
+    )
+
+    blocked_tokens = (
+        "suite_boundary_trace",
+        "SuiteRegistry",
+        "register_suite",
+        "pkgutil",
+        "importlib",
+        "os.walk",
+        "Path.rglob",
+        "globals()",
+        "ObjectMapProviderEntry",
+        "build_section",
+        "register_provider",
+    )
+    for token in blocked_tokens:
+        assert token not in source
 
 
 def test_runtime_manager_summarizes_injected_object_map_snapshot_read_only() -> None:
@@ -863,7 +1031,8 @@ def _download_request(
 def _runtime_manager_backend(
     app: LeonardoApp,
     *,
-    object_map_snapshot_provider: object,
+    object_map_snapshot_provider: object | None = None,
+    suite_runtime_summary_provider: object | None = None,
 ) -> RuntimeManagerBackend:
     return RuntimeManagerBackend(
         state_store=app.state_store,
@@ -880,6 +1049,7 @@ def _runtime_manager_backend(
         download_manager=app.download_manager,
         download_execution_manager=app.download_execution_manager,
         object_map_snapshot_provider=object_map_snapshot_provider,
+        suite_runtime_summary_provider=suite_runtime_summary_provider,
     )
 
 

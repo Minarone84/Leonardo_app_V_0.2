@@ -25,6 +25,101 @@ class RuntimeSectionStatus(str, Enum):
     ERROR = "error"
 
 
+class SuiteRuntimeSummaryStatus(str, Enum):
+    """Read-only availability status for one suite or area summary."""
+
+    OK = "ok"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class SuiteRuntimeSummary:
+    """
+    Compact read-only Runtime Manager summary for a future suite or area.
+
+    The summary is supplied by future app composition or suite owners. It does
+    not contain provider callables, suite objects, descriptors, command
+    implementations, or mutable runtime state.
+    """
+
+    suite_id: str | None
+    area_id: str | None
+    display_name: str
+    status: SuiteRuntimeSummaryStatus | str
+    module_count: int = 0
+    active_operation_count: int = 0
+    active_task_count: int = 0
+    object_map_section_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    degraded: bool = False
+    unavailable_reason: str | None = None
+    last_activity_at: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    docs_refs: tuple[str, ...] = ()
+    test_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_optional_string(self.suite_id, "suite_id")
+        _validate_optional_string(self.area_id, "area_id")
+        if self.suite_id is None and self.area_id is None:
+            raise ValueError("suite_id or area_id must identify the summary")
+        _validate_non_empty_string(self.display_name, "display_name")
+        object.__setattr__(
+            self,
+            "status",
+            _coerce_suite_runtime_status(self.status),
+        )
+        for field_name in (
+            "module_count",
+            "active_operation_count",
+            "active_task_count",
+            "object_map_section_count",
+            "warning_count",
+            "error_count",
+        ):
+            _validate_non_negative_int(getattr(self, field_name), field_name)
+        if type(self.degraded) is not bool:
+            raise TypeError("degraded must be a bool")
+        _validate_optional_string(self.unavailable_reason, "unavailable_reason")
+        _validate_optional_string(self.last_activity_at, "last_activity_at")
+        for field_name in ("warnings", "errors", "docs_refs", "test_refs"):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_string_tuple(getattr(self, field_name), field_name),
+            )
+        object.__setattr__(self, "metadata", _readonly_mapping(self.metadata))
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible mapping for this suite runtime summary."""
+
+        return {
+            "suite_id": self.suite_id,
+            "area_id": self.area_id,
+            "display_name": self.display_name,
+            "status": self.status.value,
+            "module_count": self.module_count,
+            "active_operation_count": self.active_operation_count,
+            "active_task_count": self.active_task_count,
+            "object_map_section_count": self.object_map_section_count,
+            "warning_count": self.warning_count,
+            "error_count": self.error_count,
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "degraded": self.degraded,
+            "unavailable_reason": self.unavailable_reason,
+            "last_activity_at": self.last_activity_at,
+            "metadata": _plain_value(self.metadata),
+            "docs_refs": list(self.docs_refs),
+            "test_refs": list(self.test_refs),
+        }
+
+
 @dataclass(frozen=True)
 class RuntimeSectionSummary:
     """
@@ -260,6 +355,38 @@ def _empty_object_map_summary() -> RuntimeSectionSummary:
     )
 
 
+def _empty_suite_runtime_summary() -> RuntimeSectionSummary:
+    return RuntimeSectionSummary(
+        section_id="suite_runtime",
+        status=RuntimeSectionStatus.OK,
+        count=0,
+        message="Suite runtime summaries unavailable",
+        metadata={
+            "available": False,
+            "summary_count": 0,
+            "suite_count": 0,
+            "area_count": 0,
+            "module_count": 0,
+            "active_operation_count": 0,
+            "active_task_count": 0,
+            "object_map_section_count": 0,
+            "warning_count": 0,
+            "error_count": 0,
+            "degraded_count": 0,
+            "unavailable_count": 0,
+            "suite_ids": (),
+            "area_ids": (),
+            "warnings": (),
+            "errors": (),
+            "unavailable_reasons": (),
+            "last_activity_at": None,
+            "summary_rows": (),
+            "degraded": False,
+            "provider_failed": False,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeManagerSnapshot:
     """
@@ -294,6 +421,9 @@ class RuntimeManagerSnapshot:
     object_map_summary: RuntimeSectionSummary = field(
         default_factory=_empty_object_map_summary
     )
+    suite_runtime_summary: RuntimeSectionSummary = field(
+        default_factory=_empty_suite_runtime_summary
+    )
     recent_audit_events: tuple[AuditEventPreview, ...] = ()
     audit_sink_failures: tuple[AuditSinkFailurePreview, ...] = ()
     contract_registry: ContractRegistrySummary = field(
@@ -324,6 +454,7 @@ class RuntimeManagerSnapshot:
             "downloads_summary",
             "download_execution_summary",
             "object_map_summary",
+            "suite_runtime_summary",
             "audit_summary",
             "contracts_summary",
         ):
@@ -369,6 +500,7 @@ class RuntimeManagerSnapshot:
             self.downloads_summary,
             self.download_execution_summary,
             self.object_map_summary,
+            self.suite_runtime_summary,
             self.audit_summary,
             self.contracts_summary,
         )
@@ -402,6 +534,20 @@ def _derive_health(
     if any(section.status is RuntimeSectionStatus.DEGRADED for section in sections):
         return RuntimeHealthStatus.DEGRADED
     return RuntimeHealthStatus.OK
+
+
+def _coerce_suite_runtime_status(
+    value: SuiteRuntimeSummaryStatus | str,
+) -> SuiteRuntimeSummaryStatus:
+    if isinstance(value, SuiteRuntimeSummaryStatus):
+        return value
+    if isinstance(value, str):
+        try:
+            return SuiteRuntimeSummaryStatus(value)
+        except ValueError as error:
+            allowed = ", ".join(status.value for status in SuiteRuntimeSummaryStatus)
+            raise ValueError(f"status must be one of: {allowed}") from error
+    raise TypeError("status must be a SuiteRuntimeSummaryStatus or string")
 
 
 def _coerce_utc(value: datetime, field_name: str) -> datetime:
@@ -443,6 +589,18 @@ def _normalize_tuple(
     return normalized
 
 
+def _normalize_string_tuple(
+    values: tuple[str, ...],
+    field_name: str,
+) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raise TypeError(f"{field_name} must be a tuple of strings")
+    normalized = tuple(values)
+    for value in normalized:
+        _validate_non_empty_string(value, f"{field_name} entry")
+    return normalized
+
+
 def _plain_value(value: object) -> object:
     if isinstance(value, Mapping):
         return {key: _plain_value(item) for key, item in value.items()}
@@ -458,6 +616,11 @@ def _plain_value(value: object) -> object:
 def _validate_non_empty_string(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
+
+
+def _validate_non_negative_int(value: int, field_name: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
 
 
 def _validate_optional_string(value: str | None, field_name: str) -> None:

@@ -15,12 +15,15 @@ The backend aggregates current runtime truth from existing Core owners:
 - `AuditLog`
 - `ContractRegistry`
 - optional Object Map snapshot provider
+- optional suite runtime summary provider
 
 `snapshot()` returns a defensive `RuntimeManagerSnapshot`. The backend reads
 current app lifecycle state, current session identity, service visibility, active
 tasks, open windows, recent action triggers, active operations, retained audit
 events, audit sink failures, contract registry counts, and an optional compact
 Object Map summary when a read-only `ObjectMapSnapshot` provider is injected.
+It may also include an optional compact suite/area runtime summary when a
+read-only `SuiteRuntimeSummary` provider is injected by app composition.
 
 Object Map integration is snapshot-only. Runtime Manager consumes an optional
 injected callable that returns `ObjectMapSnapshot`. It does not own Object Map,
@@ -35,12 +38,21 @@ redacted for read-only Runtime Manager display. GUI display must keep those
 diagnostics read-only and must not repair, retry, execute, cancel, or control
 Object Map provider output.
 
+Suite runtime summary integration is provider-only. Runtime Manager consumes an
+optional injected callable returning frozen `SuiteRuntimeSummary` values. It
+does not construct suite descriptors, scan modules, import concrete suite
+packages, register suite providers, or own suite behavior. The compact
+`suite_runtime` section reports visible suite and area counts, module totals,
+active operation and task totals, Object Map section totals, bounded diagnostics,
+degraded/unavailable counts, and last activity metadata.
+
 The backend does not own runtime state. It does not mutate `StateStore`, register
 services, register windows or actions, execute actions, start or cancel tasks,
-create audit files, own Object Map providers, repair Object Map output, route
-Object Map interrogation, or perform lifecycle transitions.
+create audit files, own Object Map providers, own suite summary providers,
+repair Object Map output, route Object Map interrogation, or perform lifecycle
+transitions.
 
 Runtime Manager display remains read-only. Runtime Manager controls, Object Map
 interrogation routing, provider repair, lifecycle control, Data Manager
 behavior, Analysis Suite behavior, Trading Suite behavior, provider transport,
-and old Leonardo code reuse remain outside this backend.
+suite execution, and old Leonardo code reuse remain outside this backend.
