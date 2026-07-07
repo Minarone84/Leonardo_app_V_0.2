@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QLineEdit,
     QPushButton,
     QTextEdit,
+    QWidget,
 )
 
 from leonardo.gui.metadata import GuiMetadataResolver, load_metadata_document  # noqa: E402
@@ -136,13 +137,17 @@ def test_builder_metadata_aligns_to_download_data_boundary() -> None:
         "progress",
         "final_recap",
     )
+    assert "selection_recap" not in workflow["not_implemented_stages"]
     assert {
-        "selection_recap",
         "visible_preflight",
         "process_confirmation",
         "progress",
         "final_recap",
     }.issubset(set(workflow["not_implemented_stages"]))
+    assert any(
+        "passive read-only selection recap" in note
+        for note in workflow["implemented_stage_notes"]
+    )
     assert {
         "DownloadDataSelectionDraft",
         "DownloadDataSelectionSummary",
@@ -231,6 +236,19 @@ def test_builder_metadata_is_ai_helper_inspectable_without_implementation() -> N
     assert inspection["inspectable"] is True
     assert "normal GUI action observation" in inspection["allowed_path"]
     assert "Future AI helper work" in inspection["notes"][0]
+    recap = document.metadata["selection_recap_surface"]
+    assert recap["surface_id"] == "download_request_builder.selection_recap"
+    assert recap["read_only"] is True
+    assert recap["passive_display"] is True
+    assert recap["data_source"] == "current_draft / Download Data selection adapter"
+    assert recap["no_execution"] is True
+    assert recap["no_core_call"] is True
+    assert recap["no_provider_api_call"] is True
+    assert recap["no_storage_access"] is True
+    assert recap["no_ai_helper_implementation"] is True
+    assert "download_request_builder.selection_recap" in {
+        region.region_id for region in document.regions
+    }
     assert document.metadata["documentation"]["docs_refs"]
     assert document.metadata["documentation"]["test_refs"]
 
@@ -323,6 +341,43 @@ def test_builder_initializes_with_empty_download_data_selection(
     _dispose(qapplication, window)
 
 
+def test_selection_recap_is_visible_and_empty_on_initial_creation(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+    window.show()
+    qapplication.processEvents()
+
+    recap = window.findChild(QWidget, "download_request_builder.selection_recap")
+
+    assert recap is not None
+    assert recap.isVisible() is True
+    assert _recap_value(window, "exchange") == "missing"
+    assert _recap_value(window, "market_type") == "missing"
+    assert _recap_value(window, "symbols") == "missing"
+    assert _recap_value(window, "timeframes") == "none selected"
+    assert _recap_value(window, "limit") == "200"
+    assert _recap_value(window, "state") == "Selection incomplete"
+    assert "exchange_id is required for Download Data selection." in _recap_value(
+        window,
+        "blockers",
+    )
+    assert "market_type is required for Download Data selection." in _recap_value(
+        window,
+        "blockers",
+    )
+    assert "symbol is required for Download Data selection." in _recap_value(
+        window,
+        "blockers",
+    )
+    assert (
+        "selected_timeframes is required for Download Data selection."
+        in _recap_value(window, "blockers")
+    )
+
+    _dispose(qapplication, window)
+
+
 def test_selecting_exchange_does_not_auto_select_market_or_other_fields(
     qapplication: QApplication,
 ) -> None:
@@ -336,6 +391,11 @@ def test_selecting_exchange_does_not_auto_select_market_or_other_fields(
     assert draft.symbols == ()
     assert draft.timeframes == ()
     assert window.option_values_for_id("market") == ("spot", "linear", "inverse")
+    assert _recap_value(window, "exchange") == "Bybit"
+    assert _recap_value(window, "market_type") == "missing"
+    assert _recap_value(window, "symbols") == "missing"
+    assert _recap_value(window, "timeframes") == "none selected"
+    assert _recap_value(window, "state") == "Selection incomplete"
 
     _dispose(qapplication, window)
 
@@ -353,6 +413,100 @@ def test_selecting_market_does_not_invent_symbol_or_timeframes(
     assert draft.market == "spot"
     assert draft.symbols == ()
     assert draft.timeframes == ()
+    assert _recap_value(window, "exchange") == "Bybit"
+    assert _recap_value(window, "market_type") == "spot"
+    assert _recap_value(window, "symbols") == "missing"
+    assert _recap_value(window, "timeframes") == "none selected"
+    assert _recap_value(window, "state") == "Selection incomplete"
+
+    _dispose(qapplication, window)
+
+
+def test_selection_recap_updates_symbol_timeframes_and_limit(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m", "5m")
+    _set_text_field(window, "limit", "500")
+
+    assert _recap_value(window, "symbols") == "BTCUSDT"
+    assert _recap_value(window, "timeframes") == "2 (1m, 5m)"
+    assert _recap_value(window, "limit") == "500"
+
+    _dispose(qapplication, window)
+
+
+def test_complete_selection_recap_shows_ready_state_and_item_count(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m", "5m")
+
+    assert _recap_value(window, "state") == (
+        "Selection complete - ready for preflight (2 items)"
+    )
+    assert _recap_value(window, "warnings") == "none"
+    assert _recap_value(window, "blockers") == "none"
+
+    _dispose(qapplication, window)
+
+
+def test_selection_recap_reports_limit_blocker_without_exception(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+    _set_text_field(window, "limit", "invalid")
+
+    assert _recap_value(window, "limit") == "unresolved"
+    assert _recap_value(window, "state") == "Selection incomplete"
+    assert "Limit must be a positive integer." in _recap_value(window, "blockers")
+
+    _dispose(qapplication, window)
+
+
+def test_selection_recap_updates_do_not_trigger_preview_or_submit_callbacks(
+    qapplication: QApplication,
+) -> None:
+    preview_calls = 0
+    submit_calls = 0
+
+    def preview_callback(draft: object) -> object:
+        nonlocal preview_calls
+        preview_calls += 1
+        return object()
+
+    def submit_callback(draft: object) -> object:
+        nonlocal submit_calls
+        submit_calls += 1
+        return _submit_view()
+
+    window = _builder(
+        on_preview_requested=preview_callback,
+        on_submit_intent=submit_callback,
+    )
+
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+    _set_text_field(window, "limit", "500")
+
+    assert preview_calls == 0
+    assert submit_calls == 0
+    assert _status_area(window).toPlainText() == ""
 
     _dispose(qapplication, window)
 
@@ -744,11 +898,13 @@ class _RecordingActionObserver:
 def _builder(
     workflow_mode: str = DOWNLOAD_DATA_WORKFLOW_MODE,
     *,
+    on_preview_requested=None,
     on_submit_intent=None,
     action_observer=None,
 ) -> DownloadRequestBuilderWindow:
     return DownloadRequestBuilderWindow(
         workflow_mode,
+        on_preview_requested=on_preview_requested,
         on_submit_intent=on_submit_intent,
         action_observer=action_observer,
         options=_BUILDER_OPTIONS,
@@ -798,6 +954,15 @@ def _status_area(window: DownloadRequestBuilderWindow) -> QTextEdit:
     status = window.findChild(QTextEdit, "download_request_builder.status_summary")
     assert status is not None
     return status
+
+
+def _recap_value(window: DownloadRequestBuilderWindow, field_id: str) -> str:
+    label = window.findChild(
+        QLabel,
+        f"download_request_builder.selection_recap.{field_id}.value",
+    )
+    assert label is not None
+    return label.text()
 
 
 def _render_summary(window: DownloadRequestBuilderWindow) -> str:

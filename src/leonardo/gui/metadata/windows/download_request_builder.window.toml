@@ -33,10 +33,10 @@ accepted_sequence = [
 ]
 implemented_stage_notes = [
     "The current shell renders selection fields and a draft submit action.",
+    "The current shell renders a passive read-only selection recap from the current draft and Download Data selection adapter.",
     "The current shell can format a preflight callback result when called through existing code, but no visible Preview button is exposed.",
 ]
 not_implemented_stages = [
-    "selection_recap",
     "visible_preflight",
     "process_confirmation",
     "progress",
@@ -76,6 +76,19 @@ allowed_path = "stable window and action identifiers through normal GUI action o
 notes = [
     "Future AI helper work may inspect field and action metadata but must not mutate GUI state, Core internals, provider state, storage, Data Manager state, Runtime Manager state, or Object Map service state directly.",
 ]
+
+[metadata.selection_recap_surface]
+surface_id = "download_request_builder.selection_recap"
+label = "Selection Recap"
+read_only = true
+passive_display = true
+data_source = "current_draft / Download Data selection adapter"
+workflow_stage = "selection_recap"
+no_execution = true
+no_core_call = true
+no_provider_api_call = true
+no_storage_access = true
+no_ai_helper_implementation = true
 
 [metadata.documentation]
 docs_refs = [
@@ -218,6 +231,10 @@ label = "Header"
 [[regions]]
 region_id = "download_request_builder.form"
 label = "Download Data Fields"
+
+[[regions]]
+region_id = "download_request_builder.selection_recap"
+label = "Selection Recap"
 
 [[regions]]
 region_id = "download_request_builder.results"

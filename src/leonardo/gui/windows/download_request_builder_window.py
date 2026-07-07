@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -23,6 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.gui.action_observer import GuiActionObserver
+from leonardo.gui.download_request_mapper import (
+    download_data_selection_drafts_from_request_draft,
+    download_data_selection_summary_from_selection_draft,
+)
 
 
 DOWNLOAD_DATA_WORKFLOW_MODE = "download_data"
@@ -170,6 +174,7 @@ class DownloadRequestBuilderWindow(QWidget):
         self._options = options if options is not None else DownloadRequestBuilderOptions()
         self._title_label: QLabel | None = None
         self._ohlcv_policy_note: QLabel | None = None
+        self._selection_recap_value_labels: dict[str, QLabel] = {}
         self._summary_text: QTextEdit | None = None
         self._on_preview_requested = on_preview_requested
         self._on_submit_intent = on_submit_intent
@@ -250,6 +255,7 @@ class DownloadRequestBuilderWindow(QWidget):
             )
         if self._summary_text is not None:
             self._summary_text.clear()
+        self._refresh_selection_recap()
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
@@ -270,6 +276,7 @@ class DownloadRequestBuilderWindow(QWidget):
         exchange.setObjectName("download_request_builder.exchange")
         exchange.addItems(self._options.exchanges)
         exchange.setCurrentIndex(-1)
+        exchange.currentTextChanged.connect(self._refresh_selection_recap)
         self._field_widgets["exchange"] = exchange
         self._field_widgets["source_provider"] = exchange
         form.addRow(_field_label("exchange", "Exchange"), exchange)
@@ -278,12 +285,14 @@ class DownloadRequestBuilderWindow(QWidget):
         market.setObjectName("download_request_builder.market")
         market.addItems(self._options.markets)
         market.setCurrentIndex(-1)
+        market.currentTextChanged.connect(self._refresh_selection_recap)
         self._field_widgets["market"] = market
         form.addRow(_field_label("market", "Market Type"), market)
 
         symbol = QLineEdit()
         symbol.setObjectName("download_request_builder.symbol")
         symbol.setPlaceholderText("BTCUSDT")
+        symbol.textChanged.connect(self._refresh_selection_recap)
         self._field_widgets["symbol"] = symbol
         self._field_widgets["symbols"] = symbol
         form.addRow(_field_label("symbol", "Symbol"), symbol)
@@ -297,6 +306,7 @@ class DownloadRequestBuilderWindow(QWidget):
         for index, timeframe in enumerate(self._options.timeframes):
             checkbox = QCheckBox(timeframe)
             checkbox.setObjectName(f"download_request_builder.timeframe.{timeframe}")
+            checkbox.toggled.connect(self._refresh_selection_recap)
             self._timeframe_checkboxes[timeframe] = checkbox
             grid.addWidget(checkbox, index // 3, index % 3)
         self._field_widgets["timeframes"] = timeframe_grid
@@ -323,8 +333,11 @@ class DownloadRequestBuilderWindow(QWidget):
             else "positive integer"
         )
         limit.setPlaceholderText(f"Page limit ({max_label})")
+        limit.textChanged.connect(self._refresh_selection_recap)
         self._field_widgets["limit"] = limit
         form.addRow(_field_label("limit", "Limit"), limit)
+
+        selection_recap = self._build_selection_recap()
 
         submit_button = QPushButton("Start")
         submit_button.setObjectName("download_request_builder.submit_button")
@@ -348,8 +361,58 @@ class DownloadRequestBuilderWindow(QWidget):
         root.addWidget(title_label)
         root.addWidget(ohlcv_note)
         root.addLayout(form)
+        root.addWidget(selection_recap)
         root.addWidget(summary_text)
         root.addLayout(buttons)
+        self._refresh_selection_recap()
+
+    def _build_selection_recap(self) -> QWidget:
+        recap = QWidget()
+        recap.setObjectName("download_request_builder.selection_recap")
+        grid = QGridLayout(recap)
+        grid.setContentsMargins(0, 8, 0, 8)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(4)
+
+        title = QLabel("Selection Recap")
+        title.setObjectName("download_request_builder.selection_recap.title")
+        grid.addWidget(title, 0, 0, 1, 2)
+
+        fields = (
+            ("exchange", "Exchange"),
+            ("market_type", "Market Type"),
+            ("symbols", "Asset / Symbol"),
+            ("timeframes", "Selected Timeframes"),
+            ("limit", "Limit"),
+            ("state", "State"),
+            ("warnings", "Warnings"),
+            ("blockers", "Blockers"),
+        )
+        for row_index, (field_id, label_text) in enumerate(fields, start=1):
+            label = QLabel(label_text)
+            label.setObjectName(
+                f"download_request_builder.selection_recap.{field_id}.label"
+            )
+            value = QLabel("")
+            value.setObjectName(
+                f"download_request_builder.selection_recap.{field_id}.value"
+            )
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self._selection_recap_value_labels[field_id] = value
+            grid.addWidget(label, row_index, 0)
+            grid.addWidget(value, row_index, 1)
+        return recap
+
+    def _refresh_selection_recap(self) -> None:
+        if not self._selection_recap_value_labels:
+            return
+
+        values = _selection_recap_values(self.current_draft())
+        for field_id, value in values.items():
+            label = self._selection_recap_value_labels.get(field_id)
+            if label is not None:
+                label.setText(value)
 
     def _show_draft_summary(self) -> None:
         if not self._record_action(DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID):
@@ -615,6 +678,55 @@ def _validate_draft(draft: DownloadRequestDraft) -> tuple[DownloadDraftIssue, ..
     return tuple(issues)
 
 
+def _selection_recap_values(draft: DownloadRequestDraft) -> dict[str, str]:
+    selection_drafts = download_data_selection_drafts_from_request_draft(draft)
+    warnings = _unique_strings(
+        warning
+        for selection in selection_drafts
+        for warning in selection.warnings
+    )
+    blockers = list(
+        _unique_strings(
+            blocker
+            for selection in selection_drafts
+            for blocker in selection.blockers
+        )
+    )
+    if draft.metadata_parse_error is not None:
+        blockers.append(draft.metadata_parse_error)
+
+    item_count = 0
+    complete_selection = bool(selection_drafts) and not blockers
+    for selection in selection_drafts:
+        if not selection.selection_complete:
+            complete_selection = False
+            continue
+        summary = download_data_selection_summary_from_selection_draft(selection)
+        item_count += summary.item_count
+
+    state = (
+        f"Selection complete - ready for preflight ({item_count} items)"
+        if complete_selection
+        else "Selection incomplete"
+    )
+    return {
+        "exchange": _format_optional_sequence(
+            tuple(selection.exchange_id for selection in selection_drafts)
+        ),
+        "market_type": _format_optional_sequence(
+            tuple(selection.market_type for selection in selection_drafts)
+        ),
+        "symbols": _format_optional_sequence(
+            tuple(selection.symbol for selection in selection_drafts)
+        ),
+        "timeframes": _format_selected_timeframes(selection_drafts),
+        "limit": _display_optional(dict(draft.metadata).get("limit")),
+        "state": state,
+        "warnings": _format_sequence(warnings),
+        "blockers": _format_sequence(tuple(blockers)),
+    }
+
+
 def _format_draft_summary(
     draft: DownloadRequestDraft,
     issues: tuple[DownloadDraftIssue, ...],
@@ -773,3 +885,32 @@ def _format_sequence(values: tuple[str, ...]) -> str:
     if not values:
         return "none"
     return ", ".join(values)
+
+
+def _format_optional_sequence(values: tuple[str | None, ...]) -> str:
+    normalized = _unique_strings(value for value in values if value)
+    return _format_sequence(normalized) if normalized else "missing"
+
+
+def _format_selected_timeframes(selection_drafts: tuple[object, ...]) -> str:
+    timeframes = _unique_strings(
+        timeframe
+        for selection in selection_drafts
+        for timeframe in getattr(selection, "selected_timeframes", ())
+    )
+    if not timeframes:
+        return "none selected"
+    return f"{len(timeframes)} ({_format_sequence(timeframes)})"
+
+
+def _unique_strings(values: Iterable[object]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        candidate = value.strip()
+        if candidate and candidate not in seen:
+            normalized.append(candidate)
+            seen.add(candidate)
+    return tuple(normalized)
