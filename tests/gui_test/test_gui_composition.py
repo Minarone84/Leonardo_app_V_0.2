@@ -432,7 +432,7 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
     _select_download_defaults(builder)
     _set_builder_text(builder, "symbol", "BTCUSDT")
     _check_builder_timeframes(builder, "1m", "5m")
-    builder._show_preflight_preview()
+    _click_builder_button(builder, "download_request_builder.preview_preflight_button")
     after_snapshot = context.runtime_manager.snapshot()
     status_text = _builder_status_text(builder)
 
@@ -446,6 +446,7 @@ def test_composition_wires_download_preview_without_submit_or_runtime_mutation(
     )
     assert context.download_manager.last_preview_request.symbols == ("BTCUSDT",)
     assert context.download_manager.last_preview_request.timeframes == ("1m", "5m")
+    assert "Structural preflight preview only." in status_text
     assert "Preflight preview passed." in status_text
     assert before_snapshot == after_snapshot
 

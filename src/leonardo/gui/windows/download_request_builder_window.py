@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -175,6 +176,8 @@ class DownloadRequestBuilderWindow(QWidget):
         self._title_label: QLabel | None = None
         self._ohlcv_policy_note: QLabel | None = None
         self._selection_recap_value_labels: dict[str, QLabel] = {}
+        self._progress_timeframes_layout: QVBoxLayout | None = None
+        self._progress_timeframe_bars: dict[str, QProgressBar] = {}
         self._summary_text: QTextEdit | None = None
         self._on_preview_requested = on_preview_requested
         self._on_submit_intent = on_submit_intent
@@ -338,6 +341,13 @@ class DownloadRequestBuilderWindow(QWidget):
         form.addRow(_field_label("limit", "Limit"), limit)
 
         selection_recap = self._build_selection_recap()
+        progress_shell = self._build_progress_shell()
+
+        preview_button = QPushButton("Preview Preflight")
+        preview_button.setObjectName(
+            "download_request_builder.preview_preflight_button"
+        )
+        preview_button.clicked.connect(self._show_preflight_preview)
 
         submit_button = QPushButton("Start")
         submit_button.setObjectName("download_request_builder.submit_button")
@@ -355,6 +365,7 @@ class DownloadRequestBuilderWindow(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
+        buttons.addWidget(preview_button)
         buttons.addWidget(submit_button)
         buttons.addWidget(close_button)
 
@@ -363,6 +374,7 @@ class DownloadRequestBuilderWindow(QWidget):
         root.addLayout(form)
         root.addWidget(selection_recap)
         root.addWidget(summary_text)
+        root.addWidget(progress_shell)
         root.addLayout(buttons)
         self._refresh_selection_recap()
 
@@ -404,6 +416,44 @@ class DownloadRequestBuilderWindow(QWidget):
             grid.addWidget(value, row_index, 1)
         return recap
 
+    def _build_progress_shell(self) -> QWidget:
+        progress = QWidget()
+        progress.setObjectName("download_request_builder.progress_shell")
+        layout = QVBoxLayout(progress)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(6)
+
+        title = QLabel("Progress")
+        title.setObjectName("download_request_builder.progress.title")
+        layout.addWidget(title)
+
+        total_label = QLabel("Total Progress")
+        total_label.setObjectName("download_request_builder.progress.total.label")
+        layout.addWidget(total_label)
+
+        total = QProgressBar()
+        total.setObjectName("download_request_builder.progress.total")
+        total.setRange(0, 100)
+        total.setValue(0)
+        layout.addWidget(total)
+
+        timeframe_container = QWidget()
+        timeframe_container.setObjectName("download_request_builder.progress.timeframes")
+        timeframe_layout = QVBoxLayout(timeframe_container)
+        timeframe_layout.setContentsMargins(0, 0, 0, 0)
+        timeframe_layout.setSpacing(4)
+        self._progress_timeframes_layout = timeframe_layout
+        layout.addWidget(timeframe_container)
+
+        messages = QTextEdit()
+        messages.setObjectName("download_request_builder.progress.messages")
+        messages.setReadOnly(True)
+        messages.setFixedHeight(64)
+        messages.setPlainText("No download running.\nExecution is not implemented yet.")
+        layout.addWidget(messages)
+
+        return progress
+
     def _refresh_selection_recap(self) -> None:
         if not self._selection_recap_value_labels:
             return
@@ -413,6 +463,45 @@ class DownloadRequestBuilderWindow(QWidget):
             label = self._selection_recap_value_labels.get(field_id)
             if label is not None:
                 label.setText(value)
+        self._refresh_progress_shell()
+
+    def _refresh_progress_shell(self) -> None:
+        if self._progress_timeframes_layout is None:
+            return
+
+        while self._progress_timeframes_layout.count():
+            item = self._progress_timeframes_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._progress_timeframe_bars.clear()
+
+        timeframes = self.selected_timeframes()
+        if not timeframes:
+            empty = QLabel("No timeframes selected.")
+            empty.setObjectName("download_request_builder.progress.timeframes.empty")
+            self._progress_timeframes_layout.addWidget(empty)
+            return
+
+        for timeframe in timeframes:
+            row = QWidget()
+            row.setObjectName(f"download_request_builder.progress.row.{timeframe}")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+
+            label = QLabel(timeframe)
+            label.setObjectName(f"download_request_builder.progress.label.{timeframe}")
+            row_layout.addWidget(label)
+
+            bar = QProgressBar()
+            bar.setObjectName(f"download_request_builder.progress.timeframe.{timeframe}")
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            row_layout.addWidget(bar)
+            self._progress_timeframe_bars[timeframe] = bar
+
+            self._progress_timeframes_layout.addWidget(row)
 
     def _show_draft_summary(self) -> None:
         if not self._record_action(DOWNLOAD_REQUEST_BUILDER_DRAFT_SUMMARY_ACTION_ID):
@@ -777,6 +866,11 @@ def _format_preflight_preview(preview: object) -> str:
     issues = tuple(getattr(preview, "issues", ()))
     lines = [
         "Preflight preview result:",
+        (
+            "Structural preflight preview only. Provider range checks, storage "
+            "checks, update/new-file detection, and execution are not performed "
+            "in this shell yet."
+        ),
         f"Message: {getattr(preview, 'message', '')}",
         f"Request ID: {getattr(preview, 'request_id', '')}",
         f"Status: {getattr(preview, 'status', '')}",

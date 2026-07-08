@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QComboBox,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QWidget,
@@ -22,6 +23,7 @@ from leonardo.gui.windows.download_request_builder_window import (  # noqa: E402
     DOWNLOAD_DATA_WORKFLOW_MODE,
     DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID,
     DOWNLOAD_REQUEST_BUILDER_METADATA_ID,
+    DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,
     DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID,
     OHLCV_MAINTENANCE_WORKFLOW_MODE,
     OHLCV_POLICY_DEFERRED_MESSAGE,
@@ -138,14 +140,26 @@ def test_builder_metadata_aligns_to_download_data_boundary() -> None:
         "final_recap",
     )
     assert "selection_recap" not in workflow["not_implemented_stages"]
+    assert "visible_preflight" not in workflow["not_implemented_stages"]
+    assert "progress" not in workflow["not_implemented_stages"]
     assert {
-        "visible_preflight",
+        "storage_aware_preflight",
+        "provider_range_discovery",
         "process_confirmation",
-        "progress",
+        "real_execution",
         "final_recap",
+        "cancellation",
     }.issubset(set(workflow["not_implemented_stages"]))
     assert any(
         "passive read-only selection recap" in note
+        for note in workflow["implemented_stage_notes"]
+    )
+    assert any(
+        "visible Preview Preflight control" in note
+        for note in workflow["implemented_stage_notes"]
+    )
+    assert any(
+        "passive non-executing progress shell" in note
         for note in workflow["implemented_stage_notes"]
     )
     assert {
@@ -174,7 +188,10 @@ def test_builder_metadata_documents_action_descriptors() -> None:
         "internal_not_visible"
     )
     assert descriptors["download_request_builder.preview_preflight"]["visibility"] == (
-        "internal_not_visible"
+        "visible_button"
+    )
+    assert descriptors["download_request_builder.preview_preflight"]["permission_ref"] == (
+        "download:preview"
     )
     assert descriptors[DOWNLOAD_REQUEST_BUILDER_SUBMIT_ACTION_ID]["visibility"] == (
         "visible_button"
@@ -246,7 +263,32 @@ def test_builder_metadata_is_ai_helper_inspectable_without_implementation() -> N
     assert recap["no_provider_api_call"] is True
     assert recap["no_storage_access"] is True
     assert recap["no_ai_helper_implementation"] is True
+    preflight = document.metadata["preflight_preview_surface"]
+    assert preflight["surface_id"] == "download_request_builder.status_summary"
+    assert preflight["control_id"] == (
+        "download_request_builder.preview_preflight_button"
+    )
+    assert preflight["read_only"] is True
+    assert preflight["structural_preview_only"] is True
+    assert preflight["no_execution"] is True
+    assert preflight["no_provider_api_call"] is True
+    assert preflight["no_storage_access"] is True
+    assert preflight["no_update_or_new_file_detection"] is True
+    assert "Provider range checks" in preflight["wording_guard"]
+    progress = document.metadata["progress_shell_surface"]
+    assert progress["surface_id"] == "download_request_builder.progress_shell"
+    assert progress["total_progress_id"] == "download_request_builder.progress.total"
+    assert progress["non_executing_shell"] is True
+    assert progress["initial_total_progress"] == 0
+    assert progress["initial_timeframe_progress"] == 0
+    assert progress["no_auto_run"] is True
+    assert progress["no_fake_progress"] is True
+    assert progress["no_timers"] is True
+    assert progress["no_core_task_call"] is True
     assert "download_request_builder.selection_recap" in {
+        region.region_id for region in document.regions
+    }
+    assert "download_request_builder.progress_shell" in {
         region.region_id for region in document.regions
     }
     assert document.metadata["documentation"]["docs_refs"]
@@ -533,6 +575,7 @@ def test_no_unapproved_visible_buttons_or_controls(qapplication: QApplication) -
     }
 
     assert buttons == {
+        "download_request_builder.preview_preflight_button": "Preview Preflight",
         "download_request_builder.submit_button": "Start",
         "download_request_builder.close": "Close",
     }
@@ -544,6 +587,10 @@ def test_no_unapproved_visible_buttons_or_controls(qapplication: QApplication) -
         is None
     )
     assert window.findChild(QPushButton, "download_request_builder.preflight") is None
+    assert (
+        window.findChild(QPushButton, "download_request_builder.process_download")
+        is None
+    )
 
     _dispose(qapplication, window)
 
@@ -553,6 +600,189 @@ def test_status_area_is_read_only(qapplication: QApplication) -> None:
     status = _status_area(window)
 
     assert status.isReadOnly() is True
+
+    _dispose(qapplication, window)
+
+
+def test_preview_preflight_incomplete_selection_shows_local_validation_only(
+    qapplication: QApplication,
+) -> None:
+    preview_calls = 0
+    submit_calls = 0
+
+    def preview_callback(draft: object) -> object:
+        nonlocal preview_calls
+        preview_calls += 1
+        return _preview_view()
+
+    def submit_callback(draft: object) -> object:
+        nonlocal submit_calls
+        submit_calls += 1
+        return _submit_view()
+
+    window = _builder(
+        on_preview_requested=preview_callback,
+        on_submit_intent=submit_callback,
+    )
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+
+    result = _render_preview(window)
+
+    assert preview_calls == 0
+    assert submit_calls == 0
+    assert "Preflight preview blocked by local validation issues:" in result
+    assert "ERROR timeframes: Explicit timeframe mode requires at least one timeframe." in (
+        result
+    )
+
+    _dispose(qapplication, window)
+
+
+def test_preview_preflight_complete_selection_calls_preview_without_submit(
+    qapplication: QApplication,
+) -> None:
+    preview_calls: list[object] = []
+    submit_calls = 0
+
+    def preview_callback(draft: object) -> object:
+        preview_calls.append(draft)
+        return _preview_view()
+
+    def submit_callback(draft: object) -> object:
+        nonlocal submit_calls
+        submit_calls += 1
+        return _submit_view()
+
+    window = _builder(
+        on_preview_requested=preview_callback,
+        on_submit_intent=submit_callback,
+    )
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    result = _render_preview(window)
+
+    assert len(preview_calls) == 1
+    assert preview_calls[0].symbols == ("BTCUSDT",)
+    assert preview_calls[0].timeframes == ("1m",)
+    assert submit_calls == 0
+    assert result.startswith("Preflight preview result:")
+    assert (
+        "Structural preflight preview only. Provider range checks, storage "
+        "checks, update/new-file detection, and execution are not performed "
+        "in this shell yet."
+    ) in result
+    assert "Message: Preflight preview passed." in result
+    assert "Request ID: preview-test" in result
+    assert "Provider range checks completed" not in result
+    assert "Storage checks completed" not in result
+    assert "Update/new-file mode determined" not in result
+    assert "Execution started" not in result
+    assert "Files written" not in result
+
+    _dispose(qapplication, window)
+
+
+def test_preview_preflight_action_records_through_observer(
+    qapplication: QApplication,
+) -> None:
+    observer = _RecordingActionObserver()
+    window = _builder(
+        on_preview_requested=lambda draft: _preview_view(),
+        action_observer=observer,
+    )
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    _render_preview(window)
+
+    assert tuple(call.action_id for call in observer.calls) == (
+        DOWNLOAD_REQUEST_BUILDER_PREVIEW_PREFLIGHT_ACTION_ID,
+    )
+    assert observer.calls[0].window_id == DOWNLOAD_REQUEST_BUILDER_METADATA_ID
+    assert observer.calls[0].metadata == {"workflow_mode": DOWNLOAD_DATA_WORKFLOW_MODE}
+
+    _dispose(qapplication, window)
+
+
+def test_progress_shell_initializes_as_non_running_empty_state(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+
+    progress = window.findChild(QWidget, "download_request_builder.progress_shell")
+    total = window.findChild(QProgressBar, "download_request_builder.progress.total")
+    empty = window.findChild(
+        QLabel,
+        "download_request_builder.progress.timeframes.empty",
+    )
+    messages = window.findChild(
+        QTextEdit,
+        "download_request_builder.progress.messages",
+    )
+
+    assert progress is not None
+    assert total is not None
+    assert total.value() == 0
+    assert empty is not None
+    assert empty.text() == "No timeframes selected."
+    assert messages is not None
+    assert messages.isReadOnly() is True
+    assert messages.toPlainText() == (
+        "No download running.\nExecution is not implemented yet."
+    )
+
+    _dispose(qapplication, window)
+
+
+def test_progress_shell_shows_zeroed_per_timeframe_rows_without_autorun(
+    qapplication: QApplication,
+) -> None:
+    window = _builder()
+    _check_timeframes(window, "1m", "5m")
+    qapplication.processEvents()
+
+    total = window.findChild(QProgressBar, "download_request_builder.progress.total")
+    one_minute = window.findChild(
+        QProgressBar,
+        "download_request_builder.progress.timeframe.1m",
+    )
+    five_minutes = window.findChild(
+        QProgressBar,
+        "download_request_builder.progress.timeframe.5m",
+    )
+    empty = window.findChild(
+        QLabel,
+        "download_request_builder.progress.timeframes.empty",
+    )
+    messages = window.findChild(
+        QTextEdit,
+        "download_request_builder.progress.messages",
+    )
+
+    assert total is not None
+    assert total.value() == 0
+    assert one_minute is not None
+    assert one_minute.value() == 0
+    assert five_minutes is not None
+    assert five_minutes.value() == 0
+    assert empty is None
+    assert messages is not None
+    assert messages.toPlainText() == (
+        "No download running.\nExecution is not implemented yet."
+    )
+
+    qapplication.processEvents()
+
+    assert total.value() == 0
+    assert one_minute.value() == 0
+    assert five_minutes.value() == 0
 
     _dispose(qapplication, window)
 
@@ -979,6 +1209,32 @@ def _render_start(window: DownloadRequestBuilderWindow) -> str:
 
     button.click()
     return _status_area(window).toPlainText()
+
+
+def _render_preview(window: DownloadRequestBuilderWindow) -> str:
+    button = window.findChild(
+        QPushButton,
+        "download_request_builder.preview_preflight_button",
+    )
+    assert button is not None
+
+    button.click()
+    return _status_area(window).toPlainText()
+
+
+def _preview_view() -> SimpleNamespace:
+    return SimpleNamespace(
+        request_id="preview-test",
+        status="validated",
+        can_run=True,
+        estimated_symbols=1,
+        estimated_timeframes=1,
+        estimated_items=1,
+        required_connections=(),
+        websocket_required=False,
+        issues=(),
+        message="Preflight preview passed.",
+    )
 
 
 def _submit_view() -> SimpleNamespace:

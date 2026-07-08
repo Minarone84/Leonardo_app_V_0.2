@@ -34,13 +34,16 @@ accepted_sequence = [
 implemented_stage_notes = [
     "The current shell renders selection fields and a draft submit action.",
     "The current shell renders a passive read-only selection recap from the current draft and Download Data selection adapter.",
-    "The current shell can format a preflight callback result when called through existing code, but no visible Preview button is exposed.",
+    "The current shell exposes a visible Preview Preflight control that calls the existing non-mutating structural preview callback.",
+    "The current shell renders a passive non-executing progress shell with zeroed total and per-timeframe progress display.",
 ]
 not_implemented_stages = [
-    "visible_preflight",
+    "storage_aware_preflight",
+    "provider_range_discovery",
     "process_confirmation",
-    "progress",
+    "real_execution",
     "final_recap",
+    "cancellation",
 ]
 future_contracts = [
     "DownloadDataSelectionDraft",
@@ -90,6 +93,43 @@ no_provider_api_call = true
 no_storage_access = true
 no_ai_helper_implementation = true
 
+[metadata.preflight_preview_surface]
+surface_id = "download_request_builder.status_summary"
+control_id = "download_request_builder.preview_preflight_button"
+label = "Preview Preflight"
+read_only = true
+passive_display = true
+workflow_stage = "preflight_preview"
+data_source = "existing injected preview callback / current DownloadPreflightPreviewView"
+structural_preview_only = true
+no_execution = true
+no_provider_api_call = true
+no_storage_access = true
+no_update_or_new_file_detection = true
+no_ai_helper_implementation = true
+wording_guard = "Structural preflight preview only. Provider range checks, storage checks, update/new-file detection, and execution are not performed in this shell yet."
+
+[metadata.progress_shell_surface]
+surface_id = "download_request_builder.progress_shell"
+total_progress_id = "download_request_builder.progress.total"
+timeframe_progress_container_id = "download_request_builder.progress.timeframes"
+message_surface_id = "download_request_builder.progress.messages"
+label = "Progress"
+read_only = true
+passive_display = true
+workflow_stage = "progress_shell"
+non_executing_shell = true
+initial_total_progress = 0
+initial_timeframe_progress = 0
+no_auto_run = true
+no_fake_progress = true
+no_timers = true
+no_core_task_call = true
+no_provider_api_call = true
+no_storage_write = true
+no_cancellation_behavior = true
+no_ai_helper_implementation = true
+
 [metadata.documentation]
 docs_refs = [
     "docs/gui_readme.md",
@@ -115,9 +155,9 @@ permission_ref = "download:view"
 [[metadata.action_descriptors]]
 action_id = "download_request_builder.preview_preflight"
 label = "Preview Preflight"
-purpose = "Existing internal action identifier for formatting an injected preflight preview result."
+purpose = "Render the existing injected structural preflight preview result without executing downloads."
 workflow_stage = "preflight_preview"
-visibility = "internal_not_visible"
+visibility = "visible_button"
 permission_ref = "download:preview"
 
 [[metadata.action_descriptors]]
@@ -239,6 +279,10 @@ label = "Selection Recap"
 [[regions]]
 region_id = "download_request_builder.results"
 label = "Status"
+
+[[regions]]
+region_id = "download_request_builder.progress_shell"
+label = "Progress"
 
 [[regions]]
 region_id = "download_request_builder.actions"
