@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from leonardo.contracts.audit import AuditCategory, AuditEvent, AuditSeverity
+from leonardo.contracts.download_data_execution import (
+    DownloadDataExecutionResult,
+    DownloadDataExecutionStatus,
+)
 from leonardo.contracts.download_execution import (
     DownloadExecutionEstimate,
     DownloadExecutionPhase,
@@ -29,6 +35,10 @@ from leonardo.contracts.downloads import (
 from leonardo.core.audit_log import AuditLog
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.download_manager import DownloadManager
+from leonardo.download_data.smoke_execution import (
+    fixture_bybit_kline_transport,
+    run_bybit_ohlcv_smoke_slice,
+)
 
 
 @dataclass(frozen=True)
@@ -39,12 +49,12 @@ class _CapabilityReadinessResult:
 
 class DownloadExecutionManager:
     """
-    Create and retain non-executing download execution snapshots.
+    Create retained download execution snapshots and explicit smoke runs.
 
     The manager owns planning/read-model state for future execution. It reads
-    submitted request state from `DownloadManager`, but it does not fetch data,
-    resolve adapters, create operations, create tasks, launch processes, update
-    Runtime Manager views, write output files, or own GUI behavior.
+    submitted request state from `DownloadManager`. Planning and readiness
+    classification remain non-executing. The sandbox smoke method is a separate,
+    explicit fixture-transport path that requires an injected sandbox root.
     """
 
     def __init__(
@@ -217,6 +227,76 @@ class DownloadExecutionManager:
             for plan_id in sorted(self._snapshot_by_plan_id)
         )
 
+    def run_sandbox_smoke(
+        self,
+        request_id: str,
+        *,
+        sandbox_root: str | Path,
+        transport: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
+    ) -> DownloadDataExecutionResult:
+        """
+        Run the explicit offline Download Data smoke execution for one request.
+
+        The method requires a submitted, readiness-classified request and an
+        explicit sandbox root. It uses deterministic fixture transport by
+        default and never selects the live Bybit HTTP transport.
+        """
+
+        _validate_request_id(request_id)
+        request = self._download_manager.get_request(request_id)
+        if request is None:
+            raise KeyError(f"Download request is not submitted: {request_id}")
+
+        snapshot = self.get_snapshot_for_request(request_id)
+        if snapshot is None:
+            raise ValueError("Download execution plan is required before smoke run")
+        if snapshot.plan.phase is not DownloadExecutionPhase.READY:
+            raise ValueError(
+                "Download execution plan must be ready before sandbox smoke run"
+            )
+
+        _validate_smoke_request(request)
+        active_transport = transport or fixture_bybit_kline_transport
+        results = tuple(
+            run_bybit_ohlcv_smoke_slice(
+                sandbox_root=sandbox_root,
+                transport=active_transport,
+                exchange_id="bybit",
+                market_type="spot",
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=_smoke_limit(request),
+            )
+            for symbol in request.symbols
+            for timeframe in request.timeframes
+        )
+        return DownloadDataExecutionResult(
+            workflow_id=f"download-data-sandbox-smoke-{request_id}",
+            status=DownloadDataExecutionStatus.COMPLETED,
+            targets=tuple(
+                target for result in results for target in result.targets
+            ),
+            storage_results=tuple(
+                storage_result
+                for result in results
+                for storage_result in result.storage_results
+            ),
+            progress_events=tuple(
+                progress_event
+                for result in results
+                for progress_event in result.progress_events
+            ),
+            total_bars_downloaded=sum(
+                result.total_bars_downloaded for result in results
+            ),
+            metadata={
+                "source": "download_execution_manager",
+                "request_id": request_id,
+                "sandbox_root_ref": str(Path(sandbox_root).resolve(strict=False)),
+                "transport": "fixture",
+            },
+        )
+
     def _require_snapshot(self, plan_id: str) -> DownloadExecutionSnapshot:
         _validate_plan_id(plan_id)
         snapshot = self.get_snapshot(plan_id)
@@ -297,6 +377,30 @@ def _validate_plan_id(plan_id: str) -> None:
 def _validate_reason(reason: str) -> None:
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reason must be a non-empty string")
+
+
+def _validate_smoke_request(request: DownloadRequest) -> None:
+    if request.workflow_kind is not DownloadWorkflowKind.DOWNLOAD_DATA:
+        raise ValueError("sandbox smoke supports Download Data workflow only")
+    if request.source is None or request.source.strip().lower() != "bybit":
+        raise ValueError("sandbox smoke supports bybit provider only")
+    if request.market is None or request.market.strip().lower() != "spot":
+        raise ValueError("sandbox smoke supports spot market only")
+    if request.timeframe_mode is not DownloadTimeframeMode.EXPLICIT:
+        raise ValueError("sandbox smoke requires explicit timeframe mode")
+    if not request.symbols:
+        raise ValueError("sandbox smoke requires at least one symbol")
+    if not request.timeframes:
+        raise ValueError("sandbox smoke requires at least one timeframe")
+
+
+def _smoke_limit(request: DownloadRequest) -> int:
+    value = dict(request.metadata).get("limit")
+    if value is None:
+        return 10
+    if type(value) is not int or value < 1:
+        raise ValueError("sandbox smoke limit must be a positive integer")
+    return value
 
 
 def _validate_planned_transition(

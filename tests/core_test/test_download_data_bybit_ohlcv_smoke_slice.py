@@ -190,6 +190,41 @@ def test_fixture_transport_receives_params_and_no_real_network_is_used(
     ]
 
 
+def test_smoke_execution_uses_selected_symbol_timeframe_and_limit(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fixture_transport(params: object) -> dict[str, object]:
+        calls.append(dict(params))  # type: ignore[arg-type]
+        return _fixture_response()
+
+    result = run_bybit_ohlcv_smoke_slice(
+        sandbox_root=tmp_path,
+        transport=fixture_transport,
+        symbol="ETHUSDT",
+        timeframe="5m",
+        limit=25,
+    )
+
+    assert calls == [
+        {
+            "category": "spot",
+            "symbol": "ETHUSDT",
+            "interval": "5",
+            "limit": 25,
+        }
+    ]
+    assert result.targets[0].symbol == "ETHUSDT"
+    assert result.targets[0].timeframe == "5m"
+    assert (
+        tmp_path / "historical/bybit/spot/ETHUSDT/5m/ohlcv/candles.csv"
+    ).exists()
+    assert (
+        tmp_path / "historical/bybit/spot/ETHUSDT/5m/ohlcv/candles.meta.json"
+    ).exists()
+
+
 def test_smoke_slice_does_not_create_project_data_directory(tmp_path: Path) -> None:
     project_data_dir = Path.cwd() / "data" / "historical"
     existed_before = project_data_dir.exists()

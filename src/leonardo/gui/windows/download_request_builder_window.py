@@ -178,6 +178,8 @@ class DownloadRequestBuilderWindow(QWidget):
         self._selection_recap_value_labels: dict[str, QLabel] = {}
         self._progress_timeframes_layout: QVBoxLayout | None = None
         self._progress_timeframe_bars: dict[str, QProgressBar] = {}
+        self._progress_total_bar: QProgressBar | None = None
+        self._progress_messages: QTextEdit | None = None
         self._summary_text: QTextEdit | None = None
         self._on_preview_requested = on_preview_requested
         self._on_submit_intent = on_submit_intent
@@ -435,6 +437,7 @@ class DownloadRequestBuilderWindow(QWidget):
         total.setObjectName("download_request_builder.progress.total")
         total.setRange(0, 100)
         total.setValue(0)
+        self._progress_total_bar = total
         layout.addWidget(total)
 
         timeframe_container = QWidget()
@@ -450,6 +453,7 @@ class DownloadRequestBuilderWindow(QWidget):
         messages.setReadOnly(True)
         messages.setFixedHeight(64)
         messages.setPlainText("No download running.\nExecution is not implemented yet.")
+        self._progress_messages = messages
         layout.addWidget(messages)
 
         return progress
@@ -568,8 +572,12 @@ class DownloadRequestBuilderWindow(QWidget):
             self._summary_text.setPlainText(
                 "Download start failed: " f"{type(error).__name__}: {error}"
             )
+            self._set_progress_message(
+                f"Download start failed: {type(error).__name__}: {error}"
+            )
             return
         self._summary_text.setPlainText(_format_submit_result(result))
+        self._apply_submit_progress(result)
 
     def _close_requested(self) -> None:
         if not self._record_action(DOWNLOAD_REQUEST_BUILDER_CLOSE_ACTION_ID):
@@ -586,6 +594,31 @@ class DownloadRequestBuilderWindow(QWidget):
             metadata={"workflow_mode": self._workflow_mode},
         )
         return decision.allowed
+
+    def _apply_submit_progress(self, result: object) -> None:
+        status = getattr(result, "sandbox_execution_status", None)
+        if status is None:
+            return
+
+        if getattr(result, "sandbox_execution_completed", False) is True:
+            if self._progress_total_bar is not None:
+                self._progress_total_bar.setValue(100)
+            for timeframe in tuple(
+                getattr(result, "sandbox_timeframes_completed", ())
+            ):
+                bar = self._progress_timeframe_bars.get(timeframe)
+                if bar is not None:
+                    bar.setValue(100)
+            self._set_progress_message(_format_sandbox_progress_message(result))
+            return
+
+        if self._progress_total_bar is not None:
+            self._progress_total_bar.setValue(0)
+        self._set_progress_message(str(getattr(result, "sandbox_execution_message", "")))
+
+    def _set_progress_message(self, message: str) -> None:
+        if self._progress_messages is not None:
+            self._progress_messages.setPlainText(message)
 
 
 def _validate_workflow_mode(workflow_mode: str) -> None:
@@ -929,14 +962,67 @@ def _format_submit_result(result: object) -> str:
             "Execution plan blocked: "
             f"{_display_yes_no(getattr(result, 'execution_plan_blocked', False))}"
         ),
-        "Submit issues:",
     ]
+    sandbox_status = getattr(result, "sandbox_execution_status", None)
+    if sandbox_status is not None:
+        lines.extend(
+            (
+                "",
+                "Sandbox execution:",
+                f"Status: {sandbox_status}",
+                (
+                    "Completed: "
+                    f"{_display_yes_no(getattr(result, 'sandbox_execution_completed', False))}"
+                ),
+                f"Message: {getattr(result, 'sandbox_execution_message', '')}",
+                (
+                    "Sandbox root: "
+                    f"{_display_optional(getattr(result, 'sandbox_root', None))}"
+                ),
+                (
+                    "Bars written: "
+                    f"{getattr(result, 'sandbox_bars_written', 0)}"
+                ),
+                (
+                    "CSV path: "
+                    f"{_format_sequence(tuple(getattr(result, 'sandbox_csv_paths', ())))}"
+                ),
+                (
+                    "Metadata path: "
+                    f"{_format_sequence(tuple(getattr(result, 'sandbox_metadata_paths', ())))}"
+                ),
+                (
+                    "First timestamp: "
+                    f"{_display_optional(getattr(result, 'sandbox_first_timestamp_ms', None))}"
+                ),
+                (
+                    "Last timestamp: "
+                    f"{_display_optional(getattr(result, 'sandbox_last_timestamp_ms', None))}"
+                ),
+                "Sandbox root notice: output is confined to the configured sandbox root.",
+            )
+        )
+    lines.append("Submit issues:")
     if not issues:
         lines.append("- none")
     else:
         for issue in issues:
             lines.append(f"- {issue}")
     return "\n".join(lines)
+
+
+def _format_sandbox_progress_message(result: object) -> str:
+    lines = [
+        str(getattr(result, "sandbox_execution_message", "")),
+        f"Bars written: {getattr(result, 'sandbox_bars_written', 0)}",
+    ]
+    csv_paths = tuple(getattr(result, "sandbox_csv_paths", ()))
+    metadata_paths = tuple(getattr(result, "sandbox_metadata_paths", ()))
+    if csv_paths:
+        lines.append(f"CSV: {_format_sequence(csv_paths)}")
+    if metadata_paths:
+        lines.append(f"Metadata: {_format_sequence(metadata_paths)}")
+    return "\n".join(line for line in lines if line)
 
 
 def _text_field_value(widget: QWidget) -> str:

@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QComboBox,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QWidget,
@@ -508,6 +510,109 @@ def test_composition_wires_download_submit_without_preview_call(
     builder.deleteLater()
     window.deleteLater()
     qapplication.processEvents()
+
+
+def test_composition_runs_sandbox_smoke_execution_with_injected_root(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    app = LeonardoApp()
+    context = app.startup()
+    sandbox_root = tmp_path / "download-smoke"
+    project_data_dir = Path.cwd() / "data" / "historical"
+    project_data_existed = project_data_dir.exists()
+    root = GuiCompositionRoot(
+        context,
+        download_smoke_sandbox_root=sandbox_root,
+    )
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _select_download_defaults(builder)
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m", "5m")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    submit_text = _builder_status_text(builder)
+
+    one_minute_csv_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv"
+    )
+    five_minute_csv_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/5m/ohlcv/candles.csv"
+    )
+    one_minute_metadata_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json"
+    )
+    five_minute_metadata_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/5m/ohlcv/candles.meta.json"
+    )
+    one_minute_metadata = json.loads(
+        one_minute_metadata_path.read_text(encoding="utf-8")
+    )
+    five_minute_metadata = json.loads(
+        five_minute_metadata_path.read_text(encoding="utf-8")
+    )
+    total_progress = builder.findChild(
+        QProgressBar,
+        "download_request_builder.progress.total",
+    )
+    timeframe_progress = builder.findChild(
+        QProgressBar,
+        "download_request_builder.progress.timeframe.1m",
+    )
+    five_minute_progress = builder.findChild(
+        QProgressBar,
+        "download_request_builder.progress.timeframe.5m",
+    )
+    messages = builder.findChild(
+        QTextEdit,
+        "download_request_builder.progress.messages",
+    )
+
+    assert one_minute_csv_path.exists()
+    assert five_minute_csv_path.exists()
+    assert one_minute_metadata_path.exists()
+    assert five_minute_metadata_path.exists()
+    assert one_minute_csv_path.resolve().is_relative_to(sandbox_root.resolve())
+    assert five_minute_csv_path.resolve().is_relative_to(sandbox_root.resolve())
+    assert one_minute_metadata_path.resolve().is_relative_to(sandbox_root.resolve())
+    assert five_minute_metadata_path.resolve().is_relative_to(sandbox_root.resolve())
+    assert project_data_dir.exists() is project_data_existed
+    assert one_minute_metadata["artifact_id"] == "ohlcv__candles"
+    assert five_minute_metadata["artifact_id"] == "ohlcv__candles"
+    assert one_minute_metadata["accepted"] is False
+    assert five_minute_metadata["accepted"] is False
+    assert one_minute_metadata["loadable"] is False
+    assert five_minute_metadata["loadable"] is False
+    assert one_minute_metadata["validated"] is False
+    assert five_minute_metadata["validated"] is False
+    assert "Download request submitted." in submit_text
+    assert "Sandbox execution:" in submit_text
+    assert "Status: completed" in submit_text
+    assert "Bars written: 6" in submit_text
+    assert str(one_minute_csv_path) in submit_text
+    assert str(five_minute_csv_path) in submit_text
+    assert str(one_minute_metadata_path) in submit_text
+    assert str(five_minute_metadata_path) in submit_text
+    assert "First timestamp: 1700000000000" in submit_text
+    assert "Last timestamp: 1700000120000" in submit_text
+    assert total_progress is not None
+    assert total_progress.value() == 100
+    assert timeframe_progress is not None
+    assert timeframe_progress.value() == 100
+    assert five_minute_progress is not None
+    assert five_minute_progress.value() == 100
+    assert messages is not None
+    assert "Sandbox smoke execution completed." in messages.toPlainText()
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+    app.shutdown()
 
 
 def test_composition_reports_blocked_readiness_for_explicit_download(

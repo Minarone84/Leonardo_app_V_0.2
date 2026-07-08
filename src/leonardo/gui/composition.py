@@ -92,6 +92,20 @@ class _ExecutionPlanSubmitState:
     blocked: bool = False
 
 
+@dataclass(frozen=True)
+class _SandboxExecutionSubmitState:
+    status: str | None
+    completed: bool
+    message: str
+    sandbox_root: str | None = None
+    csv_paths: tuple[str, ...] = ()
+    metadata_paths: tuple[str, ...] = ()
+    bars_written: int = 0
+    first_timestamp_ms: int | None = None
+    last_timestamp_ms: int | None = None
+    timeframes_completed: tuple[str, ...] = ()
+
+
 class GuiCompositionRoot:
     """
     Compose GUI-owned windows from an existing Core context.
@@ -109,6 +123,7 @@ class GuiCompositionRoot:
         track_windows: bool = True,
         override_store: GuiMetadataOverrideStore | None = None,
         settings_profile_provider: GuiSettingsProfileProvider | None = None,
+        download_smoke_sandbox_root: str | Path | None = None,
     ) -> None:
         snapshot = getattr(getattr(context, "runtime_manager", None), "snapshot", None)
         if not callable(snapshot):
@@ -153,6 +168,11 @@ class GuiCompositionRoot:
             context,
             "download_capability_catalog",
             None,
+        )
+        self._download_smoke_sandbox_root = (
+            Path(download_smoke_sandbox_root)
+            if download_smoke_sandbox_root is not None
+            else None
         )
 
     @property
@@ -383,6 +403,12 @@ class GuiCompositionRoot:
             self._download_execution_manager,
             request.request_id,
         )
+        sandbox_execution = _run_sandbox_smoke_execution(
+            self._download_execution_manager,
+            request.request_id,
+            self._download_smoke_sandbox_root,
+            execution_plan,
+        )
         return build_submit_result_view(
             request,
             preflight,
@@ -393,6 +419,16 @@ class GuiCompositionRoot:
             execution_plan_phase=execution_plan.phase,
             execution_plan_ready=execution_plan.ready,
             execution_plan_blocked=execution_plan.blocked,
+            sandbox_execution_status=sandbox_execution.status,
+            sandbox_execution_completed=sandbox_execution.completed,
+            sandbox_execution_message=sandbox_execution.message,
+            sandbox_root=sandbox_execution.sandbox_root,
+            sandbox_csv_paths=sandbox_execution.csv_paths,
+            sandbox_metadata_paths=sandbox_execution.metadata_paths,
+            sandbox_bars_written=sandbox_execution.bars_written,
+            sandbox_first_timestamp_ms=sandbox_execution.first_timestamp_ms,
+            sandbox_last_timestamp_ms=sandbox_execution.last_timestamp_ms,
+            sandbox_timeframes_completed=sandbox_execution.timeframes_completed,
         )
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
@@ -595,6 +631,109 @@ def _classify_execution_plan(
         phase,
         ready=phase == "ready",
         blocked=phase == "blocked",
+    )
+
+
+def _run_sandbox_smoke_execution(
+    download_execution_manager: object,
+    request_id: str,
+    sandbox_root: Path | None,
+    execution_plan: _ExecutionPlanSubmitState,
+) -> _SandboxExecutionSubmitState:
+    if sandbox_root is None:
+        return _SandboxExecutionSubmitState(
+            None,
+            False,
+            "Sandbox execution root is not configured.",
+        )
+    if not execution_plan.ready:
+        return _SandboxExecutionSubmitState(
+            "blocked",
+            False,
+            "Sandbox execution was not run because the execution plan is not ready.",
+            str(sandbox_root.resolve(strict=False)),
+        )
+
+    run_sandbox_smoke = getattr(download_execution_manager, "run_sandbox_smoke", None)
+    if not callable(run_sandbox_smoke):
+        return _SandboxExecutionSubmitState(
+            "unavailable",
+            False,
+            "Sandbox smoke execution is unavailable.",
+            str(sandbox_root.resolve(strict=False)),
+        )
+
+    try:
+        result = run_sandbox_smoke(
+            request_id,
+            sandbox_root=sandbox_root,
+        )
+    except Exception as error:
+        return _SandboxExecutionSubmitState(
+            "failed",
+            False,
+            f"Sandbox smoke execution failed: {type(error).__name__}: {error}",
+            str(sandbox_root.resolve(strict=False)),
+        )
+
+    storage_results = tuple(getattr(result, "storage_results", ()))
+    csv_paths = tuple(
+        str(sandbox_root / path)
+        for path in (
+            getattr(storage_result, "csv_path", "")
+            for storage_result in storage_results
+        )
+        if path
+    )
+    metadata_paths = tuple(
+        str(sandbox_root / path)
+        for path in (
+            getattr(storage_result, "metadata_path", "")
+            for storage_result in storage_results
+        )
+        if path
+    )
+    first_timestamps = tuple(
+        timestamp
+        for timestamp in (
+            getattr(storage_result, "first_timestamp_ms", None)
+            for storage_result in storage_results
+        )
+        if isinstance(timestamp, int)
+    )
+    last_timestamps = tuple(
+        timestamp
+        for timestamp in (
+            getattr(storage_result, "last_timestamp_ms", None)
+            for storage_result in storage_results
+        )
+        if isinstance(timestamp, int)
+    )
+    timeframes_completed = tuple(
+        timeframe
+        for timeframe in (
+            getattr(getattr(storage_result, "target", None), "timeframe", None)
+            for storage_result in storage_results
+        )
+        if isinstance(timeframe, str) and timeframe
+    )
+    status = getattr(getattr(result, "status", None), "value", None)
+    if not isinstance(status, str):
+        status = str(getattr(result, "status", "completed"))
+    return _SandboxExecutionSubmitState(
+        status,
+        status == "completed",
+        "Sandbox smoke execution completed.",
+        str(sandbox_root.resolve(strict=False)),
+        csv_paths,
+        metadata_paths,
+        sum(
+            getattr(storage_result, "bars_written", 0)
+            for storage_result in storage_results
+        ),
+        min(first_timestamps) if first_timestamps else None,
+        max(last_timestamps) if last_timestamps else None,
+        timeframes_completed,
     )
 
 

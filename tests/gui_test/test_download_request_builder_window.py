@@ -952,6 +952,51 @@ def test_start_valid_download_data_draft_calls_callback_once(
     _dispose(qapplication, window)
 
 
+def test_start_completed_sandbox_execution_updates_status_and_progress(
+    qapplication: QApplication,
+) -> None:
+    window = _builder(on_submit_intent=lambda draft: _submit_view_with_sandbox())
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    result = _render_start(window)
+    total = window.findChild(QProgressBar, "download_request_builder.progress.total")
+    one_minute = window.findChild(
+        QProgressBar,
+        "download_request_builder.progress.timeframe.1m",
+    )
+    messages = window.findChild(
+        QTextEdit,
+        "download_request_builder.progress.messages",
+    )
+
+    assert "Sandbox execution:" in result
+    assert "Status: completed" in result
+    assert "Bars written: 3" in result
+    assert "CSV path: C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv" in (
+        result
+    )
+    assert "Metadata path: C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json" in (
+        result
+    )
+    assert "First timestamp: 1700000000000" in result
+    assert "Last timestamp: 1700000120000" in result
+    assert "Sandbox root notice: output is confined to the configured sandbox root." in (
+        result
+    )
+    assert total is not None
+    assert total.value() == 100
+    assert one_minute is not None
+    assert one_minute.value() == 100
+    assert messages is not None
+    assert "Sandbox smoke execution completed." in messages.toPlainText()
+    assert "Bars written: 3" in messages.toPlainText()
+
+    _dispose(qapplication, window)
+
+
 def test_start_action_records_through_observer(qapplication: QApplication) -> None:
     observer = _RecordingActionObserver()
     window = _builder(action_observer=observer)
@@ -1255,6 +1300,25 @@ def _submit_view() -> SimpleNamespace:
         execution_plan_ready=True,
         execution_plan_blocked=False,
     )
+
+
+def _submit_view_with_sandbox() -> SimpleNamespace:
+    view = _submit_view()
+    view.sandbox_execution_status = "completed"
+    view.sandbox_execution_completed = True
+    view.sandbox_execution_message = "Sandbox smoke execution completed."
+    view.sandbox_root = "C:/tmp/sandbox"
+    view.sandbox_csv_paths = (
+        "C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv",
+    )
+    view.sandbox_metadata_paths = (
+        "C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json",
+    )
+    view.sandbox_bars_written = 3
+    view.sandbox_first_timestamp_ms = 1_700_000_000_000
+    view.sandbox_last_timestamp_ms = 1_700_000_120_000
+    view.sandbox_timeframes_completed = ("1m",)
+    return view
 
 
 def _dispose(qapplication: QApplication, *widgets) -> None:

@@ -70,6 +70,16 @@ class DownloadSubmitResultView:
     execution_plan_phase: str | None = None
     execution_plan_ready: bool = False
     execution_plan_blocked: bool = False
+    sandbox_execution_status: str | None = None
+    sandbox_execution_completed: bool = False
+    sandbox_execution_message: str = "Sandbox execution was not run."
+    sandbox_root: str | None = None
+    sandbox_csv_paths: tuple[str, ...] = ()
+    sandbox_metadata_paths: tuple[str, ...] = ()
+    sandbox_bars_written: int = 0
+    sandbox_first_timestamp_ms: int | None = None
+    sandbox_last_timestamp_ms: int | None = None
+    sandbox_timeframes_completed: tuple[str, ...] = ()
 
 
 class DownloadRequestDraftLike(Protocol):
@@ -273,6 +283,16 @@ def build_submit_result_view(
     execution_plan_phase: str | None = None,
     execution_plan_ready: bool = False,
     execution_plan_blocked: bool = False,
+    sandbox_execution_status: str | None = None,
+    sandbox_execution_completed: bool = False,
+    sandbox_execution_message: str = "Sandbox execution was not run.",
+    sandbox_root: str | None = None,
+    sandbox_csv_paths: tuple[str, ...] = (),
+    sandbox_metadata_paths: tuple[str, ...] = (),
+    sandbox_bars_written: int = 0,
+    sandbox_first_timestamp_ms: int | None = None,
+    sandbox_last_timestamp_ms: int | None = None,
+    sandbox_timeframes_completed: tuple[str, ...] = (),
 ) -> DownloadSubmitResultView:
     """Convert a Core submit result into a GUI-safe display view."""
 
@@ -302,6 +322,16 @@ def build_submit_result_view(
         execution_plan_phase=execution_plan_phase,
         execution_plan_ready=execution_plan_ready,
         execution_plan_blocked=execution_plan_blocked,
+        sandbox_execution_status=sandbox_execution_status,
+        sandbox_execution_completed=sandbox_execution_completed,
+        sandbox_execution_message=sandbox_execution_message,
+        sandbox_root=sandbox_root,
+        sandbox_csv_paths=tuple(sandbox_csv_paths),
+        sandbox_metadata_paths=tuple(sandbox_metadata_paths),
+        sandbox_bars_written=sandbox_bars_written,
+        sandbox_first_timestamp_ms=sandbox_first_timestamp_ms,
+        sandbox_last_timestamp_ms=sandbox_last_timestamp_ms,
+        sandbox_timeframes_completed=tuple(sandbox_timeframes_completed),
     )
 
 
