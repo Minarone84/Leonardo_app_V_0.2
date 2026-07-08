@@ -230,6 +230,20 @@ TRACKED_GUI_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         is_placeholder=True,
     ),
     ActionDefinition(
+        action_id="data_manager.action.preview_dummy_artifact",
+        label="Preview Dummy Artifact",
+        kind=ActionKind.BUTTON,
+        window_id="data_manager_suite.window",
+        is_placeholder=True,
+    ),
+    ActionDefinition(
+        action_id="data_manager.action.preview_dummy_recipe",
+        label="Preview Dummy Recipe",
+        kind=ActionKind.BUTTON,
+        window_id="data_manager_suite.window",
+        is_placeholder=True,
+    ),
+    ActionDefinition(
         action_id="data_manager.action.plan_dummy_database",
         label="Plan Dummy Database",
         kind=ActionKind.BUTTON,
@@ -258,6 +272,13 @@ TRACKED_GUI_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         is_placeholder=True,
     ),
     ActionDefinition(
+        action_id="analysis_suite.action.reset_dummy_plan",
+        label="Reset Dummy Plan",
+        kind=ActionKind.BUTTON,
+        window_id="analysis_suite.window",
+        is_placeholder=True,
+    ),
+    ActionDefinition(
         action_id="trading_suite.action.load_dummy_trading_state",
         label="Load Dummy Trading State",
         kind=ActionKind.BUTTON,
@@ -272,8 +293,8 @@ TRACKED_GUI_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         is_placeholder=True,
     ),
     ActionDefinition(
-        action_id="trading_suite.action.kill_switch_visual",
-        label="Kill Switch Visual",
+        action_id="trading_suite.action.kill_switch_placeholder",
+        label="Kill Switch Placeholder",
         kind=ActionKind.BUTTON,
         window_id="trading_suite.window",
         is_placeholder=True,

@@ -240,6 +240,7 @@ class GuiCompositionRoot:
             on_download_data_requested=download_data_requested,
             on_ohlcv_maintenance_requested=ohlcv_maintenance_requested,
             on_suite_shell_requested=suite_shell_requested,
+            on_close_requested=self._close_suite_shells,
         )
         main_window = window
         self._install_tracker(
@@ -273,7 +274,11 @@ class GuiCompositionRoot:
         if action_id == "main_window.open_research_suite":
             if self._research_suite_window is None:
                 profile = self._load_research_suite_profile()
-                self._research_suite_window = ResearchSuiteWindow(profile, parent=parent)
+                self._research_suite_window = ResearchSuiteWindow(
+                    profile,
+                    action_observer=self._action_observer,
+                    parent=parent,
+                )
                 self._install_tracker(
                     self._research_suite_window,
                     profile,
@@ -284,7 +289,11 @@ class GuiCompositionRoot:
         if action_id == "main_window.open_data_manager_suite":
             if self._data_manager_suite_window is None:
                 profile = self._load_data_manager_suite_profile()
-                self._data_manager_suite_window = DataManagerSuiteWindow(profile, parent=parent)
+                self._data_manager_suite_window = DataManagerSuiteWindow(
+                    profile,
+                    action_observer=self._action_observer,
+                    parent=parent,
+                )
                 self._install_tracker(
                     self._data_manager_suite_window,
                     profile,
@@ -295,7 +304,11 @@ class GuiCompositionRoot:
         if action_id == "main_window.open_analysis_suite":
             if self._analysis_suite_window is None:
                 profile = self._load_analysis_suite_profile()
-                self._analysis_suite_window = AnalysisSuiteWindow(profile, parent=parent)
+                self._analysis_suite_window = AnalysisSuiteWindow(
+                    profile,
+                    action_observer=self._action_observer,
+                    parent=parent,
+                )
                 self._install_tracker(
                     self._analysis_suite_window,
                     profile,
@@ -306,7 +319,11 @@ class GuiCompositionRoot:
         if action_id == "main_window.open_trading_suite":
             if self._trading_suite_window is None:
                 profile = self._load_trading_suite_profile()
-                self._trading_suite_window = TradingSuiteWindow(profile, parent=parent)
+                self._trading_suite_window = TradingSuiteWindow(
+                    profile,
+                    action_observer=self._action_observer,
+                    parent=parent,
+                )
                 self._install_tracker(
                     self._trading_suite_window,
                     profile,
@@ -315,6 +332,24 @@ class GuiCompositionRoot:
             self._show_window(self._trading_suite_window)
             return "Trading Suite shell opened."
         raise ValueError(f"Unsupported suite shell action ID: {action_id}")
+
+    def _close_suite_shells(self) -> None:
+        for window_id, attr_name in (
+            ("research_suite.window", "_research_suite_window"),
+            ("data_manager_suite.window", "_data_manager_suite_window"),
+            ("analysis_suite.window", "_analysis_suite_window"),
+            ("trading_suite.window", "_trading_suite_window"),
+        ):
+            window = getattr(self, attr_name)
+            if window is None:
+                continue
+            tracker = self._trackers.get(window_id)
+            if tracker is not None:
+                tracker.mark_close_requested()
+            window.close()
+            if tracker is not None:
+                tracker.mark_closed()
+            setattr(self, attr_name, None)
 
     def _show_window(self, window: object) -> None:
         show = getattr(window, "show")

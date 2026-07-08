@@ -69,6 +69,14 @@ action_id = "data_manager.action.preview_dummy_dataset"
 label = "Preview Dummy Dataset"
 
 [[actions]]
+action_id = "data_manager.action.preview_dummy_artifact"
+label = "Preview Dummy Artifact"
+
+[[actions]]
+action_id = "data_manager.action.preview_dummy_recipe"
+label = "Preview Dummy Recipe"
+
+[[actions]]
 action_id = "data_manager.action.plan_dummy_database"
 label = "Plan Dummy Database"
 [[widgets]]
@@ -93,6 +101,18 @@ widget_type = "button"
 widget_id = "data_manager.button.preview_dummy_dataset"
 region_id = "data_manager.toolbar"
 label = "Preview Dummy Dataset"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "data_manager.button.preview_dummy_artifact"
+region_id = "data_manager.toolbar"
+label = "Preview Dummy Artifact"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "data_manager.button.preview_dummy_recipe"
+region_id = "data_manager.toolbar"
+label = "Preview Dummy Recipe"
 widget_type = "button"
 
 [[widgets]]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.dummy_data import analysis_feature_rows, analysis_readiness_rows
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
@@ -60,12 +61,18 @@ class AnalysisSuiteWindow(QWidget):
         self,
         profile: EffectiveGuiMetadataProfile | None = None,
         *,
+        action_observer: GuiActionObserver | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._profile = profile if profile is not None else load_analysis_suite_profile()
         if self._profile.metadata_id != ANALYSIS_SUITE_METADATA_ID:
             raise ValueError("profile must describe analysis_suite.window")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
+        self._action_observer = action_observer
         self._buttons: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
         self._status_label: QLabel | None = None
@@ -198,21 +205,30 @@ class AnalysisSuiteWindow(QWidget):
             object_type="layout",
             parent_object_id="analysis_suite.toolbar.main",
         )
-        for button_id, label, action in (
+        for button_id, label, action_id, action in (
             (
                 "analysis_suite.button.load_dummy_state",
                 "Load Dummy State",
+                "analysis_suite.action.load_dummy_state",
                 self.load_dummy_analysis_state,
             ),
             (
                 "analysis_suite.button.preview_target_plan",
                 "Preview Target Plan",
+                "analysis_suite.action.preview_target_plan",
                 partial(self._local_action, "analysis_suite.action.preview_target_plan"),
             ),
             (
                 "analysis_suite.button.preview_diagnostics",
                 "Preview Diagnostics",
+                "analysis_suite.action.preview_diagnostics",
                 partial(self._local_action, "analysis_suite.action.preview_diagnostics"),
+            ),
+            (
+                "analysis_suite.button.reset_dummy_plan",
+                "Reset Dummy Plan",
+                "analysis_suite.action.reset_dummy_plan",
+                self.reset_dummy_plan,
             ),
         ):
             button = QPushButton(label, toolbar)
@@ -222,10 +238,10 @@ class AnalysisSuiteWindow(QWidget):
                 object_type="button",
                 display_label=label,
                 parent_object_id="analysis_suite.toolbar.main",
-                action_id=button_id.replace(".button.", ".action."),
+                action_id=action_id,
                 tooltip="GUI shell action only. No analysis engine.",
             )
-            button.clicked.connect(action)
+            button.clicked.connect(partial(self._handle_shell_action, action_id, action))
             self._buttons[button_id] = button
             layout.addWidget(button)
         layout.addStretch(1)
@@ -358,9 +374,38 @@ class AnalysisSuiteWindow(QWidget):
         layout.addWidget(log)
         return panel
 
+    def reset_dummy_plan(self) -> None:
+        """Reset local Analysis Suite dummy plan display state."""
+
+        self._tables["analysis_suite.table.feature_plan_dummy"].setRowCount(0)
+        if self._report_area is not None:
+            self._report_area.setPlainText(
+                "DUMMY analysis plan reset. No analysis engine ran."
+            )
+        self._set_status("DUMMY analysis plan reset: shell remains inert.")
+        self._append_log("Reset dummy Analysis Suite plan display.")
+
     def _local_action(self, action_id: str) -> None:
         self._set_status(f"{action_id} is GUI shell-only dummy behavior.")
         self._append_log(f"{action_id}: no Analysis Suite engine ran.")
+
+    def _handle_shell_action(
+        self,
+        action_id: str,
+        handler: Callable[[], None],
+    ) -> None:
+        if not self._record_action(action_id):
+            return
+        handler()
+
+    def _record_action(self, action_id: str) -> bool:
+        if self._action_observer is None:
+            return True
+        decision = self._action_observer.record_action(
+            action_id,
+            window_id=ANALYSIS_SUITE_METADATA_ID,
+        )
+        return decision.allowed
 
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:

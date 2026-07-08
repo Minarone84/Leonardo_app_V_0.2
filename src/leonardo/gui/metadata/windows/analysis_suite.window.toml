@@ -75,6 +75,10 @@ label = "Preview Target Plan"
 [[actions]]
 action_id = "analysis_suite.action.preview_diagnostics"
 label = "Preview Diagnostics"
+
+[[actions]]
+action_id = "analysis_suite.action.reset_dummy_plan"
+label = "Reset Dummy Plan"
 [[widgets]]
 widget_id = "analysis_suite.panel.header"
 region_id = "analysis_suite.header"
@@ -103,6 +107,12 @@ widget_type = "button"
 widget_id = "analysis_suite.button.preview_diagnostics"
 region_id = "analysis_suite.toolbar"
 label = "Preview Diagnostics"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "analysis_suite.button.reset_dummy_plan"
+region_id = "analysis_suite.toolbar"
+label = "Reset Dummy Plan"
 widget_type = "button"
 
 [[widgets]]

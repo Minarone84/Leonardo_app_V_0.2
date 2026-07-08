@@ -33,6 +33,8 @@ _NEW_SHELL_METADATA = {
         "target_suite_id": "data_manager_suite",
         "required_widgets": {
             "data_manager.button.load_dummy_catalogs",
+            "data_manager.button.preview_dummy_artifact",
+            "data_manager.button.preview_dummy_recipe",
             "data_manager.table.dataset_catalog_dummy",
             "data_manager.table.artifact_catalog_dummy",
             "data_manager.table.recipe_catalog_dummy",
@@ -41,6 +43,8 @@ _NEW_SHELL_METADATA = {
         "required_actions": {
             "data_manager.action.load_dummy_catalogs",
             "data_manager.action.preview_dummy_dataset",
+            "data_manager.action.preview_dummy_artifact",
+            "data_manager.action.preview_dummy_recipe",
             "data_manager.action.plan_dummy_database",
         },
     },
@@ -50,6 +54,7 @@ _NEW_SHELL_METADATA = {
         "target_suite_id": "analysis_suite",
         "required_widgets": {
             "analysis_suite.button.load_dummy_state",
+            "analysis_suite.button.reset_dummy_plan",
             "analysis_suite.table.readiness_dummy",
             "analysis_suite.table.feature_plan_dummy",
             "analysis_suite.text.diagnostics_report_dummy",
@@ -58,6 +63,7 @@ _NEW_SHELL_METADATA = {
             "analysis_suite.action.load_dummy_state",
             "analysis_suite.action.preview_target_plan",
             "analysis_suite.action.preview_diagnostics",
+            "analysis_suite.action.reset_dummy_plan",
         },
     },
     "trading_suite.window.toml": {
@@ -74,7 +80,7 @@ _NEW_SHELL_METADATA = {
         "required_actions": {
             "trading_suite.action.load_dummy_trading_state",
             "trading_suite.action.preview_paper_shell",
-            "trading_suite.action.kill_switch_visual",
+            "trading_suite.action.kill_switch_placeholder",
         },
     },
 }

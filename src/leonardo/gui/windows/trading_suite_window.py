@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.dummy_data import trading_account_rows, trading_position_rows
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
@@ -60,12 +61,18 @@ class TradingSuiteWindow(QWidget):
         self,
         profile: EffectiveGuiMetadataProfile | None = None,
         *,
+        action_observer: GuiActionObserver | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._profile = profile if profile is not None else load_trading_suite_profile()
         if self._profile.metadata_id != TRADING_SUITE_METADATA_ID:
             raise ValueError("profile must describe trading_suite.window")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
+        self._action_observer = action_observer
         self._buttons: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
         self._status_label: QLabel | None = None
@@ -195,14 +202,31 @@ class TradingSuiteWindow(QWidget):
             object_type="layout",
             parent_object_id="trading_suite.toolbar.main",
         )
-        for button_id, label, enabled in (
+        for button_id, label, action_id, handler, enabled in (
             (
                 "trading_suite.button.load_dummy_trading_state",
                 "Load Dummy Trading State",
+                "trading_suite.action.load_dummy_trading_state",
+                self.load_dummy_trading_state,
                 True,
             ),
-            ("trading_suite.button.preview_paper_shell", "Preview Paper Shell", True),
-            ("trading_suite.button.kill_switch_visual", "Kill Switch Visual", False),
+            (
+                "trading_suite.button.preview_paper_shell",
+                "Preview Paper Shell",
+                "trading_suite.action.preview_paper_shell",
+                partial(self._local_action, "trading_suite.action.preview_paper_shell"),
+                True,
+            ),
+            (
+                "trading_suite.button.kill_switch_visual",
+                "Kill Switch Placeholder",
+                "trading_suite.action.kill_switch_placeholder",
+                partial(
+                    self._local_action,
+                    "trading_suite.action.kill_switch_placeholder",
+                ),
+                True,
+            ),
         ):
             button = QPushButton(label, toolbar)
             apply_trace(
@@ -211,14 +235,11 @@ class TradingSuiteWindow(QWidget):
                 object_type="button",
                 display_label=label,
                 parent_object_id="trading_suite.toolbar.main",
-                action_id=button_id.replace(".button.", ".action."),
+                action_id=action_id,
                 tooltip="GUI-only dummy control; no broker or order route exists here.",
             )
             button.setEnabled(enabled)
-            if button_id == "trading_suite.button.load_dummy_trading_state":
-                button.clicked.connect(self.load_dummy_trading_state)
-            else:
-                button.clicked.connect(partial(self._local_action, button_id))
+            button.clicked.connect(partial(self._handle_shell_action, action_id, handler))
             self._buttons[button_id] = button
             layout.addWidget(button)
         layout.addStretch(1)
@@ -348,6 +369,24 @@ class TradingSuiteWindow(QWidget):
     def _local_action(self, action_id: str) -> None:
         self._set_status(f"{action_id} is GUI shell-only dummy behavior.")
         self._append_log(f"{action_id}: no broker, order, or trading behavior ran.")
+
+    def _handle_shell_action(
+        self,
+        action_id: str,
+        handler: Callable[[], None],
+    ) -> None:
+        if not self._record_action(action_id):
+            return
+        handler()
+
+    def _record_action(self, action_id: str) -> bool:
+        if self._action_observer is None:
+            return True
+        decision = self._action_observer.record_action(
+            action_id,
+            window_id=TRADING_SUITE_METADATA_ID,
+        )
+        return decision.allowed
 
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:

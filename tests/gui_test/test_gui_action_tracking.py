@@ -47,6 +47,30 @@ _WINDOW_SOURCES = (
     / "leonardo"
     / "gui"
     / "windows"
+    / "research_suite_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
+    / "data_manager_suite_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
+    / "analysis_suite_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
+    / "trading_suite_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
     / "historical_download_manager_window.py",
     _REPO_ROOT
     / "src"
@@ -98,6 +122,21 @@ def test_composition_registers_first_gui_action_definitions(
         "historical_download_manager.stop",
         "main_window.download_data",
         "main_window.ohlcv_maintenance",
+        "research_suite.action.load_dummy_workspace",
+        "research_suite.action.reset_dummy_workspace",
+        "research_suite.action.add_chart_placeholder",
+        "data_manager.action.load_dummy_catalogs",
+        "data_manager.action.preview_dummy_dataset",
+        "data_manager.action.preview_dummy_artifact",
+        "data_manager.action.preview_dummy_recipe",
+        "data_manager.action.plan_dummy_database",
+        "analysis_suite.action.load_dummy_state",
+        "analysis_suite.action.preview_target_plan",
+        "analysis_suite.action.preview_diagnostics",
+        "analysis_suite.action.reset_dummy_plan",
+        "trading_suite.action.load_dummy_trading_state",
+        "trading_suite.action.preview_paper_shell",
+        "trading_suite.action.kill_switch_placeholder",
         "main_window.open_analysis_suite",
         "main_window.open_data_manager_suite",
         "main_window.open_research_suite",
@@ -154,6 +193,27 @@ def test_composition_registers_first_gui_action_definitions(
     assert definitions["main_window.download_data"].kind is ActionKind.MENU
     assert definitions["main_window.ohlcv_maintenance"].kind is ActionKind.MENU
     assert definitions["main_window.open_trading_suite"].kind is ActionKind.BUTTON
+    for action_id, window_id in (
+        ("research_suite.action.load_dummy_workspace", "research_suite.window"),
+        ("research_suite.action.reset_dummy_workspace", "research_suite.window"),
+        ("research_suite.action.add_chart_placeholder", "research_suite.window"),
+        ("data_manager.action.load_dummy_catalogs", "data_manager_suite.window"),
+        ("data_manager.action.preview_dummy_dataset", "data_manager_suite.window"),
+        ("data_manager.action.preview_dummy_artifact", "data_manager_suite.window"),
+        ("data_manager.action.preview_dummy_recipe", "data_manager_suite.window"),
+        ("data_manager.action.plan_dummy_database", "data_manager_suite.window"),
+        ("analysis_suite.action.load_dummy_state", "analysis_suite.window"),
+        ("analysis_suite.action.preview_target_plan", "analysis_suite.window"),
+        ("analysis_suite.action.preview_diagnostics", "analysis_suite.window"),
+        ("analysis_suite.action.reset_dummy_plan", "analysis_suite.window"),
+        ("trading_suite.action.load_dummy_trading_state", "trading_suite.window"),
+        ("trading_suite.action.preview_paper_shell", "trading_suite.window"),
+        ("trading_suite.action.kill_switch_placeholder", "trading_suite.window"),
+    ):
+        assert definitions[action_id].required_permissions == ()
+        assert definitions[action_id].is_placeholder is True
+        assert definitions[action_id].kind is ActionKind.BUTTON
+        assert definitions[action_id].window_id == window_id
 
     _dispose(qapplication, window)
     app.shutdown()
@@ -286,6 +346,141 @@ def test_historical_download_manager_shell_buttons_remain_local_signals(
     ]
 
     _dispose(qapplication, window, shell)
+    app.shutdown()
+
+
+def test_suite_shell_internal_buttons_record_action_ids_not_button_ids(
+    qapplication: QApplication,
+) -> None:
+    app = LeonardoApp()
+    root = GuiCompositionRoot(app.context, track_windows=False)
+    window = root.create_main_window()
+
+    for action_id in (
+        "main_window.open_research_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_analysis_suite",
+        "main_window.open_trading_suite",
+    ):
+        window.placeholder_button_for_id(action_id).click()
+        qapplication.processEvents()
+
+    assert root.research_suite_window is not None
+    assert root.data_manager_suite_window is not None
+    assert root.analysis_suite_window is not None
+    assert root.trading_suite_window is not None
+
+    cases = (
+        (
+            root.research_suite_window,
+            "research_suite.window",
+            (
+                (
+                    "research_suite.button.load_dummy_workspace",
+                    "research_suite.action.load_dummy_workspace",
+                ),
+                (
+                    "research_suite.button.reset_dummy_workspace",
+                    "research_suite.action.reset_dummy_workspace",
+                ),
+                (
+                    "research_suite.button.add_chart_placeholder",
+                    "research_suite.action.add_chart_placeholder",
+                ),
+            ),
+        ),
+        (
+            root.data_manager_suite_window,
+            "data_manager_suite.window",
+            (
+                (
+                    "data_manager.button.load_dummy_catalogs",
+                    "data_manager.action.load_dummy_catalogs",
+                ),
+                (
+                    "data_manager.button.preview_dummy_dataset",
+                    "data_manager.action.preview_dummy_dataset",
+                ),
+                (
+                    "data_manager.button.preview_dummy_artifact",
+                    "data_manager.action.preview_dummy_artifact",
+                ),
+                (
+                    "data_manager.button.preview_dummy_recipe",
+                    "data_manager.action.preview_dummy_recipe",
+                ),
+                (
+                    "data_manager.button.plan_dummy_database",
+                    "data_manager.action.plan_dummy_database",
+                ),
+            ),
+        ),
+        (
+            root.analysis_suite_window,
+            "analysis_suite.window",
+            (
+                (
+                    "analysis_suite.button.load_dummy_state",
+                    "analysis_suite.action.load_dummy_state",
+                ),
+                (
+                    "analysis_suite.button.preview_target_plan",
+                    "analysis_suite.action.preview_target_plan",
+                ),
+                (
+                    "analysis_suite.button.preview_diagnostics",
+                    "analysis_suite.action.preview_diagnostics",
+                ),
+                (
+                    "analysis_suite.button.reset_dummy_plan",
+                    "analysis_suite.action.reset_dummy_plan",
+                ),
+            ),
+        ),
+        (
+            root.trading_suite_window,
+            "trading_suite.window",
+            (
+                (
+                    "trading_suite.button.load_dummy_trading_state",
+                    "trading_suite.action.load_dummy_trading_state",
+                ),
+                (
+                    "trading_suite.button.preview_paper_shell",
+                    "trading_suite.action.preview_paper_shell",
+                ),
+                (
+                    "trading_suite.button.kill_switch_visual",
+                    "trading_suite.action.kill_switch_placeholder",
+                ),
+            ),
+        ),
+    )
+
+    for shell, expected_window_id, button_action_pairs in cases:
+        for button_id, expected_action_id in button_action_pairs:
+            shell.button_for_id(button_id).click()
+            qapplication.processEvents()
+            record = _last_record(app, expected_action_id)
+
+            assert _recent_action_ids(app)[-1] == expected_action_id
+            assert record.window_id == expected_window_id
+            assert button_id not in _recent_action_ids(app)
+
+    assert not [
+        event
+        for event in app.audit_log.snapshot()
+        if event.event_type.startswith("download.")
+    ]
+
+    _dispose(
+        qapplication,
+        window,
+        root.research_suite_window,
+        root.data_manager_suite_window,
+        root.analysis_suite_window,
+        root.trading_suite_window,
+    )
     app.shutdown()
 
 

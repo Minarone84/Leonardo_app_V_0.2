@@ -218,6 +218,52 @@ def test_main_window_suite_actions_open_gui_only_dummy_shells(
     app.shutdown()
 
 
+def test_closing_main_window_releases_suite_shells_and_registry_state(
+    qapplication: QApplication,
+) -> None:
+    app = LeonardoApp()
+    root = GuiCompositionRoot(app.context)
+    window = root.create_main_window()
+
+    window.show()
+    for action_id in (
+        "main_window.open_research_suite",
+        "main_window.open_data_manager_suite",
+        "main_window.open_analysis_suite",
+        "main_window.open_trading_suite",
+    ):
+        window.action_for_id(action_id).trigger()
+        qapplication.processEvents()
+
+    suite_window_ids = (
+        "research_suite.window",
+        "data_manager_suite.window",
+        "analysis_suite.window",
+        "trading_suite.window",
+    )
+    assert set(suite_window_ids) <= set(_open_window_ids(app))
+    assert root.research_suite_window is not None
+    assert root.data_manager_suite_window is not None
+    assert root.analysis_suite_window is not None
+    assert root.trading_suite_window is not None
+
+    window.close()
+    qapplication.processEvents()
+
+    assert root.research_suite_window is None
+    assert root.data_manager_suite_window is None
+    assert root.analysis_suite_window is None
+    assert root.trading_suite_window is None
+    assert not set(suite_window_ids) & set(_open_window_ids(app))
+    for window_id in suite_window_ids:
+        tracker = root.tracker_for(window_id)
+        assert tracker is not None
+        assert tracker.is_open is False
+
+    _dispose(qapplication, window)
+    app.shutdown()
+
+
 def test_composition_can_disable_window_tracking(qapplication: QApplication) -> None:
     app = LeonardoApp()
     root = GuiCompositionRoot(app.context, track_windows=False)

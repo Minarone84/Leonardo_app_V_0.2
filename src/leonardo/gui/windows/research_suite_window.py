@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from leonardo.gui.dummy_data import (
     research_workspace_rows,
     research_workspace_status,
 )
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataResolver,
@@ -67,12 +68,18 @@ class ResearchSuiteWindow(QWidget):
         self,
         profile: EffectiveGuiMetadataProfile | None = None,
         *,
+        action_observer: GuiActionObserver | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._profile = profile if profile is not None else load_research_suite_profile()
         if self._profile.metadata_id != RESEARCH_SUITE_METADATA_ID:
             raise ValueError("profile must describe research_suite.window")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
+        self._action_observer = action_observer
         self._buttons: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
         self._status_label: QLabel | None = None
@@ -212,20 +219,23 @@ class ResearchSuiteWindow(QWidget):
             object_type="layout",
             parent_object_id="research_suite.toolbar.main",
         )
-        for button_id, label, action in (
+        for button_id, label, action_id, action in (
             (
                 "research_suite.button.load_dummy_workspace",
                 "Load Dummy Workspace",
+                "research_suite.action.load_dummy_workspace",
                 self.load_dummy_workspace,
             ),
             (
                 "research_suite.button.reset_dummy_workspace",
                 "Reset Dummy Workspace",
+                "research_suite.action.reset_dummy_workspace",
                 self.reset_dummy_workspace,
             ),
             (
                 "research_suite.button.add_chart_placeholder",
                 "Add Chart Placeholder",
+                "research_suite.action.add_chart_placeholder",
                 partial(self._local_action, "research_suite.action.add_chart_placeholder"),
             ),
         ):
@@ -236,10 +246,10 @@ class ResearchSuiteWindow(QWidget):
                 object_type="button",
                 display_label=label,
                 parent_object_id="research_suite.toolbar.main",
-                action_id=button_id.replace(".button.", ".action."),
+                action_id=action_id,
                 tooltip="GUI shell action only. No chart renderer or study calculation.",
             )
-            button.clicked.connect(action)
+            button.clicked.connect(partial(self._handle_shell_action, action_id, action))
             self._buttons[button_id] = button
             layout.addWidget(button)
         layout.addStretch(1)
@@ -409,6 +419,24 @@ class ResearchSuiteWindow(QWidget):
     def _local_action(self, action_id: str) -> None:
         self._set_status(f"{action_id} is GUI shell-only dummy behavior.")
         self._append_log(f"{action_id}: no chart logic executed.")
+
+    def _handle_shell_action(
+        self,
+        action_id: str,
+        handler: Callable[[], None],
+    ) -> None:
+        if not self._record_action(action_id):
+            return
+        handler()
+
+    def _record_action(self, action_id: str) -> bool:
+        if self._action_observer is None:
+            return True
+        decision = self._action_observer.record_action(
+            action_id,
+            window_id=RESEARCH_SUITE_METADATA_ID,
+        )
+        return decision.allowed
 
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:

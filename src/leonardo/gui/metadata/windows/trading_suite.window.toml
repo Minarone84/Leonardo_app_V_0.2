@@ -75,8 +75,8 @@ action_id = "trading_suite.action.preview_paper_shell"
 label = "Preview Paper Shell"
 
 [[actions]]
-action_id = "trading_suite.action.kill_switch_visual"
-label = "Kill Switch Visual"
+action_id = "trading_suite.action.kill_switch_placeholder"
+label = "Kill Switch Placeholder"
 [[widgets]]
 widget_id = "trading_suite.panel.header"
 region_id = "trading_suite.header"
@@ -104,7 +104,7 @@ widget_type = "button"
 [[widgets]]
 widget_id = "trading_suite.button.kill_switch_visual"
 region_id = "trading_suite.toolbar"
-label = "Kill Switch Visual"
+label = "Kill Switch Placeholder"
 widget_type = "button"
 
 [[widgets]]

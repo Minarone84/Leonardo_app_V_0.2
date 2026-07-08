@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from leonardo.gui.dummy_data import (
     data_manager_dataset_rows,
     data_manager_recipe_rows,
 )
+from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataResolver,
@@ -66,12 +67,18 @@ class DataManagerSuiteWindow(QWidget):
         self,
         profile: EffectiveGuiMetadataProfile | None = None,
         *,
+        action_observer: GuiActionObserver | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._profile = profile if profile is not None else load_data_manager_suite_profile()
         if self._profile.metadata_id != DATA_MANAGER_SUITE_METADATA_ID:
             raise ValueError("profile must describe data_manager_suite.window")
+        if action_observer is not None and not callable(
+            getattr(action_observer, "record_action", None)
+        ):
+            raise TypeError("action_observer must expose callable record_action")
+        self._action_observer = action_observer
         self._buttons: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
         self._status_label: QLabel | None = None
@@ -206,20 +213,35 @@ class DataManagerSuiteWindow(QWidget):
             object_type="layout",
             parent_object_id="data_manager.toolbar.main",
         )
-        for button_id, label, action in (
+        for button_id, label, action_id, action in (
             (
                 "data_manager.button.load_dummy_catalogs",
                 "Load Dummy Catalogs",
+                "data_manager.action.load_dummy_catalogs",
                 self.load_dummy_catalogs,
             ),
             (
                 "data_manager.button.preview_dummy_dataset",
                 "Preview Dummy Dataset",
+                "data_manager.action.preview_dummy_dataset",
                 partial(self._local_action, "data_manager.action.preview_dummy_dataset"),
+            ),
+            (
+                "data_manager.button.preview_dummy_artifact",
+                "Preview Dummy Artifact",
+                "data_manager.action.preview_dummy_artifact",
+                partial(self._local_action, "data_manager.action.preview_dummy_artifact"),
+            ),
+            (
+                "data_manager.button.preview_dummy_recipe",
+                "Preview Dummy Recipe",
+                "data_manager.action.preview_dummy_recipe",
+                partial(self._local_action, "data_manager.action.preview_dummy_recipe"),
             ),
             (
                 "data_manager.button.plan_dummy_database",
                 "Plan Dummy Database",
+                "data_manager.action.plan_dummy_database",
                 partial(self._local_action, "data_manager.action.plan_dummy_database"),
             ),
         ):
@@ -230,10 +252,10 @@ class DataManagerSuiteWindow(QWidget):
                 object_type="button",
                 display_label=label,
                 parent_object_id="data_manager.toolbar.main",
-                action_id=button_id.replace(".button.", ".action."),
+                action_id=action_id,
                 tooltip="GUI shell action only. No storage or materialization.",
             )
-            button.clicked.connect(action)
+            button.clicked.connect(partial(self._handle_shell_action, action_id, action))
             self._buttons[button_id] = button
             layout.addWidget(button)
         layout.addStretch(1)
@@ -378,6 +400,24 @@ class DataManagerSuiteWindow(QWidget):
     def _local_action(self, action_id: str) -> None:
         self._set_status(f"{action_id} is GUI shell-only dummy behavior.")
         self._append_log(f"{action_id}: no Data Manager backend ran.")
+
+    def _handle_shell_action(
+        self,
+        action_id: str,
+        handler: Callable[[], None],
+    ) -> None:
+        if not self._record_action(action_id):
+            return
+        handler()
+
+    def _record_action(self, action_id: str) -> bool:
+        if self._action_observer is None:
+            return True
+        decision = self._action_observer.record_action(
+            action_id,
+            window_id=DATA_MANAGER_SUITE_METADATA_ID,
+        )
+        return decision.allowed
 
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:

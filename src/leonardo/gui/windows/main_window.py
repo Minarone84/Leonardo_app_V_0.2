@@ -41,6 +41,7 @@ RuntimeSnapshotProvider = Callable[[], object]
 SettingsInspectorFactory = Callable[[], QWidget]
 ShellActionIntentCallback = Callable[[str], str | None]
 DownloadActionIntentCallback = ShellActionIntentCallback
+MainWindowCloseCallback = Callable[[], None]
 _DOWNLOAD_SHELL_ACTION_IDS = frozenset(
     (
         "main_window.download_data",
@@ -102,6 +103,7 @@ class LeonardoMainWindow(QMainWindow):
         on_download_data_requested: DownloadActionIntentCallback | None = None,
         on_ohlcv_maintenance_requested: DownloadActionIntentCallback | None = None,
         on_suite_shell_requested: ShellActionIntentCallback | None = None,
+        on_close_requested: MainWindowCloseCallback | None = None,
         username: str = "admin-dev",
         version_label: str = "v0.2",
     ) -> None:
@@ -133,6 +135,8 @@ class LeonardoMainWindow(QMainWindow):
             raise TypeError("on_ohlcv_maintenance_requested must be callable")
         if on_suite_shell_requested is not None and not callable(on_suite_shell_requested):
             raise TypeError("on_suite_shell_requested must be callable")
+        if on_close_requested is not None and not callable(on_close_requested):
+            raise TypeError("on_close_requested must be callable")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
         self._menus: dict[str, QMenu] = {}
@@ -147,6 +151,7 @@ class LeonardoMainWindow(QMainWindow):
         self._on_download_data_requested = on_download_data_requested
         self._on_ohlcv_maintenance_requested = on_ohlcv_maintenance_requested
         self._on_suite_shell_requested = on_suite_shell_requested
+        self._on_close_requested = on_close_requested
         self._username = _string_or_fallback(username, "admin-dev")
         self._version_label = _string_or_fallback(version_label, "v0.2")
         self._central_message_label: QLabel | None = None
@@ -240,6 +245,8 @@ class LeonardoMainWindow(QMainWindow):
         """Record that the shell close path stayed local."""
 
         self.close_requested_locally = True
+        if self._on_close_requested is not None:
+            self._on_close_requested()
         if self._runtime_manager_window is not None:
             self._runtime_manager_window.close()
         if self._settings_inspector_window is not None:
