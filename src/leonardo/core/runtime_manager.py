@@ -9,11 +9,6 @@ import re
 
 from leonardo.contracts.audit import AuditEvent
 from leonardo.contracts.connections import ConnectionLifecycleStatus
-from leonardo.contracts.download_execution import (
-    DownloadExecutionPhase,
-    is_running_execution_phase,
-    is_terminal_execution_phase,
-)
 from leonardo.contracts.inspection import (
     AuditEventPreview,
     AuditSinkFailurePreview,
@@ -42,8 +37,6 @@ from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.audit_log import AuditLog, AuditSinkFailure
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.contract_registry import ContractRegistry
-from leonardo.core.download_execution_manager import DownloadExecutionManager
-from leonardo.core.download_manager import DownloadManager
 from leonardo.core.operation_registry import OperationRegistry
 from leonardo.core.process_manager import ProcessManager
 from leonardo.core.service_registry import ServiceRegistry
@@ -92,8 +85,6 @@ class RuntimeManagerBackend:
         operation_registry: OperationRegistry,
         audit_log: AuditLog,
         contract_registry: ContractRegistry,
-        download_manager: DownloadManager | None = None,
-        download_execution_manager: DownloadExecutionManager | None = None,
         object_map_snapshot_provider: Callable[[], ObjectMapSnapshot] | None = None,
         provider_runtime_summary_provider: Callable[
             [],
@@ -134,18 +125,6 @@ class RuntimeManagerBackend:
             raise TypeError("audit_log must be an AuditLog")
         if not isinstance(contract_registry, ContractRegistry):
             raise TypeError("contract_registry must be a ContractRegistry")
-        if download_manager is not None and not isinstance(
-            download_manager,
-            DownloadManager,
-        ):
-            raise TypeError("download_manager must be a DownloadManager or None")
-        if download_execution_manager is not None and not isinstance(
-            download_execution_manager,
-            DownloadExecutionManager,
-        ):
-            raise TypeError(
-                "download_execution_manager must be a DownloadExecutionManager or None"
-            )
         if recent_audit_limit < 1:
             raise ValueError("recent_audit_limit must be greater than zero")
         if object_map_snapshot_provider is not None and not callable(
@@ -184,8 +163,6 @@ class RuntimeManagerBackend:
         self._operation_registry = operation_registry
         self._audit_log = audit_log
         self._contract_registry = contract_registry
-        self._download_manager = download_manager
-        self._download_execution_manager = download_execution_manager
         self._object_map_snapshot_provider = object_map_snapshot_provider
         self._provider_runtime_summary_provider = provider_runtime_summary_provider
         self._suite_runtime_summary_provider = suite_runtime_summary_provider
@@ -578,144 +555,50 @@ class RuntimeManagerBackend:
         )
 
     def _downloads_summary(self) -> RuntimeSectionSummary:
-        if self._download_manager is None:
-            return RuntimeSectionSummary(
-                section_id="downloads",
-                status=RuntimeSectionStatus.OK,
-                count=0,
-                message="Download Manager unavailable",
-                metadata={
-                    "available": False,
-                    "total_requests": 0,
-                    "total_items": 0,
-                    "requested_count": 0,
-                    "validated_count": 0,
-                    "queued_count": 0,
-                    "running_count": 0,
-                    "completed_count": 0,
-                    "failed_count": 0,
-                    "cancelled_count": 0,
-                    "skipped_count": 0,
-                    "partially_completed_count": 0,
-                    "preflight_failed_count": 0,
-                    "websocket_required_count": 0,
-                    "connection_blocked_count": 0,
-                    "active_request_ids": (),
-                    "queued_request_ids": (),
-                    "failed_request_ids": (),
-                    "active_item_ids": (),
-                    "failed_item_ids": (),
-                },
-            )
-
-        summary = self._download_manager.get_summary()
-        status = (
-            RuntimeSectionStatus.DEGRADED
-            if (
-                summary.failed_count
-                or summary.preflight_failed_count
-                or summary.connection_blocked_count
-            )
-            else RuntimeSectionStatus.OK
-        )
         return RuntimeSectionSummary(
             section_id="downloads",
-            status=status,
-            count=summary.total_requests,
-            message=_download_summary_message(
-                summary.total_requests,
-                summary.total_items,
-            ),
+            status=RuntimeSectionStatus.OK,
+            count=0,
+            message="Download Manager unavailable",
             metadata={
-                "available": True,
-                "total_requests": summary.total_requests,
-                "total_items": summary.total_items,
-                "requested_count": summary.requested_count,
-                "validated_count": summary.validated_count,
-                "queued_count": summary.queued_count,
-                "running_count": summary.running_count,
-                "completed_count": summary.completed_count,
-                "failed_count": summary.failed_count,
-                "cancelled_count": summary.cancelled_count,
-                "skipped_count": summary.skipped_count,
-                "partially_completed_count": summary.partially_completed_count,
-                "preflight_failed_count": summary.preflight_failed_count,
-                "websocket_required_count": summary.websocket_required_count,
-                "connection_blocked_count": summary.connection_blocked_count,
-                "active_request_ids": summary.active_request_ids,
-                "queued_request_ids": summary.queued_request_ids,
-                "failed_request_ids": summary.failed_request_ids,
-                "active_item_ids": summary.active_item_ids,
-                "failed_item_ids": summary.failed_item_ids,
+                "available": False,
+                "total_requests": 0,
+                "total_items": 0,
+                "requested_count": 0,
+                "validated_count": 0,
+                "queued_count": 0,
+                "running_count": 0,
+                "completed_count": 0,
+                "failed_count": 0,
+                "cancelled_count": 0,
+                "skipped_count": 0,
+                "partially_completed_count": 0,
+                "preflight_failed_count": 0,
+                "websocket_required_count": 0,
+                "connection_blocked_count": 0,
+                "active_request_ids": (),
+                "queued_request_ids": (),
+                "failed_request_ids": (),
+                "active_item_ids": (),
+                "failed_item_ids": (),
             },
         )
 
     def _download_execution_summary(self) -> RuntimeSectionSummary:
-        if self._download_execution_manager is None:
-            return RuntimeSectionSummary(
-                section_id="download_execution",
-                status=RuntimeSectionStatus.OK,
-                count=0,
-                message="Download Execution Manager unavailable",
-                metadata={
-                    "available": False,
-                    "total_plans": 0,
-                    "active_plan_ids": (),
-                    "failed_plan_ids": (),
-                    "completed_plan_ids": (),
-                    "running_plan_ids": (),
-                    "blocked_plan_ids": (),
-                    "plan_rows": (),
-                },
-            )
-
-        snapshots = self._download_execution_manager.list_snapshots()
-        rows = tuple(_download_execution_plan_row(snapshot) for snapshot in snapshots)
-        failed_plan_ids = tuple(
-            row["plan_id"]
-            for row in rows
-            if row["phase"] == DownloadExecutionPhase.FAILED.value
-        )
-        completed_plan_ids = tuple(
-            row["plan_id"]
-            for row in rows
-            if row["phase"] == DownloadExecutionPhase.COMPLETED.value
-        )
-        running_plan_ids = tuple(
-            row["plan_id"]
-            for row in rows
-            if is_running_execution_phase(row["phase"])
-        )
-        blocked_plan_ids = tuple(
-            row["plan_id"]
-            for row in rows
-            if row["phase"] == DownloadExecutionPhase.BLOCKED.value
-        )
-        active_plan_ids = tuple(
-            row["plan_id"]
-            for row in rows
-            if not is_terminal_execution_phase(row["phase"])
-        )
-        error_count = sum(int(row["error_count"]) for row in rows)
-        status = (
-            RuntimeSectionStatus.DEGRADED
-            if failed_plan_ids or blocked_plan_ids or error_count
-            else RuntimeSectionStatus.OK
-        )
         return RuntimeSectionSummary(
             section_id="download_execution",
-            status=status,
-            count=len(snapshots),
-            message=_download_execution_summary_message(len(snapshots)),
+            status=RuntimeSectionStatus.OK,
+            count=0,
+            message="Download Execution Manager unavailable",
             metadata={
-                "available": True,
-                "total_plans": len(snapshots),
-                "active_plan_ids": active_plan_ids,
-                "failed_plan_ids": failed_plan_ids,
-                "completed_plan_ids": completed_plan_ids,
-                "running_plan_ids": running_plan_ids,
-                "blocked_plan_ids": blocked_plan_ids,
-                "plan_rows": rows,
+                "available": False,
+                "total_plans": 0,
+                "active_plan_ids": (),
+                "failed_plan_ids": (),
+                "completed_plan_ids": (),
+                "running_plan_ids": (),
+                "blocked_plan_ids": (),
+                "plan_rows": (),
             },
         )
 
@@ -941,55 +824,6 @@ def _event_preview(event: AuditEvent) -> AuditEventPreview:
         task_id=event.task_id,
         correlation_id=event.correlation_id,
     )
-
-
-def _download_summary_message(total_requests: int, total_items: int) -> str:
-    request_label = "request" if total_requests == 1 else "requests"
-    item_label = "item" if total_items == 1 else "items"
-    return f"{total_requests} download {request_label}, {total_items} {item_label}"
-
-
-def _download_execution_summary_message(total_plans: int) -> str:
-    plan_label = "plan" if total_plans == 1 else "plans"
-    return f"{total_plans} download execution {plan_label}"
-
-
-def _download_execution_plan_row(snapshot: object) -> dict[str, object]:
-    plan = snapshot.plan
-    progress = snapshot.progress
-    estimate = snapshot.estimate
-    details = _download_execution_details(snapshot)
-    return {
-        "plan_id": plan.plan_id,
-        "request_id": plan.request_id,
-        "phase": plan.phase.value,
-        "operation_id": plan.operation_id,
-        "task_id": plan.task_id,
-        "item_count": len(plan.item_ids),
-        "preflight_layer_count": len(snapshot.preflight_layers),
-        "progress_percent": progress.percent if progress is not None else None,
-        "output_count": len(snapshot.outputs),
-        "error_count": len(snapshot.errors),
-        "details": details,
-        "estimated_items": estimate.estimated_items if estimate is not None else None,
-    }
-
-
-def _download_execution_details(snapshot: object) -> str:
-    plan = snapshot.plan
-    progress = snapshot.progress
-    details: list[str] = []
-    if plan.connection_refs:
-        details.append(f"connection_refs={', '.join(plan.connection_refs)}")
-    if plan.dataset_refs:
-        details.append(f"dataset_refs={', '.join(plan.dataset_refs)}")
-    if plan.adapter_ref:
-        details.append(f"adapter_ref={plan.adapter_ref}")
-    if plan.storage_policy_ref:
-        details.append(f"storage_policy_ref={plan.storage_policy_ref}")
-    if progress is not None and progress.message:
-        details.append(f"message={progress.message}")
-    return "; ".join(details)
 
 
 def _empty_object_map_summary() -> RuntimeSectionSummary:

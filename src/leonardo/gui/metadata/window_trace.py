@@ -42,7 +42,7 @@ _WINDOW_METADATA_DIR = Path(__file__).with_name("windows")
 _DEFAULT_WINDOW_METADATA_FILENAMES: tuple[str, ...] = (
     "main_window.window.toml",
     "runtime_manager.window.toml",
-    "download_request_builder.window.toml",
+    "historical_download_manager.window.toml",
     "dummy_metadata_test.window.toml",
 )
 _TRACE_CONTRACTS = (

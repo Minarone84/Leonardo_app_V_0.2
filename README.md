@@ -43,8 +43,8 @@ A legacy Leonardo capability is not current V2 behavior unless the V2 code imple
 | GUI Service | **Partially implemented** | GUI shell/metadata patterns exist. GUI is a shared presentation service, not a domain area. |
 | Connection Suite ownership model | **Partially implemented** | Download Manager ownership contracts now point to Connection Suite. Static Bybit exchange metadata and provider capability loading exist. |
 | Connection Download Manager GUI | **Shell-only** | Historical Download Manager, Confirm OHLCV Download, and OHLCV Download Task shells exist. Buttons/signals are local shell behavior only. |
-| Old inline `DownloadRequestBuilder` flow | **Pending sanitation** | Not the accepted final Download Manager UX. It must not be treated as future source of truth. |
-| Download execution/storage/provider implementation | **Pending sanitation** | Sandbox/fixture/live-opt-in work may exist, but the final Connection Suite execution architecture is not yet accepted. |
+| Old inline `DownloadRequestBuilder` flow | **Removed from active V2 code** | The retained builder route was decommissioned and must not be treated as future source of truth. |
+| Download execution/storage/provider implementation | **Future work** | The contaminated sandbox/provider/storage implementation was removed from active source pending a future Connection Suite execution rebuild. |
 | Bybit static exchange metadata | **Implemented** | Static exchange metadata belongs under the connection namespace and feeds provider capabilities. |
 | Research Suite | **Partially implemented** | Only the parts proven by current V2 code/tests are current implementation. Legacy Research features remain guidelines unless rebuilt. |
 | Data Manager Suite | **Partially implemented** | Only the parts proven by current V2 code/tests are current implementation. Legacy Data Manager workflows remain guidelines unless rebuilt. |
@@ -141,12 +141,12 @@ Implemented/partially implemented pieces include:
 - Download Manager ownership contracts pointing to Connection Suite;
 - shell-only Download Manager GUI windows targeting Connection Suite.
 
-Pending sanitation:
+Sanitized from active V2 source:
 
 - old inline `DownloadRequestBuilder` flow;
-- current download execution/storage/provider implementation;
-- any GUI composition path that performs workflow orchestration directly;
-- any Core manager importing concrete Download Data runtime implementation directly.
+- contaminated download execution/storage/provider implementation;
+- GUI composition path that performed workflow orchestration directly;
+- Core manager imports of concrete Download Data runtime implementation.
 
 Target responsibilities:
 
@@ -817,8 +817,8 @@ Improve with:
 Current accepted status:
 
 - Connection ownership contracts: partially implemented.
-- Old-style Download Manager GUI shells: shell-only.
-- Download Manager backend/execution path: pending sanitation.
+- Connection Download Manager GUI shells: shell-only.
+- Download Manager backend/execution path: removed from active source pending future Connection Suite rebuild.
 
 ### OHLCV Maintenance legacy target
 

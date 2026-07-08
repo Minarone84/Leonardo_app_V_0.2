@@ -8,17 +8,19 @@ integration, dependency changes, app entry points, or old-code import.
 
 ## Ownership Model
 
-Future real Download Data execution should use a separate Core
-`DownloadExecutionManager`.
+Future real Download Data execution should be owned by Connection Suite
+Download Manager services and coordinated through Core runtime primitives.
+Core must not own Download Manager domain behavior and must not import concrete
+provider, storage, or smoke execution implementations.
 
-`DownloadManager` remains the owner of stored request intent, structural
-preflight state, item read models, and aggregate Download Manager summaries. It
-must not own adapters, network calls, storage writing, task scheduling, process
-launching, or GUI behavior.
+Connection Suite Download Manager services remain the owner of stored request
+intent, structural preflight state, item read models, and aggregate Download
+Manager summaries. They must not own GUI behavior, and GUI must not own
+download planning, provider calls, or storage writes.
 
-The future execution manager should orchestrate existing owners:
+The future execution service should coordinate existing owners:
 
-- `DownloadManager` for stored request and item state.
+- Connection Suite Download Manager read models for request and item state.
 - `OperationRegistry` for semantic user-visible lifecycle.
 - `TaskManager` for async supervision.
 - `ConnectionRegistry` for provider or client readiness visibility.
@@ -184,7 +186,7 @@ The snapshot is immutable and does not execute work.
 
 This phase does not add:
 
-- `DownloadExecutionManager`;
+- future Connection Suite execution service;
 - adapter interfaces;
 - downloader execution;
 - storage writers;

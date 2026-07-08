@@ -58,13 +58,13 @@ during Main Window construction.
 
 ## Download Manager Launch Surfaces
 
-### Legacy retained path / pending sanitation
+### Shell-only accepted route
 
-The current composition route still opens the old inline
-`download_request_builder.window` from the Main Window Download Manager menu.
-This route is retained temporarily and is pending sanitation. It is not the
-accepted final Connection Download Manager UX and must not be used as the
-source-of-truth for future Download Manager GUI design.
+The current composition route opens the GUI-only
+`historical_download_manager.window` shell from the Main Window Download
+Manager menu. The old inline `download_request_builder.window` route has been
+removed from active V2 code and must not be used as source-of-truth for future
+Connection Download Manager GUI design.
 
 The Main Window remains a launch surface only. It does not own execution,
 storage, provider calls, or Download Manager domain behavior.
@@ -82,26 +82,10 @@ The new shell-only GUI windows are:
 - `ohlcv_download_task.window`.
 
 These windows are GUI presentation shells. GUI owns only shell display, local
-widgets, and local user-intent signals. Backend execution is not wired through
-these windows yet.
-
-In the retained legacy path, the Download Data builder owns Qt fields,
-selection recap display, Preview Preflight display, progress display, and final
-recap display. That retained path also contains composition wiring from GUI
-draft intent to Core Download Manager and Download Execution Manager services.
-This wiring is pending sanitation and is not the accepted final Connection
-Suite Download Manager architecture.
-
-Default Download Data execution is fixture-backed/offline and writes only under
-an explicit sandbox root. Sandbox storage-aware preflight detects `new_file`
-versus `update_existing`; if local sandbox OHLCV exists, the latest local
-timestamp becomes the update start point. Live Bybit public REST transport is
-opt-in only and is not used by default GUI execution.
-
-Sandbox output remains `accepted=false`, `loadable=false`, and
-`validated=false`. OHLCV Maintenance acceptance/loadability, Data Manager
-integration, production storage roots, cancellation, Runtime Manager controls,
-Object Map mutation, and AI helper behavior remain out of scope.
+widgets, and local user-intent signals. Backend execution, provider/API calls,
+storage writes, sandbox execution, Runtime Manager controls, Object Map
+mutation, Data Manager integration, and AI helper behavior are not wired
+through these windows.
 
 ## Persisted Overrides
 

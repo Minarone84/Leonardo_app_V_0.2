@@ -26,8 +26,6 @@ from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.core_runner import CoreRunner
 from leonardo.core.core_runtime_bridge import CoreRuntimeBridge
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
-from leonardo.core.download_execution_manager import DownloadExecutionManager
-from leonardo.core.download_manager import DownloadManager
 from leonardo.core.error_router import ErrorRouter
 from leonardo.core.operation_registry import OperationRegistry
 from leonardo.core.process_manager import ProcessManager
@@ -61,8 +59,6 @@ class CoreContext:
     action_registry: ActionRegistry
     operation_registry: OperationRegistry
     download_capability_catalog: DownloadCapabilityCatalog
-    download_manager: DownloadManager
-    download_execution_manager: DownloadExecutionManager
     runtime_manager: RuntimeManagerBackend
 
 
@@ -114,12 +110,6 @@ class LeonardoApp:
         self.download_capability_catalog = DownloadCapabilityCatalog(
             load_default_exchange_capabilities()
         )
-        self.download_manager = DownloadManager(self.audit_log)
-        self.download_execution_manager = DownloadExecutionManager(
-            self.download_manager,
-            self.audit_log,
-            self.download_capability_catalog,
-        )
         self.runtime_manager = RuntimeManagerBackend(
             state_store=self.state_store,
             session_manager=self.session_manager,
@@ -132,8 +122,6 @@ class LeonardoApp:
             operation_registry=self.operation_registry,
             audit_log=self.audit_log,
             contract_registry=self.contract_registry,
-            download_manager=self.download_manager,
-            download_execution_manager=self.download_execution_manager,
         )
         self._context = CoreContext(
             config=self.config,
@@ -153,8 +141,6 @@ class LeonardoApp:
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
             download_capability_catalog=self.download_capability_catalog,
-            download_manager=self.download_manager,
-            download_execution_manager=self.download_execution_manager,
             runtime_manager=self.runtime_manager,
         )
 

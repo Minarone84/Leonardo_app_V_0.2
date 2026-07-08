@@ -107,9 +107,9 @@ shells only. They do not wire backend execution, provider/API calls, storage
 writes, Runtime Manager controls, Object Map mutation, or Data Manager
 integration.
 
-The old inline `download_request_builder.window` flow is a legacy retained path
-and is pending sanitation. It is not the accepted final Download Manager UX and
-must not be used as source-of-truth for future Connection Download Manager UI.
+The old inline `download_request_builder.window` flow has been removed from
+active V2 code. It is not the accepted final Download Manager UX and must not be
+used as source-of-truth for future Connection Download Manager UI.
 
 ## Main Window Shell Consumer
 
