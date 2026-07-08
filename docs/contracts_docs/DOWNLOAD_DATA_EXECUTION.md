@@ -5,41 +5,26 @@ contracts for future Download Data execution. The contracts describe execution
 commands, targets, provider page requests and normalized page results, storage
 write requests and results, progress events, final results, errors, and plans.
 
-The original execution-contract phase was contract-only. The current accepted
-Download Data slice now includes a sandboxed Bybit OHLCV smoke execution path
-that consumes these contracts without changing their ownership boundaries.
-Default execution is fixture-backed/offline and writes only under an explicit
-sandbox root.
+The original execution-contract phase was contract-only, and that remains the
+accepted status after Download Manager sanitation. The previous sandbox/fixture
+Bybit execution slice was removed from active source. These contracts are
+future boundary shapes only; they do not imply an active execution, provider,
+transport, or storage implementation.
 
-Live Bybit public REST transport exists but is opt-in only. It is not used by
-default tests or default GUI execution. It requires
-`LEONARDO_ALLOW_LIVE_BYBIT_SMOKE=1` or explicit `allow_live=True`, and it still
-writes only to sandbox output.
+## Current Execution Status
 
-## Current Sandbox Execution Semantics
+Current V2 behavior for this area is:
 
-The sandbox smoke path supports:
+- no active Download Data execution runtime;
+- no active fixture-backed Download Data execution path;
+- no active live Bybit transport;
+- no active isolated-output storage writer;
+- no production OHLCV storage writes from Download Data;
+- shell-only Connection Download Manager GUI surfaces.
 
-- Bybit spot OHLCV fixture-backed execution by default;
-- storage-aware preflight for `new_file` versus `update_existing`;
-- use of the latest local sandbox timestamp as the update start point;
-- fallback to `new_file` behavior when no local sandbox OHLCV exists;
-- canonical sandbox paths under
-  `historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/`;
-- merge and deduplicate by `timestamp_ms`, with incoming candles replacing
-  duplicate timestamps;
-- ascending CSV output;
-- metadata sidecar updates;
-- passive final recap display of mode, status, bars, timestamps, CSV path,
-  metadata path, accepted/loadable/validated flags, and sandbox-only notice.
-
-Sandbox output remains `partial=false`, `accepted=false`, `loadable=false`, and
-`validated=false`. OHLCV Maintenance and Data Manager acceptance/loadability
-remain outside this scope.
-
-Multi-timeframe sandbox execution is supported with separate per-timeframe
-output and progress. The current limitation is that one timeframe failure fails
-the sandbox execution rather than producing partial per-timeframe success.
+Future execution work must be scoped under Connection Suite ownership and must
+reintroduce provider, transport, storage, safety, Runtime Manager, and Object
+Map behavior only through explicit phases.
 
 ## Ownership Split
 
@@ -150,21 +135,21 @@ provider, adapter, writer, and handle.
 Progress and error messages are bounded. Messages containing sensitive transport
 or credential terms are redacted.
 
-## First Smoke Recommendation
+## Future Smoke Recommendation
 
-The first real smoke implementation remains separate from these contracts and
-has been implemented as a sandbox-only slice. Its accepted shape is:
+The first future smoke implementation remains separate from these contracts. Its
+recommended shape is:
 
 - use fixture-backed provider transport by default;
 - use explicit targets such as Bybit spot BTCUSDT 1m;
 - use a small bounded page limit;
-- write only under an explicit sandboxed output root;
+- write only under an explicit isolated output root;
 - support new-file and update-existing sandbox modes;
 - keep partial writes unaccepted, unloadable, and unvalidated;
 - recheck provider documentation immediately before any future production
   transport work.
 
-No production or user data path should be used for the first smoke.
+No production or user data path should be used for the first future smoke.
 
 ## Explicitly Out Of Scope
 

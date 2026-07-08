@@ -1,73 +1,35 @@
 # Download Data Runtime Summary
 
-This document records the first read-only Runtime Manager summary integration
-for Download Data runtime read models.
+Status: retired historical reference.
 
-Runtime Manager consumes optional injected `DownloadDataRuntimeSummary` values
-and exposes one compact `download_data_runtime` section. The provider is
-explicit injection only. If no provider is injected, the section remains an OK
-unavailable read model.
+This document records a removed Runtime Manager integration that previously
+described a first-class `download_data_runtime` summary section. That section is
+no longer active V2 behavior.
 
-The current Download Data workflow supports sandboxed Bybit OHLCV execution
-through the Download Manager area. Runtime Manager may display supplied read
-model counts for that workflow, but it does not own execution, storage,
-validation, or user actions.
+Runtime Manager now exposes generic runtime, provider, and suite inspection
+sections only. Core inspection contracts do not carry first-class
+`downloads_summary`, `download_execution_summary`, or
+`download_data_runtime_summary` fields. A future Connection Suite Download
+Manager may supply read-only status through generic suite or provider summary
+boundaries when that work is explicitly scoped.
 
-## Scope
+## Current Truth
 
-The summary reports compact counts for:
+- Old sandbox/fixture Download Data execution has been removed from active
+  source.
+- No active source executes downloads, calls Bybit, or writes Download Data
+  storage.
+- Connection Suite owns future Download Manager domain behavior.
+- GUI surfaces remain shell/display/local-intent only.
+- Runtime Manager remains read-only and generic.
 
-- workflows
-- selections
-- preflight recaps
-- progress recaps
-- completion recaps
-- output references
-- storage targets
-- partial persistence records
-- expected and completed steps
-- expected and downloaded bars
-- warnings, errors, unavailable summaries, and last activity
+## Historical Scope
 
-The section is read-only. It is display/query metadata, not a control surface.
+The retired summary described compact counts for workflows, selections,
+preflight recaps, progress recaps, completion recaps, output references, storage
+targets, partial persistence records, warnings, errors, unavailable summaries,
+and last activity.
 
-## Boundaries
-
-This Runtime Manager summary phase does not own Download Data execution,
-adapter calls, provider clients, network/API/websocket/subscription behavior,
-storage writes, cancellation behavior, Runtime Manager controls/actions, Object
-Map service changes, GUI behavior, Data Manager integration, ProviderRegistry
-discovery, app startup changes, old Leonardo code import, or AI helper
-behavior.
-
-Runtime Manager does not import Download Data Object Map helpers and does not
-modify those helpers in this phase.
-
-Core supervises runtime workflow state. Core does not own persisted OHLCV truth.
-Storage/Data owns persisted OHLCV truth. Provider/Exchange owns capability and
-API facts. GUI owns selection, display, and intent. Runtime Manager only reads
-summary values supplied by composition.
-
-Partial persistence remains diagnostic state. It does not imply accepted,
-loadable, validated, repaired, or clean data.
-
-Sandbox Download Data output follows the same rule. Downloaded sandbox files
-remain `accepted=false`, `loadable=false`, and `validated=false`; OHLCV
-Maintenance and Data Manager acceptance remain outside this scope.
-
-## Diagnostics
-
-Runtime Manager redacts and bounds diagnostics before exposing them in section
-metadata. Summary metadata must not contain credentials, tokens, secrets,
-passwords, API keys, authorization material, raw clients, sockets, payloads, raw
-responses, provider objects, adapters, storage writers, handles, GUI objects,
-Data Manager objects, or runtime task objects.
-
-## Validation
-
-The focused validation targets are:
-
-```text
-python -m pytest tests/contracts_test/test_runtime_inspection_contracts.py -q -p no:cacheprovider
-python -m pytest tests/core_test/test_runtime_manager_backend.py -q -p no:cacheprovider
-```
+Those shapes are historical references only. They are not current Runtime
+Manager snapshot fields and must not be treated as a Core-owned Download
+Manager contract.

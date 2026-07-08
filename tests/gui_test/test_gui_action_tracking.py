@@ -200,7 +200,9 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     root = GuiCompositionRoot(app.context, track_windows=False)
     window = root.create_main_window()
 
-    initial_runtime_downloads = app.runtime_manager.snapshot().downloads_summary
+    initial_section_ids = tuple(
+        section.section_id for section in app.runtime_manager.snapshot().sections
+    )
 
     window.action_for_id("main_window.download_data").trigger()
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
@@ -224,7 +226,9 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
         for event in app.audit_log.snapshot()
         if event.event_type == "gui.action.triggered"
     )
-    runtime_downloads = app.runtime_manager.snapshot().downloads_summary
+    runtime_section_ids = tuple(
+        section.section_id for section in app.runtime_manager.snapshot().sections
+    )
     download_events = tuple(
         event
         for event in app.audit_log.snapshot()
@@ -243,13 +247,10 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     assert window.settings_inspector_window is None
     assert root.historical_download_manager_window is not None
     assert root.historical_download_manager_window.isVisible() is True
-    assert initial_runtime_downloads.count == 0
-    assert initial_runtime_downloads.metadata["total_requests"] == 0
-    assert initial_runtime_downloads.metadata["available"] is False
-    assert runtime_downloads.count == 0
-    assert runtime_downloads.metadata["total_requests"] == 0
-    assert runtime_downloads.metadata["total_items"] == 0
-    assert runtime_downloads.metadata["available"] is False
+    assert "downloads" not in initial_section_ids
+    assert "download_execution" not in initial_section_ids
+    assert "download_data_runtime" not in initial_section_ids
+    assert runtime_section_ids == initial_section_ids
     assert download_events == ()
 
     _dispose(qapplication, window, root.historical_download_manager_window)

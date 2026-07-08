@@ -63,12 +63,13 @@ notes = [
 
 [metadata.documentation]
 docs_refs = [
+    "README.md",
     "docs/gui_docs/GUI_COMPOSITION.md",
+    "docs/gui_docs/GUI_METADATA_MANAGEMENT.md",
     "docs/contracts_docs/DOWNLOAD_DATA_BOUNDARY.md",
-    "docs/contracts_docs/DOWNLOAD_DATA_EXECUTION.md",
-    "docs/core_docs/DOWNLOAD_DATA_OBJECT_MAP_PATTERN.md",
-    "docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md",
-    "docs/core_docs/DOWNLOAD_DATA_USER_SMOKE_TEST.md",
+    "docs/contracts_docs/DOWNLOAD_EXECUTION_CONTRACTS.md",
+    "docs/contracts_docs/DOWNLOAD_PROVIDER_CAPABILITIES.md",
+    "docs/contracts_docs/BYBIT_EXCHANGE_METADATA.md",
 ]
 test_refs = [
     "tests/gui_test/test_main_window_metadata.py",

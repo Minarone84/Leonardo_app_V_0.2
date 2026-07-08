@@ -17,10 +17,10 @@ Suite, Data Manager Suite, Trading Suite, Connection Suite, and Analysis Suite.
 Download Manager is a Connection Suite module with
 `module_id = connection.download_manager` and
 `owner_domain = connection.download_manager`. Download Data may remain a
-workflow ID under that module. Its current accepted behavior is a sandboxed
-Bybit OHLCV smoke path with fixture-backed default execution and explicit
-sandbox output only. It may later hand accepted artifacts to Data Manager after
-that boundary is explicitly scoped.
+workflow ID under that module. Its current accepted behavior is shell-only:
+active source does not execute downloads, call Bybit, or write Download Data
+storage. It may later hand accepted artifacts to Data Manager after that
+boundary is explicitly scoped.
 
 Provider and exchange capability descriptors live under the Connection Suite
 boundary. Static capability facts do not create provider clients, sockets,

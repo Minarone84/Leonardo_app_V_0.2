@@ -179,15 +179,17 @@ provider services into suite services through an explicit boundary.
 
 ## Relationship To Download Data
 
-Download Data now has a sandboxed Bybit OHLCV execution path through the
-Download Manager area. It consumes capability-style facts and safe read models;
-it does not own provider sessions, raw clients, credentials, websocket
-subscriptions, reconnect behavior, or provider registries.
+Download Data execution is future work under Connection Suite ownership. The
+removed sandbox/fixture Bybit execution slice is not current active behavior.
 
-The current default Download Data execution path is fixture-backed/offline and
-writes only under an explicit sandbox root. Live Bybit public REST transport is
-opt-in only and remains sandbox-only. Provider/Connection boundaries remain the
-owners of provider capability and transport facts.
+Future Download Manager work may consume capability-style facts and safe read
+models, but it must not own provider sessions, raw clients, credentials,
+websocket subscriptions, reconnect behavior, or provider registries.
+
+Provider/Connection boundaries remain the owners of provider capability and
+transport facts. Static Bybit exchange metadata remains a safe capability input;
+it does not create provider clients, network calls, execution, or storage
+writes.
 
 ## Validation
 

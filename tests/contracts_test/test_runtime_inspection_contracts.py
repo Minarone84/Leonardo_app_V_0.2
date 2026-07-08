@@ -8,8 +8,6 @@ from leonardo.contracts.inspection import (
     AuditEventPreview,
     AuditSinkFailurePreview,
     ContractRegistrySummary,
-    DownloadDataRuntimeSummary,
-    DownloadDataRuntimeSummaryStatus,
     ProviderRuntimeSummary,
     ProviderRuntimeSummaryStatus,
     RuntimeHealthStatus,
@@ -329,154 +327,6 @@ def test_provider_runtime_summary_to_dict_has_json_compatible_nested_metadata() 
     json.dumps(serialized)
 
 
-def test_download_data_runtime_summary_is_frozen_and_serialization_friendly() -> None:
-    summary = DownloadDataRuntimeSummary(
-        workflow_id="download_data",
-        display_name="Download Data",
-        status="ok",
-        selection_count=1,
-        preflight_count=2,
-        ready_preflight_count=1,
-        blocked_preflight_count=1,
-        running_progress_count=1,
-        completed_progress_count=1,
-        completion_count=1,
-        partial_count=1,
-        failed_count=1,
-        cancelled_count=1,
-        output_ref_count=2,
-        storage_target_count=2,
-        partial_persistence_count=1,
-        expected_total_bars=100,
-        expected_total_steps=10,
-        completed_steps=5,
-        downloaded_bars=50,
-        warning_count=1,
-        error_count=1,
-        warnings=("partial data",),
-        errors=("one item failed",),
-        metadata={"counts": {"selected": 1}, "flags": [True, False]},
-        docs_refs=["docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md"],
-    )
-
-    assert summary.status is DownloadDataRuntimeSummaryStatus.OK
-    assert summary.warnings == ("partial data",)
-    assert summary.docs_refs == ("docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md",)
-    assert summary.metadata["counts"]["selected"] == 1  # type: ignore[index]
-    assert summary.metadata["flags"] == (True, False)
-    serialized = summary.to_dict()
-    assert serialized["status"] == "ok"
-    assert serialized["warnings"] == ["partial data"]
-    assert serialized["metadata"] == {
-        "counts": {"selected": 1},
-        "flags": [True, False],
-    }
-    json.dumps(serialized)
-    with pytest.raises(FrozenInstanceError):
-        summary.display_name = "changed"
-    with pytest.raises(TypeError):
-        summary.metadata["counts"]["selected"] = 2  # type: ignore[index]
-
-
-def test_download_data_runtime_summary_rejects_blank_required_fields() -> None:
-    with pytest.raises(ValueError, match="workflow_id"):
-        DownloadDataRuntimeSummary(
-            workflow_id=" ",
-            display_name="Download Data",
-            status=DownloadDataRuntimeSummaryStatus.OK,
-        )
-    with pytest.raises(ValueError, match="display_name"):
-        DownloadDataRuntimeSummary(
-            workflow_id="download_data",
-            display_name=" ",
-            status=DownloadDataRuntimeSummaryStatus.OK,
-        )
-
-
-def test_download_data_runtime_summary_rejects_negative_counts() -> None:
-    with pytest.raises(ValueError, match="partial_persistence_count"):
-        DownloadDataRuntimeSummary(
-            workflow_id="download_data",
-            display_name="Download Data",
-            status=DownloadDataRuntimeSummaryStatus.OK,
-            partial_persistence_count=-1,
-        )
-
-
-def test_download_data_runtime_summary_normalizes_tuples_and_rejects_plain_strings() -> None:
-    summary = DownloadDataRuntimeSummary(
-        workflow_id="download_data",
-        display_name="Download Data",
-        status="degraded",
-        warnings=["partial"],  # type: ignore[arg-type]
-        errors=["failed"],  # type: ignore[arg-type]
-        docs_refs=["docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md"],  # type: ignore[arg-type]
-        test_refs=["tests/contracts_test/test_runtime_inspection_contracts.py"],  # type: ignore[arg-type]
-    )
-
-    assert summary.status is DownloadDataRuntimeSummaryStatus.DEGRADED
-    assert summary.warnings == ("partial",)
-    assert summary.errors == ("failed",)
-    assert summary.docs_refs == ("docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md",)
-    with pytest.raises(TypeError, match="warnings"):
-        DownloadDataRuntimeSummary(
-            workflow_id="download_data",
-            display_name="Download Data",
-            status=DownloadDataRuntimeSummaryStatus.OK,
-            warnings="partial",  # type: ignore[arg-type]
-        )
-
-
-@pytest.mark.parametrize(
-    "metadata",
-    (
-        {"provider_ref": "blocked"},
-        {"safe": {"token": "x"}},
-        {"safe": [{"adapter": "x"}]},
-        {"safe": {"nested": {"storage_writer": "x"}}},
-        {"level": {"one": {"two": {"authorization": "Bearer x"}}}},
-    ),
-)
-def test_download_data_runtime_summary_rejects_sensitive_metadata_keys(
-    metadata: dict[str, object],
-) -> None:
-    with pytest.raises(ValueError, match="sensitive"):
-        DownloadDataRuntimeSummary(
-            workflow_id="download_data",
-            display_name="Download Data",
-            status=DownloadDataRuntimeSummaryStatus.OK,
-            metadata=metadata,
-        )
-
-
-@pytest.mark.parametrize(
-    "metadata",
-    (
-        {"safe": object()},
-        {"safe": lambda: None},
-        {"safe": b"bytes"},
-        {"safe": bytearray(b"bytes")},
-        {"safe": memoryview(b"bytes")},
-        {"safe": {"values"}},
-        {"safe": frozenset({"values"})},
-        {1: "not a string key"},
-        {"safe": float("nan")},
-        {"safe": float("inf")},
-        {"safe": float("-inf")},
-    ),
-)
-def test_download_data_runtime_summary_rejects_unsafe_metadata_values(
-    metadata: dict[object, object],
-) -> None:
-    with pytest.raises((TypeError, ValueError)):
-        DownloadDataRuntimeSummary(
-            workflow_id="download_data",
-            display_name="Download Data",
-            status=DownloadDataRuntimeSummaryStatus.OK,
-            metadata=metadata,  # type: ignore[arg-type]
-        )
-
-
 def test_audit_previews_and_contract_summary_are_serialization_friendly() -> None:
     timestamp = datetime(2026, 7, 2, 12, tzinfo=UTC)
     event = AuditEventPreview(
@@ -534,23 +384,24 @@ def test_runtime_manager_snapshot_derives_health_from_sections() -> None:
         "windows",
         "actions",
         "operations",
-        "downloads",
-        "download_execution",
         "object_map",
         "provider_runtime",
         "suite_runtime",
-        "download_data_runtime",
         "audit",
         "contracts",
     ]
-    assert snapshot.download_execution_summary.section_id == "download_execution"
-    assert snapshot.download_execution_summary.metadata["available"] is False
     assert snapshot.object_map_summary.section_id == "object_map"
     assert snapshot.object_map_summary.metadata["available"] is False
     assert snapshot.provider_runtime_summary.section_id == "provider_runtime"
     assert snapshot.provider_runtime_summary.metadata["available"] is False
     assert snapshot.suite_runtime_summary.section_id == "suite_runtime"
     assert snapshot.suite_runtime_summary.metadata["available"] is False
-    assert snapshot.download_data_runtime_summary.section_id == "download_data_runtime"
-    assert snapshot.download_data_runtime_summary.metadata["available"] is False
     assert snapshot.to_dict()["health"] == "degraded"
+
+
+def test_runtime_manager_snapshot_has_no_first_class_download_sections() -> None:
+    field_names = RuntimeManagerSnapshot.__dataclass_fields__
+
+    assert "downloads_summary" not in field_names
+    assert "download_execution_summary" not in field_names
+    assert "download_data_runtime_summary" not in field_names

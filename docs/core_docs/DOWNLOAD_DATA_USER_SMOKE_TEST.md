@@ -1,54 +1,30 @@
 # Download Data User Smoke Test
 
-## Scope
+Status: retired historical reference.
 
-This smoke test covers the default sandbox Download Data path only. It does not
-write to production storage and does not make a default live Bybit call.
+This document records a removed sandbox Download Data smoke path. It is not a
+current validation procedure for Leonardo V2.
 
-## Launch
+## Current Truth
 
-From the repository root:
+- The old sandbox/fixture Bybit Download Data execution path was removed from
+  active source.
+- No active source executes downloads, calls Bybit, writes sandbox output, or
+  writes production OHLCV storage.
+- The Connection Suite Download Manager GUI is shell-only.
+- Static Bybit exchange metadata remains available under the Connection
+  boundary, but it does not create transport, execution, or storage behavior.
 
-```powershell
-$env:PYTHONPATH="src"
-python tools/dev_launch_gui.py --settings-base-dir runs/gui_dev_settings
-```
+## Replacement Validation Scope
 
-## Steps
+Current validation for this area is limited to:
 
-1. Open Main Window.
-2. Open Download Data.
-3. Confirm the empty selection blocked state.
-4. Select Bybit / spot / BTCUSDT / 1m / limit 10.
-5. Confirm the selection recap.
-6. Click Preview Preflight.
-7. Confirm preview does not execute or write output.
-8. Click Start.
-9. Confirm progress reaches 100.
-10. Confirm the final recap shows:
-    - `new_file` on the first run;
-    - completed status;
-    - bars written;
-    - CSV path;
-    - metadata path;
-    - `accepted=false`;
-    - `loadable=false`;
-    - `validated=false`;
-    - sandbox-only notice.
-11. Repeat the same selection.
-12. Confirm `update_existing`.
-13. Confirm there is no default live API call.
-14. Confirm there is no real project `data/historical` write.
+- contract tests for Download Data, provider, suite, and execution boundary
+  shapes;
+- GUI shell tests for Connection Download Manager windows and local intent;
+- static checks proving removed builder, execution, provider, storage, and
+  `download_data` runtime paths remain absent.
 
-## Optional Live Smoke
-
-Optional live Bybit smoke is opt-in only. It requires
-`LEONARDO_ALLOW_LIVE_BYBIT_SMOKE=1` or an explicit `allow_live=True` call. It
-remains sandbox-only and is not part of default user smoke validation.
-
-## Non-Goals
-
-This smoke test does not validate production live download behavior, OHLCV
-Maintenance acceptance, Data Manager integration, accepted/loadable/validated
-dataset state, Runtime Manager controls, Object Map mutation, cancellation, or
-AI helper behavior.
+A future live or fixture-backed Download Data smoke test must be introduced by
+a dedicated Connection Suite execution phase with explicit provider, storage,
+and safety boundaries.
