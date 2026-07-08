@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from leonardo.contracts.downloads import CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
 from leonardo.contracts.traceable_object import ObjectFamilyLegend
 
 
@@ -133,7 +134,7 @@ def _download_legend(
 ) -> ObjectFamilyLegend:
     return _current_legend(
         family_id,
-        owner_domain="download.core",
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
         owner_component=owner_component,
         mutation_owner=mutation_owner,
         read_provider="download read models and future read-only Object Map",

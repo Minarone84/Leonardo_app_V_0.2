@@ -11,18 +11,20 @@ providers, Download Data behavior, GUI features, or a mutable suite registry.
 
 An area is the generic architecture term.
 
-A suite is a large user-facing product area such as Research Suite, Data
-Manager Suite, Analysis Suite, or Trading Suite.
+A suite is a large user-facing product area. The domain suites are Research
+Suite, Data Manager Suite, Trading Suite, Connection Suite, and Analysis Suite.
 
-Download Data is a workflow/module under the Download Manager area, not a
-top-level suite. Its current accepted behavior is a sandboxed Bybit OHLCV smoke
-path with fixture-backed default execution and explicit sandbox output only.
-It may later integrate with a Data Manager or Data Acquisition area after those
-boundaries are explicitly scoped.
+Download Manager is a Connection Suite module with
+`module_id = connection.download_manager` and
+`owner_domain = connection.download_manager`. Download Data may remain a
+workflow ID under that module. Its current accepted behavior is a sandboxed
+Bybit OHLCV smoke path with fixture-backed default execution and explicit
+sandbox output only. It may later hand accepted artifacts to Data Manager after
+that boundary is explicitly scoped.
 
-Provider/Connection is shared infrastructure, not a suite. Provider and
-connection components provide capabilities that future suites may depend on,
-but they do not become user-facing suites by name alone.
+Provider and exchange capability descriptors live under the Connection Suite
+boundary. Static capability facts do not create provider clients, sockets,
+adapters, or network behavior.
 
 ## Contract Shapes
 

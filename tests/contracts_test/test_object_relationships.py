@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from leonardo.contracts.downloads import CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
 from leonardo.contracts.object_family_legends import (
     CURRENT_V2_FAMILY_IDS,
     FUTURE_PLACEHOLDER_FAMILY_IDS,
@@ -138,7 +139,8 @@ def test_download_read_model_relationships_are_non_executing() -> None:
         definitions = object_relationship_definitions_by_type(relationship_type)
         assert definitions
         for definition in definitions:
-            assert definition.owner_domain == "download.core"
+            assert definition.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+            assert definition.owner_domain not in {"gui", "core", "download.core"}
             assert definition.extra["read_model_only"] is True
             assert "execution" in definition.extra["forbidden_behavior"]
             assert "adapters" in definition.extra["forbidden_behavior"]

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from leonardo.contracts.downloads import CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
 from leonardo.contracts.object_family_legends import (
     CURRENT_V2_FAMILY_IDS,
     FUTURE_PLACEHOLDER_FAMILY_IDS,
@@ -471,7 +472,7 @@ def _download_definition(
         source_family_id=source_family_id,
         target_family_id=target_family_id,
         direction=direction,
-        owner_domain="download.core",
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
         owner_component=owner_component,
         read_provider="DownloadManager read model and future read-only Object Map",
         mutation_owner="DownloadManager",

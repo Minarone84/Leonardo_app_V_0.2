@@ -1,5 +1,12 @@
 from pathlib import Path
 
+from leonardo.contracts.downloads import (
+    CONNECTION_AREA_ID,
+    CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+    CONNECTION_SUITE_ID,
+)
 from leonardo.contracts.identity import Permission
 from leonardo.contracts.object_map import ObjectMapSection
 from leonardo.contracts.suite_boundary import (
@@ -71,16 +78,16 @@ def test_area_descriptor_converts_to_ref_and_summary() -> None:
     ref = area_trace_ref_from_descriptor(area)
     summary = area_trace_summary_from_descriptor(area)
 
-    assert ref.object_id == "data_acquisition"
+    assert ref.object_id == CONNECTION_AREA_ID
     assert ref.object_kind == AREA_OBJECT_KIND
-    assert ref.owner_domain == "data_manager"
-    assert ref.owner_component == "DataAcquisitionBoundary"
-    assert ref.label == "Data Acquisition"
+    assert ref.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+    assert ref.owner_component == CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT
+    assert ref.label == "Connection"
     assert summary.object_ref == ref
     assert summary.lifecycle_status == "planned"
     assert summary.runtime_or_persistent == "static_metadata"
     assert summary.metadata["area_kind"] == "workflow"
-    assert summary.metadata["module_ids"] == ("download_data",)
+    assert summary.metadata["module_ids"] == (CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,)
     assert summary.permission_refs == ("download:view",)
 
 
@@ -90,12 +97,12 @@ def test_suite_descriptor_converts_to_ref_and_summary() -> None:
     ref = suite_trace_ref_from_descriptor(suite)
     summary = suite_trace_summary_from_descriptor(suite)
 
-    assert ref.object_id == "data_manager"
+    assert ref.object_id == CONNECTION_SUITE_ID
     assert ref.object_kind == SUITE_OBJECT_KIND
-    assert ref.owner_domain == "data_manager"
-    assert summary.metadata["area_ids"] == ("data_acquisition",)
+    assert ref.owner_domain == "connection"
+    assert summary.metadata["area_ids"] == (CONNECTION_AREA_ID,)
     assert summary.metadata["supported_command_ids"] == ("download.preview",)
-    assert summary.permission_refs == ("data_manager:view",)
+    assert summary.permission_refs == ("connection:view",)
 
 
 def test_module_descriptor_converts_to_ref_and_summary() -> None:
@@ -104,11 +111,12 @@ def test_module_descriptor_converts_to_ref_and_summary() -> None:
     ref = suite_module_trace_ref_from_descriptor(module)
     summary = suite_module_trace_summary_from_descriptor(module)
 
-    assert ref.object_id == "download_data"
+    assert ref.object_id == CONNECTION_DOWNLOAD_MANAGER_MODULE_ID
     assert ref.object_kind == SUITE_MODULE_OBJECT_KIND
-    assert ref.owner_component == "DownloadDataBoundary"
-    assert summary.metadata["suite_id"] == "data_manager"
-    assert summary.metadata["area_id"] == "data_acquisition"
+    assert ref.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+    assert ref.owner_component == CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT
+    assert summary.metadata["suite_id"] == CONNECTION_SUITE_ID
+    assert summary.metadata["area_id"] == CONNECTION_AREA_ID
     assert summary.metadata["command_ids"] == ("download.preview",)
 
 
@@ -133,8 +141,8 @@ def test_command_descriptor_converts_to_ref_and_summary() -> None:
 
     assert ref.object_id == "download.preview"
     assert ref.object_kind == SUITE_COMMAND_OBJECT_KIND
-    assert ref.owner_domain == "download"
-    assert ref.owner_component == "DownloadDataBoundary"
+    assert ref.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+    assert ref.owner_component == CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT
     assert summary.metadata["command_kind"] == "long_running"
     assert summary.metadata["required_permission"] == "download:preview"
     assert summary.metadata["related_action_ids"] == ("action.download.preview",)
@@ -162,7 +170,7 @@ def test_query_descriptor_converts_to_ref_and_summary() -> None:
 
     assert ref.object_id == "download.capability.summary"
     assert ref.object_kind == SUITE_QUERY_OBJECT_KIND
-    assert ref.owner_domain == "download"
+    assert ref.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
     assert summary.metadata["query_kind"] == "local_read_model"
     assert summary.metadata["read_model_kind"] == "download_capability"
     assert summary.metadata["cache_policy"] == "snapshot"
@@ -191,42 +199,42 @@ def test_relationships_include_permissions_and_declared_descriptor_links() -> No
     assert (
         "references",
         "suite",
-        "data_manager",
+        CONNECTION_SUITE_ID,
         "area",
-        "data_acquisition",
+        CONNECTION_AREA_ID,
     ) in pairs
     assert (
         "references",
         "suite",
-        "data_manager",
+        CONNECTION_SUITE_ID,
         "suite_module",
-        "download_data",
+        CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
     ) in pairs
     assert (
         "references",
         "suite",
-        "data_manager",
+        CONNECTION_SUITE_ID,
         "suite_command",
         "download.preview",
     ) in pairs
     assert (
         "references",
         "suite",
-        "data_manager",
+        CONNECTION_SUITE_ID,
         "suite_query",
         "download.capability.summary",
     ) in pairs
     assert (
         "references",
         "suite_module",
-        "download_data",
+        CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         "suite_command",
         "download.preview",
     ) in pairs
     assert (
         "references",
         "suite_module",
-        "download_data",
+        CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         "suite_query",
         "download.capability.summary",
     ) in pairs
@@ -283,19 +291,23 @@ def test_missing_optional_ids_do_not_create_fake_relationships() -> None:
 
 def test_download_data_can_appear_as_workflow_module_metadata_not_suite() -> None:
     section = build_suite_boundary_trace_section(
-        areas=(_area(area_id="download_data", suite_id=None),),
+        areas=(_area(suite_id=None),),
         modules=(_module(suite_id=None),),
         commands=(_command(suite_id=None),),
         queries=(_query(suite_id=None),),
     )
 
-    area_summary = _summary_by_id(section, "download_data")
-    module_summary = _summary_by_id(section, "download_data", kind="suite_module")
+    area_summary = _summary_by_id(section, CONNECTION_AREA_ID)
+    module_summary = _summary_by_id(
+        section,
+        CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+        kind="suite_module",
+    )
 
     assert area_summary.metadata["area_kind"] == "workflow"
     assert area_summary.metadata["suite_id"] is None
     assert module_summary.metadata["suite_id"] is None
-    assert module_summary.metadata["area_id"] == "download_data"
+    assert module_summary.metadata["area_id"] == CONNECTION_AREA_ID
 
 
 def test_provider_connection_can_appear_as_infrastructure_capability_not_suite() -> None:
@@ -431,19 +443,19 @@ def test_no_mutable_registry_scanning_runtime_manager_or_concrete_behavior() -> 
 
 def _area(
     *,
-    area_id: str = "data_acquisition",
-    suite_id: str | None = "data_manager",
-    module_ids: tuple[str, ...] = ("download_data",),
+    area_id: str = CONNECTION_AREA_ID,
+    suite_id: str | None = CONNECTION_SUITE_ID,
+    module_ids: tuple[str, ...] = (CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,),
     command_ids: tuple[str, ...] = ("download.preview",),
     query_ids: tuple[str, ...] = ("download.capability.summary",),
 ) -> AreaDescriptor:
     return AreaDescriptor(
         area_id=area_id,
-        display_name="Data Acquisition" if area_id != "download_data" else "Download Data",
-        description="Future data acquisition workflow boundary.",
+        display_name="Connection",
+        description="Connection Suite Download Manager workflow boundary.",
         area_kind=AreaKind.WORKFLOW,
-        owner_domain="data_manager" if area_id != "download_data" else "download",
-        owner_component="DataAcquisitionBoundary",
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
         suite_id=suite_id,
         module_ids=module_ids,
         command_ids=command_ids,
@@ -458,30 +470,30 @@ def _area(
 
 def _suite() -> SuiteDescriptor:
     return SuiteDescriptor(
-        suite_id="data_manager",
-        display_name="Data Manager Suite",
-        description="Future Data Manager Suite boundary.",
-        owner_domain="data_manager",
-        owner_component="DataManagerBoundary",
-        area_ids=("data_acquisition",),
-        module_ids=("download_data",),
+        suite_id=CONNECTION_SUITE_ID,
+        display_name="Connection Suite",
+        description="Connection Suite boundary.",
+        owner_domain="connection",
+        owner_component="ConnectionSuiteBoundary",
+        area_ids=(CONNECTION_AREA_ID,),
+        module_ids=(CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,),
         supported_command_ids=("download.preview",),
         supported_query_ids=("download.capability.summary",),
         object_family_ids=("download_request", "download_capability"),
-        required_permissions=(Permission.DATA_MANAGER_VIEW,),
+        required_permissions=(Permission.CONNECTION_VIEW,),
         audit_categories=("download.preview",),
     )
 
 
-def _module(*, suite_id: str | None = "data_manager") -> SuiteModuleDescriptor:
+def _module(*, suite_id: str | None = CONNECTION_SUITE_ID) -> SuiteModuleDescriptor:
     return SuiteModuleDescriptor(
-        module_id="download_data",
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         suite_id=suite_id,
-        area_id="data_acquisition" if suite_id is not None else "download_data",
-        display_name="Download Data",
-        description="Future Download Data workflow module.",
-        owner_domain="download",
-        owner_component="DownloadDataBoundary",
+        area_id=CONNECTION_AREA_ID,
+        display_name="Download Manager",
+        description="Connection Suite Download Manager module.",
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
         object_family_ids=("download_request", "download_capability"),
         command_ids=("download.preview",),
         query_ids=("download.capability.summary",),
@@ -491,12 +503,12 @@ def _module(*, suite_id: str | None = "data_manager") -> SuiteModuleDescriptor:
     )
 
 
-def _command(*, suite_id: str | None = "data_manager") -> SuiteCommandDescriptor:
+def _command(*, suite_id: str | None = CONNECTION_SUITE_ID) -> SuiteCommandDescriptor:
     return SuiteCommandDescriptor(
         command_id="download.preview",
         suite_id=suite_id,
-        area_id="data_acquisition" if suite_id is not None else "download_data",
-        module_id="download_data",
+        area_id=CONNECTION_AREA_ID,
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         command_kind=SuiteCommandKind.LONG_RUNNING,
         label="Preview Download",
         description="Future Download Data preview command.",
@@ -517,12 +529,12 @@ def _command(*, suite_id: str | None = "data_manager") -> SuiteCommandDescriptor
     )
 
 
-def _query(*, suite_id: str | None = "data_manager") -> SuiteQueryDescriptor:
+def _query(*, suite_id: str | None = CONNECTION_SUITE_ID) -> SuiteQueryDescriptor:
     return SuiteQueryDescriptor(
         query_id="download.capability.summary",
         suite_id=suite_id,
-        area_id="data_acquisition" if suite_id is not None else "download_data",
-        module_id="download_data",
+        area_id=CONNECTION_AREA_ID,
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         query_kind=SuiteQueryKind.LOCAL_READ_MODEL,
         label="Download Capability Summary",
         description="Future Download capability read model.",

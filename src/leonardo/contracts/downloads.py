@@ -1,4 +1,4 @@
-"""Download Manager contracts for request and read-model state."""
+"""Connection Suite-owned Download Manager contracts for request read models."""
 
 from __future__ import annotations
 
@@ -6,6 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from enum import Enum
 from types import MappingProxyType
+
+
+CONNECTION_AREA_ID = "connection"
+CONNECTION_SUITE_ID = "connection_suite"
+CONNECTION_DOWNLOAD_MANAGER_MODULE_ID = "connection.download_manager"
+CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN = "connection.download_manager"
+CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT = "DownloadManager"
 
 
 class DownloadWorkflowKind(str, Enum):

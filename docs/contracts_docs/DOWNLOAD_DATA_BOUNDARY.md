@@ -7,8 +7,8 @@ completion recap, output references, and partial persistence state.
 
 The original boundary phase was contract-only. The current accepted Download
 Data slice now supports a sandboxed Bybit OHLCV execution path through the
-Download Manager area. Default execution is fixture-backed/offline and writes
-only under an explicit sandbox root.
+Connection Suite Download Manager module. Default execution is
+fixture-backed/offline and writes only under an explicit sandbox root.
 
 Live Bybit public REST transport exists as an opt-in smoke helper only. It is
 not used by default tests or default GUI execution and requires either
@@ -39,16 +39,28 @@ OHLCV Maintenance and Data Manager acceptance remain outside this scope.
 
 ## Boundary Classification
 
-Download Data is a Core-routed workflow/module, not a top-level suite.
+Download Data remains the workflow ID for a Download Manager flow. Descriptor
+ownership belongs to the Connection Suite Download Manager module:
 
-Download Data is not Provider/Connection. Provider/Connection may later supply
-capability facts, range facts, readiness facts, and provider-specific
-constraints. It must not receive Download Data ownership.
+- `owner_area_id = connection`
+- `owner_suite_id = connection_suite`
+- `owner_domain = connection.download_manager`
+- `owner_component = DownloadManager`
+- `module_id = connection.download_manager`
 
-Download Data is not the storage/data layer. Core routes and supervises runtime
-when execution exists, but Core does not own persisted OHLCV truth.
+Core owns runtime primitives, lifecycle routing, tasks, operations, state,
+audit, and inspection infrastructure. Core does not own Download Manager domain
+behavior.
 
-The storage/data layer owns persisted OHLCV truth:
+The GUI owns presentation shells only. It may collect user intent and present
+recaps, but it must not own provider capability truth, file persistence,
+validation, runtime execution, or accepted dataset state.
+
+Data Manager owns accepted or managed data artifacts only after a later handoff
+boundary accepts download output. Download Data contracts do not transfer
+Download Manager ownership to Data Manager.
+
+The storage/data layer owns persisted OHLCV value truth:
 
 - OHLCV CSV value truth;
 - OHLCV metadata sidecar truth;
@@ -57,10 +69,6 @@ The storage/data layer owns persisted OHLCV truth:
 - row counts;
 - partial persistence metadata;
 - accepted/loadable dataset state after validation and maintenance.
-
-The GUI owns selection and display only. It may collect user intent and present
-recaps, but it must not own provider capability truth, file persistence,
-validation, runtime execution, or accepted dataset state.
 
 ## Selection Vocabulary
 

@@ -5,6 +5,11 @@ from pathlib import Path
 import pytest
 
 from leonardo.contracts.download_data_boundary import (
+    CONNECTION_AREA_ID,
+    CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+    CONNECTION_SUITE_ID,
     DOWNLOAD_DATA_ARTIFACT_ID,
     DOWNLOAD_DATA_MESSAGE_MAX_LENGTH,
     DownloadDataBoundaryDescriptor,
@@ -58,6 +63,79 @@ def test_enums_coerce_from_strings() -> None:
     assert preflight_item.status is DownloadDataItemStatus.READY
     assert output.persistence_status is DownloadDataPersistenceStatus.COMPLETE
     assert output.validation_status is DownloadDataValidationStatus.VALID
+
+
+def test_download_data_descriptors_expose_connection_suite_ownership() -> None:
+    boundary = DownloadDataBoundaryDescriptor(
+        boundary_id="download_data_boundary",
+        display_name="Download Data Boundary",
+        workflow_ids=("download_data",),
+    )
+    workflow = DownloadDataWorkflowDescriptor(
+        workflow_id="download_data",
+        display_name="Download Data",
+    )
+
+    for descriptor in (boundary, workflow):
+        assert descriptor.owner_area_id == CONNECTION_AREA_ID
+        assert descriptor.owner_suite_id == CONNECTION_SUITE_ID
+        assert descriptor.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+        assert descriptor.owner_component == CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT
+        assert descriptor.module_id == CONNECTION_DOWNLOAD_MANAGER_MODULE_ID
+        assert descriptor.owner_area_id != "gui"
+        assert descriptor.owner_domain not in {"gui", "core", "download.core"}
+        assert descriptor.module_id != "download_data"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("owner_area_id", "gui"),
+        ("owner_suite_id", "gui"),
+        ("owner_domain", "gui"),
+        ("owner_domain", "core"),
+        ("owner_domain", "download.core"),
+        ("module_id", "download_data"),
+    ),
+)
+def test_download_data_boundary_rejects_non_connection_suite_ownership(
+    field_name: str,
+    value: str,
+) -> None:
+    kwargs = {
+        "boundary_id": "download_data_boundary",
+        "display_name": "Download Data Boundary",
+        "workflow_ids": ("download_data",),
+        field_name: value,
+    }
+
+    with pytest.raises(ValueError, match=field_name):
+        DownloadDataBoundaryDescriptor(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("owner_area_id", "gui"),
+        ("owner_suite_id", "gui"),
+        ("owner_domain", "gui"),
+        ("owner_domain", "core"),
+        ("owner_domain", "download.core"),
+        ("module_id", "download_data"),
+    ),
+)
+def test_download_data_workflow_rejects_non_connection_suite_ownership(
+    field_name: str,
+    value: str,
+) -> None:
+    kwargs = {
+        "workflow_id": "download_data",
+        "display_name": "Download Data",
+        field_name: value,
+    }
+
+    with pytest.raises(ValueError, match=field_name):
+        DownloadDataWorkflowDescriptor(**kwargs)
 
 
 def test_all_contract_dataclasses_are_frozen_read_only() -> None:
@@ -558,12 +636,17 @@ def test_contract_fields_do_not_store_provider_handles_or_raw_messages() -> None
 def test_docs_record_boundary_and_partial_persistence_policy() -> None:
     doc = _DOC_PATH.read_text(encoding="utf-8")
 
-    assert "Core-routed workflow/module" in doc
-    assert "not a top-level suite" in doc
-    assert "not Provider/Connection" in doc
-    assert "Core routes and supervises runtime" in doc
-    assert "storage/data layer owns persisted OHLCV truth" in doc
-    assert "GUI owns selection and display" in doc
+    assert "Connection Suite Download Manager module" in doc
+    assert "`owner_area_id = connection`" in doc
+    assert "`owner_suite_id = connection_suite`" in doc
+    assert "`owner_domain = connection.download_manager`" in doc
+    assert "`module_id = connection.download_manager`" in doc
+    assert "Core owns runtime primitives" in doc
+    assert "Core does not own Download Manager domain" in doc
+    assert "behavior." in doc
+    assert "The GUI owns presentation shells only" in doc
+    assert "Data Manager owns accepted or managed data artifacts" in doc
+    assert "storage/data layer owns persisted OHLCV value truth" in doc
     assert "data/historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv" in doc
     assert "No default selections" in doc
     assert "partial persistence is not accepted, loadable, validated, or clean data" in doc

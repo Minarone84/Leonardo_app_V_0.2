@@ -3,6 +3,12 @@ from pathlib import Path
 
 import pytest
 
+from leonardo.contracts.downloads import (
+    CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+    CONNECTION_SUITE_ID,
+)
 from leonardo.contracts.identity import Permission
 from leonardo.contracts.suite_boundary import (
     AreaDescriptor,
@@ -31,13 +37,14 @@ _SUITE_BOUNDARY_DOC = _REPO_ROOT / "docs" / "contracts_docs" / "SUITE_BOUNDARY.m
 
 def test_area_descriptor_constructs_with_normalized_tuples() -> None:
     descriptor = AreaDescriptor(
-        area_id="data_acquisition",
-        display_name="Data Acquisition",
-        description="Shared data acquisition area.",
+        area_id="connection",
+        display_name="Connection",
+        description="Connection Suite Download Manager area.",
         area_kind="workflow",
-        owner_domain="data_manager",
-        owner_component="DataAcquisitionBoundary",
-        module_ids=["download_data"],  # type: ignore[arg-type]
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+        suite_id=CONNECTION_SUITE_ID,
+        module_ids=[CONNECTION_DOWNLOAD_MANAGER_MODULE_ID],  # type: ignore[arg-type]
         object_family_ids=("download_request", "download_preflight"),
         command_ids=("download.preview",),
         query_ids=["download.capabilities"],  # type: ignore[arg-type]
@@ -48,7 +55,7 @@ def test_area_descriptor_constructs_with_normalized_tuples() -> None:
 
     assert descriptor.area_kind is AreaKind.WORKFLOW
     assert descriptor.lifecycle_status is SuiteLifecycleStatus.PLANNED
-    assert descriptor.module_ids == ("download_data",)
+    assert descriptor.module_ids == (CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,)
     assert descriptor.query_ids == ("download.capabilities",)
     assert descriptor.required_permissions == ("download:view", "download:preview")
     assert descriptor.audit_categories == ("download.preview",)
@@ -80,28 +87,29 @@ def test_suite_descriptor_constructs_with_normalized_tuples() -> None:
 def test_suite_module_descriptor_requires_suite_or_area_owner() -> None:
     with pytest.raises(ValueError, match="suite_id or area_id"):
         SuiteModuleDescriptor(
-            module_id="download_data",
-            display_name="Download Data",
-            description="Future Download Data module.",
-            owner_domain="download",
-            owner_component="DownloadDataBoundary",
+            module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+            display_name="Download Manager",
+            description="Connection Suite Download Manager module.",
+            owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+            owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
         )
 
     module = SuiteModuleDescriptor(
-        module_id="download_data",
-        area_id="data_acquisition",
-        display_name="Download Data",
-        description="Future Download Data module.",
-        owner_domain="download",
-        owner_component="DownloadDataBoundary",
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+        suite_id=CONNECTION_SUITE_ID,
+        area_id="connection",
+        display_name="Download Manager",
+        description="Connection Suite Download Manager module.",
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
         lifecycle_status="planned",
         command_ids=["download.preview"],  # type: ignore[arg-type]
         query_ids=("download.capabilities",),
         required_permissions=("download:view",),
     )
 
-    assert module.area_id == "data_acquisition"
-    assert module.suite_id is None
+    assert module.area_id == "connection"
+    assert module.suite_id == CONNECTION_SUITE_ID
     assert module.command_ids == ("download.preview",)
 
 
@@ -148,7 +156,7 @@ def test_suite_command_descriptor_references_gui_actions_without_importing_gui()
             TraceableObjectRef(
                 object_id="download_request:preview",
                 object_kind="download_request",
-                owner_domain="download",
+                owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
             ),
             {
                 "object_id": "action.download.preview",
@@ -172,8 +180,8 @@ def test_suite_query_descriptor_constructs_read_only_query_metadata() -> None:
         description="Read-only provider capability summary.",
         required_permission=Permission.DOWNLOAD_VIEW,
         read_model_kind="download_capability",
-        area_id="data_acquisition",
-        module_id="download_data",
+        area_id="connection",
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         object_family_ids=["download_capability"],  # type: ignore[arg-type]
         cache_policy="snapshot",
         audit_policy="summary",
@@ -264,27 +272,30 @@ def test_permission_names_remain_area_scoped_strings_not_dynamic_suite_names() -
 
 def test_download_data_can_be_workflow_module_without_becoming_suite() -> None:
     area = AreaDescriptor(
-        area_id="download_data",
-        display_name="Download Data",
-        description="Future Download Data workflow.",
+        area_id="connection",
+        display_name="Connection",
+        description="Connection Suite area for provider and download workflows.",
         area_kind=AreaKind.WORKFLOW,
-        owner_domain="download",
-        owner_component="DownloadDataBoundary",
-        module_ids=("download_data",),
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+        suite_id=CONNECTION_SUITE_ID,
+        module_ids=(CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,),
         required_permissions=("download:view", "download:submit"),
     )
     module = SuiteModuleDescriptor(
-        module_id="download_data",
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+        suite_id=CONNECTION_SUITE_ID,
         area_id=area.area_id,
-        display_name="Download Data",
-        description="Future workflow module under a data acquisition area.",
-        owner_domain="download",
-        owner_component="DownloadDataBoundary",
+        display_name="Download Manager",
+        description="Connection Suite Download Manager module.",
+        owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        owner_component=CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
     )
 
     assert area.area_kind is AreaKind.WORKFLOW
-    assert module.suite_id is None
-    assert module.area_id == "download_data"
+    assert module.suite_id == CONNECTION_SUITE_ID
+    assert module.area_id == "connection"
+    assert module.owner_domain not in {"gui", "core", "download.core"}
 
 
 def test_provider_connection_can_be_infrastructure_capability_area_not_suite() -> None:
@@ -354,8 +365,14 @@ def test_suite_boundary_docs_explain_ownership_and_forbidden_behavior() -> None:
     doc = _SUITE_BOUNDARY_DOC.read_text(encoding="utf-8")
 
     assert "area is the generic architecture term" in doc
-    assert "Download Data is a workflow/module under the Download Manager area" in doc
-    assert "Provider/Connection is shared infrastructure" in doc
+    assert "Research" in doc
+    assert "Data Manager Suite" in doc
+    assert "Trading Suite" in doc
+    assert "Connection Suite" in doc
+    assert "Analysis Suite" in doc
+    assert "Download Manager is a Connection Suite module" in doc
+    assert "`owner_domain = connection.download_manager`" in doc
+    assert "Download Data may remain a" in doc
     assert "No mutable SuiteRegistry exists in this phase" in doc
     assert "Suite Object Map provider patterns are read-only" in doc
     assert "Runtime Manager suite summaries are read-only" in doc
@@ -379,8 +396,8 @@ def _command(
         label="Preview Download",
         description="Future Download Data preview command capability.",
         required_permission=required_permission,
-        area_id="data_acquisition",
-        module_id="download_data",
+        area_id="connection",
+        module_id=CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
         creates_operation=creates_operation,
         expected_task_behavior=expected_task_behavior,
         cancellable=True,

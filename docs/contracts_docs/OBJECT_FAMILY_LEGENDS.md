@@ -40,6 +40,10 @@ The current V2 family descriptors are:
 These descriptors document current ownership and read-model boundaries. They do
 not move mutation ownership into the legend layer.
 
+Download Manager read-model families are owned by the Connection Suite domain
+`connection.download_manager`. GUI remains presentation-only, and Core remains
+runtime infrastructure for any routed work.
+
 ## Future Placeholder Families
 
 The placeholder descriptors are:

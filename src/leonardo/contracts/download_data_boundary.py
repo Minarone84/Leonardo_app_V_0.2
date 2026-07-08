@@ -5,6 +5,10 @@ workflow boundary. They describe user selection, selection recap, preflight,
 progress read models, completion recap, storage references, and partial
 persistence state. They do not execute downloads, call provider APIs, write
 files, construct runtime services, or import GUI modules.
+
+Download Data is owned by the Connection Suite Download Manager module. GUI
+surfaces may present the workflow, and Core may route runtime primitives, but
+neither GUI nor Core owns Download Manager domain behavior.
 """
 
 from __future__ import annotations
@@ -16,6 +20,14 @@ from dataclasses import is_dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from types import MappingProxyType
+
+from leonardo.contracts.downloads import (
+    CONNECTION_AREA_ID,
+    CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+    CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+    CONNECTION_SUITE_ID,
+)
 
 
 DOWNLOAD_DATA_WORKFLOW_ID = "download_data"
@@ -107,6 +119,11 @@ class DownloadDataBoundaryDescriptor(_SerializableContract):
     boundary_id: str
     display_name: str
     workflow_ids: tuple[str, ...]
+    owner_area_id: str = CONNECTION_AREA_ID
+    owner_suite_id: str = CONNECTION_SUITE_ID
+    owner_domain: str = CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+    owner_component: str = CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT
+    module_id: str = CONNECTION_DOWNLOAD_MANAGER_MODULE_ID
     docs_refs: tuple[str, ...] = ()
     test_refs: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
@@ -116,6 +133,7 @@ class DownloadDataBoundaryDescriptor(_SerializableContract):
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.boundary_id, "boundary_id")
         _validate_non_empty_string(self.display_name, "display_name")
+        _validate_download_manager_ownership(self)
         _normalize_string_sequence_fields(
             self,
             (
@@ -136,6 +154,11 @@ class DownloadDataWorkflowDescriptor(_SerializableContract):
     workflow_id: str
     display_name: str
     status: DownloadDataWorkflowStatus | str = DownloadDataWorkflowStatus.DRAFT
+    owner_area_id: str = CONNECTION_AREA_ID
+    owner_suite_id: str = CONNECTION_SUITE_ID
+    owner_domain: str = CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+    owner_component: str = CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT
+    module_id: str = CONNECTION_DOWNLOAD_MANAGER_MODULE_ID
     required_permission: str | None = "download:submit"
     provider_capability_refs: tuple[str, ...] = ()
     storage_policy_refs: tuple[str, ...] = ()
@@ -153,6 +176,7 @@ class DownloadDataWorkflowDescriptor(_SerializableContract):
             "status",
             _coerce_enum(self.status, DownloadDataWorkflowStatus, "status"),
         )
+        _validate_download_manager_ownership(self)
         _validate_optional_string(self.required_permission, "required_permission")
         _normalize_string_sequence_fields(
             self,
@@ -1126,6 +1150,39 @@ def _validate_optional_relative_path(value: object, field_name: str) -> None:
     _validate_relative_path(value, field_name)
 
 
+def _validate_download_manager_ownership(value: object) -> None:
+    _validate_expected_string(
+        getattr(value, "owner_area_id"),
+        CONNECTION_AREA_ID,
+        "owner_area_id",
+    )
+    _validate_expected_string(
+        getattr(value, "owner_suite_id"),
+        CONNECTION_SUITE_ID,
+        "owner_suite_id",
+    )
+    _validate_expected_string(
+        getattr(value, "owner_domain"),
+        CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
+        "owner_domain",
+    )
+    _validate_expected_string(
+        getattr(value, "owner_component"),
+        CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT,
+        "owner_component",
+    )
+    _validate_expected_string(
+        getattr(value, "module_id"),
+        CONNECTION_DOWNLOAD_MANAGER_MODULE_ID,
+        "module_id",
+    )
+
+
+def _validate_expected_string(value: object, expected: str, field_name: str) -> None:
+    if value != expected:
+        raise ValueError(f"{field_name} must be {expected!r}")
+
+
 def _validate_relative_path(value: object, field_name: str) -> None:
     _validate_non_empty_string(value, field_name)
     if "\\" in value:
@@ -1199,6 +1256,11 @@ _SENSITIVE_METADATA_KEY_PARTS = (
 
 
 __all__ = [
+    "CONNECTION_AREA_ID",
+    "CONNECTION_DOWNLOAD_MANAGER_MODULE_ID",
+    "CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT",
+    "CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN",
+    "CONNECTION_SUITE_ID",
     "DOWNLOAD_DATA_ARTIFACT_ID",
     "DOWNLOAD_DATA_BOUNDARY_ID",
     "DOWNLOAD_DATA_CSV_FILENAME",

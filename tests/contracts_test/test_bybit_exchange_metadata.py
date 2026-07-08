@@ -99,6 +99,17 @@ def test_bybit_metadata_json_loads() -> None:
     assert metadata["exchange_id"] == "bybit"
 
 
+def test_bybit_metadata_remains_under_connection_exchange_metadata() -> None:
+    assert _METADATA_PATH.exists()
+    assert _METADATA_PATH.parts[-5:] == (
+        "leonardo",
+        "connection",
+        "exchange",
+        "metadata",
+        "bybit.exchange.json",
+    )
+
+
 def test_bybit_metadata_loads_through_loader() -> None:
     metadata = load_bybit_exchange_metadata()
 

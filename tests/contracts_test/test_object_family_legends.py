@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from leonardo.contracts.downloads import CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
 from leonardo.contracts.object_family_legends import (
     CURRENT_V2_FAMILY_IDS,
     FUTURE_PLACEHOLDER_FAMILY_IDS,
@@ -122,7 +123,8 @@ def test_download_family_legends_are_read_model_only() -> None:
         "download_capability",
     ):
         legend = _legend(family_id)
-        assert legend.owner_domain == "download.core"
+        assert legend.owner_domain == CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN
+        assert legend.owner_domain not in {"gui", "core", "download.core"}
         assert legend.extra["read_model_only"] is True
         assert "execution" in legend.extra["forbidden_behavior"]
         assert "adapters" in legend.extra["forbidden_behavior"]

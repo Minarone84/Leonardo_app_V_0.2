@@ -82,6 +82,8 @@ The current Download read-model relationship types are:
 
 These descriptors are marked read-model only. They do not imply Download
 execution, adapter calls, provider network calls, or storage writers.
+Their owner domain is the Connection Suite Download Manager domain
+`connection.download_manager`.
 
 ## Future Placeholder Relationships
 
