@@ -80,6 +80,7 @@ class DownloadSubmitResultView:
     sandbox_first_timestamp_ms: int | None = None
     sandbox_last_timestamp_ms: int | None = None
     sandbox_timeframes_completed: tuple[str, ...] = ()
+    sandbox_result_summaries: tuple[str, ...] = ()
 
 
 class DownloadRequestDraftLike(Protocol):
@@ -293,6 +294,7 @@ def build_submit_result_view(
     sandbox_first_timestamp_ms: int | None = None,
     sandbox_last_timestamp_ms: int | None = None,
     sandbox_timeframes_completed: tuple[str, ...] = (),
+    sandbox_result_summaries: tuple[str, ...] = (),
 ) -> DownloadSubmitResultView:
     """Convert a Core submit result into a GUI-safe display view."""
 
@@ -332,6 +334,7 @@ def build_submit_result_view(
         sandbox_first_timestamp_ms=sandbox_first_timestamp_ms,
         sandbox_last_timestamp_ms=sandbox_last_timestamp_ms,
         sandbox_timeframes_completed=tuple(sandbox_timeframes_completed),
+        sandbox_result_summaries=tuple(sandbox_result_summaries),
     )
 
 

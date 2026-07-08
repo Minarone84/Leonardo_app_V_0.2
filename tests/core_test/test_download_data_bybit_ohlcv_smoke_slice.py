@@ -23,7 +23,11 @@ from leonardo.download_data.bybit_ohlcv import (
     build_bybit_kline_request,
     normalize_bybit_kline_response,
 )
-from leonardo.download_data.ohlcv_storage_writer import write_ohlcv_smoke_new_file
+from leonardo.download_data.ohlcv_storage_writer import (
+    inspect_ohlcv_smoke_storage,
+    write_ohlcv_smoke,
+    write_ohlcv_smoke_new_file,
+)
 from leonardo.download_data.smoke_execution import run_bybit_ohlcv_smoke_slice
 
 
@@ -140,6 +144,144 @@ def test_storage_write_result_reports_counts_and_timestamps(tmp_path: Path) -> N
     assert result.validated is False
 
 
+def test_storage_preflight_reports_new_file_when_no_sandbox_artifact_exists(
+    tmp_path: Path,
+) -> None:
+    preflight = inspect_ohlcv_smoke_storage(
+        sandbox_root=tmp_path,
+        exchange_id="bybit",
+        market_type="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+    )
+
+    assert preflight.mode is DownloadDataExecutionMode.NEW_FILE
+    assert preflight.local_latest_timestamp_ms is None
+    assert preflight.csv_exists is False
+    assert preflight.metadata_exists is False
+
+
+def test_storage_preflight_detects_update_existing_and_metadata_latest(
+    tmp_path: Path,
+) -> None:
+    request = _write_request()
+    write_ohlcv_smoke_new_file(request, sandbox_root=tmp_path)
+
+    preflight = inspect_ohlcv_smoke_storage(
+        sandbox_root=tmp_path,
+        exchange_id="bybit",
+        market_type="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+    )
+
+    assert preflight.mode is DownloadDataExecutionMode.UPDATE_EXISTING
+    assert preflight.local_latest_timestamp_ms == 1_700_000_060_000
+    assert preflight.csv_exists is True
+    assert preflight.metadata_exists is True
+
+
+def test_storage_preflight_prefers_reliable_metadata_latest_over_csv(
+    tmp_path: Path,
+) -> None:
+    request = _write_request()
+    write_ohlcv_smoke_new_file(request, sandbox_root=tmp_path)
+    metadata_path = tmp_path / request.metadata_path
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["last_timestamp_ms"] = 1_700_000_120_000
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    preflight = inspect_ohlcv_smoke_storage(
+        sandbox_root=tmp_path,
+        exchange_id="bybit",
+        market_type="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+    )
+
+    assert preflight.mode is DownloadDataExecutionMode.UPDATE_EXISTING
+    assert preflight.local_latest_timestamp_ms == 1_700_000_120_000
+
+
+def test_storage_preflight_falls_back_to_csv_latest_when_metadata_is_unreliable(
+    tmp_path: Path,
+) -> None:
+    request = _write_request()
+    write_ohlcv_smoke_new_file(request, sandbox_root=tmp_path)
+    metadata_path = tmp_path / request.metadata_path
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["symbol"] = "WRONG"
+    metadata["last_timestamp_ms"] = 1
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    preflight = inspect_ohlcv_smoke_storage(
+        sandbox_root=tmp_path,
+        exchange_id="bybit",
+        market_type="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+    )
+
+    assert preflight.mode is DownloadDataExecutionMode.UPDATE_EXISTING
+    assert preflight.local_latest_timestamp_ms == 1_700_000_060_000
+
+
+def test_storage_writer_update_mode_merges_deduplicates_and_sorts(
+    tmp_path: Path,
+) -> None:
+    initial = _write_request(
+        candles=(
+            _candle(timestamp_ms=1_700_000_060_000, close="41000.0"),
+            _candle(timestamp_ms=1_699_999_940_000, close="40000.0"),
+        )
+    )
+    write_ohlcv_smoke_new_file(initial, sandbox_root=tmp_path)
+    update = _write_request(
+        write_mode=DownloadDataExecutionMode.UPDATE_EXISTING,
+        target=smoke_execution._smoke_target(
+            mode=DownloadDataExecutionMode.UPDATE_EXISTING,
+            local_latest_timestamp_ms=1_700_000_060_000,
+        ),
+        candles=(
+            _candle(timestamp_ms=1_700_000_120_000, close="43000.0"),
+            _candle(timestamp_ms=1_700_000_060_000, close="42015.0"),
+        ),
+    )
+
+    result = write_ohlcv_smoke(update, sandbox_root=tmp_path)
+
+    with (tmp_path / update.csv_path).open(newline="", encoding="utf-8") as csv_file:
+        rows = list(csv.DictReader(csv_file))
+    metadata = json.loads((tmp_path / update.metadata_path).read_text("utf-8"))
+
+    assert [int(row["timestamp_ms"]) for row in rows] == [
+        1_699_999_940_000,
+        1_700_000_060_000,
+        1_700_000_120_000,
+    ]
+    assert rows[1]["close"] == "42015.0"
+    assert result.bars_written == 3
+    assert result.first_timestamp_ms == 1_699_999_940_000
+    assert result.last_timestamp_ms == 1_700_000_120_000
+    assert result.accepted is False
+    assert result.loadable is False
+    assert result.validated is False
+    assert metadata["mode"] == "update_existing"
+    assert metadata["persistence_status"] == "update_existing"
+    assert metadata["bars_written"] == 3
+    assert metadata["first_timestamp_ms"] == 1_699_999_940_000
+    assert metadata["last_timestamp_ms"] == 1_700_000_120_000
+    assert metadata["partial"] is False
+    assert metadata["accepted"] is False
+    assert metadata["loadable"] is False
+    assert metadata["validated"] is False
+
+
+def test_storage_writer_requires_explicit_sandbox_root() -> None:
+    with pytest.raises(ValueError, match="sandbox_root"):
+        write_ohlcv_smoke(_write_request(), sandbox_root=None)  # type: ignore[arg-type]
+
+
 def test_smoke_execution_result_reports_completed_download_and_write(
     tmp_path: Path,
 ) -> None:
@@ -217,6 +359,7 @@ def test_smoke_execution_uses_selected_symbol_timeframe_and_limit(
     ]
     assert result.targets[0].symbol == "ETHUSDT"
     assert result.targets[0].timeframe == "5m"
+    assert result.targets[0].mode is DownloadDataExecutionMode.NEW_FILE
     assert (
         tmp_path / "historical/bybit/spot/ETHUSDT/5m/ohlcv/candles.csv"
     ).exists()
@@ -235,6 +378,43 @@ def test_smoke_slice_does_not_create_project_data_directory(tmp_path: Path) -> N
     )
 
     assert project_data_dir.exists() is existed_before
+
+
+def test_smoke_execution_update_existing_uses_latest_local_timestamp_as_start(
+    tmp_path: Path,
+) -> None:
+    write_ohlcv_smoke_new_file(_write_request(), sandbox_root=tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def fixture_transport(params: object) -> dict[str, object]:
+        calls.append(dict(params))  # type: ignore[arg-type]
+        return _fixture_response()
+
+    result = run_bybit_ohlcv_smoke_slice(
+        sandbox_root=tmp_path,
+        transport=fixture_transport,
+    )
+    metadata = json.loads(
+        (
+            tmp_path
+            / "historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert calls == [
+        {
+            "category": "spot",
+            "symbol": "BTCUSDT",
+            "interval": "1",
+            "limit": 10,
+            "start": 1_700_000_060_000,
+        }
+    ]
+    assert result.targets[0].mode is DownloadDataExecutionMode.UPDATE_EXISTING
+    assert result.targets[0].direction.value == "forward_update"
+    assert result.targets[0].local_latest_timestamp_ms == 1_700_000_060_000
+    assert result.storage_results[0].metadata["mode"] == "update_existing"
+    assert metadata["mode"] == "update_existing"
 
 
 def test_storage_writer_rejects_project_root_as_sandbox() -> None:

@@ -1,3 +1,4 @@
+import csv
 import os
 import json
 from pathlib import Path
@@ -583,6 +584,8 @@ def test_composition_runs_sandbox_smoke_execution_with_injected_root(
     assert project_data_dir.exists() is project_data_existed
     assert one_minute_metadata["artifact_id"] == "ohlcv__candles"
     assert five_minute_metadata["artifact_id"] == "ohlcv__candles"
+    assert one_minute_metadata["mode"] == "new_file"
+    assert five_minute_metadata["mode"] == "new_file"
     assert one_minute_metadata["accepted"] is False
     assert five_minute_metadata["accepted"] is False
     assert one_minute_metadata["loadable"] is False
@@ -597,6 +600,10 @@ def test_composition_runs_sandbox_smoke_execution_with_injected_root(
     assert str(five_minute_csv_path) in submit_text
     assert str(one_minute_metadata_path) in submit_text
     assert str(five_minute_metadata_path) in submit_text
+    assert "mode=new_file" in submit_text
+    assert "accepted=false" in submit_text
+    assert "loadable=false" in submit_text
+    assert "validated=false" in submit_text
     assert "First timestamp: 1700000000000" in submit_text
     assert "Last timestamp: 1700000120000" in submit_text
     assert total_progress is not None
@@ -607,6 +614,88 @@ def test_composition_runs_sandbox_smoke_execution_with_injected_root(
     assert five_minute_progress.value() == 100
     assert messages is not None
     assert "Sandbox smoke execution completed." in messages.toPlainText()
+
+    builder.close()
+    builder.deleteLater()
+    window.deleteLater()
+    qapplication.processEvents()
+    app.shutdown()
+
+
+def test_composition_reports_update_existing_mode_per_timeframe(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    app = LeonardoApp()
+    context = app.startup()
+    sandbox_root = tmp_path / "download-smoke"
+    _seed_existing_ohlcv(sandbox_root, timeframe="1m")
+    root = GuiCompositionRoot(
+        context,
+        download_smoke_sandbox_root=sandbox_root,
+    )
+    window = root.create_main_window()
+
+    window.action_for_id("main_window.download_data").trigger()
+    qapplication.processEvents()
+    builder = root.download_request_builder_window
+    assert builder is not None
+    _select_download_defaults(builder)
+    _set_builder_text(builder, "symbol", "BTCUSDT")
+    _check_builder_timeframes(builder, "1m", "5m")
+    _click_builder_button(builder, "download_request_builder.submit_button")
+    submit_text = _builder_status_text(builder)
+
+    one_minute_csv_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv"
+    )
+    five_minute_csv_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/5m/ohlcv/candles.csv"
+    )
+    one_minute_metadata_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json"
+    )
+    five_minute_metadata_path = (
+        sandbox_root / "historical/bybit/spot/BTCUSDT/5m/ohlcv/candles.meta.json"
+    )
+    one_minute_rows = _read_csv_rows(one_minute_csv_path)
+    one_minute_metadata = json.loads(
+        one_minute_metadata_path.read_text(encoding="utf-8")
+    )
+    five_minute_metadata = json.loads(
+        five_minute_metadata_path.read_text(encoding="utf-8")
+    )
+    messages = builder.findChild(
+        QTextEdit,
+        "download_request_builder.progress.messages",
+    )
+
+    assert [int(row["timestamp_ms"]) for row in one_minute_rows] == [
+        1_699_999_940_000,
+        1_700_000_000_000,
+        1_700_000_060_000,
+        1_700_000_120_000,
+    ]
+    assert one_minute_rows[1]["close"] == "42005.0"
+    assert one_minute_metadata["mode"] == "update_existing"
+    assert one_minute_metadata["local_latest_timestamp_ms"] == 1_700_000_000_000
+    assert one_minute_metadata["bars_written"] == 4
+    assert one_minute_metadata["accepted"] is False
+    assert one_minute_metadata["loadable"] is False
+    assert one_minute_metadata["validated"] is False
+    assert five_minute_csv_path.exists()
+    assert five_minute_metadata["mode"] == "new_file"
+    assert "mode=update_existing" in submit_text
+    assert "mode=new_file" in submit_text
+    assert str(one_minute_csv_path) in submit_text
+    assert str(five_minute_csv_path) in submit_text
+    assert "Bars written: 7" in submit_text
+    assert "accepted=false" in submit_text
+    assert "loadable=false" in submit_text
+    assert "validated=false" in submit_text
+    assert messages is not None
+    assert "mode=update_existing" in messages.toPlainText()
+    assert "mode=new_file" in messages.toPlainText()
 
     builder.close()
     builder.deleteLater()
@@ -1060,3 +1149,75 @@ def _market(
             for timeframe in timeframes
         ),
     )
+
+
+def _seed_existing_ohlcv(sandbox_root: Path, *, timeframe: str) -> None:
+    ohlcv_dir = sandbox_root / f"historical/bybit/spot/BTCUSDT/{timeframe}/ohlcv"
+    ohlcv_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = ohlcv_dir / "candles.csv"
+    metadata_path = ohlcv_dir / "candles.meta.json"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=(
+                "timestamp_ms",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "turnover",
+            ),
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "timestamp_ms": "1699999940000",
+                "open": "41900.0",
+                "high": "41910.0",
+                "low": "41890.0",
+                "close": "41905.0",
+                "volume": "1.0",
+                "turnover": "41900.0",
+            }
+        )
+        writer.writerow(
+            {
+                "timestamp_ms": "1700000000000",
+                "open": "1.0",
+                "high": "1.0",
+                "low": "1.0",
+                "close": "1.0",
+                "volume": "1.0",
+                "turnover": "1.0",
+            }
+        )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "exchange_id": "bybit",
+                "market_type": "spot",
+                "symbol": "BTCUSDT",
+                "timeframe": timeframe,
+                "artifact_id": "ohlcv__candles",
+                "persistence_status": "new_file",
+                "bars_written": 2,
+                "first_timestamp_ms": 1_699_999_940_000,
+                "last_timestamp_ms": 1_700_000_000_000,
+                "partial": False,
+                "accepted": False,
+                "loadable": False,
+                "validated": False,
+                "source": "bybit",
+                "smoke": True,
+                "mode": "new_file",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
+    with csv_path.open(newline="", encoding="utf-8") as csv_file:
+        return list(csv.DictReader(csv_file))

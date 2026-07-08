@@ -26,7 +26,10 @@ from leonardo.download_data.bybit_ohlcv import (
     bybit_public_kline_http_transport,
     fetch_bybit_kline_page,
 )
-from leonardo.download_data.ohlcv_storage_writer import write_ohlcv_smoke_new_file
+from leonardo.download_data.ohlcv_storage_writer import (
+    inspect_ohlcv_smoke_storage,
+    write_ohlcv_smoke,
+)
 
 
 SMOKE_EXCHANGE_ID = "bybit"
@@ -50,12 +53,21 @@ def run_bybit_ohlcv_smoke_slice(
 ) -> DownloadDataExecutionResult:
     """Run the offline Bybit OHLCV smoke slice against fixture transport."""
 
+    storage_preflight = inspect_ohlcv_smoke_storage(
+        sandbox_root=sandbox_root,
+        exchange_id=exchange_id,
+        market_type=market_type,
+        symbol=symbol,
+        timeframe=timeframe,
+    )
     target = _smoke_target(
         exchange_id=exchange_id,
         market_type=market_type,
         symbol=symbol,
         timeframe=timeframe,
         limit=limit,
+        mode=storage_preflight.mode,
+        local_latest_timestamp_ms=storage_preflight.local_latest_timestamp_ms,
     )
     provider_request = _smoke_provider_request(
         exchange_id=exchange_id,
@@ -63,13 +75,16 @@ def run_bybit_ohlcv_smoke_slice(
         symbol=symbol,
         timeframe=timeframe,
         limit=limit,
+        mode=storage_preflight.mode,
+        local_latest_timestamp_ms=storage_preflight.local_latest_timestamp_ms,
     )
     event_scope = f"{_safe_event_part(symbol)}-{_safe_event_part(timeframe)}"
+    mode_value = storage_preflight.mode.value
     prepared_event = _progress_event(
         event_id=f"bybit-smoke-{event_scope}-progress-1",
         target=target,
         status=DownloadDataExecutionStatus.PENDING,
-        message="Smoke request prepared",
+        message=f"Smoke {mode_value} request prepared",
     )
     page_result = fetch_bybit_kline_page(provider_request, transport)
     normalized_event = _progress_event(
@@ -84,21 +99,11 @@ def run_bybit_ohlcv_smoke_slice(
     write_request = DownloadDataStorageWriteRequest(
         target=target,
         candles=page_result.candles,
-        csv_path=_smoke_csv_relative_path(
-            exchange_id=exchange_id,
-            market_type=market_type,
-            symbol=symbol,
-            timeframe=timeframe,
-        ),
-        metadata_path=_smoke_metadata_relative_path(
-            exchange_id=exchange_id,
-            market_type=market_type,
-            symbol=symbol,
-            timeframe=timeframe,
-        ),
-        write_mode=DownloadDataExecutionMode.NEW_FILE,
+        csv_path=storage_preflight.csv_path,
+        metadata_path=storage_preflight.metadata_path,
+        write_mode=storage_preflight.mode,
     )
-    storage_result = write_ohlcv_smoke_new_file(
+    storage_result = write_ohlcv_smoke(
         write_request,
         sandbox_root=sandbox_root,
     )
@@ -106,7 +111,7 @@ def run_bybit_ohlcv_smoke_slice(
         event_id=f"bybit-smoke-{event_scope}-progress-3",
         target=target,
         status=DownloadDataExecutionStatus.COMPLETED,
-        message="Sandbox storage completed",
+        message=f"Sandbox storage {mode_value} completed",
         completed_steps=2,
         total_steps=2,
         downloaded_bars=len(page_result.candles),
@@ -200,7 +205,14 @@ def _smoke_target(
     symbol: str = SMOKE_SYMBOL,
     timeframe: str = SMOKE_TIMEFRAME,
     limit: int = SMOKE_LIMIT,
+    mode: DownloadDataExecutionMode = DownloadDataExecutionMode.NEW_FILE,
+    local_latest_timestamp_ms: int | None = None,
 ) -> DownloadDataExecutionTarget:
+    direction = (
+        DownloadDataExecutionDirection.FORWARD_UPDATE
+        if mode is DownloadDataExecutionMode.UPDATE_EXISTING
+        else DownloadDataExecutionDirection.BACKWARD_HISTORY
+    )
     return DownloadDataExecutionTarget(
         exchange_id=exchange_id,
         market_type=market_type,
@@ -212,8 +224,10 @@ def _smoke_target(
             symbol=symbol,
             timeframe=timeframe,
         ),
-        mode=DownloadDataExecutionMode.NEW_FILE,
-        direction=DownloadDataExecutionDirection.BACKWARD_HISTORY,
+        mode=mode,
+        direction=direction,
+        requested_start_timestamp_ms=local_latest_timestamp_ms,
+        local_latest_timestamp_ms=local_latest_timestamp_ms,
         limit=limit,
     )
 
@@ -225,7 +239,14 @@ def _smoke_provider_request(
     symbol: str = SMOKE_SYMBOL,
     timeframe: str = SMOKE_TIMEFRAME,
     limit: int = SMOKE_LIMIT,
+    mode: DownloadDataExecutionMode = DownloadDataExecutionMode.NEW_FILE,
+    local_latest_timestamp_ms: int | None = None,
 ) -> DownloadDataProviderPageRequest:
+    direction = (
+        DownloadDataExecutionDirection.FORWARD_UPDATE
+        if mode is DownloadDataExecutionMode.UPDATE_EXISTING
+        else DownloadDataExecutionDirection.BACKWARD_HISTORY
+    )
     return DownloadDataProviderPageRequest(
         exchange_id=exchange_id,
         market_type=market_type,
@@ -233,8 +254,9 @@ def _smoke_provider_request(
         timeframe=timeframe,
         category=market_type,
         interval=_bybit_interval_for_timeframe(timeframe),
+        start_timestamp_ms=local_latest_timestamp_ms,
         limit=limit,
-        direction=DownloadDataExecutionDirection.BACKWARD_HISTORY,
+        direction=direction,
     )
 
 

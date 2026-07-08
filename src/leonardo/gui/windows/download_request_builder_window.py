@@ -965,6 +965,7 @@ def _format_submit_result(result: object) -> str:
     ]
     sandbox_status = getattr(result, "sandbox_execution_status", None)
     if sandbox_status is not None:
+        result_summaries = tuple(getattr(result, "sandbox_result_summaries", ()))
         lines.extend(
             (
                 "",
@@ -999,9 +1000,16 @@ def _format_submit_result(result: object) -> str:
                     "Last timestamp: "
                     f"{_display_optional(getattr(result, 'sandbox_last_timestamp_ms', None))}"
                 ),
+                "Accepted: no",
+                "Loadable: no",
+                "Validated: no",
                 "Sandbox root notice: output is confined to the configured sandbox root.",
             )
         )
+        if result_summaries:
+            lines.append("Final recap:")
+            for summary in result_summaries:
+                lines.append(f"- {summary}")
     lines.append("Submit issues:")
     if not issues:
         lines.append("- none")
@@ -1022,6 +1030,10 @@ def _format_sandbox_progress_message(result: object) -> str:
         lines.append(f"CSV: {_format_sequence(csv_paths)}")
     if metadata_paths:
         lines.append(f"Metadata: {_format_sequence(metadata_paths)}")
+    result_summaries = tuple(getattr(result, "sandbox_result_summaries", ()))
+    if result_summaries:
+        lines.append("Completed timeframes:")
+        lines.extend(f"- {summary}" for summary in result_summaries)
     return "\n".join(line for line in lines if line)
 
 

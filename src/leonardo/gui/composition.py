@@ -104,6 +104,7 @@ class _SandboxExecutionSubmitState:
     first_timestamp_ms: int | None = None
     last_timestamp_ms: int | None = None
     timeframes_completed: tuple[str, ...] = ()
+    result_summaries: tuple[str, ...] = ()
 
 
 class GuiCompositionRoot:
@@ -429,6 +430,7 @@ class GuiCompositionRoot:
             sandbox_first_timestamp_ms=sandbox_execution.first_timestamp_ms,
             sandbox_last_timestamp_ms=sandbox_execution.last_timestamp_ms,
             sandbox_timeframes_completed=sandbox_execution.timeframes_completed,
+            sandbox_result_summaries=sandbox_execution.result_summaries,
         )
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
@@ -720,10 +722,14 @@ def _run_sandbox_smoke_execution(
     status = getattr(getattr(result, "status", None), "value", None)
     if not isinstance(status, str):
         status = str(getattr(result, "status", "completed"))
+    result_summaries = tuple(
+        _sandbox_result_summary(sandbox_root, storage_result, status)
+        for storage_result in storage_results
+    )
     return _SandboxExecutionSubmitState(
         status,
         status == "completed",
-        "Sandbox smoke execution completed.",
+        _sandbox_execution_message(result_summaries),
         str(sandbox_root.resolve(strict=False)),
         csv_paths,
         metadata_paths,
@@ -734,6 +740,7 @@ def _run_sandbox_smoke_execution(
         min(first_timestamps) if first_timestamps else None,
         max(last_timestamps) if last_timestamps else None,
         timeframes_completed,
+        result_summaries,
     )
 
 
@@ -750,6 +757,59 @@ def _snapshot_progress_message(snapshot: object) -> str:
     progress = getattr(snapshot, "progress", None)
     message = getattr(progress, "message", "")
     return message if isinstance(message, str) else ""
+
+
+def _sandbox_execution_message(result_summaries: tuple[str, ...]) -> str:
+    if any("mode=update_existing" in summary for summary in result_summaries):
+        return "Sandbox smoke execution completed with update_existing output."
+    return "Sandbox smoke execution completed."
+
+
+def _sandbox_result_summary(
+    sandbox_root: Path,
+    storage_result: object,
+    execution_status: str,
+) -> str:
+    target = getattr(storage_result, "target", None)
+    mode = getattr(getattr(target, "mode", None), "value", getattr(target, "mode", ""))
+    status = _sandbox_result_status(storage_result, execution_status)
+    csv_path = sandbox_root / str(getattr(storage_result, "csv_path", ""))
+    metadata_path = sandbox_root / str(getattr(storage_result, "metadata_path", ""))
+    parts = (
+        f"exchange={getattr(target, 'exchange_id', '')}",
+        f"market_type={getattr(target, 'market_type', '')}",
+        f"symbol={getattr(target, 'symbol', '')}",
+        f"timeframe={getattr(target, 'timeframe', '')}",
+        f"mode={mode}",
+        f"status={status}",
+        f"bars_written={getattr(storage_result, 'bars_written', 0)}",
+        f"first_timestamp_ms={_display_optional(getattr(storage_result, 'first_timestamp_ms', None))}",
+        f"last_timestamp_ms={_display_optional(getattr(storage_result, 'last_timestamp_ms', None))}",
+        f"csv_path={csv_path}",
+        f"metadata_path={metadata_path}",
+        f"accepted={_display_bool(getattr(storage_result, 'accepted', False))}",
+        f"loadable={_display_bool(getattr(storage_result, 'loadable', False))}",
+        f"validated={_display_bool(getattr(storage_result, 'validated', False))}",
+        "sandbox_only=true",
+    )
+    return " | ".join(parts)
+
+
+def _sandbox_result_status(storage_result: object, execution_status: str) -> str:
+    status = getattr(getattr(storage_result, "status", None), "value", None)
+    if status == "written" and execution_status == "completed":
+        return "completed"
+    if isinstance(status, str) and status:
+        return status
+    return execution_status
+
+
+def _display_optional(value: object) -> str:
+    return "unresolved" if value is None else str(value)
+
+
+def _display_bool(value: object) -> str:
+    return "true" if value is True else "false"
 
 
 def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindow:

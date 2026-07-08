@@ -983,6 +983,19 @@ def test_start_completed_sandbox_execution_updates_status_and_progress(
     )
     assert "First timestamp: 1700000000000" in result
     assert "Last timestamp: 1700000120000" in result
+    assert "Accepted: no" in result
+    assert "Loadable: no" in result
+    assert "Validated: no" in result
+    assert "Final recap:" in result
+    assert "exchange=bybit" in result
+    assert "market_type=spot" in result
+    assert "symbol=BTCUSDT" in result
+    assert "timeframe=1m" in result
+    assert "mode=new_file" in result
+    assert "status=completed" in result
+    assert "accepted=false" in result
+    assert "loadable=false" in result
+    assert "validated=false" in result
     assert "Sandbox root notice: output is confined to the configured sandbox root." in (
         result
     )
@@ -993,6 +1006,50 @@ def test_start_completed_sandbox_execution_updates_status_and_progress(
     assert messages is not None
     assert "Sandbox smoke execution completed." in messages.toPlainText()
     assert "Bars written: 3" in messages.toPlainText()
+    assert "mode=new_file" in messages.toPlainText()
+
+    _dispose(qapplication, window)
+
+
+def test_start_completed_sandbox_update_execution_shows_update_recap(
+    qapplication: QApplication,
+) -> None:
+    window = _builder(
+        on_submit_intent=lambda draft: _submit_view_with_sandbox(
+            mode="update_existing",
+            message="Sandbox smoke execution completed with update_existing output.",
+        )
+    )
+    _select_combo(window, "exchange", "Bybit")
+    _select_combo(window, "market", "spot")
+    _set_text_field(window, "symbol", "BTCUSDT")
+    _check_timeframes(window, "1m")
+
+    result = _render_start(window)
+    messages = window.findChild(
+        QTextEdit,
+        "download_request_builder.progress.messages",
+    )
+
+    assert "Sandbox execution:" in result
+    assert "Status: completed" in result
+    assert "Message: Sandbox smoke execution completed with update_existing output." in (
+        result
+    )
+    assert "Final recap:" in result
+    assert "mode=update_existing" in result
+    assert "status=completed" in result
+    assert "csv_path=C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv" in (
+        result
+    )
+    assert "metadata_path=C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json" in (
+        result
+    )
+    assert "accepted=false" in result
+    assert "loadable=false" in result
+    assert "validated=false" in result
+    assert messages is not None
+    assert "mode=update_existing" in messages.toPlainText()
 
     _dispose(qapplication, window)
 
@@ -1302,11 +1359,15 @@ def _submit_view() -> SimpleNamespace:
     )
 
 
-def _submit_view_with_sandbox() -> SimpleNamespace:
+def _submit_view_with_sandbox(
+    *,
+    mode: str = "new_file",
+    message: str = "Sandbox smoke execution completed.",
+) -> SimpleNamespace:
     view = _submit_view()
     view.sandbox_execution_status = "completed"
     view.sandbox_execution_completed = True
-    view.sandbox_execution_message = "Sandbox smoke execution completed."
+    view.sandbox_execution_message = message
     view.sandbox_root = "C:/tmp/sandbox"
     view.sandbox_csv_paths = (
         "C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv",
@@ -1318,6 +1379,15 @@ def _submit_view_with_sandbox() -> SimpleNamespace:
     view.sandbox_first_timestamp_ms = 1_700_000_000_000
     view.sandbox_last_timestamp_ms = 1_700_000_120_000
     view.sandbox_timeframes_completed = ("1m",)
+    view.sandbox_result_summaries = (
+        "exchange=bybit | market_type=spot | symbol=BTCUSDT | timeframe=1m | "
+        f"mode={mode} | status=completed | bars_written=3 | "
+        "first_timestamp_ms=1700000000000 | "
+        "last_timestamp_ms=1700000120000 | "
+        "csv_path=C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.csv | "
+        "metadata_path=C:/tmp/sandbox/historical/bybit/spot/BTCUSDT/1m/ohlcv/candles.meta.json | "
+        "accepted=false | loadable=false | validated=false | sandbox_only=true",
+    )
     return view
 
 
