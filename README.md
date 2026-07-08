@@ -1,212 +1,1043 @@
-# Leonardo App V 0.2
+# Leonardo V2
 
-Leonardo V2 is a clean rebuild around explicit contracts, traceable runtime
-state, strict ownership boundaries, and GUI presentation shells. The project
-goal is a system where Core coordinates runtime truth, domain suites own domain
-behavior, GUI presents user intent, and agents operate through contracts instead
-of hidden coupling.
+Leonardo V2 is a contract-first, object-addressable, metadata-backed financial research and trading platform rebuilt from the strongest parts of the old Leonardo application.
 
-## Current Implementation Status
+The goal is not to copy the old app class-for-class. The goal is to preserve what was sound, improve what was fragile, and rebuild the whole system around explicit ownership, traceable objects, async Core execution, and AI-agent operability.
 
-Leonardo V2 currently has a tested Core foundation, GUI shell infrastructure,
-contract docs, metadata docs, and Connection Download Manager shell work. It is
-not a claim that every target system is implemented.
+Leonardo V2 must be usable by humans and inspectable by agents. Every runtime, service, suite, window, widget, menu, button, chart, study, dataset, notebook, websocket, API call, task, report, style, layout, and user action must be identifiable, traceable, auditable, and governed by one clear owner.
 
-| System | Status | Current truth |
+**No shared responsibility is allowed.**
+
+---
+
+## Documentation honesty
+
+This README is both:
+
+1. a status document for the current Leonardo V2 implementation; and
+2. an architecture guide for the updated Leonardo V2 target.
+
+Those two things must not be mixed. The current implementation is what the repository actually contains and validates. The guidelines describe the target architecture and the rules that future implementation must follow.
+
+A legacy Leonardo capability is not current V2 behavior unless the V2 code implements it and tests prove it. A GUI shell is not backend execution. A contract is not a finished workflow. A markdown heading is not a feature, despite humanity's brave attempts to make documents do engineering.
+
+---
+
+## Status legend
+
+- **Implemented**: present in V2 and validated by focused tests.
+- **Partially implemented**: present in V2, but incomplete, not fully wired, or not yet covering the full target architecture.
+- **Shell-only**: GUI/display shell exists, but backend execution is not wired.
+- **Pending sanitation**: implementation exists, but it is not yet accepted as the final V2 architecture and must be cleaned, quarantined, or rebuilt.
+- **Guideline for updated V2 Leonardo version**: target architecture rule for current and future work. This is not a claim that the feature is complete.
+- **Future work**: intentionally not implemented yet.
+- **Explicitly out of scope**: not part of the current phase.
+
+---
+
+## Current implementation status
+
+| Area | Current status | Notes |
 | --- | --- | --- |
-| Core foundation | `Partially implemented` | Runtime foundation and many contracts exist and pass validation. Core must not own Download Manager domain policy. |
-| GUI Service | `Partially implemented` | GUI shell metadata and Connection Download Manager shell windows exist. Full style/layout/action/object registry doctrine remains target architecture unless proven by code/tests. |
-| Connection Suite | `Partially implemented` | Bybit static exchange metadata, provider capability loading, and Download Manager ownership contracts are implemented. Execution architecture remains pending sanitation. |
-| Connection Download Manager GUI | `Shell-only` | Historical Download Manager, Confirm OHLCV Download, and OHLCV Download Task shells exist. Buttons/signals are local GUI shell behavior only. No backend execution is wired. |
-| Old inline DownloadRequestBuilder flow | `Pending sanitation` | Retained temporarily. It is not the accepted final Download Manager UX and must not be used as source-of-truth for future Connection Download Manager design. |
-| Download execution, storage, and provider implementation | `Pending sanitation` | Existing sandbox, fixture, or live-opt-in work may exist. It is not yet accepted as the final Connection Suite Download Manager execution architecture. |
-| Research Suite | `Partially implemented` where current V2 code/tests prove it | Legacy Research capabilities are guidelines for the updated V2 Leonardo version unless explicitly accepted into V2. |
-| Data Manager Suite | `Partially implemented` where current V2 code/tests prove it | Legacy Data Manager capabilities are guidelines for the updated V2 Leonardo version unless explicitly accepted into V2. |
-| Analysis Suite | `Guideline for updated V2 Leonardo version` / `Future work` | Analysis behavior is not current V2 behavior unless specific V2 code and tests prove it. |
-| Trading Suite | `Future work` | Ownership is defined now to prevent leakage into GUI, Research, Analysis, Data Manager, or Connection. |
-| Complete object-addressability across all objects | `Guideline for updated V2 Leonardo version` | Current traceability work establishes direction; all-object addressability is not claimed unless proven by tests. |
-| Full action registry discipline across all GUI/domain actions | `Guideline for updated V2 Leonardo version` | Action IDs and observation patterns exist, but global action discipline remains target architecture unless proven by code/tests. |
-| Full style/font/layout profile mutation system | `Guideline for updated V2 Leonardo version` | Safe GUI style settings exist for selected profiles; full mutation policy remains target architecture. |
-| Full AI-agent operability | `Guideline for updated V2 Leonardo version` | Agents must operate through contracts, metadata, runtime state, and policy gates; full operability is not current behavior. |
-| StateStore thread-safety hardening | `Future Core hardening` / `Guideline for updated V2 Leonardo version` | Do not treat thread-safety hardening as accepted unless a future focused phase proves it. |
+| Core foundation | **Partially implemented** | Core/contracts validation exists for the current foundation. The full target object/action/style/agent system is not complete. |
+| GUI Service | **Partially implemented** | GUI shell/metadata patterns exist. GUI is a shared presentation service, not a domain area. |
+| Connection Suite ownership model | **Partially implemented** | Download Manager ownership contracts now point to Connection Suite. Static Bybit exchange metadata and provider capability loading exist. |
+| Connection Download Manager GUI | **Shell-only** | Historical Download Manager, Confirm OHLCV Download, and OHLCV Download Task shells exist. Buttons/signals are local shell behavior only. |
+| Old inline `DownloadRequestBuilder` flow | **Pending sanitation** | Not the accepted final Download Manager UX. It must not be treated as future source of truth. |
+| Download execution/storage/provider implementation | **Pending sanitation** | Sandbox/fixture/live-opt-in work may exist, but the final Connection Suite execution architecture is not yet accepted. |
+| Bybit static exchange metadata | **Implemented** | Static exchange metadata belongs under the connection namespace and feeds provider capabilities. |
+| Research Suite | **Partially implemented** | Only the parts proven by current V2 code/tests are current implementation. Legacy Research features remain guidelines unless rebuilt. |
+| Data Manager Suite | **Partially implemented** | Only the parts proven by current V2 code/tests are current implementation. Legacy Data Manager workflows remain guidelines unless rebuilt. |
+| Analysis Suite | **Guideline for updated V2 Leonardo version** | Target ownership and workflow boundaries are defined here. Treat implementation as future/partial unless code/tests prove otherwise. |
+| Trading Suite | **Future work** | Ownership is defined now to prevent trading behavior leaking into GUI, Research, Analysis, Data Manager, or Connection. |
+| Full object registry doctrine | **Guideline for updated V2 Leonardo version** | Some object identity patterns may exist, but the full universal object descriptor system is not complete. |
+| Full action registry doctrine | **Guideline for updated V2 Leonardo version** | Some action/menu metadata may exist, but full registered action descriptors for every operation are not complete. |
+| Full style/font/layout profile doctrine | **Guideline for updated V2 Leonardo version** | Current GUI style/settings work may exist, but the full object-linked style/layout system is target architecture. |
+| Full AI-agent operability doctrine | **Guideline for updated V2 Leonardo version** | Agents must eventually operate through contracts. Do not claim complete agent operation unless tested. |
 
-## Status Legend
+---
 
-* `Implemented`: present in V2 and validated by tests.
-* `Partially implemented`: present, but unfinished or not yet fully wired.
-* `Shell-only`: GUI/display shell exists, but backend behavior is not wired.
-* `Pending sanitation`: existing implementation exists but is not yet accepted as the correct V2 architecture.
-* `Guideline for updated V2 Leonardo version`: architectural law for future and ongoing work, not a claim that implementation is finished.
-* `Future work`: intentionally not implemented yet.
-* `Explicitly out of scope`: not part of the current phase.
+## Current accepted ownership model
 
-## Implemented / Partially Implemented / Shell-Only / Pending Sanitation / Guideline / Future Work / Explicitly Out Of Scope
+Leonardo V2 is organized from Core upward:
 
-Implemented status requires current V2 code and tests. Partial status means a
-boundary or slice exists but is not the whole target system. Shell-only status
-means GUI surfaces exist without backend ownership. Pending sanitation means an
-existing path is retained temporarily and must not define future architecture.
-Guidelines define the updated V2 direction. Future work is intentionally not
-implemented. Explicitly out-of-scope work must not be introduced by adjacent
-phases.
+```text
+Core
+  -> GUI Service
+  -> Connection Suite
+  -> Research Suite
+  -> Data Manager Suite
+  -> Analysis Suite
+  -> Trading Suite
+```
 
-## Guidelines For The Updated V2 Leonardo Version
+Core is the foundation. GUI is a shared shell service. Domain suites plug into Core through contracts.
 
-Leonardo V2 has five domain areas running on Core:
+### Core
 
-* `connection_suite`
-* `research_suite`
-* `data_manager_suite`
-* `analysis_suite`
-* `trading_suite`
+**Current status:** Partially implemented.
 
-GUI is not a domain area. GUI is a shared presentation service. GUI owns
-windows, widgets, buttons, menus, metadata for visual shells, layout, style,
-fonts, display state, and local user-intent signals. Domain suites own domain
-behavior. Core owns runtime foundation, orchestration primitives, service
-registration, task lifecycle, audit/event routing, and cross-suite
-coordination.
+Core owns runtime foundation:
 
-## Core Doctrine
+- application lifecycle;
+- service registration;
+- suite registration;
+- task orchestration primitives;
+- async execution primitives;
+- cancellation/progress infrastructure;
+- audit/event routing;
+- cross-suite coordination;
+- safe bridge from GUI intent to registered domain operations.
 
-Core owns runtime foundation, contracts, service registration, task lifecycle,
-operation lifecycle, state snapshots, policy, audit/event routing, and
-cross-suite coordination. Core must not own Download Manager domain policy,
-provider behavior, storage writer behavior, GUI layout, or suite-specific
-workflow decisions.
+Core must not own suite-specific business policy. Core orchestrates. It does not become every domain wearing a fake moustache.
 
-Core status is `Partially implemented`: runtime foundation and many contracts
-exist and pass validation, but not every target object/action/style/agent
-system is finished.
+### GUI Service
 
-## GUI Service Doctrine
+**Current status:** Partially implemented.
 
-GUI is a presentation service. It owns windows, widgets, menus, buttons,
-dialogs, layout, fonts, style defaults, editable GUI metadata, display state,
-and local user-intent signals. GUI may expose launch surfaces and shell-only
-signals, but it must not own Connection Suite behavior, provider calls, storage
-writes, Core execution policy, Runtime Manager control behavior, or Object Map
-mutation.
+GUI is not a domain area. GUI is a shared, editable, traceable presentation service used by all suites.
 
-GUI status is `Partially implemented`. The Connection Download Manager windows
-are `Shell-only`.
+GUI owns:
 
-## Connection Suite Doctrine
+- windows;
+- dialogs;
+- menus;
+- menu items;
+- widgets;
+- buttons;
+- layout;
+- style;
+- fonts;
+- GUI metadata;
+- local display state;
+- local user-intent signals.
 
-Connection Suite owns exchange, API, websocket, provider capability, and
-Download Manager domain behavior. Download Manager belongs to Connection Suite.
-The accepted target module is `connection.download_manager`.
+GUI does not own:
 
-Connection Suite status is `Partially implemented`: Download Manager ownership
-contracts, Bybit static exchange metadata, and provider capability loading are
-implemented. Final Download Manager execution architecture and final
-provider/storage/download runtime architecture are `Pending sanitation`.
+- exchange rules;
+- download planning;
+- OHLCV validation;
+- artifact calculation;
+- database materialization;
+- analysis semantics;
+- trading behavior;
+- provider/API transport;
+- storage writes.
 
-## Research Suite Doctrine
+A GUI window may exist with dummy data before backend logic exists. That is valid shell work. The shell is not the engine. This apparently needs to be written in stone because buttons keep developing messiah complexes.
 
-Research Suite owns research workflow behavior when that behavior is accepted
-into V2. Research capability is `Partially implemented` only where current V2
-code and tests prove it. Legacy Research behavior remains a guideline for the
-updated V2 Leonardo version or reference material until audited and accepted.
+### Connection Suite
 
-## Data Manager Suite Doctrine
+**Current status:** Partially implemented.
 
-Data Manager Suite owns managed data artifacts and accepted data-management
-workflows. It does not inherit ownership from old code automatically. Data
-Manager capability is `Partially implemented` only where current V2 code and
-tests prove it. Legacy Data Manager behavior remains a guideline for the
-updated V2 Leonardo version until accepted.
+Connection Suite owns exchange, account, API, websocket, and download connectivity.
 
-## Analysis Suite Doctrine
+Connection Suite owns the Download Manager domain.
 
-Analysis Suite behavior is `Guideline for updated V2 Leonardo version` or
-`Future work` unless current V2 code and tests prove implementation. Old
-Analysis Suite behavior must not be described as current V2 behavior merely
-because reference code exists.
+Implemented/partially implemented pieces include:
 
-## Trading Suite Doctrine
+- static Bybit exchange metadata under the connection namespace;
+- provider capability loading from metadata;
+- Download Manager ownership contracts pointing to Connection Suite;
+- shell-only Download Manager GUI windows targeting Connection Suite.
 
-Trading Suite is `Future work`. Ownership boundaries are defined now to
-prevent trading behavior from leaking into GUI, Research, Analysis, Data
-Manager, Connection, or Core. No trading/order behavior is part of the current
-phase.
+Pending sanitation:
 
-## Object System Doctrine
+- old inline `DownloadRequestBuilder` flow;
+- current download execution/storage/provider implementation;
+- any GUI composition path that performs workflow orchestration directly;
+- any Core manager importing concrete Download Data runtime implementation directly.
 
-Objects should be traceable, addressable, and inspectable through contracts and
-metadata. Complete object-addressability across all objects is a `Guideline for
-updated V2 Leonardo version` unless specific modules and tests prove a narrower
-implemented slice.
+Target responsibilities:
 
-## Action System Doctrine
+- exchange registry;
+- exchange capability reports;
+- REST API adapters;
+- websocket adapters;
+- account/API-key profiles;
+- connection testing;
+- historical download manager;
+- live feed monitoring;
+- rate limit reporting;
+- connection audit events;
+- API/websocket runtime state;
+- download preflight and execution contracts.
 
-Actions require stable IDs, explicit ownership, policy visibility, and audit
-readiness. Full action registry discipline across all GUI and domain actions is
-a `Guideline for updated V2 Leonardo version` unless proven by current code and
-tests.
+### Research Suite
 
-## State Snapshot Doctrine
+**Current status:** Partially implemented where current code/tests prove it. Otherwise guideline.
 
-Runtime truth must be inspectable through snapshots and read models. Runtime
-Manager may display state but must not own task, process, connection, action,
-operation, provider, or Download Manager behavior. StateStore thread-safety
-hardening is future Core hardening unless a focused phase proves otherwise.
+Research Suite owns historical chart research and visual study workflows.
 
-## Style/Font/Layout Doctrine
+Target responsibilities:
 
-Style, font, density, geometry, and layout policy are first-class GUI metadata
-concerns. A full style/font/layout profile mutation system is a `Guideline for
-updated V2 Leonardo version`; current V2 implements selected safe visual
-settings and must not claim the whole target system is finished.
+- historical chart sessions;
+- chart workspace slots;
+- chart panels;
+- chart panes;
+- viewport/camera state;
+- study instances;
+- study style profiles;
+- financial tool apply/save intent;
+- Study Environment save/load/update/delete flows;
+- Workspace Snapshot save/load/update/delete flows;
+- notebook assignment display and navigation;
+- chart annotations;
+- research-only visual workflows.
 
-## Metadata/Persistence Doctrine
+Research Suite does not own OHLCV truth, artifact persistence policy, Analysis Database materialization, trading execution, or exchange connectivity.
 
-Metadata is system truth for GUI presentation shells and traceable identities.
-GUI metadata may reference a target area, suite, module, or shell, but that
-reference does not transfer domain ownership to GUI.
+### Data Manager Suite
 
-Persistent user overrides are changed-only where implemented. Source metadata
-must not be mutated by settings UI. Review ZIPs should exclude `.git`,
-`__pycache__`, `.pytest_cache`, egg-info, `runs`, `tmp`, and generated
-`historical_data` unless specifically requested.
+**Current status:** Partially implemented where current code/tests prove it. Otherwise guideline.
 
-## Agent Operability Doctrine
+Data Manager Suite owns dataset preparation and Analysis Database construction.
 
-Agents must operate through contracts, metadata, runtime state, policy gates,
-and audited actions. Full AI-agent operability is a `Guideline for updated V2
-Leonardo version`, not current finished behavior.
+Target responsibilities:
 
-## Legacy Capability Migration Doctrine
+- accepted/loadable OHLCV dataset selection;
+- dataset preview intent;
+- saved artifact catalog;
+- artifact recipes;
+- recipe collections;
+- artifact collections;
+- artifact calculation intent;
+- metadata tools;
+- database seed creation;
+- database component editing;
+- database build/rebuild/update intent;
+- materialization preflight display;
+- freshness/update reports;
+- artifact/database lineage display.
 
-Old Leonardo code is reference material unless a future phase explicitly audits
-and accepts a specific module for V2. Legacy Analysis Suite, Data Manager,
-financial tools, adapters, trading behavior, and historical downloader behavior
-must not be described as current V2 implementation unless corresponding V2 code
-and tests exist.
+Data Manager Suite does not own chart sessions, rendering, exchange connectivity, raw OHLCV validation policy, Analysis Suite diagnostics, or trading behavior.
 
-The old inline `DownloadRequestBuilder` flow is `Pending sanitation`. It is
-retained temporarily and must not be used as source-of-truth for future
-Connection Download Manager design.
+### Analysis Suite
 
-## Non-Negotiable Boundaries
+**Current status:** Guideline for updated V2 Leonardo version unless current code/tests prove partial implementation.
 
-No shared responsibility is allowed. GUI remains a shell service. Connection
-Suite remains Download Manager owner. Core remains runtime foundation. Data
-Manager owns managed data artifacts later. Runtime Manager remains an inspector,
-not a controller. Object Map inspection must remain read-only unless a future
-phase explicitly changes that contract.
+Analysis Suite owns structured analysis workflows.
 
-## Validation Doctrine
+Target responsibilities:
 
-Claims require validation. Tests define accepted V2 behavior. Documentation
-must distinguish implemented behavior, shell-only work, pending sanitation,
-guidelines for the updated V2 Leonardo version, future work, and legacy
-references.
+- Analysis Database readiness inspection;
+- target/label planning;
+- feature-set planning;
+- diagnostic reports;
+- POI definitions;
+- event family definitions;
+- road/outcome concepts;
+- genome/path previews;
+- white-box rule testing;
+- candidate scanning;
+- temporal validation;
+- rule review;
+- rule package previews;
+- saved analysis projects;
+- saved runs;
+- saved reports;
+- saved rule packages;
+- validation scenarios.
 
-## Final Doctrine
+A diagnostic report is not a tradable strategy. A rule package is not a trading bot. A promising pattern is not proof of profit. Markets do not care about your confidence, your chart annotations, or your inspirational desk lamp.
 
-Leonardo V2 is contract-aware, metadata-driven, observable, and ownership
-strict. The current repository contains validated slices and shell-only
-surfaces, not the entire target system. Future phases must preserve ownership,
-avoid shared responsibility, and keep documentation truthful as implementation
-advances.
+### Trading Suite
+
+**Current status:** Future work.
+
+Trading Suite owns real-time trading scenarios.
+
+Target responsibilities:
+
+- strategy activation;
+- paper trading;
+- live trading;
+- broker/exchange order routing;
+- account trading state;
+- risk profiles;
+- position tracking;
+- order lifecycle;
+- execution reports;
+- capital/equity state;
+- kill switch;
+- manual override;
+- trading audit events.
+
+Trading Suite must be the strictest suite in the system.
+
+No unregistered order actions. No hidden live trading buttons. No strategy execution without contracts, metadata, risk policy, connection refs, task/audit state, and explicit safety gates.
+
+---
+
+# Guidelines for the updated V2 Leonardo version
+
+Everything in this section is target architecture unless the **Current implementation status** section explicitly marks it as implemented or partially implemented.
+
+These guidelines are still binding design rules. They are not proof that the implementation is finished.
+
+## Mission guideline
+
+Leonardo V2 exists to provide a deterministic, auditable, extensible environment for:
+
+- exchange/account connectivity;
+- OHLCV download, validation, repair, and maintenance;
+- historical chart research;
+- financial study design and artifact generation;
+- dataset and Analysis Database preparation;
+- analysis planning, diagnostics, POI/family/genome/rule research;
+- future real-time trading workflows;
+- AI-agent inspection and safe operation through contracts.
+
+The old Leonardo proved that the Research Suite, Download Manager, OHLCV Maintenance, and Data Manager workflows were valuable. V2 keeps those ideas, but rebuilds them with stronger contracts, metadata, object identity, agent-readable state, async Core orchestration, and stricter ownership boundaries.
+
+---
+
+## Ten architecture commandments
+
+These are architectural laws for the updated V2 Leonardo version. If a commandment describes a system that is not yet implemented, it remains a guideline and target requirement.
+
+### 1. Core is the foundation
+
+Core owns application lifecycle, service registration, task orchestration, async execution, cancellation, progress, audit/event routing, and cross-suite coordination.
+
+Any serious operation goes through Core.
+
+This includes downloads, validation, repair, artifact calculation, database build/rebuild/update, analysis execution, websocket feeds, account checks, backtests, trading simulation, and real trading.
+
+A GUI callback must never become a secret execution engine.
+
+### 2. GUI is a traceable shell service
+
+The GUI is not the brain. The GUI is a shared, inspectable, configurable shell service used by every suite.
+
+The complete GUI must be buildable with dummy data before real backend logic exists.
+
+Every GUI object should have stable identity:
+
+- windows;
+- dialogs;
+- menus;
+- menu items;
+- toolbars;
+- tabs;
+- dock widgets;
+- panels;
+- buttons;
+- labels;
+- inputs;
+- tables;
+- table columns;
+- chart panes;
+- status panels;
+- progress displays;
+- style controls;
+- layout containers.
+
+A missing backend is not an excuse for an unregistered GUI object. The cockpit can be wired before the engine is installed.
+
+### 3. Everything is traceable
+
+If it exists, it must be addressable.
+
+Every important object should expose:
+
+- stable object ID;
+- object type;
+- owning layer;
+- owning suite/service;
+- parent object ref;
+- child object refs;
+- available action refs;
+- state snapshot contract;
+- metadata contract;
+- style profile ref, when visual;
+- layout profile ref, when visual;
+- audit/event refs;
+- agent access policy.
+
+Examples:
+
+```text
+gui.window.main
+gui.window.research_suite
+gui.button.research_suite.chart.add
+gui.widget.data_manager.database_builder
+gui.menu.connection
+gui.action.connection.download.preflight
+core.task.download_ohlcv.20260708_001
+connection.exchange.bybit
+connection.websocket.bybit.public
+research.chart.session.btcusdt_1m_001
+research.study.rsi_001
+data_manager.artifact.volume_001
+data_manager.database.btc_1m_topology_001
+analysis.project.poi_family_research_001
+trading.order.paper_001
+```
+
+No anonymous buttons. No mystery widgets. No hidden execution paths.
+
+### 4. No shared responsibility
+
+Every behavior has exactly one owner.
+
+GUI owns display and user intent collection. It does not own business rules.
+
+Core owns orchestration. It does not own domain policy.
+
+Domain services own planning, validation, and execution semantics. They do not own GUI layout.
+
+Storage services own persistence. They do not invent business decisions.
+
+Renderers render. They do not calculate studies, validate data, or mutate state.
+
+Agents inspect and invoke through contracts. They do not bypass ownership.
+
+If two layers both think they own the same decision, the design is wrong.
+
+### 5. Contracts define the shape of reality
+
+All important payloads must be contract-backed.
+
+Contracts define:
+
+- object refs;
+- action descriptors;
+- input payloads;
+- preflight reports;
+- progress events;
+- terminal reports;
+- metadata sidecars;
+- state snapshots;
+- style profiles;
+- layout profiles;
+- suite capability descriptors;
+- persistence schemas;
+- audit events.
+
+No tuple soup. No undocumented dictionaries. No “the widget knows the format.” That way lies the old swamp.
+
+### 6. Metadata is not decoration
+
+Metadata is system truth.
+
+Every persistent object must carry enough metadata to explain what it is, where it came from, how it was produced, what version of the contract created it, and whether it is safe to use.
+
+Persistent objects should include, where applicable:
+
+- stable ID;
+- schema version;
+- object kind;
+- display name;
+- source refs;
+- lineage;
+- owner service;
+- creation/update timestamps;
+- quality state;
+- validation state;
+- hash/fingerprint evidence;
+- contract version;
+- parameters/spec identity;
+- warnings/blockers;
+- audit refs.
+
+CSV rows are data. Metadata explains whether those rows mean anything.
+
+### 7. Every action is registered
+
+A button is only a visual surface for an action. The action is the real contract.
+
+Every action should define:
+
+- action ID;
+- label;
+- owning object;
+- input contract;
+- preflight contract, if any;
+- confirmation policy;
+- execution owner;
+- result contract;
+- audit events;
+- agent invocation policy;
+- safety level.
+
+Examples:
+
+```text
+action.connection.download.preflight
+action.connection.download.confirm
+action.ohlcv.validate.checked
+action.data_manager.database.build_checked
+action.research.chart.apply_study
+action.analysis.target.preview
+action.trading.order.submit_paper
+action.trading.kill_switch.activate
+```
+
+If an action is not registered, it does not exist.
+
+### 8. Style, font, color, and layout are first-class objects
+
+The GUI should be configurable through object-linked profiles, not scattered hardcoded widget tweaks.
+
+Every visual object should be traceable to style/layout configuration where applicable:
+
+- font family;
+- font size;
+- bold/italic state;
+- foreground color;
+- background color;
+- border/padding/margin policy;
+- visibility;
+- enabled state;
+- geometry hints;
+- dock/slot/pane placement;
+- layout profile;
+- theme profile.
+
+If an AI agent is asked to increase the Research Suite font by `1`, the target architecture is:
+
+1. resolve object `gui.window.research_suite`;
+2. read linked font/style profile;
+3. apply font size delta `+1`;
+4. re-render affected child objects;
+5. emit a style mutation audit event.
+
+No pixel guessing. No Qt archaeology. No “which stylesheet was that again?” nonsense.
+
+### 9. Agents operate through contracts, not hacks
+
+An AI helper must use the same object/action/state/event contracts as the GUI and Core.
+
+An agent may inspect:
+
+- registered objects;
+- available actions;
+- current state snapshots;
+- style/layout profiles;
+- task state;
+- audit/event history;
+- preflight reports;
+- blockers/warnings/errors.
+
+An agent may invoke only actions that are explicitly agent-invokable and only through the registered action path.
+
+An agent must not:
+
+- scrape pixels;
+- bypass preflight;
+- write files directly;
+- mutate database manifests directly;
+- fake service reports;
+- invent object refs;
+- run trading actions without explicit safety gates.
+
+The agent is a disciplined operator, not a raccoon with admin rights.
+
+### 10. Legacy strengths are preserved, but V2 improves them
+
+The old app had useful foundations:
+
+- Research Suite was a strong historical chart research workspace;
+- Download Manager had a sound preflight/task-monitor/audit direction;
+- OHLCV Maintenance had the right explicit validation/repair/acceptance model;
+- Data Manager had useful dataset/artifact/recipe/database preparation workflows;
+- metadata sidecars and lineage were the correct direction;
+- GUI-as-intent/display was already the right boundary in several places.
+
+V2 preserves these strengths as capability references. They become current V2 implementation only when rebuilt through contracts, metadata, object identity, action registration, Core task routing, state snapshots, audit/event traces, and tests.
+
+---
+
+## Object system guideline
+
+**Current status:** Guideline for updated V2 Leonardo version, partially implemented only where code/tests prove it.
+
+Every Leonardo object should be describable through a stable object descriptor.
+
+Minimum target descriptor fields:
+
+```text
+object_id
+object_type
+owner_layer
+owner_suite
+owner_service
+parent_object_id
+child_object_ids
+action_ids
+state_contract
+metadata_contract
+style_profile_id
+layout_profile_id
+agent_access_policy
+audit_event_refs
+schema_version
+```
+
+Target object categories include:
+
+- runtime objects;
+- services;
+- suites;
+- windows;
+- dialogs;
+- widgets;
+- menus;
+- actions;
+- charts;
+- panes;
+- renderers;
+- studies;
+- datasets;
+- OHLCV sources;
+- artifacts;
+- recipes;
+- notebooks;
+- databases;
+- analysis reports;
+- websockets;
+- API connections;
+- trading orders;
+- tasks;
+- audit events;
+- style profiles;
+- layout profiles.
+
+---
+
+## Action system guideline
+
+**Current status:** Guideline for updated V2 Leonardo version, partially implemented only where code/tests prove it.
+
+Every user-visible action and agent-invokable operation should be registered.
+
+Minimum target action descriptor fields:
+
+```text
+action_id
+label
+description
+owning_object_id
+owning_suite
+input_contract
+preflight_contract
+confirmation_required
+execution_owner
+long_running
+result_contract
+progress_event_contract
+audit_event_types
+agent_invocation_policy
+safety_level
+```
+
+Buttons, menu items, shortcuts, context actions, and agent commands all point to action descriptors.
+
+The visual control is not the source of truth. The action descriptor is.
+
+---
+
+## State snapshot guideline
+
+**Current status:** Guideline for updated V2 Leonardo version, partially implemented only where code/tests prove it.
+
+Every important object should expose a structured state snapshot.
+
+State snapshots answer:
+
+- what object this is;
+- whether it is visible;
+- whether it is enabled;
+- what is selected;
+- what data is displayed;
+- what actions are available;
+- what blockers exist;
+- what warnings exist;
+- what task/report/event produced this state;
+- when it changed.
+
+Agents inspect state snapshots. They do not scrape pixels, parse labels, or guess from widget hierarchy.
+
+---
+
+## Style, font, and layout profile guideline
+
+**Current status:** Guideline for updated V2 Leonardo version, partially implemented only where code/tests prove it.
+
+Visual configuration is part of the target architecture.
+
+A profile may define:
+
+- font family;
+- font size;
+- bold/italic/underline;
+- foreground color;
+- background color;
+- accent color;
+- border policy;
+- margin/padding;
+- table density;
+- pane split ratios;
+- default geometry;
+- maximized/default window state;
+- dock/slot/pane placement;
+- chart pane sizing;
+- button rack sizing;
+- theme inheritance.
+
+The style/layout system must allow targeted changes. If the user wants a Jarvis-style Leonardo tomorrow, GUI style/layout profiles must allow that without domain rewrites. Apparently “make the interface editable” means not welding fonts into random constructors like a goblin with a glue gun.
+
+---
+
+## Metadata and persistence guideline
+
+**Current status:** Guideline for updated V2 Leonardo version, partially implemented only where code/tests prove it.
+
+Persistent objects must never rely on filename vibes.
+
+Every persistent object should carry contract-backed metadata:
+
+```text
+object_id
+object_kind
+schema_version
+display_name
+owner_suite
+owner_service
+created_at
+updated_at
+source_refs
+lineage
+quality_state
+validation_state
+hashes/fingerprints
+spec refs
+contract refs
+warnings
+blockers
+audit refs
+```
+
+Data without metadata is not trusted system truth.
+
+---
+
+## Agent operability guideline
+
+**Current status:** Guideline for updated V2 Leonardo version, partially implemented only where code/tests prove it.
+
+Leonardo V2 is built so an AI helper can safely operate the system through contracts.
+
+The agent should eventually be able to ask:
+
+```text
+What suites exist?
+What windows exist?
+What widgets exist in this window?
+What actions does this object expose?
+What state is currently displayed?
+What service owns this operation?
+What preflight is required?
+What style profile controls this object?
+What changed recently?
+What warnings/blockers exist?
+```
+
+The agent should act only through registered actions:
+
+```text
+inspect object
+read state snapshot
+run preflight
+request confirmation
+invoke allowed action
+watch task progress
+read terminal report
+apply style/layout mutation
+read audit trail
+```
+
+Agent operation is not GUI automation. It is contract operation.
+
+---
+
+## Legacy capability migration guideline
+
+**Current status:** Guideline for updated V2 Leonardo version unless specific items are proven by current code/tests.
+
+The old Leonardo README is treated as a legacy capability reference, not as current V2 implementation truth.
+
+V2 will preserve and improve the sound legacy workflows.
+
+### Research Suite legacy target
+
+Preserve:
+
+- historical chart workspace;
+- multi-chart layout;
+- chart-local studies;
+- study styles;
+- Study Environments;
+- Workspace Snapshots;
+- notebook association;
+- chart annotations;
+- pane/renderer ownership model.
+
+Improve with:
+
+- object refs for every chart/window/pane/study/control;
+- style/layout/font profiles;
+- agent-readable chart state;
+- action descriptors;
+- Core-routed long operations;
+- stronger metadata and lineage.
+
+### Connection / Download Manager legacy target
+
+Preserve:
+
+- exchange capability display;
+- OHLCV preflight;
+- multi-timeframe download planning;
+- task monitoring;
+- cancellation/reporting;
+- audit events;
+- conservative post-download validation state.
+
+Improve with:
+
+- Connection Suite ownership;
+- account/API/websocket object refs;
+- Core task execution;
+- richer connection state snapshots;
+- agent-safe connection tests;
+- API/websocket audit traces.
+
+Current accepted status:
+
+- Connection ownership contracts: partially implemented.
+- Old-style Download Manager GUI shells: shell-only.
+- Download Manager backend/execution path: pending sanitation.
+
+### OHLCV Maintenance legacy target
+
+Preserve:
+
+- explicit validation;
+- accepted/loadable states;
+- repair planning;
+- metadata rebuild;
+- source correction policy;
+- dataset deletion safety.
+
+Improve with:
+
+- dataset object refs;
+- validation report contracts;
+- repair task contracts;
+- clear owner services;
+- agent-visible blockers and repair plans;
+- stronger metadata/fingerprint traceability.
+
+### Data Manager Suite legacy target
+
+Preserve:
+
+- accepted OHLCV-only policy;
+- saved artifacts;
+- recipes;
+- recipe collections;
+- artifact collections;
+- database seed creator;
+- database builder;
+- update manager;
+- metadata/lineage hardening;
+- backend-owned validation/materialization/update policy.
+
+Improve with:
+
+- full object/action registry;
+- Core-routed long operations;
+- stricter metadata contracts;
+- agent-readable preparation state;
+- style/layout-configurable suite shell;
+- no direct GUI policy decisions.
+
+### Analysis Suite legacy target
+
+Preserve:
+
+- readiness/target/feature/diagnostic direction;
+- POI/family/genome/rule concepts;
+- white-box diagnostic philosophy;
+- saved analysis object direction.
+
+Improve with:
+
+- first-class suite ownership;
+- clearer execution boundaries;
+- better persistence contracts;
+- explicit non-trading status;
+- agent-readable reports and blockers.
+
+### Trading Suite target
+
+Trading Suite is future work, but its ownership is defined now.
+
+It must not be smuggled into Research Suite, Analysis Suite, Connection Suite, Data Manager, or GUI callbacks.
+
+---
+
+## Non-negotiable boundaries
+
+These boundaries are active architectural rules now and target rules for all future implementation.
+
+### GUI must never
+
+- decide OHLCV loadability;
+- validate business rules;
+- write domain files directly;
+- mutate database manifests directly;
+- calculate artifacts directly;
+- execute recipes directly;
+- classify artifact freshness locally;
+- own websocket connection logic;
+- place orders;
+- generate trading signals;
+- bypass preflight;
+- fake backend reports.
+
+### Core must never
+
+- own suite-specific business policy;
+- write arbitrary domain files outside storage services;
+- replace domain services with orchestration shortcuts;
+- hide task execution from audit/event history.
+
+### Domain services must never
+
+- own GUI layout;
+- mutate visual state directly;
+- bypass storage services for persistence;
+- return undocumented payloads.
+
+### Storage services must never
+
+- invent business decisions;
+- silently repair references;
+- mutate unrelated objects;
+- cascade deletes unless a contract explicitly says so.
+
+### Renderers must never
+
+- calculate financial studies;
+- validate data;
+- persist artifacts;
+- mutate chart/session truth;
+- own business meaning.
+
+### Agents must never
+
+- bypass registered actions;
+- bypass safety gates;
+- write files directly;
+- invent object IDs;
+- scrape GUI pixels;
+- imply profitability from diagnostics;
+- trade without explicit Trading Suite contracts and confirmations.
+
+---
+
+## Validation doctrine
+
+Every architecture patch must preserve:
+
+- no shared responsibility;
+- object identity discipline;
+- action registry discipline;
+- Core execution ownership;
+- GUI shell-only boundaries;
+- metadata and lineage requirements;
+- agent-safe operation paths;
+- documentation truthfulness.
+
+Code changes should follow:
+
+```text
+Audit -> Update -> Validation
+```
+
+Validation should include, where applicable:
+
+- static import boundary checks;
+- contract serialization tests;
+- object registry tests;
+- action descriptor tests;
+- GUI object-name/registry tests;
+- style/layout profile tests;
+- Core task lifecycle tests;
+- metadata round-trip tests;
+- persistence safety tests;
+- agent snapshot/invocation tests;
+- docs link/status review.
+
+---
+
+## Implementation status policy
+
+Every README/doc section must distinguish between:
+
+```text
+Implemented
+Partially implemented
+Shell-only
+Pending sanitation
+Guideline for updated V2 Leonardo version
+Future work
+Explicitly out of scope
+```
+
+No section may describe old Leonardo behavior as current V2 behavior unless V2 actually implements it.
+
+Documentation must be ambitious, but not dishonest. Markdown lies are still lies, just with headings.
+
+---
+
+## Final doctrine
+
+Leonardo V2 is rebuilt from Core upward.
+
+Core is the foundation.
+
+GUI is the traceable shell service.
+
+Connection Suite owns exchange/API/websocket/download connectivity.
+
+Research Suite owns historical chart research workflows.
+
+Data Manager Suite owns dataset/artifact/recipe/database preparation.
+
+Analysis Suite owns structured analysis and diagnostic research.
+
+Trading Suite owns real-time trading behavior and risk-controlled execution.
+
+Every object must eventually be identified.
+
+Every action must eventually be registered.
+
+Every state must eventually be inspectable.
+
+Every style/layout/font property must eventually be configurable.
+
+Every persistent object must carry metadata and lineage.
+
+Every long-running operation must go through Core.
+
+Every agent operation must go through contracts.
+
+Every warning, blocker, error, success, task, API call, websocket state, button press, style mutation, and user action must be auditable.
+
+No shared responsibility is allowed.
+
+That is Leonardo V2.
