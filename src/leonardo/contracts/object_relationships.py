@@ -462,7 +462,7 @@ def _download_definition(
     source_family_id: str,
     target_family_id: str,
     *,
-    owner_component: str = "DownloadManager read-model owner",
+    owner_component: str = "ConnectionDownloadManager read-model owner",
     direction: str = "forward",
 ) -> ObjectRelationshipDefinition:
     return _definition(
@@ -474,8 +474,10 @@ def _download_definition(
         direction=direction,
         owner_domain=CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN,
         owner_component=owner_component,
-        read_provider="DownloadManager read model and future read-only Object Map",
-        mutation_owner="DownloadManager",
+        read_provider=(
+            "ConnectionDownloadManager read model and future read-only Object Map"
+        ),
+        mutation_owner="ConnectionDownloadManager",
         related_contracts=(
             "leonardo.contracts.download.DownloadRequest",
             "leonardo.contracts.download_execution.DownloadExecutionSnapshot",
@@ -805,31 +807,31 @@ OBJECT_RELATIONSHIP_DEFINITIONS: tuple[ObjectRelationshipDefinition, ...] = (
         "creates_plan",
         "download_request",
         "download_execution_snapshot",
-        owner_component="DownloadExecutionManager read-model owner",
+        owner_component="ConnectionDownloadExecutionReadModel owner",
     ),
     _download_definition(
         "creates_plan",
         "download_request",
         "download_preflight",
-        owner_component="Download preflight read-model owner",
+        owner_component="ConnectionDownloadPreflightReadModel owner",
     ),
     _download_definition(
         "classified_by",
         "download_execution_snapshot",
         "download_preflight",
-        owner_component="Download readiness read-model owner",
+        owner_component="ConnectionDownloadReadinessReadModel owner",
     ),
     _download_definition(
         "requires_capability",
         "download_request",
         "download_capability",
-        owner_component="DownloadCapabilityCatalog",
+        owner_component="ConnectionDownloadCapabilityCatalog",
     ),
     _download_definition(
         "requires_capability",
         "download_item",
         "download_capability",
-        owner_component="DownloadCapabilityCatalog",
+        owner_component="ConnectionDownloadCapabilityCatalog",
     ),
     _future_definition(
         "derives_from",

@@ -12,7 +12,7 @@ CONNECTION_AREA_ID = "connection"
 CONNECTION_SUITE_ID = "connection_suite"
 CONNECTION_DOWNLOAD_MANAGER_MODULE_ID = "connection.download_manager"
 CONNECTION_DOWNLOAD_MANAGER_OWNER_DOMAIN = "connection.download_manager"
-CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT = "DownloadManager"
+CONNECTION_DOWNLOAD_MANAGER_OWNER_COMPONENT = "ConnectionDownloadManager"
 
 
 class DownloadWorkflowKind(str, Enum):

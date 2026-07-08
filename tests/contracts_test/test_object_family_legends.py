@@ -131,6 +131,29 @@ def test_download_family_legends_are_read_model_only() -> None:
         assert "storage_writers" in legend.extra["forbidden_behavior"]
 
 
+def test_download_family_legends_use_connection_owned_component_names() -> None:
+    expected_components = {
+        "download_request": "ConnectionDownloadManager",
+        "download_preflight": "ConnectionDownloadPreflightReadModel",
+        "download_item": "ConnectionDownloadManager",
+        "download_execution_snapshot": "ConnectionDownloadExecutionReadModel",
+        "download_capability": "ConnectionDownloadCapabilityCatalog",
+    }
+    deleted_test_paths = {
+        "tests/core_test/test_" + "download_manager.py",
+        "tests/core_test/test_" + "download_execution_manager.py",
+    }
+
+    for family_id, owner_component in expected_components.items():
+        legend = _legend(family_id)
+        assert legend.owner_component == owner_component
+        assert legend.owner_component not in {
+            "DownloadManager",
+            "DownloadExecutionManager",
+        }
+        assert not (set(legend.related_tests) & deleted_test_paths)
+
+
 def test_artifact_recipe_saved_artifact_and_metadata_are_distinct_placeholders() -> None:
     recipe = _legend("artifact_recipe")
     artifact = _legend("saved_artifact")

@@ -6,14 +6,9 @@ recap, preflight, process confirmation vocabulary, progress read models,
 completion recap, output references, and partial persistence state.
 
 The original boundary phase was contract-only. The current accepted Download
-Data slice now supports a sandboxed Bybit OHLCV execution path through the
-Connection Suite Download Manager module. Default execution is
-fixture-backed/offline and writes only under an explicit sandbox root.
-
-Live Bybit public REST transport exists as an opt-in smoke helper only. It is
-not used by default tests or default GUI execution and requires either
-`LEONARDO_ALLOW_LIVE_BYBIT_SMOKE=1` or an explicit `allow_live=True` call. Live
-smoke output remains sandbox-only.
+Data shell is GUI-only and non-executing after Download Manager sanitation.
+Backend execution, provider transport, live smoke helpers, and storage writes
+are pending a future Connection Suite rebuild.
 
 ## Current Implemented Slice
 
@@ -22,20 +17,12 @@ The current user path is:
 ```text
 Main Window -> Download Data -> select exchange / market type / symbol /
 timeframe / limit -> selection recap -> Preview Preflight -> Start ->
-sandbox execution -> final recap
+non-executing final recap
 ```
 
-Preview Preflight remains non-executing. Start/Submit may route through
-composition and Core services to the sandbox smoke path when an explicit
-sandbox root is configured.
-
-Sandbox storage-aware preflight detects `new_file` versus `update_existing`. If
-local sandbox OHLCV exists, the latest local timestamp becomes the update start
-point. If no local sandbox OHLCV exists, sandbox execution behaves as
-`new_file`.
-
-Downloaded sandbox files are not considered accepted, loadable, or validated.
-OHLCV Maintenance and Data Manager acceptance remain outside this scope.
+Preview Preflight remains non-executing. Start/Submit does not route through
+composition, Core services, provider transport, or storage. OHLCV Maintenance
+and Data Manager acceptance remain outside this scope.
 
 ## Boundary Classification
 
@@ -45,7 +32,7 @@ ownership belongs to the Connection Suite Download Manager module:
 - `owner_area_id = connection`
 - `owner_suite_id = connection_suite`
 - `owner_domain = connection.download_manager`
-- `owner_component = DownloadManager`
+- `owner_component = ConnectionDownloadManager`
 - `module_id = connection.download_manager`
 
 Core owns runtime primitives, lifecycle routing, tasks, operations, state,
@@ -106,8 +93,8 @@ and workload estimates. These contracts only describe read models. They do not
 read local files, call provider APIs, or write output.
 
 Process Download confirmation is represented as boundary vocabulary only.
-Production execution remains future work. The accepted implementation currently
-supports sandbox-only Start/Submit execution through composition and Core.
+Production execution remains future work. The accepted GUI shell does not
+execute Start/Submit through composition, Core, providers, or storage.
 
 ## Old Leonardo Storage Naming Policy
 
@@ -135,8 +122,8 @@ candles.meta.json
 relative POSIX read-model strings. They do not create directories and do not
 write files.
 
-The current sandbox smoke writer uses this relative shape under an explicit
-sandbox root, without writing to the project `data/historical` directory:
+Future execution/storage work may use this relative shape under an explicit
+approved root. The current GUI shell does not create these files:
 
 ```text
 historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.csv

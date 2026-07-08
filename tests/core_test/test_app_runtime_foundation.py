@@ -30,7 +30,6 @@ from leonardo.contracts.runtime import ServiceLifecycleStatus
 from leonardo.contracts.services import ServiceDescriptor, ServiceKind
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
-from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 
 
 def test_default_config_resolves_runtime_paths_without_creating_directories(tmp_path) -> None:
@@ -139,7 +138,6 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert context.window_registry is app.window_registry
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
-    assert context.download_capability_catalog is app.download_capability_catalog
     assert context.runtime_manager is app.runtime_manager
     assert app.process_manager.active_processes() == ()
     assert app.connection_registry.connection_states() == ()
@@ -417,32 +415,13 @@ def test_leonardo_app_shutdown_stops_lifecycle_services_not_capabilities() -> No
     )
 
 
-def test_leonardo_app_exposes_populated_download_capability_catalog_without_service_registration() -> None:
+def test_leonardo_app_does_not_own_connection_download_capability_catalog() -> None:
     app = LeonardoApp()
 
     context = app.startup()
-    providers = context.download_capability_catalog.list_providers()
 
-    assert isinstance(app.download_capability_catalog, DownloadCapabilityCatalog)
-    assert context.download_capability_catalog is app.download_capability_catalog
-    assert tuple(provider.provider for provider in providers) == ("bybit",)
-    assert context.download_capability_catalog.supported_timeframes(
-        "bybit",
-        "spot",
-    ) == (
-        "1m",
-        "3m",
-        "5m",
-        "15m",
-        "30m",
-        "1h",
-        "2h",
-        "4h",
-        "6h",
-        "12h",
-        "1d",
-        "1w",
-    )
+    assert not hasattr(app, "download_capability_catalog")
+    assert not hasattr(context, "download_capability_catalog")
     assert context.service_registry.list_services() == ()
 
 

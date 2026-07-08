@@ -12,12 +12,15 @@ from leonardo.contracts.download_provider_capabilities import (
     ProviderTransportKind,
     TimeframeExpansionResult,
 )
+from leonardo.connection.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.connection.exchange.metadata_loader import load_default_exchange_capabilities
-from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CATALOG_SOURCE = (
+    _REPO_ROOT / "src" / "leonardo" / "connection" / "download_capability_catalog.py"
+)
+_CORE_CATALOG_SOURCE = (
     _REPO_ROOT / "src" / "leonardo" / "core" / "download_capability_catalog.py"
 )
 
@@ -27,6 +30,14 @@ def test_empty_catalog_construction() -> None:
 
     assert catalog.list_providers() == ()
     assert catalog.list_markets("binance") == ()
+
+
+def test_catalog_is_connection_owned_source() -> None:
+    source = _CATALOG_SOURCE.read_text(encoding="utf-8")
+
+    assert _CATALOG_SOURCE.exists()
+    assert not _CORE_CATALOG_SOURCE.exists()
+    assert "Connection Suite provider capability catalog" in source
 
 
 def test_catalog_construction_with_one_provider() -> None:

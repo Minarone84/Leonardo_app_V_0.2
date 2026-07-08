@@ -147,6 +147,21 @@ def test_download_read_model_relationships_are_non_executing() -> None:
             assert "storage_writers" in definition.extra["forbidden_behavior"]
 
 
+def test_download_relationships_use_connection_owned_component_names() -> None:
+    deleted_components = {"DownloadManager", "DownloadExecutionManager"}
+
+    for relationship_type in (
+        "creates_item",
+        "creates_plan",
+        "classified_by",
+        "requires_capability",
+    ):
+        for definition in object_relationship_definitions_by_type(relationship_type):
+            assert definition.owner_component not in deleted_components
+            assert definition.mutation_owner == "ConnectionDownloadManager"
+            assert "ConnectionDownload" in definition.owner_component
+
+
 def test_future_relationship_descriptors_are_planned_placeholders() -> None:
     for relationship_type in FUTURE_PLACEHOLDER_RELATIONSHIP_TYPES:
         definitions = object_relationship_definitions_by_type(relationship_type)

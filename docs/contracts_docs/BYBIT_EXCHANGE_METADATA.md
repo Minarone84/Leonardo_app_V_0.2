@@ -5,7 +5,8 @@ Leonardo V2 exchange metadata file. It records static Bybit capability facts for
 future catalog loading and preflight decisions.
 
 The metadata remains a static fact file. The local metadata loader can convert
-it into `DownloadProviderCapability` facts for `DownloadCapabilityCatalog`
+it into `DownloadProviderCapability` facts for the Connection-owned
+`DownloadCapabilityCatalog`
 preflight, but it does not implement a REST client, WebSocket client, exchange
 adapter, credential handling, storage writer, GUI behavior, or Runtime Manager
 behavior.

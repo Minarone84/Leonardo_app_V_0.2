@@ -1,4 +1,4 @@
-"""Static provider capability catalog for Download Data preflight."""
+"""Static Connection Suite provider capability catalog for Download Data preflight."""
 
 from __future__ import annotations
 
@@ -18,14 +18,14 @@ from leonardo.contracts.ohlcv_storage import normalize_market, normalize_provide
 
 class DownloadCapabilityCatalog:
     """
-    Store static Download Data provider capability facts in memory.
+    Store static Connection Suite provider capability facts in memory.
 
-    The catalog is a read-only Core service skeleton for future capability
-    preflight. It stores already-constructed `DownloadProviderCapability`
-    values and delegates market, timeframe, and interval interpretation to the
-    provider capability contract helpers. It does not load catalogs, call
-    adapters, create provider clients, check connection readiness, write files,
-    or execute downloads.
+    The catalog is a read-only Connection-owned descriptor for future download
+    capability preflight. It stores already-constructed
+    `DownloadProviderCapability` values and delegates market, timeframe, and
+    interval interpretation to the provider capability contract helpers. It
+    does not load catalogs, call adapters, create provider clients, check
+    connection readiness, write files, or execute downloads.
     """
 
     def __init__(

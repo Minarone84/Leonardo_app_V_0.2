@@ -12,7 +12,6 @@ from leonardo.contracts.kernel import (
 )
 from leonardo.contracts.runtime import AppLifecycleStatus, ServiceLifecycleStatus
 from leonardo.contracts.services import ServiceKind
-from leonardo.connection.exchange.metadata_loader import load_default_exchange_capabilities
 from leonardo.core.audit_log import (
     AuditLog,
     CompositeAuditSink,
@@ -25,7 +24,6 @@ from leonardo.core.config import AppConfig, AuditConfig, load_default_config
 from leonardo.core.contract_registry import ContractRegistry
 from leonardo.core.core_runner import CoreRunner
 from leonardo.core.core_runtime_bridge import CoreRuntimeBridge
-from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
 from leonardo.core.error_router import ErrorRouter
 from leonardo.core.operation_registry import OperationRegistry
 from leonardo.core.process_manager import ProcessManager
@@ -58,7 +56,6 @@ class CoreContext:
     window_registry: WindowRegistry
     action_registry: ActionRegistry
     operation_registry: OperationRegistry
-    download_capability_catalog: DownloadCapabilityCatalog
     runtime_manager: RuntimeManagerBackend
 
 
@@ -107,9 +104,6 @@ class LeonardoApp:
         self.connection_registry = ConnectionRegistry(self.state_store)
         self.window_registry = WindowRegistry(self.state_store)
         self.action_registry = ActionRegistry(self.state_store)
-        self.download_capability_catalog = DownloadCapabilityCatalog(
-            load_default_exchange_capabilities()
-        )
         self.runtime_manager = RuntimeManagerBackend(
             state_store=self.state_store,
             session_manager=self.session_manager,
@@ -140,7 +134,6 @@ class LeonardoApp:
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             operation_registry=self.operation_registry,
-            download_capability_catalog=self.download_capability_catalog,
             runtime_manager=self.runtime_manager,
         )
 
