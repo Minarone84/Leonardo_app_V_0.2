@@ -23,8 +23,8 @@ _METADATA_DIR = (
 )
 _MAIN_WINDOW_METADATA = _METADATA_DIR / "main_window.window.toml"
 _RUNTIME_MANAGER_METADATA = _METADATA_DIR / "runtime_manager.window.toml"
-_DOWNLOAD_REQUEST_BUILDER_METADATA = (
-    _METADATA_DIR / "download_request_builder.window.toml"
+_HISTORICAL_DOWNLOAD_MANAGER_METADATA = (
+    _METADATA_DIR / "historical_download_manager.window.toml"
 )
 
 
@@ -78,12 +78,12 @@ def test_runtime_manager_actions_have_trace_summaries() -> None:
     assert "runtime_manager.export_snapshot" in summary_ids
 
 
-def test_download_request_builder_actions_have_trace_summaries() -> None:
-    summaries = _summaries_for(_DOWNLOAD_REQUEST_BUILDER_METADATA)
+def test_historical_download_manager_actions_have_trace_summaries() -> None:
+    summaries = _summaries_for(_HISTORICAL_DOWNLOAD_MANAGER_METADATA)
     summary_ids = {summary.object_ref.object_id for summary in summaries}
 
-    assert "download_request_builder.submit" in summary_ids
-    assert "download_request_builder.close" in summary_ids
+    assert "historical_download_manager.start" in summary_ids
+    assert "historical_download_manager.ohlcv_maintenance" in summary_ids
 
 
 def test_action_summary_includes_static_metadata_fields() -> None:
@@ -108,12 +108,12 @@ def test_action_summary_includes_static_metadata_fields() -> None:
     assert "action_observer_definition" in summary.metadata["sources"]
 
 
-def test_placeholder_action_status_is_reported_from_static_definition() -> None:
+def test_shell_action_status_is_reported_from_static_definition() -> None:
     section = build_action_trace_section()
     summary = _summary_by_id(section, "main_window.download_data")
 
-    assert summary.metadata["is_placeholder"] is True
-    assert summary.metadata["implementation_status"] == "placeholder"
+    assert summary.metadata["is_placeholder"] is False
+    assert summary.metadata["implementation_status"] == "defined"
     assert summary.metadata["window_id"] == "main_window.window"
 
 
@@ -178,7 +178,7 @@ def test_action_object_map_section_includes_summaries_legend_and_relationship_de
     assert section.family_id == "action"
     assert "main_window.open_runtime_manager" in summary_ids
     assert "runtime_manager.refresh_snapshot" in summary_ids
-    assert "download_request_builder.submit" in summary_ids
+    assert "historical_download_manager.start" in summary_ids
     assert section.legends[0].family_id == "action"
     assert "contains_action" in relationship_types
     assert "has_permission" in relationship_types
@@ -267,7 +267,7 @@ def test_default_action_metadata_paths_are_static_and_existing() -> None:
 
     assert _MAIN_WINDOW_METADATA in paths
     assert _RUNTIME_MANAGER_METADATA in paths
-    assert _DOWNLOAD_REQUEST_BUILDER_METADATA in paths
+    assert _HISTORICAL_DOWNLOAD_MANAGER_METADATA in paths
     assert all(path.exists() for path in paths)
 
 

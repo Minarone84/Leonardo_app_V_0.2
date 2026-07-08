@@ -6,16 +6,6 @@ from leonardo.contracts.connections import (
     ConnectionProtocol,
     WebSocketChannelDefinition,
 )
-from leonardo.contracts.downloads import (
-    DownloadRangeMode,
-    DownloadRequest,
-    DownloadTimeframeMode,
-    DownloadWorkflowKind,
-)
-from leonardo.contracts.download_execution import (
-    DownloadPreflightLayer,
-    DownloadPreflightLayerStatus,
-)
 from leonardo.contracts.gui import ActionDefinition, ActionKind, WindowDefinition
 from leonardo.contracts.inspection import (
     DownloadDataRuntimeSummary,
@@ -281,7 +271,7 @@ def test_runtime_manager_snapshot_includes_connection_summary() -> None:
     assert snapshot.connections_summary.metadata["channel_received_count"] == 2
 
 
-def test_runtime_manager_snapshot_includes_empty_download_summary() -> None:
+def test_runtime_manager_snapshot_includes_unavailable_download_summary() -> None:
     app = LeonardoApp()
 
     snapshot = app.runtime_manager.snapshot()
@@ -289,7 +279,8 @@ def test_runtime_manager_snapshot_includes_empty_download_summary() -> None:
     assert snapshot.downloads_summary.section_id == "downloads"
     assert snapshot.downloads_summary.status is RuntimeSectionStatus.OK
     assert snapshot.downloads_summary.count == 0
-    assert snapshot.downloads_summary.metadata["available"] is True
+    assert snapshot.downloads_summary.message == "Download Manager unavailable"
+    assert snapshot.downloads_summary.metadata["available"] is False
     assert snapshot.downloads_summary.metadata["total_requests"] == 0
     assert snapshot.downloads_summary.metadata["total_items"] == 0
     assert "downloads" in tuple(
@@ -297,7 +288,7 @@ def test_runtime_manager_snapshot_includes_empty_download_summary() -> None:
     )
 
 
-def test_runtime_manager_snapshot_includes_empty_download_execution_summary() -> None:
+def test_runtime_manager_snapshot_includes_unavailable_download_execution_summary() -> None:
     app = LeonardoApp()
 
     snapshot = app.runtime_manager.snapshot()
@@ -306,9 +297,9 @@ def test_runtime_manager_snapshot_includes_empty_download_execution_summary() ->
     assert snapshot.download_execution_summary.status is RuntimeSectionStatus.OK
     assert snapshot.download_execution_summary.count == 0
     assert snapshot.download_execution_summary.message == (
-        "0 download execution plans"
+        "Download Execution Manager unavailable"
     )
-    assert snapshot.download_execution_summary.metadata["available"] is True
+    assert snapshot.download_execution_summary.metadata["available"] is False
     assert snapshot.download_execution_summary.metadata["total_plans"] == 0
     assert snapshot.download_execution_summary.metadata["active_plan_ids"] == ()
     assert snapshot.download_execution_summary.metadata["plan_rows"] == ()
@@ -1105,256 +1096,6 @@ def test_runtime_manager_object_map_summary_does_not_import_trace_providers() ->
         assert token not in source
 
 
-def test_runtime_manager_snapshot_reflects_download_manager_state_read_only() -> None:
-    app = LeonardoApp()
-    app.download_manager.submit_request(
-        _download_request(
-            symbols=("BTCUSDT", "ETHUSDT"),
-            timeframes=("1m", "5m"),
-        )
-    )
-    before_state = (
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.download_manager.get_summary(),
-        app.audit_log.snapshot(),
-    )
-
-    snapshot = app.runtime_manager.snapshot()
-    after_state = (
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.download_manager.get_summary(),
-        app.audit_log.snapshot(),
-    )
-
-    assert after_state == before_state
-    assert snapshot.downloads_summary.status is RuntimeSectionStatus.OK
-    assert snapshot.downloads_summary.count == 1
-    assert snapshot.downloads_summary.message == "1 download request, 4 items"
-    assert snapshot.downloads_summary.metadata["total_requests"] == 1
-    assert snapshot.downloads_summary.metadata["total_items"] == 4
-    assert snapshot.downloads_summary.metadata["validated_count"] == 5
-    assert snapshot.downloads_summary.metadata["active_request_ids"] == (
-        "req-download",
-    )
-    assert snapshot.downloads_summary.metadata["active_item_ids"] == (
-        "req-download:BTCUSDT:1m",
-        "req-download:BTCUSDT:5m",
-        "req-download:ETHUSDT:1m",
-        "req-download:ETHUSDT:5m",
-    )
-
-
-def test_runtime_manager_snapshot_marks_download_failures_degraded() -> None:
-    app = LeonardoApp()
-    request = _download_request(
-        timeframe_mode=DownloadTimeframeMode.DEFAULT,
-        timeframes=(),
-    )
-    object.__setattr__(request, "timeframe_mode", DownloadTimeframeMode.EXPLICIT)
-
-    app.download_manager.submit_request(request)
-    snapshot = app.runtime_manager.snapshot()
-
-    assert snapshot.downloads_summary.status is RuntimeSectionStatus.DEGRADED
-    assert snapshot.health is RuntimeHealthStatus.DEGRADED
-    assert snapshot.downloads_summary.metadata["failed_count"] == 1
-    assert snapshot.downloads_summary.metadata["preflight_failed_count"] == 1
-    assert snapshot.downloads_summary.metadata["failed_request_ids"] == (
-        "req-download",
-    )
-
-
-def test_runtime_manager_snapshot_reflects_download_execution_state_read_only() -> None:
-    app = LeonardoApp()
-    app.download_manager.submit_request(
-        _download_request(
-            symbols=("BTCUSDT", "ETHUSDT"),
-            timeframes=("1m",),
-        )
-    )
-    execution_snapshot = app.download_execution_manager.create_plan("req-download")
-    before_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.audit_log.snapshot(),
-    )
-
-    snapshot = app.runtime_manager.snapshot()
-    after_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.audit_log.snapshot(),
-    )
-
-    assert after_state == before_state
-    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.OK
-    assert snapshot.download_execution_summary.count == 1
-    assert snapshot.download_execution_summary.metadata["total_plans"] == 1
-    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == (
-        execution_snapshot.plan.plan_id,
-    )
-    assert snapshot.download_execution_summary.metadata["failed_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["completed_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["plan_rows"] == (
-        {
-            "plan_id": "execution-plan-req-download",
-            "request_id": "req-download",
-            "phase": "planned",
-            "operation_id": None,
-            "task_id": None,
-            "item_count": 2,
-            "preflight_layer_count": 1,
-            "progress_percent": None,
-            "output_count": 0,
-            "error_count": 0,
-            "details": "connection_refs=binance-spot",
-            "estimated_items": 2,
-        },
-    )
-
-
-def test_runtime_manager_snapshot_reflects_download_execution_ready_phase() -> None:
-    app = LeonardoApp()
-    app.download_manager.submit_request(_download_request())
-    execution_snapshot = app.download_execution_manager.create_plan("req-download")
-    updated = app.download_execution_manager.mark_ready(
-        execution_snapshot.plan.plan_id,
-    )
-    before_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.audit_log.snapshot(),
-    )
-
-    snapshot = app.runtime_manager.snapshot()
-    after_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.audit_log.snapshot(),
-    )
-
-    assert after_state == before_state
-    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.OK
-    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == (
-        updated.plan.plan_id,
-    )
-    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == (
-        updated.plan.plan_id,
-    )
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
-        "ready"
-    )
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
-        "connection_refs=binance-spot; "
-        "message=Download execution plan is ready for future execution."
-    )
-
-
-def test_runtime_manager_snapshot_reflects_download_execution_blocked_phase() -> None:
-    app = LeonardoApp()
-    app.download_manager.submit_request(_download_request())
-    execution_snapshot = app.download_execution_manager.create_plan("req-download")
-    updated = app.download_execution_manager.mark_blocked(
-        execution_snapshot.plan.plan_id,
-        "Storage policy is unresolved.",
-    )
-
-    snapshot = app.runtime_manager.snapshot()
-
-    assert snapshot.health is RuntimeHealthStatus.DEGRADED
-    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.DEGRADED
-    assert snapshot.download_execution_summary.metadata["active_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["running_plan_ids"] == ()
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
-        updated.plan.plan_id,
-    )
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["phase"] == (
-        "blocked"
-    )
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
-        "connection_refs=binance-spot; message=Storage policy is unresolved."
-    )
-
-
-def test_runtime_manager_snapshot_reflects_capability_blocked_execution() -> None:
-    app = LeonardoApp()
-    app.download_manager.submit_request(_download_request())
-    execution_snapshot = app.download_execution_manager.create_plan("req-download")
-    updated = app.download_execution_manager.classify_readiness(
-        execution_snapshot.plan.plan_id,
-    )
-    before_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.audit_log.snapshot(),
-    )
-
-    snapshot = app.runtime_manager.snapshot()
-    after_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.download_manager.list_requests(),
-        app.download_manager.list_preflights(),
-        app.download_manager.list_items(),
-        app.audit_log.snapshot(),
-    )
-    capability_layers = tuple(
-        layer
-        for layer in updated.preflight_layers
-        if layer.layer is DownloadPreflightLayer.CAPABILITY
-    )
-
-    assert after_state == before_state
-    assert capability_layers[0].status is DownloadPreflightLayerStatus.BLOCKED
-    assert capability_layers[0].issues == ("Unknown provider: binance.",)
-    assert snapshot.download_execution_summary.status is RuntimeSectionStatus.DEGRADED
-    assert snapshot.download_execution_summary.metadata["blocked_plan_ids"] == (
-        updated.plan.plan_id,
-    )
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0][
-        "preflight_layer_count"
-    ] == 2
-    assert snapshot.download_execution_summary.metadata["plan_rows"][0]["details"] == (
-        "connection_refs=binance-spot; message=Unknown provider: binance."
-    )
-
-
-def test_runtime_manager_snapshot_does_not_create_download_execution_plans() -> None:
-    app = LeonardoApp()
-    app.download_manager.submit_request(_download_request())
-    before_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.audit_log.snapshot(),
-    )
-
-    snapshot = app.runtime_manager.snapshot()
-    after_state = (
-        app.download_execution_manager.list_snapshots(),
-        app.audit_log.snapshot(),
-    )
-
-    assert before_state == ((), app.audit_log.snapshot())
-    assert after_state == before_state
-    assert snapshot.download_execution_summary.count == 0
-    assert snapshot.download_execution_summary.metadata["plan_rows"] == ()
-
-
 def test_runtime_manager_snapshot_degrades_when_connection_degraded() -> None:
     app = LeonardoApp()
     app.connection_registry.register_connection(
@@ -1416,26 +1157,6 @@ def test_leonardo_app_exposes_runtime_manager_backend() -> None:
     assert app.context.runtime_manager is app.runtime_manager
 
 
-def _download_request(
-    *,
-    symbols: tuple[str, ...] = ("BTCUSDT",),
-    timeframe_mode: DownloadTimeframeMode = DownloadTimeframeMode.EXPLICIT,
-    timeframes: tuple[str, ...] = ("1m",),
-) -> DownloadRequest:
-    return DownloadRequest(
-        request_id="req-download",
-        workflow_kind=DownloadWorkflowKind.DOWNLOAD_DATA,
-        source="binance",
-        market="spot",
-        symbols=symbols,
-        timeframe_mode=timeframe_mode,
-        timeframes=timeframes,
-        range_mode=DownloadRangeMode.LATEST,
-        requested_by="admin-dev",
-        connection_ref="binance-spot",
-    )
-
-
 def _runtime_manager_backend(
     app: LeonardoApp,
     *,
@@ -1456,8 +1177,6 @@ def _runtime_manager_backend(
         operation_registry=app.operation_registry,
         audit_log=app.audit_log,
         contract_registry=app.contract_registry,
-        download_manager=app.download_manager,
-        download_execution_manager=app.download_execution_manager,
         object_map_snapshot_provider=object_map_snapshot_provider,
         provider_runtime_summary_provider=provider_runtime_summary_provider,
         suite_runtime_summary_provider=suite_runtime_summary_provider,

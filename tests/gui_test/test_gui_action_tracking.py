@@ -47,7 +47,19 @@ _WINDOW_SOURCES = (
     / "leonardo"
     / "gui"
     / "windows"
-    / "download_request_builder_window.py",
+    / "historical_download_manager_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
+    / "ohlcv_download_preflight_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
+    / "ohlcv_download_task_window.py",
     _REPO_ROOT
     / "src"
     / "leonardo"
@@ -79,10 +91,11 @@ def test_composition_registers_first_gui_action_definitions(
     }
 
     assert {
-        "download_request_builder.close",
-        "download_request_builder.draft_summary",
-        "download_request_builder.preview_preflight",
-        "download_request_builder.submit",
+        "historical_download_manager.clear_timeframes",
+        "historical_download_manager.ohlcv_maintenance",
+        "historical_download_manager.select_all_timeframes",
+        "historical_download_manager.start",
+        "historical_download_manager.stop",
         "main_window.download_data",
         "main_window.ohlcv_maintenance",
         "main_window.open_analysis_suite",
@@ -112,20 +125,19 @@ def test_composition_registers_first_gui_action_definitions(
         Permission.RUNTIME_VIEW,
     )
     assert definitions["runtime_manager.close"].required_permissions == ()
-    assert definitions["download_request_builder.submit"].label == "Start"
+    assert definitions["historical_download_manager.start"].label == "Start"
     for action_id in (
-        "download_request_builder.draft_summary",
-        "download_request_builder.preview_preflight",
-        "download_request_builder.submit",
-        "download_request_builder.close",
+        "historical_download_manager.clear_timeframes",
+        "historical_download_manager.ohlcv_maintenance",
+        "historical_download_manager.select_all_timeframes",
+        "historical_download_manager.start",
+        "historical_download_manager.stop",
     ):
         assert definitions[action_id].required_permissions == ()
         assert definitions[action_id].is_placeholder is False
         assert definitions[action_id].kind is ActionKind.BUTTON
-        assert definitions[action_id].window_id == "download_request_builder.window"
+        assert definitions[action_id].window_id == "historical_download_manager.window"
     for action_id in (
-        "main_window.download_data",
-        "main_window.ohlcv_maintenance",
         "main_window.open_analysis_suite",
         "main_window.open_data_manager_suite",
         "main_window.open_research_suite",
@@ -133,6 +145,12 @@ def test_composition_registers_first_gui_action_definitions(
     ):
         assert definitions[action_id].required_permissions == ()
         assert definitions[action_id].is_placeholder is True
+    for action_id in (
+        "main_window.download_data",
+        "main_window.ohlcv_maintenance",
+    ):
+        assert definitions[action_id].required_permissions == ()
+        assert definitions[action_id].is_placeholder is False
     assert definitions["main_window.download_data"].kind is ActionKind.MENU
     assert definitions["main_window.ohlcv_maintenance"].kind is ActionKind.MENU
     assert definitions["main_window.open_trading_suite"].kind is ActionKind.BUTTON
@@ -182,7 +200,6 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     root = GuiCompositionRoot(app.context, track_windows=False)
     window = root.create_main_window()
 
-    initial_download_summary = app.download_manager.get_summary()
     initial_runtime_downloads = app.runtime_manager.snapshot().downloads_summary
 
     window.action_for_id("main_window.download_data").trigger()
@@ -207,7 +224,6 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
         for event in app.audit_log.snapshot()
         if event.event_type == "gui.action.triggered"
     )
-    download_summary = app.download_manager.get_summary()
     runtime_downloads = app.runtime_manager.snapshot().downloads_summary
     download_events = tuple(
         event
@@ -225,62 +241,50 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
 
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
-    assert root.download_request_builder_window is not None
-    assert root.download_request_builder_window.workflow_mode == "ohlcv_maintenance"
-    assert initial_download_summary.total_requests == 0
-    assert initial_download_summary.total_items == 0
-    assert download_summary.total_requests == 0
-    assert download_summary.total_items == 0
+    assert root.historical_download_manager_window is not None
+    assert root.historical_download_manager_window.isVisible() is True
     assert initial_runtime_downloads.count == 0
     assert initial_runtime_downloads.metadata["total_requests"] == 0
+    assert initial_runtime_downloads.metadata["available"] is False
     assert runtime_downloads.count == 0
     assert runtime_downloads.metadata["total_requests"] == 0
     assert runtime_downloads.metadata["total_items"] == 0
-    assert app.download_manager.list_requests() == ()
-    assert app.download_manager.list_preflights() == ()
-    assert app.download_manager.list_items() == ()
+    assert runtime_downloads.metadata["available"] is False
     assert download_events == ()
 
-    _dispose(qapplication, window, root.download_request_builder_window)
+    _dispose(qapplication, window, root.historical_download_manager_window)
     app.shutdown()
 
 
-def test_download_request_builder_internal_actions_are_recorded(
+def test_historical_download_manager_shell_buttons_remain_local_signals(
     qapplication: QApplication,
 ) -> None:
     app = LeonardoApp()
     root = GuiCompositionRoot(app.context, track_windows=False)
     window = root.create_main_window()
+    signals: list[str] = []
 
     window.action_for_id("main_window.download_data").trigger()
     qapplication.processEvents()
-    builder = root.download_request_builder_window
-    assert builder is not None
+    shell = root.historical_download_manager_window
+    assert shell is not None
 
-    for object_name in (
-        "download_request_builder.submit_button",
-        "download_request_builder.close",
-    ):
-        button = builder.findChild(QPushButton, object_name)
-        assert button is not None
-        button.click()
-        qapplication.processEvents()
+    shell.start_requested.connect(lambda: signals.append("start"))
+    shell.maintenance_requested.connect(lambda: signals.append("maintenance"))
+    shell.button_for_id("start").click()
+    shell.button_for_id("ohlcv_maintenance").click()
+    qapplication.processEvents()
 
-    for action_id in (
-        "download_request_builder.submit",
-        "download_request_builder.close",
-    ):
-        record = _last_record(app, action_id)
-        assert record.window_id == "download_request_builder.window"
-        assert record.actor_id == "admin-dev"
-        assert record.session_id == "session-admin-dev"
-        assert dict(record.metadata) == {"workflow_mode": "download_data"}
+    assert signals == ["start", "maintenance"]
+    assert "historical_download_manager.start" not in _recent_action_ids(app)
+    assert "historical_download_manager.ohlcv_maintenance" not in _recent_action_ids(app)
+    assert not [
+        event
+        for event in app.audit_log.snapshot()
+        if event.event_type.startswith("download.")
+    ]
 
-    assert app.download_manager.list_requests() == ()
-    assert app.download_manager.list_preflights() == ()
-    assert app.download_manager.list_items() == ()
-
-    _dispose(qapplication, window, builder)
+    _dispose(qapplication, window, shell)
     app.shutdown()
 
 

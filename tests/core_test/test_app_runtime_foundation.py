@@ -20,18 +20,6 @@ from leonardo.contracts.core_runtime import (
     CoreRuntimeResult,
     CoreRuntimeResultStatus,
 )
-from leonardo.contracts.downloads import (
-    DownloadRangeMode,
-    DownloadRequest,
-    DownloadStatus,
-    DownloadTimeframeMode,
-    DownloadWorkflowKind,
-)
-from leonardo.contracts.download_execution import (
-    DownloadExecutionPhase,
-    DownloadPreflightLayer,
-    DownloadPreflightLayerStatus,
-)
 from leonardo.contracts.processes import (
     ProcessKind,
     ProcessLaunchRequest,
@@ -43,8 +31,6 @@ from leonardo.contracts.services import ServiceDescriptor, ServiceKind
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import load_default_config
 from leonardo.core.download_capability_catalog import DownloadCapabilityCatalog
-from leonardo.core.download_execution_manager import DownloadExecutionManager
-from leonardo.core.download_manager import DownloadManager
 
 
 def test_default_config_resolves_runtime_paths_without_creating_directories(tmp_path) -> None:
@@ -154,8 +140,6 @@ def test_leonardo_app_startup_and_shutdown_transition_state() -> None:
     assert context.action_registry is app.action_registry
     assert context.operation_registry is app.operation_registry
     assert context.download_capability_catalog is app.download_capability_catalog
-    assert context.download_manager is app.download_manager
-    assert context.download_execution_manager is app.download_execution_manager
     assert context.runtime_manager is app.runtime_manager
     assert app.process_manager.active_processes() == ()
     assert app.connection_registry.connection_states() == ()
@@ -433,28 +417,6 @@ def test_leonardo_app_shutdown_stops_lifecycle_services_not_capabilities() -> No
     )
 
 
-def test_leonardo_app_exposes_download_manager_without_service_registration() -> None:
-    app = LeonardoApp()
-
-    context = app.startup()
-
-    assert isinstance(app.download_manager, DownloadManager)
-    assert context.download_manager is app.download_manager
-    assert context.download_manager.get_summary().total_requests == 0
-    assert context.service_registry.list_services() == ()
-
-
-def test_leonardo_app_exposes_download_execution_manager_without_service_registration() -> None:
-    app = LeonardoApp()
-
-    context = app.startup()
-
-    assert isinstance(app.download_execution_manager, DownloadExecutionManager)
-    assert context.download_execution_manager is app.download_execution_manager
-    assert context.download_execution_manager.list_snapshots() == ()
-    assert context.service_registry.list_services() == ()
-
-
 def test_leonardo_app_exposes_populated_download_capability_catalog_without_service_registration() -> None:
     app = LeonardoApp()
 
@@ -463,10 +425,6 @@ def test_leonardo_app_exposes_populated_download_capability_catalog_without_serv
 
     assert isinstance(app.download_capability_catalog, DownloadCapabilityCatalog)
     assert context.download_capability_catalog is app.download_capability_catalog
-    assert (
-        app.download_execution_manager._capability_catalog  # type: ignore[attr-defined]
-        is app.download_capability_catalog
-    )
     assert tuple(provider.provider for provider in providers) == ("bybit",)
     assert context.download_capability_catalog.supported_timeframes(
         "bybit",
@@ -486,114 +444,6 @@ def test_leonardo_app_exposes_populated_download_capability_catalog_without_serv
         "1w",
     )
     assert context.service_registry.list_services() == ()
-
-
-def test_default_app_catalog_blocks_unknown_download_provider_readiness() -> None:
-    app = LeonardoApp()
-    context = app.startup()
-    context.download_manager.submit_request(_download_request())
-    before_items = context.download_manager.list_items("req-app-download")
-
-    snapshot = context.download_execution_manager.create_plan("req-app-download")
-    updated = context.download_execution_manager.classify_readiness(
-        snapshot.plan.plan_id,
-    )
-
-    layer = _capability_layer(updated)
-    assert updated.plan.phase is DownloadExecutionPhase.BLOCKED
-    assert updated.progress is not None
-    assert updated.progress.message == "Unknown provider: binance."
-    assert layer.status is DownloadPreflightLayerStatus.BLOCKED
-    assert layer.issues == ("Unknown provider: binance.",)
-    assert context.download_manager.list_items("req-app-download") == before_items
-    assert context.service_registry.list_services() == ()
-
-
-def test_default_app_catalog_classifies_valid_bybit_download_ready() -> None:
-    app = LeonardoApp()
-    context = app.startup()
-    context.download_manager.submit_request(
-        _download_request(
-            source="bybit",
-            connection_ref="bybit-spot",
-        )
-    )
-
-    snapshot = context.download_execution_manager.create_plan("req-app-download")
-    updated = context.download_execution_manager.classify_readiness(
-        snapshot.plan.plan_id,
-    )
-
-    layer = _capability_layer(updated)
-    assert updated.plan.phase is DownloadExecutionPhase.READY
-    assert layer.status is DownloadPreflightLayerStatus.PASSED
-    assert layer.metadata["provider"] == "bybit"
-    assert layer.metadata["market"] == "spot"
-    assert dict(layer.metadata["provider_intervals"]) == {
-        "1m": "1",
-        "5m": "5",
-    }
-
-
-def test_download_manager_can_be_used_through_app_context_without_gui(tmp_path) -> None:
-    config = load_default_config(tmp_path)
-    app = LeonardoApp(config)
-
-    context = app.startup()
-    preflight = context.download_manager.submit_request(_download_request())
-    app.shutdown()
-
-    assert preflight.status is DownloadStatus.VALIDATED
-    assert preflight.can_run is True
-    assert context.download_manager.list_requests() == (_download_request(),)
-    assert len(context.download_manager.list_items("req-app-download")) == 2
-    assert not config.paths.runs_dir.exists()
-    assert not config.paths.historical_data_dir.exists()
-    assert not config.paths.tmp_dir.exists()
-    assert config.audit.jsonl_path is not None
-    assert not config.audit.jsonl_path.exists()
-
-
-def test_download_execution_manager_uses_app_owned_download_manager() -> None:
-    app = LeonardoApp()
-    context = app.startup()
-
-    preflight = app.download_manager.submit_request(_download_request())
-    snapshot = context.download_execution_manager.create_plan("req-app-download")
-
-    assert preflight.can_run is True
-    assert snapshot.plan.request_id == "req-app-download"
-    assert snapshot.plan.item_ids == (
-        "req-app-download:BTCUSDT:1m",
-        "req-app-download:BTCUSDT:5m",
-    )
-    assert snapshot.estimate is not None
-    assert snapshot.estimate.estimated_items == 2
-    assert app.download_execution_manager.get_snapshot(
-        "execution-plan-req-app-download",
-    ) is snapshot
-
-
-def test_app_injected_audit_log_receives_download_manager_events() -> None:
-    app = LeonardoApp()
-    context = app.startup()
-
-    context.download_manager.submit_request(_download_request())
-
-    event_types = [event.event_type for event in app.audit_log.snapshot()]
-    assert "download.request.submitted" in event_types
-    assert "download.preflight.completed" in event_types
-
-
-def test_app_injected_audit_log_receives_download_execution_plan_event() -> None:
-    app = LeonardoApp()
-    context = app.startup()
-
-    context.download_manager.submit_request(_download_request())
-    context.download_execution_manager.create_plan("req-app-download")
-
-    event_types = [event.event_type for event in app.audit_log.snapshot()]
-    assert "download.execution.plan.created" in event_types
 
 
 def _audit_event(event_type: str) -> AuditEvent:
@@ -671,34 +521,3 @@ def _channel_definition() -> WebSocketChannelDefinition:
         connection_id="connection-1",
         label="Shutdown channel",
     )
-
-
-def _download_request(
-    *,
-    source: str = "binance",
-    market: str = "spot",
-    timeframes: tuple[str, ...] = ("1m", "5m"),
-    connection_ref: str = "binance-spot",
-) -> DownloadRequest:
-    return DownloadRequest(
-        request_id="req-app-download",
-        workflow_kind=DownloadWorkflowKind.DOWNLOAD_DATA,
-        source=source,
-        market=market,
-        symbols=("BTCUSDT",),
-        timeframe_mode=DownloadTimeframeMode.EXPLICIT,
-        timeframes=timeframes,
-        range_mode=DownloadRangeMode.LATEST,
-        requested_by="admin-dev",
-        connection_ref=connection_ref,
-    )
-
-
-def _capability_layer(snapshot: object) -> object:
-    layers = tuple(
-        layer
-        for layer in snapshot.preflight_layers
-        if layer.layer is DownloadPreflightLayer.CAPABILITY
-    )
-    assert len(layers) == 1
-    return layers[0]
