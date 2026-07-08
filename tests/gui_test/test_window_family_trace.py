@@ -94,7 +94,7 @@ def test_window_summaries_include_static_metadata_fields() -> None:
     assert summary.metadata["object_name"] == "main_window"
     assert summary.metadata["title"] == "Leonardo"
     assert summary.metadata["label"] == "Leonardo"
-    assert summary.metadata["owner_area"] == "shell"
+    assert summary.metadata["owner_area"] == "gui"
     assert summary.metadata["instance_policy"] == "singleton"
     assert summary.metadata["settings_present"] is True
     assert "main_window.open_runtime_manager" in summary.metadata["action_ids"]

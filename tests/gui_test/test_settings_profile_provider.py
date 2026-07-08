@@ -86,7 +86,7 @@ def test_settings_profile_provider_returns_main_window_source_reference() -> Non
     assert profile.title == "Leonardo"
     assert profile.metadata_path.name == "main_window.window.toml"
     assert profile.metadata_path.exists() is True
-    assert profile.owner_area == "shell"
+    assert profile.owner_area == "gui"
     assert profile.logical_kind == "main_application_shell"
 
 

@@ -49,7 +49,7 @@ def test_main_window_identity_is_discoverable() -> None:
 
     assert document.metadata["contract_id"] == "main_window.window"
     assert document.metadata["logical_kind"] == "main_application_shell"
-    assert document.metadata["owner_area"] == "shell"
+    assert document.metadata["owner_area"] == "gui"
     assert document.metadata["instance_policy"] == "singleton"
     assert document.metadata["geometry_policy"]["start_mode"] == "maximized"
 
@@ -95,16 +95,38 @@ def test_main_window_metadata_documents_download_launch_surfaces() -> None:
     assert document.metadata["menu_bar"]["present"] is True
     assert "Download Manager" in document.metadata["menu_bar"]["menus"]
     assert download_data["action_id"] == "main_window.download_data"
-    assert download_data["target_window_id"] == "download_request_builder.window"
-    assert download_data["target_workflow_id"] == "download_data"
+    assert download_data["target_area_id"] == "connection"
+    assert download_data["target_suite_id"] == "connection_suite"
+    assert download_data["target_module_id"] == "connection.download_manager"
+    assert download_data["target_window_id"] == "historical_download_manager.window"
+    assert download_data["legacy_window_id"] == "download_request_builder.window"
+    assert download_data["target_workflow_id"] == "connection_download_manager"
     assert download_data["boundary_id"] == "download_data_boundary"
     assert download_data["permission_ref"] == "download:view"
-    assert download_data["implementation_status"] == "opens_existing_builder_shell"
+    assert download_data["status"] == "pending_sanitation"
+    assert download_data["implementation_status"] == (
+        "legacy_builder_route_retained_temporarily"
+    )
+    assert download_data["ownership_scope"] == "launch_surface_only"
+    assert download_data["execution_owner"] == "none_shell_only"
+    assert download_data["storage_owner"] == "none_shell_only"
+    assert download_data["legacy_route_status"] == (
+        "legacy_retained_path_pending_sanitation"
+    )
     assert ohlcv_maintenance["action_id"] == "main_window.ohlcv_maintenance"
-    assert ohlcv_maintenance["target_window_id"] == "download_request_builder.window"
-    assert ohlcv_maintenance["target_workflow_id"] == "ohlcv_maintenance"
+    assert ohlcv_maintenance["target_area_id"] == "connection"
+    assert ohlcv_maintenance["target_suite_id"] == "connection_suite"
+    assert ohlcv_maintenance["target_module_id"] == "connection.download_manager"
+    assert ohlcv_maintenance["target_window_id"] == "historical_download_manager.window"
+    assert ohlcv_maintenance["legacy_window_id"] == "download_request_builder.window"
+    assert ohlcv_maintenance["target_workflow_id"] == (
+        "connection_download_manager_ohlcv_maintenance"
+    )
     assert ohlcv_maintenance["related_boundary_id"] == "download_data_boundary"
-    assert ohlcv_maintenance["implementation_status"] == "deferred_shell_entry"
+    assert ohlcv_maintenance["status"] == "pending_sanitation"
+    assert ohlcv_maintenance["implementation_status"] == (
+        "legacy_builder_route_retained_temporarily"
+    )
 
 
 def test_main_window_metadata_is_inspectable_without_ai_helper_behavior() -> None:

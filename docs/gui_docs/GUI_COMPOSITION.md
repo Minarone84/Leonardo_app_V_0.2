@@ -56,16 +56,41 @@ The GUI composition root:
 The Runtime Manager snapshot provider is passed as a callable. It is not called
 during Main Window construction.
 
-## Download Data Wiring
+## Download Manager Launch Surfaces
 
-Composition opens the Download Data builder from the Main Window Download
-Manager menu. The Main Window remains a launch surface only; it does not own
-execution or storage.
+### Legacy retained path / pending sanitation
 
-The Download Data builder owns Qt fields, selection recap display, Preview
-Preflight display, progress display, and final recap display. Composition owns
-the bridge from GUI draft intent to Core Download Manager and Download
-Execution Manager services.
+The current composition route still opens the old inline
+`download_request_builder.window` from the Main Window Download Manager menu.
+This route is retained temporarily and is pending sanitation. It is not the
+accepted final Connection Download Manager UX and must not be used as the
+source-of-truth for future Download Manager GUI design.
+
+The Main Window remains a launch surface only. It does not own execution,
+storage, provider calls, or Download Manager domain behavior.
+
+The accepted V2 ownership target is Connection Suite Download Manager:
+
+- `target_area_id = "connection"`;
+- `target_suite_id = "connection_suite"`;
+- `target_module_id = "connection.download_manager"`.
+
+The new shell-only GUI windows are:
+
+- `historical_download_manager.window`;
+- `ohlcv_download_preflight.window`;
+- `ohlcv_download_task.window`.
+
+These windows are GUI presentation shells. GUI owns only shell display, local
+widgets, and local user-intent signals. Backend execution is not wired through
+these windows yet.
+
+In the retained legacy path, the Download Data builder owns Qt fields,
+selection recap display, Preview Preflight display, progress display, and final
+recap display. That retained path also contains composition wiring from GUI
+draft intent to Core Download Manager and Download Execution Manager services.
+This wiring is pending sanitation and is not the accepted final Connection
+Suite Download Manager architecture.
 
 Default Download Data execution is fixture-backed/offline and writes only under
 an explicit sandbox root. Sandbox storage-aware preflight detects `new_file`

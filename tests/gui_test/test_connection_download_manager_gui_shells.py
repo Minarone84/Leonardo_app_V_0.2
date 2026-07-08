@@ -340,6 +340,7 @@ def test_connection_download_manager_shell_metadata_is_gui_owned(
     assert result.document.metadata["target_suite_id"] == "connection_suite"
     assert result.document.metadata["target_module_id"] == "connection.download_manager"
     assert result.document.metadata["object_name"] == object_name
+    assert result.document.metadata["status"] == "shell_only"
     assert "owner_suite_id" not in result.document.metadata
 
     guarantees = result.document.metadata["boundary_guarantees"]

@@ -80,6 +80,37 @@ This phase does not create or wire a Main Window class. It does not create
 Runtime Manager metadata, open Runtime Manager, or add production override
 persistence.
 
+## Connection Download Manager Metadata Doctrine
+
+The accepted V2 Download Manager owner is Connection Suite, not GUI and not
+Core. Main Window metadata may describe a GUI launch surface for Download
+Manager intent, but that metadata is launch/presentation truth only.
+
+The current accepted target module is:
+
+```text
+connection.download_manager
+```
+
+The shell-only GUI metadata profiles are:
+
+```text
+historical_download_manager.window
+ohlcv_download_preflight.window
+ohlcv_download_task.window
+```
+
+These profiles declare `owner_area = "gui"` and reference
+`target_area_id = "connection"`, `target_suite_id = "connection_suite"`, and
+`target_module_id = "connection.download_manager"`. They describe visual
+shells only. They do not wire backend execution, provider/API calls, storage
+writes, Runtime Manager controls, Object Map mutation, or Data Manager
+integration.
+
+The old inline `download_request_builder.window` flow is a legacy retained path
+and is pending sanitation. It is not the accepted final Download Manager UX and
+must not be used as source-of-truth for future Connection Download Manager UI.
+
 ## Main Window Shell Consumer
 
 Phase 001G adds a minimal PySide6 `LeonardoMainWindow` shell that consumes the
