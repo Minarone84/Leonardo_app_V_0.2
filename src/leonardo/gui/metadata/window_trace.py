@@ -43,6 +43,10 @@ _DEFAULT_WINDOW_METADATA_FILENAMES: tuple[str, ...] = (
     "main_window.window.toml",
     "runtime_manager.window.toml",
     "historical_download_manager.window.toml",
+    "research_suite.window.toml",
+    "data_manager_suite.window.toml",
+    "analysis_suite.window.toml",
+    "trading_suite.window.toml",
     "dummy_metadata_test.window.toml",
 )
 _TRACE_CONTRACTS = (

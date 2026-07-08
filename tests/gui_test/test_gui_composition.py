@@ -12,11 +12,17 @@ from leonardo.gui.composition import (  # noqa: E402
     GuiCompositionRoot,
     create_main_window_for_context,
 )
+from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow  # noqa: E402
+from leonardo.gui.windows.data_manager_suite_window import (  # noqa: E402
+    DataManagerSuiteWindow,
+)
 from leonardo.gui.windows.historical_download_manager_window import (  # noqa: E402
     HistoricalDownloadManagerWindow,
 )
 from leonardo.gui.windows.main_window import LeonardoMainWindow  # noqa: E402
+from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow  # noqa: E402
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow  # noqa: E402
+from leonardo.gui.windows.trading_suite_window import TradingSuiteWindow  # noqa: E402
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +59,10 @@ def test_composition_creates_main_window_from_context_without_startup(
     assert root.tracker_for("main_window.window") is not None
     assert window.runtime_manager_window is None
     assert root.historical_download_manager_window is None
+    assert root.research_suite_window is None
+    assert root.data_manager_suite_window is None
+    assert root.analysis_suite_window is None
+    assert root.trading_suite_window is None
 
     _dispose(qapplication, window)
     app.shutdown()
@@ -144,6 +154,70 @@ def test_download_manager_menu_opens_gui_only_historical_shell(
     app.shutdown()
 
 
+def test_main_window_suite_actions_open_gui_only_dummy_shells(
+    qapplication: QApplication,
+) -> None:
+    app = LeonardoApp()
+    root = GuiCompositionRoot(app.context)
+    window = root.create_main_window()
+    before_events = app.audit_log.snapshot()
+
+    for action_id, attr_name, window_type, message, tracker_id in (
+        (
+            "main_window.open_research_suite",
+            "research_suite_window",
+            ResearchSuiteWindow,
+            "Research Suite shell opened.",
+            "research_suite.window",
+        ),
+        (
+            "main_window.open_data_manager_suite",
+            "data_manager_suite_window",
+            DataManagerSuiteWindow,
+            "Data Manager Suite shell opened.",
+            "data_manager_suite.window",
+        ),
+        (
+            "main_window.open_analysis_suite",
+            "analysis_suite_window",
+            AnalysisSuiteWindow,
+            "Analysis Suite shell opened.",
+            "analysis_suite.window",
+        ),
+        (
+            "main_window.open_trading_suite",
+            "trading_suite_window",
+            TradingSuiteWindow,
+            "Trading Suite shell opened.",
+            "trading_suite.window",
+        ),
+    ):
+        window.action_for_id(action_id).trigger()
+        qapplication.processEvents()
+        shell = getattr(root, attr_name)
+
+        assert isinstance(shell, window_type)
+        assert shell.isVisible() is True
+        assert root.tracker_for(tracker_id) is not None
+        assert app.window_registry.get_window_definition(tracker_id) is not None
+        assert tracker_id in _open_window_ids(app)
+        assert window.statusBar().currentMessage() == message
+
+    assert _download_event_types(app.audit_log.snapshot()) == _download_event_types(
+        before_events
+    )
+
+    _dispose(
+        qapplication,
+        window,
+        root.research_suite_window,
+        root.data_manager_suite_window,
+        root.analysis_suite_window,
+        root.trading_suite_window,
+    )
+    app.shutdown()
+
+
 def test_composition_can_disable_window_tracking(qapplication: QApplication) -> None:
     app = LeonardoApp()
     root = GuiCompositionRoot(app.context, track_windows=False)
@@ -207,10 +281,13 @@ def test_composed_windows_destroy_cleanly(qapplication: QApplication) -> None:
     window.show()
     window.action_for_id("main_window.open_runtime_manager").trigger()
     window.action_for_id("main_window.download_data").trigger()
+    window.action_for_id("main_window.open_research_suite").trigger()
     qapplication.processEvents()
     runtime_window = window.runtime_manager_window
 
     assert runtime_window is not None
+    assert window.runtime_manager_window is not None
+    assert window.isVisible() is True
     window.close()
     _dispose(qapplication, window, runtime_window)
     app.shutdown()

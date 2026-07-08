@@ -217,6 +217,7 @@ class RuntimeManagerWindow(QWidget):
 
         self.setWindowTitle(_string_value(identity, "title", "Runtime Manager"))
         self.setObjectName(_string_value(metadata, "object_name", "runtime_manager_window"))
+        self.setProperty("object_id", RUNTIME_MANAGER_METADATA_ID)
         self.resize(
             _int_value(geometry, "width", 1440),
             _int_value(geometry, "height", 900),
@@ -228,6 +229,7 @@ class RuntimeManagerWindow(QWidget):
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
+        root.setObjectName("runtime_manager.layout.root")
         root.addWidget(self._build_header())
         root.addWidget(self._build_toolbar())
         root.addWidget(self._build_body(), stretch=1)
@@ -237,18 +239,29 @@ class RuntimeManagerWindow(QWidget):
         identity = _mapping_at(self._profile.values, "identity")
         title = QLabel(_string_value(identity, "title", "Runtime Manager"))
         title.setObjectName("runtime_manager.title_label")
+        title.setProperty("object_id", "runtime_manager.title_label")
+        title.setProperty("object_type", "label")
 
         header = QGroupBox(_region_label(self._profile.values, "header", "Header"))
+        header.setObjectName("runtime_manager.panel.header")
+        header.setProperty("object_id", "runtime_manager.panel.header")
         layout = QVBoxLayout(header)
+        layout.setObjectName("runtime_manager.layout.header")
         layout.addWidget(title)
         return header
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QGroupBox(_region_label(self._profile.values, "toolbar", "Toolbar"))
+        toolbar.setObjectName("runtime_manager.toolbar.main")
+        toolbar.setProperty("object_id", "runtime_manager.toolbar.main")
         layout = QHBoxLayout(toolbar)
+        layout.setObjectName("runtime_manager.layout.toolbar")
         for action_id, action in _metadata_items(_mapping_at(self._profile.values, "actions")):
             button = QPushButton(_string_value(action, "label", action_id))
             button.setObjectName(action_id)
+            button.setProperty("object_id", action_id)
+            button.setProperty("object_type", "button")
+            button.setProperty("action_id", action_id)
             _connect_signal(button.clicked, partial(self._handle_action, action_id))
             self._actions[action_id] = button
             layout.addWidget(button)
@@ -256,9 +269,14 @@ class RuntimeManagerWindow(QWidget):
 
     def _build_body(self) -> QWidget:
         body = QGroupBox(_region_label(self._profile.values, "body", "Body"))
+        body.setObjectName("runtime_manager.panel.body")
+        body.setProperty("object_id", "runtime_manager.panel.body")
         layout = QVBoxLayout(body)
+        layout.setObjectName("runtime_manager.layout.body")
         tabs = QTabWidget()
         tabs.setObjectName("runtime_manager.tables")
+        tabs.setProperty("object_id", "runtime_manager.tables")
+        tabs.setProperty("object_type", "tabs")
         for table_id, table_metadata in _metadata_items(_mapping_at(self._profile.values, "tables")):
             table = self._build_table(table_id, table_metadata)
             self._tables[table_id] = table
@@ -270,6 +288,8 @@ class RuntimeManagerWindow(QWidget):
         columns = _sorted_columns(_mapping_at(table_metadata, "columns"))
         table = QTableWidget(0, len(columns))
         table.setObjectName(table_id)
+        table.setProperty("object_id", table_id)
+        table.setProperty("object_type", "table")
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setHorizontalHeaderLabels(
             [_string_value(column, "label", column_id) for column_id, column in columns]
@@ -278,9 +298,14 @@ class RuntimeManagerWindow(QWidget):
 
     def _build_footer(self) -> QWidget:
         footer = QGroupBox(_region_label(self._profile.values, "footer", "Footer"))
+        footer.setObjectName("runtime_manager.panel.footer")
+        footer.setProperty("object_id", "runtime_manager.panel.footer")
         layout = QHBoxLayout(footer)
+        layout.setObjectName("runtime_manager.layout.footer")
         status = QLabel("No runtime snapshot rendered.")
         status.setObjectName("runtime_manager.status_label")
+        status.setProperty("object_id", "runtime_manager.status_label")
+        status.setProperty("object_type", "status_label")
         self._status_label = status
         layout.addWidget(status)
         return footer

@@ -23,6 +23,14 @@ from leonardo.gui.settings_profiles import (
 )
 from leonardo.gui.settings_inspector import GuiSettingsInspectorViewModel
 from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
+from leonardo.gui.windows.analysis_suite_window import (
+    AnalysisSuiteWindow,
+    load_analysis_suite_profile,
+)
+from leonardo.gui.windows.data_manager_suite_window import (
+    DataManagerSuiteWindow,
+    load_data_manager_suite_profile,
+)
 from leonardo.gui.windows.historical_download_manager_window import (
     HistoricalDownloadManagerWindow,
 )
@@ -31,20 +39,30 @@ from leonardo.gui.windows.main_window import (
     _MAIN_WINDOW_METADATA_PATH,
     load_main_window_profile,
 )
+from leonardo.gui.windows.research_suite_window import (
+    ResearchSuiteWindow,
+    load_research_suite_profile,
+)
 from leonardo.gui.windows.runtime_manager_window import (
     RuntimeManagerWindow,
     _RUNTIME_MANAGER_METADATA_PATH,
     load_runtime_manager_profile,
 )
 from leonardo.gui.windows.settings_inspector_window import SettingsInspectorWindow
-
-
-_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH = (
-    Path(__file__).resolve().parent
-    / "metadata"
-    / "windows"
-    / "historical_download_manager.window.toml"
+from leonardo.gui.windows.trading_suite_window import (
+    TradingSuiteWindow,
+    load_trading_suite_profile,
 )
+
+
+_METADATA_WINDOWS_DIR = Path(__file__).resolve().parent / "metadata" / "windows"
+_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH = (
+    _METADATA_WINDOWS_DIR / "historical_download_manager.window.toml"
+)
+_RESEARCH_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "research_suite.window.toml"
+_DATA_MANAGER_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "data_manager_suite.window.toml"
+_ANALYSIS_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "analysis_suite.window.toml"
+_TRADING_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "trading_suite.window.toml"
 
 
 class RuntimeSnapshotBackend(Protocol):
@@ -70,9 +88,9 @@ class GuiCompositionRoot:
     Compose GUI-owned windows from an existing Core context.
 
     The composition root receives Core services but does not own application
-    lifecycle, create the Qt application object, or construct Core services. It injects
-    read-only runtime snapshot access into Runtime Manager windows and installs
-    GUI-side window tracking when enabled.
+    lifecycle, create the Qt application object, or construct Core services. It
+    injects read-only runtime snapshot access into Runtime Manager windows and
+    installs GUI-side window tracking when enabled.
     """
 
     def __init__(
@@ -118,6 +136,10 @@ class GuiCompositionRoot:
         self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = (
             None
         )
+        self._research_suite_window: ResearchSuiteWindow | None = None
+        self._data_manager_suite_window: DataManagerSuiteWindow | None = None
+        self._analysis_suite_window: AnalysisSuiteWindow | None = None
+        self._trading_suite_window: TradingSuiteWindow | None = None
 
     @property
     def window_trackers(self) -> Mapping[str, GuiWindowTracker]:
@@ -143,6 +165,30 @@ class GuiCompositionRoot:
         """Return the retained Historical Download Manager shell, if created."""
 
         return self._historical_download_manager_window
+
+    @property
+    def research_suite_window(self) -> ResearchSuiteWindow | None:
+        """Return the retained Research Suite shell, if created."""
+
+        return self._research_suite_window
+
+    @property
+    def data_manager_suite_window(self) -> DataManagerSuiteWindow | None:
+        """Return the retained Data Manager Suite shell, if created."""
+
+        return self._data_manager_suite_window
+
+    @property
+    def analysis_suite_window(self) -> AnalysisSuiteWindow | None:
+        """Return the retained Analysis Suite shell, if created."""
+
+        return self._analysis_suite_window
+
+    @property
+    def trading_suite_window(self) -> TradingSuiteWindow | None:
+        """Return the retained Trading Suite shell, if created."""
+
+        return self._trading_suite_window
 
     def create_main_window(
         self,
@@ -179,6 +225,11 @@ class GuiCompositionRoot:
                 raise RuntimeError("Main Window is not available for download shell")
             return self._open_historical_download_manager(main_window)
 
+        def suite_shell_requested(action_id: str) -> str:
+            if main_window is None:
+                raise RuntimeError("Main Window is not available for suite shell")
+            return self._open_suite_shell(action_id, main_window)
+
         window = LeonardoMainWindow(
             main_profile,
             runtime_manager_window_factory=self._create_runtime_manager_window,
@@ -188,6 +239,7 @@ class GuiCompositionRoot:
             action_observer=self._action_observer,
             on_download_data_requested=download_data_requested,
             on_ohlcv_maintenance_requested=ohlcv_maintenance_requested,
+            on_suite_shell_requested=suite_shell_requested,
         )
         main_window = window
         self._install_tracker(
@@ -216,6 +268,61 @@ class GuiCompositionRoot:
         self._historical_download_manager_window.raise_()
         self._historical_download_manager_window.activateWindow()
         return "Historical Download Manager shell opened."
+
+    def _open_suite_shell(self, action_id: str, parent: LeonardoMainWindow) -> str:
+        if action_id == "main_window.open_research_suite":
+            if self._research_suite_window is None:
+                profile = self._load_research_suite_profile()
+                self._research_suite_window = ResearchSuiteWindow(profile, parent=parent)
+                self._install_tracker(
+                    self._research_suite_window,
+                    profile,
+                    fallback_window_type="research_suite",
+                )
+            self._show_window(self._research_suite_window)
+            return "Research Suite shell opened."
+        if action_id == "main_window.open_data_manager_suite":
+            if self._data_manager_suite_window is None:
+                profile = self._load_data_manager_suite_profile()
+                self._data_manager_suite_window = DataManagerSuiteWindow(profile, parent=parent)
+                self._install_tracker(
+                    self._data_manager_suite_window,
+                    profile,
+                    fallback_window_type="data_manager_suite",
+                )
+            self._show_window(self._data_manager_suite_window)
+            return "Data Manager Suite shell opened."
+        if action_id == "main_window.open_analysis_suite":
+            if self._analysis_suite_window is None:
+                profile = self._load_analysis_suite_profile()
+                self._analysis_suite_window = AnalysisSuiteWindow(profile, parent=parent)
+                self._install_tracker(
+                    self._analysis_suite_window,
+                    profile,
+                    fallback_window_type="analysis_suite",
+                )
+            self._show_window(self._analysis_suite_window)
+            return "Analysis Suite shell opened."
+        if action_id == "main_window.open_trading_suite":
+            if self._trading_suite_window is None:
+                profile = self._load_trading_suite_profile()
+                self._trading_suite_window = TradingSuiteWindow(profile, parent=parent)
+                self._install_tracker(
+                    self._trading_suite_window,
+                    profile,
+                    fallback_window_type="trading_suite",
+                )
+            self._show_window(self._trading_suite_window)
+            return "Trading Suite shell opened."
+        raise ValueError(f"Unsupported suite shell action ID: {action_id}")
+
+    def _show_window(self, window: object) -> None:
+        show = getattr(window, "show")
+        raise_ = getattr(window, "raise_")
+        activate = getattr(window, "activateWindow")
+        show()
+        raise_()
+        activate()
 
     def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
         profile = self._load_runtime_manager_profile()
@@ -263,6 +370,10 @@ class GuiCompositionRoot:
             RuntimeManagerWindow
             | LeonardoMainWindow
             | HistoricalDownloadManagerWindow
+            | ResearchSuiteWindow
+            | DataManagerSuiteWindow
+            | AnalysisSuiteWindow
+            | TradingSuiteWindow
             | SettingsInspectorWindow
         ),
         profile: EffectiveGuiMetadataProfile,
@@ -298,6 +409,26 @@ class GuiCompositionRoot:
                 raise ValueError(f"Invalid GUI metadata profile: {messages}")
             return GuiMetadataResolver().resolve(result.document)
         return self._load_profile_with_overrides(_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH)
+
+    def _load_research_suite_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_research_suite_profile()
+        return self._load_profile_with_overrides(_RESEARCH_SUITE_METADATA_PATH)
+
+    def _load_data_manager_suite_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_data_manager_suite_profile()
+        return self._load_profile_with_overrides(_DATA_MANAGER_SUITE_METADATA_PATH)
+
+    def _load_analysis_suite_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_analysis_suite_profile()
+        return self._load_profile_with_overrides(_ANALYSIS_SUITE_METADATA_PATH)
+
+    def _load_trading_suite_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_trading_suite_profile()
+        return self._load_profile_with_overrides(_TRADING_SUITE_METADATA_PATH)
 
     def _load_profile_with_overrides(
         self,

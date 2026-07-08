@@ -60,6 +60,7 @@ def test_main_window_required_shell_regions_exist() -> None:
     assert {
         "menu_bar",
         "central",
+        "launcher_panel",
         "status_bar",
         "user_display",
         "version_display",
@@ -93,7 +94,7 @@ def test_main_window_metadata_documents_download_launch_surfaces() -> None:
     ohlcv_maintenance = launch_surfaces["ohlcv_maintenance"]
 
     assert document.metadata["menu_bar"]["present"] is True
-    assert "Download Manager" in document.metadata["menu_bar"]["menus"]
+    assert "Connection" in document.metadata["menu_bar"]["menus"]
     assert download_data["action_id"] == "main_window.download_data"
     assert download_data["target_area_id"] == "connection"
     assert download_data["target_suite_id"] == "connection_suite"
@@ -122,6 +123,35 @@ def test_main_window_metadata_documents_download_launch_surfaces() -> None:
     assert ohlcv_maintenance["implementation_status"] == (
         "opens_historical_download_manager_shell"
     )
+
+
+def test_main_window_metadata_documents_traceable_suite_launch_surfaces() -> None:
+    document = _load_main_window_document()
+    launch_surfaces = document.metadata["launch_surfaces"]
+
+    assert launch_surfaces["research_suite"]["target_window_id"] == (
+        "research_suite.window"
+    )
+    assert launch_surfaces["data_manager_suite"]["target_window_id"] == (
+        "data_manager_suite.window"
+    )
+    assert launch_surfaces["analysis_suite"]["target_window_id"] == (
+        "analysis_suite.window"
+    )
+    assert launch_surfaces["trading_suite"]["target_window_id"] == (
+        "trading_suite.window"
+    )
+    for key in (
+        "research_suite",
+        "data_manager_suite",
+        "analysis_suite",
+        "trading_suite",
+    ):
+        surface = launch_surfaces[key]
+        assert surface["status"] == "shell_only"
+        assert surface["ownership_scope"] == "launch_surface_only"
+        assert surface["execution_owner"] == "none_shell_only"
+        assert surface["storage_owner"] == "none_shell_only"
 
 
 def test_main_window_metadata_is_inspectable_without_ai_helper_behavior() -> None:

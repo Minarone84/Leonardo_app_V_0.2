@@ -40,16 +40,16 @@ A legacy Leonardo capability is not current V2 behavior unless the V2 code imple
 | Area | Current status | Notes |
 | --- | --- | --- |
 | Core foundation | **Partially implemented** | Core/contracts validation exists for the current foundation. The full target object/action/style/agent system is not complete. |
-| GUI Service | **Partially implemented** | GUI shell/metadata patterns exist. GUI is a shared presentation service, not a domain area. |
+| GUI Service | **Partially implemented** | GUI shell/metadata patterns exist, including traceable dummy shell windows for the current suite cockpit phase. GUI is a shared presentation service, not a domain area. |
 | Connection Suite ownership model | **Partially implemented** | Download Manager ownership contracts now point to Connection Suite. Static Bybit exchange metadata and provider capability loading exist. |
 | Connection Download Manager GUI | **Shell-only** | Historical Download Manager, Confirm OHLCV Download, and OHLCV Download Task shells exist. Buttons/signals are local shell behavior only. |
 | Old inline `DownloadRequestBuilder` flow | **Removed from active V2 code** | The retained builder route was decommissioned and must not be treated as future source of truth. |
 | Download execution/storage/provider implementation | **Future work** | The contaminated sandbox/provider/storage implementation was removed from active source pending a future Connection Suite execution rebuild. |
 | Bybit static exchange metadata | **Implemented** | Static exchange metadata belongs under the connection namespace and feeds provider capabilities. |
-| Research Suite | **Partially implemented** | Only the parts proven by current V2 code/tests are current implementation. Legacy Research features remain guidelines unless rebuilt. |
-| Data Manager Suite | **Partially implemented** | Only the parts proven by current V2 code/tests are current implementation. Legacy Data Manager workflows remain guidelines unless rebuilt. |
-| Analysis Suite | **Guideline for updated V2 Leonardo version** | Target ownership and workflow boundaries are defined here. Treat implementation as future/partial unless code/tests prove otherwise. |
-| Trading Suite | **Future work** | Ownership is defined now to prevent trading behavior leaking into GUI, Research, Analysis, Data Manager, or Connection. |
+| Research Suite | **Shell-only** | Traceable GUI shell with deterministic dummy workspace/study/chart placeholders exists. No chart rendering, OHLCV, study calculation, or persistence logic is implemented. |
+| Data Manager Suite | **Shell-only** | Traceable GUI shell with deterministic dummy dataset/artifact/recipe/database placeholders exists. No storage, artifact calculation, materialization, or Data Manager backend behavior is implemented. |
+| Analysis Suite | **Shell-only** | Traceable GUI shell with deterministic dummy readiness/feature/diagnostics placeholders exists. No analysis engine, diagnostics runtime, or report generation backend is implemented. |
+| Trading Suite | **Shell-only** | Traceable GUI shell with deterministic dummy paper/account/risk/order-position placeholders exists. No broker, order routing, risk engine, paper execution, or live trading behavior is implemented. |
 | Full object registry doctrine | **Guideline for updated V2 Leonardo version** | Some object identity patterns may exist, but the full universal object descriptor system is not complete. |
 | Full action registry doctrine | **Guideline for updated V2 Leonardo version** | Some action/menu metadata may exist, but full registered action descriptors for every operation are not complete. |
 | Full style/font/layout profile doctrine | **Guideline for updated V2 Leonardo version** | Current GUI style/settings work may exist, but the full object-linked style/layout system is target architecture. |
@@ -126,6 +126,16 @@ GUI does not own:
 
 A GUI window may exist with dummy data before backend logic exists. That is valid shell work. The shell is not the engine. This apparently needs to be written in stone because buttons keep developing messiah complexes.
 
+Current traceable dummy shell layer:
+
+- Main Window exposes traceable menus and launcher buttons for Connection, Research, Data Manager, Analysis, Trading, Runtime Manager, and Settings.
+- Connection Download Manager shells remain GUI-owned presentation shells that target Connection Suite ownership.
+- Research Suite shell displays deterministic dummy workspace/study/chart-placeholder data only.
+- Data Manager Suite shell displays deterministic dummy dataset/artifact/recipe/database placeholders only.
+- Analysis Suite shell displays deterministic dummy readiness, feature planning, and diagnostics placeholders only.
+- Trading Suite shell displays deterministic dummy paper/account/risk/order/position placeholders only, including a disabled visual kill-switch placeholder.
+- Dummy data lives in GUI-only in-memory fixtures. It does not call providers, write storage, run chart logic, calculate studies, materialize databases, analyze markets, route orders, or mutate Runtime Manager/Object Map state. Truly shocking that “dummy” has to mean dummy, but here we are.
+
 ### Connection Suite
 
 **Current status:** Partially implemented.
@@ -165,7 +175,7 @@ Target responsibilities:
 
 ### Research Suite
 
-**Current status:** Partially implemented where current code/tests prove it. Otherwise guideline.
+**Current status:** Shell-only GUI dummy shell where current code/tests prove it. Backend/chart logic remains future work.
 
 Research Suite owns historical chart research and visual study workflows.
 
@@ -189,7 +199,7 @@ Research Suite does not own OHLCV truth, artifact persistence policy, Analysis D
 
 ### Data Manager Suite
 
-**Current status:** Partially implemented where current code/tests prove it. Otherwise guideline.
+**Current status:** Shell-only GUI dummy shell where current code/tests prove it. Backend data/materialization logic remains future work.
 
 Data Manager Suite owns dataset preparation and Analysis Database construction.
 
@@ -214,7 +224,7 @@ Data Manager Suite does not own chart sessions, rendering, exchange connectivity
 
 ### Analysis Suite
 
-**Current status:** Guideline for updated V2 Leonardo version unless current code/tests prove partial implementation.
+**Current status:** Shell-only GUI dummy shell where current code/tests prove it. Analysis engine behavior remains future work.
 
 Analysis Suite owns structured analysis workflows.
 
@@ -243,7 +253,7 @@ A diagnostic report is not a tradable strategy. A rule package is not a trading 
 
 ### Trading Suite
 
-**Current status:** Future work.
+**Current status:** Shell-only GUI dummy shell where current code/tests prove it. Trading and broker/order behavior remain future work.
 
 Trading Suite owns real-time trading scenarios.
 

@@ -70,6 +70,7 @@ class OhlcvDownloadPreflightWindow(QDialog):
         self._table = QTableWidget(self)
 
         self.setObjectName("ohlcv_download_preflight_window")
+        self.setProperty("object_id", OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID)
         self.setWindowTitle("Confirm OHLCV Download")
         self.resize(980, 520)
         self._build_layout()
@@ -116,11 +117,16 @@ class OhlcvDownloadPreflightWindow(QDialog):
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setObjectName("ohlcv_download_preflight.layout.root")
         header = QLabel("Confirm OHLCV Download", self)
         header.setObjectName("ohlcv_download_preflight.header")
+        header.setProperty("object_id", "ohlcv_download_preflight.header")
+        header.setProperty("object_type", "label")
         layout.addWidget(header)
 
         self._table.setObjectName("ohlcv_download_preflight.work_plan_table")
+        self._table.setProperty("object_id", "ohlcv_download_preflight.work_plan_table")
+        self._table.setProperty("object_type", "table")
         self._table.setColumnCount(len(OHLCV_PREFLIGHT_COLUMNS))
         self._table.setHorizontalHeaderLabels(OHLCV_PREFLIGHT_COLUMNS)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -128,6 +134,7 @@ class OhlcvDownloadPreflightWindow(QDialog):
         layout.addWidget(self._table)
 
         buttons = QHBoxLayout()
+        buttons.setObjectName("ohlcv_download_preflight.layout.actions")
         buttons.addStretch(1)
         cancel = self._add_button("cancel", "Cancel")
         start = self._add_button("start_download", "Start Download")
@@ -140,6 +147,9 @@ class OhlcvDownloadPreflightWindow(QDialog):
     def _add_button(self, button_id: str, label: str) -> QPushButton:
         button = QPushButton(label, self)
         button.setObjectName(f"ohlcv_download_preflight.{button_id}")
+        button.setProperty("object_id", button.objectName())
+        button.setProperty("object_type", "button")
+        button.setProperty("action_id", button.objectName())
         self._buttons[button_id] = button
         return button
 

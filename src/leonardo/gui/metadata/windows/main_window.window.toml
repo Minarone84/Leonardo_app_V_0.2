@@ -12,13 +12,24 @@ window_id = "main_window.window"
 object_name = "main_window"
 test_id = "main_window"
 instance_policy = "singleton"
+status = "shell_only"
+ownership_scope = "presentation_shell_only"
+dummy_data_status = "local_in_memory_gui_dummy_only"
 
 [metadata.menu_bar]
 present = true
-menus = ["File", "Download Manager", "Connections", "User"]
+menus = ["File", "Connection", "Research Suite", "Data Manager", "Analysis Suite", "Trading Suite", "Runtime Manager", "Settings", "User"]
+object_id = "main_window.menu_bar"
+
+[metadata.traceability]
+object_id_policy = "stable_readable_deterministic_ids"
+qt_object_name_policy = "objectName equals object_id for actions, menus, launcher buttons, panels, and display widgets; top-level window objectName maps through metadata.object_name while metadata.window_id remains the window object_id."
+parent_child_policy = "Parent IDs are exposed in widget/action metadata and as Qt dynamic property parent_object_id where widgets are constructed."
+no_anonymous_widgets = true
 
 [metadata.launch_surfaces.download_data]
 action_id = "main_window.download_data"
+launcher_button_id = "main_window.button.download_data"
 label = "Download Data"
 target_area_id = "connection"
 target_suite_id = "connection_suite"
@@ -54,9 +65,87 @@ ownership_scope = "launch_surface_only"
 execution_owner = "none_shell_only"
 storage_owner = "none_shell_only"
 
+[metadata.launch_surfaces.research_suite]
+action_id = "main_window.open_research_suite"
+launcher_button_id = "main_window.button.open_research_suite"
+label = "Research Suite"
+target_area_id = "research"
+target_suite_id = "research_suite"
+target_module_id = "research.gui_shell"
+target_window_id = "research_suite.window"
+status = "shell_only"
+ownership_scope = "launch_surface_only"
+execution_owner = "none_shell_only"
+storage_owner = "none_shell_only"
+charts_logic = "forbidden"
+
+[metadata.launch_surfaces.data_manager_suite]
+action_id = "main_window.open_data_manager_suite"
+launcher_button_id = "main_window.button.open_data_manager_suite"
+label = "Data Manager Suite"
+target_area_id = "data_manager"
+target_suite_id = "data_manager_suite"
+target_module_id = "data_manager.gui_shell"
+target_window_id = "data_manager_suite.window"
+status = "shell_only"
+ownership_scope = "launch_surface_only"
+execution_owner = "none_shell_only"
+storage_owner = "none_shell_only"
+
+[metadata.launch_surfaces.analysis_suite]
+action_id = "main_window.open_analysis_suite"
+launcher_button_id = "main_window.button.open_analysis_suite"
+label = "Analysis Suite"
+target_area_id = "analysis"
+target_suite_id = "analysis_suite"
+target_module_id = "analysis.gui_shell"
+target_window_id = "analysis_suite.window"
+status = "shell_only"
+ownership_scope = "launch_surface_only"
+execution_owner = "none_shell_only"
+storage_owner = "none_shell_only"
+
+[metadata.launch_surfaces.trading_suite]
+action_id = "main_window.open_trading_suite"
+launcher_button_id = "main_window.button.open_trading_suite"
+label = "Trading Suite"
+target_area_id = "trading"
+target_suite_id = "trading_suite"
+target_module_id = "trading.gui_shell"
+target_window_id = "trading_suite.window"
+status = "shell_only"
+ownership_scope = "launch_surface_only"
+execution_owner = "none_shell_only"
+storage_owner = "none_shell_only"
+trading_behavior = "forbidden"
+
+[metadata.launch_surfaces.runtime_manager]
+action_id = "main_window.open_runtime_manager"
+launcher_button_id = "main_window.button.open_runtime_manager"
+label = "Runtime Manager"
+target_area_id = "runtime"
+target_module_id = "runtime_manager"
+target_window_id = "runtime_manager.window"
+status = "active_read_only"
+ownership_scope = "launch_surface_only"
+execution_owner = "none_shell_only"
+storage_owner = "none_shell_only"
+
+[metadata.launch_surfaces.settings]
+action_id = "main_window.open_settings_inspector"
+launcher_button_id = "main_window.button.open_settings_inspector"
+label = "Settings"
+target_area_id = "gui"
+target_module_id = "gui.settings"
+target_window_id = "settings_inspector.window"
+status = "optional_local_gui_settings"
+ownership_scope = "launch_surface_only"
+execution_owner = "none_shell_only"
+storage_owner = "metadata_override_store_when_enabled"
+
 [metadata.ai_inspection]
 inspectable = true
-allowed_path = "stable window and action identifiers through normal GUI action observation"
+allowed_path = "stable window, menu, action, launcher, and widget identifiers through normal GUI action observation"
 notes = [
     "Future AI helper work may inspect this metadata but must not bypass user policy, action observation, Core routing, runtime state, audit, provider, storage, or GUI ownership boundaries.",
 ]
@@ -75,6 +164,7 @@ test_refs = [
     "tests/gui_test/test_main_window_metadata.py",
     "tests/gui_test/test_main_window_shell.py",
     "tests/gui_test/test_gui_composition.py",
+    "tests/gui_test/test_traceable_gui_dummy_shell_static.py",
 ]
 
 [metadata.geometry_policy]
@@ -107,6 +197,10 @@ label = "Menu Bar"
 [[regions]]
 region_id = "central"
 label = "Central Content"
+
+[[regions]]
+region_id = "launcher_panel"
+label = "Traceable Shell Launcher Panel"
 
 [[regions]]
 region_id = "status_bar"
@@ -159,6 +253,78 @@ label = "Data Manager Suite"
 [[actions]]
 action_id = "main_window.open_analysis_suite"
 label = "Analysis Suite"
+
+[[widgets]]
+widget_id = "main_window.menu_bar"
+region_id = "menu_bar"
+label = "Menu Bar"
+widget_type = "menu_bar"
+
+[[widgets]]
+widget_id = "main_window.panel.launcher"
+region_id = "launcher_panel"
+label = "Traceable Shell Launcher Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.button.download_data"
+region_id = "launcher_panel"
+label = "Download Data"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.button.open_research_suite"
+region_id = "launcher_panel"
+label = "Research Suite"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.button.open_data_manager_suite"
+region_id = "launcher_panel"
+label = "Data Manager Suite"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.button.open_analysis_suite"
+region_id = "launcher_panel"
+label = "Analysis Suite"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.button.open_trading_suite"
+region_id = "launcher_panel"
+label = "Trading Suite"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.button.open_runtime_manager"
+region_id = "launcher_panel"
+label = "Runtime Manager"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.button.open_settings_inspector"
+region_id = "launcher_panel"
+label = "Settings"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.status_bar"
+region_id = "status_bar"
+label = "Status Bar"
+widget_type = "status_bar"
+
+[[widgets]]
+widget_id = "main_window.label.username"
+region_id = "user_display"
+label = "Username"
+widget_type = "label"
+
+[[widgets]]
+widget_id = "main_window.label.version"
+region_id = "version_display"
+label = "Version"
+widget_type = "label"
 
 [[settings]]
 path = "style.font_size"

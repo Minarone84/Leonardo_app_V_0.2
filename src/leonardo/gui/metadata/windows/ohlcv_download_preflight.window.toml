@@ -16,9 +16,17 @@ object_name = "ohlcv_download_preflight_window"
 test_id = "ohlcv_download_preflight_window"
 instance_policy = "standalone"
 status = "shell_only"
+ownership_scope = "presentation_shell_only"
+dummy_data_status = "local_in_memory_gui_dummy_only"
 description = "GUI presentation shell for OHLCV work-plan confirmation."
 object_family = "window"
 object_kind = "download_manager_preflight_shell"
+
+[metadata.traceability]
+object_id_policy = "stable_readable_deterministic_ids"
+qt_object_name_policy = "objectName equals object_id for constructed controls; top-level window objectName maps through metadata.object_name."
+parent_child_policy = "Parent IDs are exposed through metadata and Qt dynamic property parent_object_id where practical."
+no_anonymous_widgets = true
 
 [metadata.boundary_guarantees]
 gui_presentation_only = true

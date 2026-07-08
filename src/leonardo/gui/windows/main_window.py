@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QGridLayout,
+    QGroupBox,
     QLabel,
     QMainWindow,
     QMenu,
@@ -38,11 +39,16 @@ _MAIN_WINDOW_METADATA_PATH = (
 RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
 SettingsInspectorFactory = Callable[[], QWidget]
-DownloadActionIntentCallback = Callable[[str], str | None]
-_PLACEHOLDER_MAIN_WINDOW_ACTION_IDS = frozenset(
+ShellActionIntentCallback = Callable[[str], str | None]
+DownloadActionIntentCallback = ShellActionIntentCallback
+_DOWNLOAD_SHELL_ACTION_IDS = frozenset(
     (
         "main_window.download_data",
         "main_window.ohlcv_maintenance",
+    )
+)
+_SUITE_SHELL_ACTION_IDS = frozenset(
+    (
         "main_window.open_analysis_suite",
         "main_window.open_data_manager_suite",
         "main_window.open_research_suite",
@@ -54,12 +60,15 @@ _TRACKED_MAIN_WINDOW_ACTION_IDS = frozenset(
         "main_window.open_runtime_manager",
         "main_window.open_settings_inspector",
     )
-) | _PLACEHOLDER_MAIN_WINDOW_ACTION_IDS
-_PLACEHOLDER_BUTTON_ACTION_IDS = (
-    "main_window.open_trading_suite",
+) | _DOWNLOAD_SHELL_ACTION_IDS | _SUITE_SHELL_ACTION_IDS
+_LAUNCHER_BUTTON_ACTION_IDS = (
+    "main_window.download_data",
     "main_window.open_research_suite",
     "main_window.open_data_manager_suite",
     "main_window.open_analysis_suite",
+    "main_window.open_trading_suite",
+    "main_window.open_runtime_manager",
+    "main_window.open_settings_inspector",
 )
 
 
@@ -77,9 +86,9 @@ class LeonardoMainWindow(QMainWindow):
     """Minimal metadata-driven Leonardo Main Window shell.
 
     The shell consumes metadata for title, action labels, and basic presentation
-    defaults. Runtime Manager handoff is GUI-local through an injected factory
-    or read-only snapshot provider. The class does not call Core services or
-    application composition.
+    defaults. Runtime Manager and suite shell handoff is GUI-local through
+    injected factories/callbacks. The class does not call provider, storage,
+    chart, trading, or domain execution services.
     """
 
     def __init__(
@@ -92,6 +101,7 @@ class LeonardoMainWindow(QMainWindow):
         action_observer: GuiActionObserver | None = None,
         on_download_data_requested: DownloadActionIntentCallback | None = None,
         on_ohlcv_maintenance_requested: DownloadActionIntentCallback | None = None,
+        on_suite_shell_requested: ShellActionIntentCallback | None = None,
         username: str = "admin-dev",
         version_label: str = "v0.2",
     ) -> None:
@@ -121,6 +131,8 @@ class LeonardoMainWindow(QMainWindow):
             on_ohlcv_maintenance_requested
         ):
             raise TypeError("on_ohlcv_maintenance_requested must be callable")
+        if on_suite_shell_requested is not None and not callable(on_suite_shell_requested):
+            raise TypeError("on_suite_shell_requested must be callable")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
         self._menus: dict[str, QMenu] = {}
@@ -134,12 +146,13 @@ class LeonardoMainWindow(QMainWindow):
         self._settings_inspector_window: QWidget | None = None
         self._on_download_data_requested = on_download_data_requested
         self._on_ohlcv_maintenance_requested = on_ohlcv_maintenance_requested
+        self._on_suite_shell_requested = on_suite_shell_requested
         self._username = _string_or_fallback(username, "admin-dev")
         self._version_label = _string_or_fallback(version_label, "v0.2")
         self._central_message_label: QLabel | None = None
         self._apply_profile_metadata()
         self._build_menu_bar()
-        self._build_central_placeholder()
+        self._build_central_launcher()
         self._build_status_bar()
 
     @property
@@ -191,13 +204,21 @@ class LeonardoMainWindow(QMainWindow):
         except KeyError as error:
             raise KeyError(f"Unknown Main Window action: {action_id}") from error
 
+    def menu_for_id(self, menu_id: str) -> QMenu:
+        """Return a menu by stable menu identifier."""
+
+        try:
+            return self._menus[menu_id]
+        except KeyError as error:
+            raise KeyError(f"Unknown Main Window menu: {menu_id}") from error
+
     def placeholder_button_for_id(self, action_id: str) -> QPushButton:
-        """Return a central placeholder button by stable action ID."""
+        """Return a central launcher button by stable action ID."""
 
         try:
             return self._placeholder_buttons[action_id]
         except KeyError as error:
-            raise KeyError(f"Unknown Main Window placeholder button: {action_id}") from error
+            raise KeyError(f"Unknown Main Window launcher button: {action_id}") from error
 
     def apply_effective_profile(self, profile: EffectiveGuiMetadataProfile) -> None:
         """
@@ -232,6 +253,10 @@ class LeonardoMainWindow(QMainWindow):
 
         self.setWindowTitle(self.metadata_title)
         self.setObjectName(_string_value(metadata, "object_name", "main_window"))
+        self.setProperty(
+            "object_id",
+            _string_value(metadata, "window_id", MAIN_WINDOW_METADATA_ID),
+        )
         self.resize(
             _int_value(geometry, "width", 1440),
             _int_value(geometry, "height", 900),
@@ -248,66 +273,121 @@ class LeonardoMainWindow(QMainWindow):
     def _build_menu_bar(self) -> None:
         menu_bar = self.menuBar()
         menu_bar.setObjectName("main_window.menu_bar")
+        menu_bar.setProperty("object_id", "main_window.menu_bar")
+        menu_bar.setProperty("object_type", "menu_bar")
+        menu_bar.setProperty("parent_object_id", MAIN_WINDOW_METADATA_ID)
         for action_id, action_metadata in _sorted_metadata_items(
             _mapping_at(self._profile.values, "actions")
         ):
             action = QAction(_string_value(action_metadata, "label", action_id), self)
             action.setObjectName(action_id)
+            action.setProperty("object_id", action_id)
+            action.setProperty("object_type", "menu_action")
+            action.setProperty("parent_object_id", "main_window.menu_bar")
             action.triggered.connect(partial(self._handle_shell_action, action_id))
             self._actions[action_id] = action
 
         file_menu = self._add_menu("file", "File")
-        file_menu.addAction(self.action_for_id("main_window.open_runtime_manager"))
-        file_menu.addAction(self.action_for_id("main_window.open_settings_inspector"))
-        file_menu.addSeparator()
         file_menu.addAction(self.action_for_id("main_window.exit"))
 
-        download_menu = self._add_menu("download_manager", "Download Manager")
-        download_menu.addAction(self.action_for_id("main_window.download_data"))
-        download_menu.addAction(self.action_for_id("main_window.ohlcv_maintenance"))
+        connection_menu = self._add_menu("connection", "Connection")
+        connection_menu.addAction(self.action_for_id("main_window.download_data"))
+        connection_menu.addAction(self.action_for_id("main_window.ohlcv_maintenance"))
 
-        self._add_menu("connections", "Connections")
+        research_menu = self._add_menu("research_suite", "Research Suite")
+        research_menu.addAction(self.action_for_id("main_window.open_research_suite"))
+
+        data_menu = self._add_menu("data_manager", "Data Manager")
+        data_menu.addAction(self.action_for_id("main_window.open_data_manager_suite"))
+
+        analysis_menu = self._add_menu("analysis_suite", "Analysis Suite")
+        analysis_menu.addAction(self.action_for_id("main_window.open_analysis_suite"))
+
+        trading_menu = self._add_menu("trading_suite", "Trading Suite")
+        trading_menu.addAction(self.action_for_id("main_window.open_trading_suite"))
+
+        runtime_menu = self._add_menu("runtime_manager", "Runtime Manager")
+        runtime_menu.addAction(self.action_for_id("main_window.open_runtime_manager"))
+
+        settings_menu = self._add_menu("settings", "Settings")
+        settings_menu.addAction(self.action_for_id("main_window.open_settings_inspector"))
+
         self._add_menu("user", "User")
 
         username_label = QLabel(self._username, menu_bar)
         username_label.setObjectName("main_window.username_label")
+        username_label.setProperty("object_id", "main_window.label.username")
+        username_label.setProperty("object_type", "label")
+        username_label.setProperty("parent_object_id", "main_window.menu_bar")
         menu_bar.setCornerWidget(username_label, Qt.Corner.TopRightCorner)
 
-    def _build_central_placeholder(self) -> None:
+    def _build_central_launcher(self) -> None:
         central = QWidget()
         central.setObjectName("main_window.central")
+        central.setProperty("object_id", "main_window.central")
+        central.setProperty("object_type", "central_area")
+        central.setProperty("parent_object_id", MAIN_WINDOW_METADATA_ID)
         layout = QVBoxLayout(central)
+        layout.setObjectName("main_window.layout.central")
         title_label = QLabel(self.metadata_title)
         title_label.setObjectName("main_window.title_label")
-        placeholder = QLabel("Select a suite placeholder.")
+        title_label.setProperty("object_id", "main_window.label.title")
+        title_label.setProperty("object_type", "label")
+        title_label.setProperty("parent_object_id", "main_window.central")
+        placeholder = QLabel("Select a traceable shell launcher.")
         placeholder.setObjectName("main_window.placeholder_label")
+        placeholder.setProperty("object_id", "main_window.label.placeholder")
+        placeholder.setProperty("object_type", "status_label")
+        placeholder.setProperty("parent_object_id", "main_window.central")
         self._central_message_label = placeholder
-        button_grid = QGridLayout()
-        for index, action_id in enumerate(_PLACEHOLDER_BUTTON_ACTION_IDS):
-            button = QPushButton(self.action_for_id(action_id).text())
-            button.setObjectName(action_id)
-            button.setMinimumHeight(96)
+
+        launcher = QGroupBox("Traceable Shell Launchers", central)
+        launcher.setObjectName("main_window.panel.launcher")
+        launcher.setProperty("object_id", "main_window.panel.launcher")
+        launcher.setProperty("object_type", "launcher_panel")
+        launcher.setProperty("parent_object_id", "main_window.central")
+        button_grid = QGridLayout(launcher)
+        button_grid.setObjectName("main_window.layout.launcher_grid")
+        for index, action_id in enumerate(_LAUNCHER_BUTTON_ACTION_IDS):
+            object_id = _launcher_button_object_id(action_id)
+            button = QPushButton(self.action_for_id(action_id).text(), launcher)
+            button.setObjectName(object_id)
+            button.setProperty("object_id", object_id)
+            button.setProperty("object_type", "button")
+            button.setProperty("action_id", action_id)
+            button.setProperty("parent_object_id", "main_window.panel.launcher")
+            button.setMinimumHeight(80)
             button.clicked.connect(partial(self._handle_shell_action, action_id))
             self._placeholder_buttons[action_id] = button
             button_grid.addWidget(button, index // 2, index % 2)
 
         layout.addWidget(title_label)
         layout.addWidget(placeholder)
-        layout.addLayout(button_grid)
+        layout.addWidget(launcher, stretch=1)
         self.setCentralWidget(central)
 
     def _build_status_bar(self) -> None:
         status_bar = QStatusBar()
         status_bar.setObjectName("main_window.status_bar")
+        status_bar.setProperty("object_id", "main_window.status_bar")
+        status_bar.setProperty("object_type", "status_bar")
+        status_bar.setProperty("parent_object_id", MAIN_WINDOW_METADATA_ID)
         version = QLabel(self._version_label)
         version.setObjectName("main_window.version_label")
+        version.setProperty("object_id", "main_window.label.version")
+        version.setProperty("object_type", "label")
+        version.setProperty("parent_object_id", "main_window.status_bar")
         status_bar.addPermanentWidget(version)
         self.setStatusBar(status_bar)
         status_bar.showMessage("Ready")
 
     def _add_menu(self, menu_id: str, label: str) -> QMenu:
         menu = self.menuBar().addMenu(label)
-        menu.setObjectName(f"main_window.menu.{menu_id}")
+        object_id = f"main_window.menu.{menu_id}"
+        menu.setObjectName(object_id)
+        menu.setProperty("object_id", object_id)
+        menu.setProperty("object_type", "menu")
+        menu.setProperty("parent_object_id", "main_window.menu_bar")
         self._menus[menu_id] = menu
         return menu
 
@@ -328,8 +408,8 @@ class LeonardoMainWindow(QMainWindow):
         if action_id == "main_window.open_runtime_manager":
             self._open_runtime_manager_window()
             return
-        if action_id in _PLACEHOLDER_MAIN_WINDOW_ACTION_IDS:
-            self._show_placeholder_action(action_id)
+        if action_id in _DOWNLOAD_SHELL_ACTION_IDS | _SUITE_SHELL_ACTION_IDS:
+            self._show_shell_action(action_id)
             return
         self.statusBar().showMessage(f"Unhandled local shell action: {action_id}")
 
@@ -345,36 +425,38 @@ class LeonardoMainWindow(QMainWindow):
         )
         return decision.allowed
 
-    def _show_placeholder_action(self, action_id: str) -> None:
-        message = self._placeholder_message_for_action(action_id)
+    def _show_shell_action(self, action_id: str) -> None:
+        message = self._shell_message_for_action(action_id)
         if self._central_message_label is not None:
             self._central_message_label.setText(message)
         self.statusBar().showMessage(message)
 
-    def _placeholder_message_for_action(self, action_id: str) -> str:
+    def _shell_message_for_action(self, action_id: str) -> str:
         message = self._default_placeholder_message_for_action(action_id)
-        callback = self._download_action_callback_for_id(action_id)
+        callback = self._shell_action_callback_for_id(action_id)
         if callback is None:
             return message
         callback_message = callback(action_id)
         if callback_message is None or callback_message == "":
             return message
         if not isinstance(callback_message, str):
-            raise TypeError("download action callback must return str or None")
+            raise TypeError("shell action callback must return str or None")
         return callback_message
 
     def _default_placeholder_message_for_action(self, action_id: str) -> str:
         label = self.action_for_id(action_id).text()
-        return f"{label} placeholder selected."
+        return f"{label} shell launcher selected."
 
-    def _download_action_callback_for_id(
+    def _shell_action_callback_for_id(
         self,
         action_id: str,
-    ) -> DownloadActionIntentCallback | None:
+    ) -> ShellActionIntentCallback | None:
         if action_id == "main_window.download_data":
             return self._on_download_data_requested
         if action_id == "main_window.ohlcv_maintenance":
             return self._on_ohlcv_maintenance_requested
+        if action_id in _SUITE_SHELL_ACTION_IDS:
+            return self._on_suite_shell_requested
         return None
 
     def _open_runtime_manager_window(self) -> None:
@@ -429,6 +511,11 @@ class LeonardoMainWindow(QMainWindow):
         return window
 
 
+def _launcher_button_object_id(action_id: str) -> str:
+    suffix = action_id.removeprefix("main_window.")
+    return f"main_window.button.{suffix}"
+
+
 def _mapping_at(values: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = values.get(key, {})
     if isinstance(value, Mapping):
@@ -456,7 +543,9 @@ def _int_value(values: Mapping[str, object], key: str, fallback: int) -> int:
     return fallback
 
 
-def _sorted_metadata_items(values: Mapping[str, object]) -> tuple[tuple[str, Mapping[str, object]], ...]:
+def _sorted_metadata_items(
+    values: Mapping[str, object],
+) -> tuple[tuple[str, Mapping[str, object]], ...]:
     return tuple(
         (key, item)
         for key, item in sorted(values.items(), key=lambda entry: entry[0])

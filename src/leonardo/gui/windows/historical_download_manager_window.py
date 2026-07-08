@@ -41,9 +41,11 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._buttons: dict[str, QPushButton] = {}
         self._timeframe_checkboxes: dict[str, QCheckBox] = {}
         self._timeframe_layout = QVBoxLayout()
+        self._timeframe_layout.setObjectName("historical_download_manager.layout.timeframes")
         self._status_log = QTextEdit(self)
 
         self.setObjectName("historical_download_manager_window")
+        self.setProperty("object_id", HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID)
         self.setWindowTitle("Historical Download Manager")
         self.resize(720, 640)
         self._build_layout()
@@ -56,6 +58,9 @@ class HistoricalDownloadManagerWindow(QWidget):
         for timeframe in normalized:
             checkbox = QCheckBox(timeframe, self)
             checkbox.setObjectName(f"historical_download_manager.timeframe.{timeframe}")
+            checkbox.setProperty("object_id", checkbox.objectName())
+            checkbox.setProperty("object_type", "checkbox")
+            checkbox.setProperty("parent_object_id", "historical_download_manager.timeframes")
             self._timeframe_checkboxes[timeframe] = checkbox
             self._timeframe_layout.addWidget(checkbox)
         self._timeframe_layout.addStretch(1)
@@ -117,11 +122,15 @@ class HistoricalDownloadManagerWindow(QWidget):
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setObjectName("historical_download_manager.layout.root")
         title = QLabel("Historical Download Manager", self)
         title.setObjectName("historical_download_manager.title")
+        title.setProperty("object_id", "historical_download_manager.title")
+        title.setProperty("object_type", "label")
         layout.addWidget(title)
 
         form = QFormLayout()
+        form.setObjectName("historical_download_manager.layout.selection_form")
         self._add_field(form, "exchange", "Exchange", QComboBox(self))
         self._add_field(form, "market_type", "Market Type", QComboBox(self))
         self._add_field(form, "symbol", "Symbol", QLineEdit(self))
@@ -132,13 +141,20 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._add_field(form, "limit", "Limit", limit)
         layout.addLayout(form)
 
-        layout.addWidget(QLabel("Timeframes", self))
+        timeframes_label = QLabel("Timeframes", self)
+        timeframes_label.setObjectName("historical_download_manager.label.timeframes")
+        timeframes_label.setProperty("object_id", "historical_download_manager.label.timeframes")
+        timeframes_label.setProperty("object_type", "label")
+        layout.addWidget(timeframes_label)
         timeframe_container = QWidget(self)
         timeframe_container.setObjectName("historical_download_manager.timeframes")
+        timeframe_container.setProperty("object_id", "historical_download_manager.timeframes")
+        timeframe_container.setProperty("object_type", "checklist")
         timeframe_container.setLayout(self._timeframe_layout)
         layout.addWidget(timeframe_container)
 
         timeframe_buttons = QHBoxLayout()
+        timeframe_buttons.setObjectName("historical_download_manager.layout.timeframe_buttons")
         select_all = self._add_button(
             "select_all_timeframes",
             "Select All Timeframes",
@@ -156,6 +172,7 @@ class HistoricalDownloadManagerWindow(QWidget):
         layout.addLayout(timeframe_buttons)
 
         action_buttons = QHBoxLayout()
+        action_buttons.setObjectName("historical_download_manager.layout.action_buttons")
         start = self._add_button("start", "Start", enabled=True)
         stop = self._add_button("stop", "Stop", enabled=False)
         maintenance = self._add_button("ohlcv_maintenance", "OHLCV Maintenance", enabled=True)
@@ -167,18 +184,30 @@ class HistoricalDownloadManagerWindow(QWidget):
         layout.addLayout(action_buttons)
 
         self._status_log.setObjectName("historical_download_manager.status_log")
+        self._status_log.setProperty("object_id", "historical_download_manager.status_log")
+        self._status_log.setProperty("object_type", "text_area")
         self._status_log.setReadOnly(True)
         self._status_log.setPlaceholderText("Status and log output")
         layout.addWidget(self._status_log)
 
     def _add_field(self, form: QFormLayout, field_id: str, label: str, widget: QWidget) -> None:
+        label_widget = QLabel(label, self)
+        label_widget.setObjectName(f"historical_download_manager.label.{field_id}")
+        label_widget.setProperty("object_id", label_widget.objectName())
+        label_widget.setProperty("object_type", "label")
         widget.setObjectName(f"historical_download_manager.{field_id}")
+        widget.setProperty("object_id", widget.objectName())
+        widget.setProperty("object_type", widget.__class__.__name__)
+        widget.setProperty("parent_object_id", "historical_download_manager.selection")
         self._field_widgets[field_id] = widget
-        form.addRow(label, widget)
+        form.addRow(label_widget, widget)
 
     def _add_button(self, button_id: str, label: str, *, enabled: bool) -> QPushButton:
         button = QPushButton(label, self)
         button.setObjectName(f"historical_download_manager.{button_id}")
+        button.setProperty("object_id", button.objectName())
+        button.setProperty("object_type", "button")
+        button.setProperty("action_id", button.objectName())
         button.setEnabled(enabled)
         self._buttons[button_id] = button
         return button

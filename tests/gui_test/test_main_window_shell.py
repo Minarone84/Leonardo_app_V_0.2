@@ -107,24 +107,35 @@ def test_main_window_menu_layout_has_expected_sections(
     window = LeonardoMainWindow(load_main_window_profile())
 
     file_menu = window.findChild(QMenu, "main_window.menu.file")
-    download_menu = window.findChild(QMenu, "main_window.menu.download_manager")
-    connections_menu = window.findChild(QMenu, "main_window.menu.connections")
+    connection_menu = window.findChild(QMenu, "main_window.menu.connection")
+    research_menu = window.findChild(QMenu, "main_window.menu.research_suite")
+    data_menu = window.findChild(QMenu, "main_window.menu.data_manager")
+    analysis_menu = window.findChild(QMenu, "main_window.menu.analysis_suite")
+    trading_menu = window.findChild(QMenu, "main_window.menu.trading_suite")
+    runtime_menu = window.findChild(QMenu, "main_window.menu.runtime_manager")
+    settings_menu = window.findChild(QMenu, "main_window.menu.settings")
     user_menu = window.findChild(QMenu, "main_window.menu.user")
 
     assert file_menu is not None
-    assert download_menu is not None
-    assert connections_menu is not None
+    assert connection_menu is not None
+    assert research_menu is not None
+    assert data_menu is not None
+    assert analysis_menu is not None
+    assert trading_menu is not None
+    assert runtime_menu is not None
+    assert settings_menu is not None
     assert user_menu is not None
-    assert [action.text() for action in file_menu.actions() if action.text()] == [
-        "Runtime Manager",
-        "Settings",
-        "Exit",
-    ]
-    assert [action.text() for action in download_menu.actions()] == [
+    assert [action.text() for action in file_menu.actions() if action.text()] == ["Exit"]
+    assert [action.text() for action in connection_menu.actions()] == [
         "Download Data",
         "OHLCV Maintenance",
     ]
-    assert connections_menu.actions() == []
+    assert [action.text() for action in research_menu.actions()] == ["Research Suite"]
+    assert [action.text() for action in data_menu.actions()] == ["Data Manager Suite"]
+    assert [action.text() for action in analysis_menu.actions()] == ["Analysis Suite"]
+    assert [action.text() for action in trading_menu.actions()] == ["Trading Suite"]
+    assert [action.text() for action in runtime_menu.actions()] == ["Runtime Manager"]
+    assert [action.text() for action in settings_menu.actions()] == ["Settings"]
     assert user_menu.actions() == []
     assert window.findChild(QToolBar, "main_window.toolbar") is None
     assert window.findChildren(QToolBar) == []
@@ -139,16 +150,38 @@ def test_main_window_central_placeholder_buttons_exist(
     window = LeonardoMainWindow(load_main_window_profile())
 
     expected = {
-        "main_window.open_trading_suite": "Trading Suite",
-        "main_window.open_research_suite": "Research Suite",
-        "main_window.open_data_manager_suite": "Data Manager Suite",
-        "main_window.open_analysis_suite": "Analysis Suite",
+        "main_window.download_data": ("main_window.button.download_data", "Download Data"),
+        "main_window.open_research_suite": (
+            "main_window.button.open_research_suite",
+            "Research Suite",
+        ),
+        "main_window.open_data_manager_suite": (
+            "main_window.button.open_data_manager_suite",
+            "Data Manager Suite",
+        ),
+        "main_window.open_analysis_suite": (
+            "main_window.button.open_analysis_suite",
+            "Analysis Suite",
+        ),
+        "main_window.open_trading_suite": (
+            "main_window.button.open_trading_suite",
+            "Trading Suite",
+        ),
+        "main_window.open_runtime_manager": (
+            "main_window.button.open_runtime_manager",
+            "Runtime Manager",
+        ),
+        "main_window.open_settings_inspector": (
+            "main_window.button.open_settings_inspector",
+            "Settings",
+        ),
     }
-    for action_id, label in expected.items():
-        button = window.findChild(QPushButton, action_id)
-        assert button is not None
+    for action_id, (button_id, label) in expected.items():
+        button = window.placeholder_button_for_id(action_id)
+        assert window.findChild(QPushButton, button_id) is button
         assert button.text() == label
-        assert button.minimumHeight() >= 96
+        assert button.property("action_id") == action_id
+        assert button.minimumHeight() >= 80
 
     window.deleteLater()
     qapplication.processEvents()
@@ -190,10 +223,10 @@ def test_main_window_placeholder_actions_update_status_without_windows(
 
     assert window.last_local_action_id == "main_window.download_data"
     assert window.statusBar().currentMessage() == (
-        "Download Data placeholder selected."
+        "Download Data shell launcher selected."
     )
     assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
-        "Download Data placeholder selected."
+        "Download Data shell launcher selected."
     )
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
@@ -203,10 +236,10 @@ def test_main_window_placeholder_actions_update_status_without_windows(
 
     assert window.last_local_action_id == "main_window.ohlcv_maintenance"
     assert window.statusBar().currentMessage() == (
-        "OHLCV Maintenance placeholder selected."
+        "OHLCV Maintenance shell launcher selected."
     )
     assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
-        "OHLCV Maintenance placeholder selected."
+        "OHLCV Maintenance shell launcher selected."
     )
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
@@ -216,7 +249,7 @@ def test_main_window_placeholder_actions_update_status_without_windows(
 
     assert window.last_local_action_id == "main_window.open_trading_suite"
     assert window.statusBar().currentMessage() == (
-        "Trading Suite placeholder selected."
+        "Trading Suite shell launcher selected."
     )
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
@@ -283,10 +316,34 @@ def test_main_window_download_callback_none_preserves_default_message(
 
     assert calls == ["main_window.download_data"]
     assert window.statusBar().currentMessage() == (
-        "Download Data placeholder selected."
+        "Download Data shell launcher selected."
     )
     assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
-        "Download Data placeholder selected."
+        "Download Data shell launcher selected."
+    )
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_suite_callback_display_returned_message(
+    qapplication: QApplication,
+) -> None:
+    calls: list[str] = []
+    window = LeonardoMainWindow(
+        load_main_window_profile(),
+        on_suite_shell_requested=lambda action_id: (
+            calls.append(action_id) or "Research Suite shell opened."
+        ),
+    )
+
+    window.action_for_id("main_window.open_research_suite").trigger()
+    qapplication.processEvents()
+
+    assert calls == ["main_window.open_research_suite"]
+    assert window.statusBar().currentMessage() == "Research Suite shell opened."
+    assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
+        "Research Suite shell opened."
     )
 
     window.deleteLater()
@@ -314,7 +371,7 @@ def test_main_window_download_callback_is_not_called_when_action_denied(
     assert window.last_local_action_id == "main_window.download_data"
     assert window.statusBar().currentMessage() == "Ready"
     assert window.findChild(QLabel, "main_window.placeholder_label").text() == (
-        "Select a suite placeholder."
+        "Select a traceable shell launcher."
     )
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
