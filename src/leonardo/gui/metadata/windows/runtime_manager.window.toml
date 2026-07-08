@@ -7,11 +7,14 @@ label = "Runtime Manager"
 [metadata]
 contract_id = "runtime_manager.window"
 logical_kind = "read_only_runtime_inspection"
-owner_area = "runtime"
+owner_area = "gui"
+target_area_id = "runtime"
+target_module_id = "runtime_manager"
 window_id = "runtime_manager.window"
 object_name = "runtime_manager_window"
 test_id = "runtime_manager_window"
 instance_policy = "singleton"
+ownership_scope = "presentation_shell_only"
 runtime_role = "read_only_runtime_inspection"
 
 [metadata.geometry_policy]

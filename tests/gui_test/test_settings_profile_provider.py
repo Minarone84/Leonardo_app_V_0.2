@@ -100,12 +100,13 @@ def test_settings_profile_provider_returns_runtime_manager_source_reference() ->
     assert profile.title == "Runtime Manager"
     assert profile.metadata_path.name == "runtime_manager.window.toml"
     assert profile.metadata_path.exists() is True
-    assert profile.owner_area == "runtime"
+    assert profile.owner_area == "gui"
     assert profile.logical_kind == "read_only_runtime_inspection"
     assert result.document is not None
     assert result.report.has_errors is False
     assert result.document.metadata_id == RUNTIME_MANAGER_SETTINGS_PROFILE_ID
-    assert result.document.metadata["owner_area"] == "runtime"
+    assert result.document.metadata["owner_area"] == "gui"
+    assert result.document.metadata["target_area_id"] == "runtime"
     assert result.document.metadata["logical_kind"] == "read_only_runtime_inspection"
     assert {
         setting.path for setting in result.document.settings

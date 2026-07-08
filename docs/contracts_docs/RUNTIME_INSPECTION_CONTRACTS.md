@@ -23,16 +23,16 @@ metadata nesting level. Provider metadata values must remain JSON-compatible:
 null, booleans, integers, finite floats, strings, lists or tuples of safe
 values, and string-keyed mappings of safe values.
 
-`DownloadDataRuntimeSummary` is a compact Download Data read model supplied by
-future app composition or Download Data owners. It reports workflow, selection,
-preflight, progress, completion, output, storage-target, partial-persistence,
-step, bar, diagnostic, and last-activity counts. It is frozen and rejects
-sensitive metadata keys such as credentials, tokens, secrets, passwords, API
-keys, authorization material, raw clients, sockets, payloads, raw responses,
-provider objects, adapters, storage writers, and handles at every metadata
-nesting level. Download Data metadata values must remain JSON-compatible: null,
-booleans, integers, finite floats, strings, lists or tuples of safe values, and
-string-keyed mappings of safe values.
+`DownloadDataRuntimeSummary` was removed from the active Runtime Inspection
+contracts after Download Manager sanitation. `RuntimeManagerSnapshot` no longer
+carries first-class Download Data or Download Manager summary fields such as
+`downloads_summary`, `download_execution_summary`, or
+`download_data_runtime_summary`.
+
+Future Connection Download Manager status must be supplied through generic
+suite or provider runtime summary boundaries after that work is explicitly
+scoped. Core runtime inspection contracts remain generic and read-only; Core
+does not own Download Manager runtime inspection truth.
 
 `RuntimeHealthStatus` is derived from section statuses. Failed app state maps to
 an error section. Audit sink failures and visible failed or cancellation-requested

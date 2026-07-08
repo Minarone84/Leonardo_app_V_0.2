@@ -105,7 +105,11 @@ def test_runtime_manager_identity_is_discoverable() -> None:
 
     assert document.metadata["contract_id"] == "runtime_manager.window"
     assert document.metadata["logical_kind"] == "read_only_runtime_inspection"
-    assert document.metadata["owner_area"] == "runtime"
+    assert document.metadata["owner_area"] == "gui"
+    assert document.metadata["target_area_id"] == "runtime"
+    assert document.metadata["target_module_id"] == "runtime_manager"
+    assert document.metadata["ownership_scope"] == "presentation_shell_only"
+    assert document.metadata["runtime_role"] == "read_only_runtime_inspection"
     assert document.metadata["window_id"] == "runtime_manager.window"
     assert document.metadata["instance_policy"] == "singleton"
     assert document.metadata["geometry_policy"]["start_mode"] == "maximized"

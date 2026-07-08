@@ -33,7 +33,10 @@ def test_dummy_window_metadata_loads_and_validates() -> None:
     assert result.document.title == "Dummy Metadata Test Window"
     assert result.document.metadata["contract_id"] == "dummy_metadata_test.window"
     assert result.document.metadata["logical_kind"] == "test_window"
-    assert result.document.metadata["owner_area"] == "gui_metadata_test"
+    assert result.document.metadata["owner_area"] == "gui"
+    assert result.document.metadata["target_area_id"] == "gui_metadata_test"
+    assert result.document.metadata["target_module_id"] == "dummy_metadata_test"
+    assert result.document.metadata["ownership_scope"] == "presentation_shell_only"
 
 
 def test_dummy_window_metadata_resolves_effective_profile() -> None:

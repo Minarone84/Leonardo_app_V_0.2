@@ -7,11 +7,14 @@ label = "Dummy Metadata Test"
 [metadata]
 contract_id = "dummy_metadata_test.window"
 logical_kind = "test_window"
-owner_area = "gui_metadata_test"
+owner_area = "gui"
+target_area_id = "gui_metadata_test"
+target_module_id = "dummy_metadata_test"
 window_id = "dummy_metadata_test.window"
 object_name = "dummy_metadata_test_window"
 test_id = "dummy_metadata_test_window"
 instance_policy = "singleton"
+ownership_scope = "presentation_shell_only"
 
 [metadata.geometry_policy]
 start_mode = "centered"

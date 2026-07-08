@@ -73,7 +73,7 @@ def test_runtime_manager_window_summary_is_available() -> None:
 
     assert summary.object_ref.object_id == "runtime_manager.window"
     assert summary.metadata["metadata_id"] == "runtime_manager.window"
-    assert summary.metadata["owner_area"] == "runtime"
+    assert summary.metadata["owner_area"] == "gui"
     assert summary.metadata["object_name"] == "runtime_manager_window"
 
 
@@ -98,6 +98,17 @@ def test_window_summaries_include_static_metadata_fields() -> None:
     assert summary.metadata["instance_policy"] == "singleton"
     assert summary.metadata["settings_present"] is True
     assert "main_window.open_runtime_manager" in summary.metadata["action_ids"]
+
+
+def test_all_gui_window_metadata_files_are_gui_owned() -> None:
+    paths = tuple(sorted(_METADATA_DIR.glob("*.window.toml")))
+
+    assert paths
+    for path in paths:
+        result = load_metadata_document(path)
+        assert result.document is not None
+        assert result.report.has_errors is False
+        assert result.document.metadata["owner_area"] == "gui"
 
 
 def test_window_summaries_include_static_window_action_relationships() -> None:
