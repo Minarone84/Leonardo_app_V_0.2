@@ -12,7 +12,7 @@ window_id = "download_request_builder.window"
 object_name = "download_request_builder_window"
 test_id = "download_request_builder_window"
 instance_policy = "singleton"
-description = "Existing builder for Download Data and OHLCV Maintenance drafts."
+description = "Builder for Download Data sandbox execution and deferred OHLCV Maintenance drafts."
 object_family = "window"
 object_kind = "download_data_selection_shell"
 boundary_id = "download_data_boundary"
@@ -21,7 +21,7 @@ workflow_id = "download_data"
 [metadata.download_data_workflow]
 boundary_id = "download_data_boundary"
 workflow_id = "download_data"
-current_shell_stage = "selection_draft"
+current_shell_stage = "sandbox_execution"
 current_contract_bridge = "DownloadRequestDraft -> DownloadRequest"
 accepted_sequence = [
     "selection",
@@ -35,15 +35,20 @@ implemented_stage_notes = [
     "The current shell renders selection fields and a draft submit action.",
     "The current shell renders a passive read-only selection recap from the current draft and Download Data selection adapter.",
     "The current shell exposes a visible Preview Preflight control that calls the existing non-mutating structural preview callback.",
-    "The current shell renders a passive non-executing progress shell with zeroed total and per-timeframe progress display.",
+    "The current shell routes Start through composition and Core services to sandbox smoke execution when an explicit sandbox root is configured.",
+    "The current shell displays sandbox progress and marks completed timeframes at 100 percent after completed sandbox execution.",
+    "The current shell displays a passive final recap with mode, status, bars, timestamps, output paths, accepted/loadable/validated flags, and sandbox notice.",
+    "Sandbox storage-aware preflight detects new_file and update_existing during submit execution.",
 ]
 not_implemented_stages = [
-    "storage_aware_preflight",
     "provider_range_discovery",
     "process_confirmation",
-    "real_execution",
-    "final_recap",
+    "production_storage_root",
+    "default_live_execution",
     "cancellation",
+    "data_manager_integration",
+    "ohlcv_maintenance_acceptance",
+    "ai_helper",
 ]
 future_contracts = [
     "DownloadDataSelectionDraft",
@@ -54,20 +59,26 @@ future_contracts = [
 ]
 
 [metadata.boundary_guarantees]
-no_downloader_execution = true
-no_provider_api_call = true
-no_storage_write = true
+sandbox_execution_only = true
+fixture_backed_default_execution = true
+live_bybit_opt_in_only = true
+no_default_live_api = true
+no_default_provider_api_call = true
+no_production_storage_write = true
+no_direct_provider_api_call = true
+no_direct_storage_write = true
 no_cancellation_behavior = true
 no_data_manager_integration = true
+no_ohlcv_maintenance_acceptance = true
 no_runtime_manager_control = true
 no_object_map_service_mutation = true
 no_ai_helper_implementation = true
 forbidden_behavior = [
-    "downloader_execution",
-    "provider_api_call",
-    "storage_write",
+    "default_live_api",
+    "production_storage_write",
     "cancellation_behavior",
     "data_manager_integration",
+    "ohlcv_maintenance_acceptance",
     "runtime_manager_control",
     "object_map_service_mutation",
     "ai_helper_implementation",
@@ -108,6 +119,7 @@ no_storage_access = true
 no_update_or_new_file_detection = true
 no_ai_helper_implementation = true
 wording_guard = "Structural preflight preview only. Provider range checks, storage checks, update/new-file detection, and execution are not performed in this shell yet."
+storage_aware_preflight_scope = "Submit execution uses sandbox storage inspection; Preview Preflight remains non-executing."
 
 [metadata.progress_shell_surface]
 surface_id = "download_request_builder.progress_shell"
@@ -119,8 +131,10 @@ read_only = true
 passive_display = true
 workflow_stage = "progress_shell"
 non_executing_shell = true
+updates_from_submit_result = true
 initial_total_progress = 0
 initial_timeframe_progress = 0
+completion_total_progress = 100
 no_auto_run = true
 no_fake_progress = true
 no_timers = true
@@ -130,13 +144,39 @@ no_storage_write = true
 no_cancellation_behavior = true
 no_ai_helper_implementation = true
 
+[metadata.final_recap_surface]
+surface_id = "download_request_builder.status_summary"
+message_surface_id = "download_request_builder.progress.messages"
+label = "Final Recap"
+read_only = true
+passive_display = true
+workflow_stage = "final_recap"
+data_source = "DownloadSubmitResultView from composition/Core sandbox execution"
+shows_mode = true
+shows_status = true
+shows_bars = true
+shows_timestamps = true
+shows_csv_path = true
+shows_metadata_path = true
+shows_accepted_loadable_validated = true
+shows_sandbox_notice = true
+accepted = false
+loadable = false
+validated = false
+no_data_manager_integration = true
+no_ohlcv_maintenance_acceptance = true
+no_runtime_manager_control = true
+no_object_map_service_mutation = true
+no_ai_helper_implementation = true
+
 [metadata.documentation]
 docs_refs = [
-    "docs/gui_readme.md",
     "docs/gui_docs/GUI_COMPOSITION.md",
     "docs/contracts_docs/DOWNLOAD_DATA_BOUNDARY.md",
+    "docs/contracts_docs/DOWNLOAD_DATA_EXECUTION.md",
     "docs/core_docs/DOWNLOAD_DATA_OBJECT_MAP_PATTERN.md",
     "docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md",
+    "docs/core_docs/DOWNLOAD_DATA_USER_SMOKE_TEST.md",
 ]
 test_refs = [
     "tests/gui_test/test_download_request_builder_window.py",

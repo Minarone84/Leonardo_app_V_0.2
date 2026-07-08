@@ -14,9 +14,11 @@ An area is the generic architecture term.
 A suite is a large user-facing product area such as Research Suite, Data
 Manager Suite, Analysis Suite, or Trading Suite.
 
-Download Data is a future workflow/module, not a top-level suite yet. It may
-later belong under a Data Manager or Data Acquisition area after the
-provider/session boundary is defined.
+Download Data is a workflow/module under the Download Manager area, not a
+top-level suite. Its current accepted behavior is a sandboxed Bybit OHLCV smoke
+path with fixture-backed default execution and explicit sandbox output only.
+It may later integrate with a Data Manager or Data Acquisition area after those
+boundaries are explicitly scoped.
 
 Provider/Connection is shared infrastructure, not a suite. Provider and
 connection components provide capabilities that future suites may depend on,
@@ -116,12 +118,12 @@ handles.
 
 ## Future Boundaries
 
-Object Map provider pattern remains future work. The suite boundary contracts
-do not create provider entries, register providers, scan modules, discover
-suites, query source managers, or mutate mapped objects.
+Suite Object Map provider patterns are read-only descriptor summaries. The
+suite boundary contracts do not create provider entries, register providers,
+scan modules, discover suites, query source managers, or mutate mapped objects.
 
-Runtime Manager suite summary remains future work. Runtime Manager remains
-read-only and must not become a suite controller.
+Runtime Manager suite summaries are read-only inspection summaries. Runtime
+Manager remains read-only and must not become a suite controller.
 
 No mutable SuiteRegistry exists in this phase. Future registry or composition
 work must be explicitly scoped and must not introduce import-time registration

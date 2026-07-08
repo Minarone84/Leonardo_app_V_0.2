@@ -5,11 +5,41 @@ contracts for future Download Data execution. The contracts describe execution
 commands, targets, provider page requests and normalized page results, storage
 write requests and results, progress events, final results, errors, and plans.
 
-This phase is contract-only. It does not implement transport, provider APIs,
-Bybit calls, network clients, file writes, CSV persistence, metadata sidecar
-writes, GUI behavior, Runtime Manager behavior, Object Map behavior, AI helper
-behavior, app startup behavior, adapters, registries, discovery, or old
-Leonardo code import.
+The original execution-contract phase was contract-only. The current accepted
+Download Data slice now includes a sandboxed Bybit OHLCV smoke execution path
+that consumes these contracts without changing their ownership boundaries.
+Default execution is fixture-backed/offline and writes only under an explicit
+sandbox root.
+
+Live Bybit public REST transport exists but is opt-in only. It is not used by
+default tests or default GUI execution. It requires
+`LEONARDO_ALLOW_LIVE_BYBIT_SMOKE=1` or explicit `allow_live=True`, and it still
+writes only to sandbox output.
+
+## Current Sandbox Execution Semantics
+
+The sandbox smoke path supports:
+
+- Bybit spot OHLCV fixture-backed execution by default;
+- storage-aware preflight for `new_file` versus `update_existing`;
+- use of the latest local sandbox timestamp as the update start point;
+- fallback to `new_file` behavior when no local sandbox OHLCV exists;
+- canonical sandbox paths under
+  `historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/`;
+- merge and deduplicate by `timestamp_ms`, with incoming candles replacing
+  duplicate timestamps;
+- ascending CSV output;
+- metadata sidecar updates;
+- passive final recap display of mode, status, bars, timestamps, CSV path,
+  metadata path, accepted/loadable/validated flags, and sandbox-only notice.
+
+Sandbox output remains `partial=false`, `accepted=false`, `loadable=false`, and
+`validated=false`. OHLCV Maintenance and Data Manager acceptance/loadability
+remain outside this scope.
+
+Multi-timeframe sandbox execution is supported with separate per-timeframe
+output and progress. The current limitation is that one timeframe failure fails
+the sandbox execution rather than producing partial per-timeframe success.
 
 ## Ownership Split
 
@@ -122,16 +152,17 @@ or credential terms are redacted.
 
 ## First Smoke Recommendation
 
-The first real smoke implementation should remain separate from these
-contracts. Recommended shape:
+The first real smoke implementation remains separate from these contracts and
+has been implemented as a sandbox-only slice. Its accepted shape is:
 
-- use a mock provider transport first;
-- use a single explicit target such as Bybit spot BTCUSDT 1m;
+- use fixture-backed provider transport by default;
+- use explicit targets such as Bybit spot BTCUSDT 1m;
 - use a small bounded page limit;
 - write only under an explicit sandboxed output root;
-- create a new-file path only;
+- support new-file and update-existing sandbox modes;
 - keep partial writes unaccepted, unloadable, and unvalidated;
-- recheck provider documentation immediately before real transport work.
+- recheck provider documentation immediately before any future production
+  transport work.
 
 No production or user data path should be used for the first smoke.
 

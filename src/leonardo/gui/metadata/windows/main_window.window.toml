@@ -26,6 +26,12 @@ boundary_id = "download_data_boundary"
 purpose = "Open the Download Data selection and draft shell."
 permission_ref = "download:view"
 implementation_status = "opens_existing_builder_shell"
+area = "download_manager"
+ownership_scope = "launch_surface_only"
+execution_owner = "composition_core_download_manager"
+storage_owner = "download_data_sandbox_writer"
+no_execution_ownership = true
+no_storage_ownership = true
 
 [metadata.launch_surfaces.ohlcv_maintenance]
 action_id = "main_window.ohlcv_maintenance"
@@ -46,11 +52,12 @@ notes = [
 
 [metadata.documentation]
 docs_refs = [
-    "docs/gui_readme.md",
     "docs/gui_docs/GUI_COMPOSITION.md",
     "docs/contracts_docs/DOWNLOAD_DATA_BOUNDARY.md",
+    "docs/contracts_docs/DOWNLOAD_DATA_EXECUTION.md",
     "docs/core_docs/DOWNLOAD_DATA_OBJECT_MAP_PATTERN.md",
     "docs/core_docs/DOWNLOAD_DATA_RUNTIME_SUMMARY.md",
+    "docs/core_docs/DOWNLOAD_DATA_USER_SMOKE_TEST.md",
 ]
 test_refs = [
     "tests/gui_test/test_main_window_metadata.py",

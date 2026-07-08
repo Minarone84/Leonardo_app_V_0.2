@@ -354,11 +354,11 @@ def test_suite_boundary_docs_explain_ownership_and_forbidden_behavior() -> None:
     doc = _SUITE_BOUNDARY_DOC.read_text(encoding="utf-8")
 
     assert "area is the generic architecture term" in doc
-    assert "Download Data is a future workflow/module" in doc
+    assert "Download Data is a workflow/module under the Download Manager area" in doc
     assert "Provider/Connection is shared infrastructure" in doc
     assert "No mutable SuiteRegistry exists in this phase" in doc
-    assert "Object Map provider pattern remains future work" in doc
-    assert "Runtime Manager suite summary remains future work" in doc
+    assert "Suite Object Map provider patterns are read-only" in doc
+    assert "Runtime Manager suite summaries are read-only" in doc
 
 
 def _command(

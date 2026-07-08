@@ -129,7 +129,7 @@ def test_builder_metadata_aligns_to_download_data_boundary() -> None:
     assert document.metadata["object_kind"] == "download_data_selection_shell"
     assert workflow["boundary_id"] == "download_data_boundary"
     assert workflow["workflow_id"] == DOWNLOAD_DATA_WORKFLOW_MODE
-    assert workflow["current_shell_stage"] == "selection_draft"
+    assert workflow["current_shell_stage"] == "sandbox_execution"
     assert workflow["current_contract_bridge"] == "DownloadRequestDraft -> DownloadRequest"
     assert workflow["accepted_sequence"] == (
         "selection",
@@ -141,14 +141,19 @@ def test_builder_metadata_aligns_to_download_data_boundary() -> None:
     )
     assert "selection_recap" not in workflow["not_implemented_stages"]
     assert "visible_preflight" not in workflow["not_implemented_stages"]
+    assert "storage_aware_preflight" not in workflow["not_implemented_stages"]
     assert "progress" not in workflow["not_implemented_stages"]
+    assert "real_execution" not in workflow["not_implemented_stages"]
+    assert "final_recap" not in workflow["not_implemented_stages"]
     assert {
-        "storage_aware_preflight",
         "provider_range_discovery",
         "process_confirmation",
-        "real_execution",
-        "final_recap",
+        "production_storage_root",
+        "default_live_execution",
         "cancellation",
+        "data_manager_integration",
+        "ohlcv_maintenance_acceptance",
+        "ai_helper",
     }.issubset(set(workflow["not_implemented_stages"]))
     assert any(
         "passive read-only selection recap" in note
@@ -159,7 +164,15 @@ def test_builder_metadata_aligns_to_download_data_boundary() -> None:
         for note in workflow["implemented_stage_notes"]
     )
     assert any(
-        "passive non-executing progress shell" in note
+        "displays sandbox progress" in note
+        for note in workflow["implemented_stage_notes"]
+    )
+    assert any(
+        "sandbox smoke execution" in note
+        for note in workflow["implemented_stage_notes"]
+    )
+    assert any(
+        "passive final recap" in note
         for note in workflow["implemented_stage_notes"]
     )
     assert {
@@ -222,24 +235,30 @@ def test_builder_metadata_documents_current_to_future_field_mapping() -> None:
     assert descriptors["symbols"]["current_default_behavior"] == "empty"
 
 
-def test_builder_metadata_declares_non_execution_boundaries() -> None:
+def test_builder_metadata_declares_sandbox_execution_boundaries() -> None:
     document = _load_builder_document()
     guarantees = document.metadata["boundary_guarantees"]
 
-    assert guarantees["no_downloader_execution"] is True
-    assert guarantees["no_provider_api_call"] is True
-    assert guarantees["no_storage_write"] is True
+    assert guarantees["sandbox_execution_only"] is True
+    assert guarantees["fixture_backed_default_execution"] is True
+    assert guarantees["live_bybit_opt_in_only"] is True
+    assert guarantees["no_default_live_api"] is True
+    assert guarantees["no_default_provider_api_call"] is True
+    assert guarantees["no_production_storage_write"] is True
+    assert guarantees["no_direct_provider_api_call"] is True
+    assert guarantees["no_direct_storage_write"] is True
     assert guarantees["no_cancellation_behavior"] is True
     assert guarantees["no_data_manager_integration"] is True
+    assert guarantees["no_ohlcv_maintenance_acceptance"] is True
     assert guarantees["no_runtime_manager_control"] is True
     assert guarantees["no_object_map_service_mutation"] is True
     assert guarantees["no_ai_helper_implementation"] is True
     assert {
-        "downloader_execution",
-        "provider_api_call",
-        "storage_write",
+        "default_live_api",
+        "production_storage_write",
         "cancellation_behavior",
         "data_manager_integration",
+        "ohlcv_maintenance_acceptance",
         "runtime_manager_control",
         "object_map_service_mutation",
         "ai_helper_implementation",
@@ -275,16 +294,31 @@ def test_builder_metadata_is_ai_helper_inspectable_without_implementation() -> N
     assert preflight["no_storage_access"] is True
     assert preflight["no_update_or_new_file_detection"] is True
     assert "Provider range checks" in preflight["wording_guard"]
+    assert "sandbox storage inspection" in preflight["storage_aware_preflight_scope"]
     progress = document.metadata["progress_shell_surface"]
     assert progress["surface_id"] == "download_request_builder.progress_shell"
     assert progress["total_progress_id"] == "download_request_builder.progress.total"
     assert progress["non_executing_shell"] is True
+    assert progress["updates_from_submit_result"] is True
     assert progress["initial_total_progress"] == 0
     assert progress["initial_timeframe_progress"] == 0
+    assert progress["completion_total_progress"] == 100
     assert progress["no_auto_run"] is True
     assert progress["no_fake_progress"] is True
     assert progress["no_timers"] is True
     assert progress["no_core_task_call"] is True
+    final_recap = document.metadata["final_recap_surface"]
+    assert final_recap["surface_id"] == "download_request_builder.status_summary"
+    assert final_recap["read_only"] is True
+    assert final_recap["passive_display"] is True
+    assert final_recap["shows_mode"] is True
+    assert final_recap["shows_csv_path"] is True
+    assert final_recap["shows_metadata_path"] is True
+    assert final_recap["shows_accepted_loadable_validated"] is True
+    assert final_recap["shows_sandbox_notice"] is True
+    assert final_recap["accepted"] is False
+    assert final_recap["loadable"] is False
+    assert final_recap["validated"] is False
     assert "download_request_builder.selection_recap" in {
         region.region_id for region in document.regions
     }

@@ -5,11 +5,37 @@ Download Data boundary vocabulary. The contracts describe selection, selection
 recap, preflight, process confirmation vocabulary, progress read models,
 completion recap, output references, and partial persistence state.
 
-This phase is contract-only. It does not implement GUI behavior, downloader
-execution, adapters, provider API calls, network transport, websocket or
-subscription behavior, storage writes, cancellation, Runtime Manager controls,
-Object Map helpers, Data Manager integration, OHLCV Maintenance execution, app
-startup changes, concrete suites, or old-code import.
+The original boundary phase was contract-only. The current accepted Download
+Data slice now supports a sandboxed Bybit OHLCV execution path through the
+Download Manager area. Default execution is fixture-backed/offline and writes
+only under an explicit sandbox root.
+
+Live Bybit public REST transport exists as an opt-in smoke helper only. It is
+not used by default tests or default GUI execution and requires either
+`LEONARDO_ALLOW_LIVE_BYBIT_SMOKE=1` or an explicit `allow_live=True` call. Live
+smoke output remains sandbox-only.
+
+## Current Implemented Slice
+
+The current user path is:
+
+```text
+Main Window -> Download Data -> select exchange / market type / symbol /
+timeframe / limit -> selection recap -> Preview Preflight -> Start ->
+sandbox execution -> final recap
+```
+
+Preview Preflight remains non-executing. Start/Submit may route through
+composition and Core services to the sandbox smoke path when an explicit
+sandbox root is configured.
+
+Sandbox storage-aware preflight detects `new_file` versus `update_existing`. If
+local sandbox OHLCV exists, the latest local timestamp becomes the update start
+point. If no local sandbox OHLCV exists, sandbox execution behaves as
+`new_file`.
+
+Downloaded sandbox files are not considered accepted, loadable, or validated.
+OHLCV Maintenance and Data Manager acceptance remain outside this scope.
 
 ## Boundary Classification
 
@@ -72,7 +98,8 @@ and workload estimates. These contracts only describe read models. They do not
 read local files, call provider APIs, or write output.
 
 Process Download confirmation is represented as boundary vocabulary only.
-Execution remains future work.
+Production execution remains future work. The accepted implementation currently
+supports sandbox-only Start/Submit execution through composition and Core.
 
 ## Old Leonardo Storage Naming Policy
 
@@ -99,6 +126,14 @@ candles.meta.json
 `DownloadDataStorageTargetRef` and `DownloadDataOutputRef` expose these paths as
 relative POSIX read-model strings. They do not create directories and do not
 write files.
+
+The current sandbox smoke writer uses this relative shape under an explicit
+sandbox root, without writing to the project `data/historical` directory:
+
+```text
+historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.csv
+historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.meta.json
+```
 
 ## Progress Read Models
 

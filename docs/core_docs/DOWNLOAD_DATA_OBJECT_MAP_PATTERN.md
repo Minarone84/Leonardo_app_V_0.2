@@ -3,6 +3,11 @@
 This document records the first read-only Object Map pattern for Download Data
 boundary descriptors and read models.
 
+The current Download Data workflow also has an accepted sandboxed Bybit OHLCV
+execution path through the Download Manager area. This Object Map pattern
+remains read-only and does not mutate that workflow, storage, Runtime Manager,
+or Core runtime state.
+
 The pattern is implemented by
 `src/leonardo/core/download_data_boundary_trace.py`. It accepts explicit
 Download Data boundary inputs and emits read-only Object Map provider
@@ -36,7 +41,9 @@ controls.
 The helper does not implement GUI behavior, downloader execution, cancellation,
 adapter calls, provider clients, network/API/websocket/subscription behavior, or
 storage writes. It does not integrate Data Manager, add ProviderRegistry
-discovery, scan modules, or import old Leonardo code.
+discovery, scan modules, or import old Leonardo code. Existing sandbox
+execution output is described by explicit read models; Object Map helpers only
+summarize those read models when supplied.
 
 Download Data may use Provider/Exchange capability facts in later phases, but
 it does not merge into Provider/Connection. Provider and Connection boundaries
@@ -48,12 +55,20 @@ truth. Storage/Data owns persisted OHLCV truth.
 ## Storage Naming
 
 Storage target and output summaries preserve the accepted legacy-compatible
-OHLCV naming policy:
+OHLCV naming policy for production-oriented contract references:
 
 ```text
 data/historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.csv
 data/historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.meta.json
 artifact_id = ohlcv__candles
+```
+
+The current sandbox smoke writer uses the same relative shape under an explicit
+sandbox root, without writing to the project `data/historical` directory:
+
+```text
+historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.csv
+historical/{exchange}/{market_type}/{symbol}/{timeframe}/ohlcv/candles.meta.json
 ```
 
 The machine identity is `symbol`. `asset` is not used as a Download Data

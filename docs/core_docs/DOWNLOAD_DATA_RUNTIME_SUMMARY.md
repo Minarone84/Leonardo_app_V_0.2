@@ -8,6 +8,11 @@ and exposes one compact `download_data_runtime` section. The provider is
 explicit injection only. If no provider is injected, the section remains an OK
 unavailable read model.
 
+The current Download Data workflow supports sandboxed Bybit OHLCV execution
+through the Download Manager area. Runtime Manager may display supplied read
+model counts for that workflow, but it does not own execution, storage,
+validation, or user actions.
+
 ## Scope
 
 The summary reports compact counts for:
@@ -28,11 +33,12 @@ The section is read-only. It is display/query metadata, not a control surface.
 
 ## Boundaries
 
-This phase does not implement Download Data execution, adapter calls, provider
-clients, network/API/websocket/subscription behavior, storage writes,
-cancellation behavior, Runtime Manager controls/actions, Object Map service
-changes, GUI behavior, Data Manager integration, ProviderRegistry discovery, app
-startup changes, old Leonardo code import, or AI helper behavior.
+This Runtime Manager summary phase does not own Download Data execution,
+adapter calls, provider clients, network/API/websocket/subscription behavior,
+storage writes, cancellation behavior, Runtime Manager controls/actions, Object
+Map service changes, GUI behavior, Data Manager integration, ProviderRegistry
+discovery, app startup changes, old Leonardo code import, or AI helper
+behavior.
 
 Runtime Manager does not import Download Data Object Map helpers and does not
 modify those helpers in this phase.
@@ -44,6 +50,10 @@ summary values supplied by composition.
 
 Partial persistence remains diagnostic state. It does not imply accepted,
 loadable, validated, repaired, or clean data.
+
+Sandbox Download Data output follows the same rule. Downloaded sandbox files
+remain `accepted=false`, `loadable=false`, and `validated=false`; OHLCV
+Maintenance and Data Manager acceptance remain outside this scope.
 
 ## Diagnostics
 

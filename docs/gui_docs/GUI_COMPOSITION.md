@@ -56,6 +56,28 @@ The GUI composition root:
 The Runtime Manager snapshot provider is passed as a callable. It is not called
 during Main Window construction.
 
+## Download Data Wiring
+
+Composition opens the Download Data builder from the Main Window Download
+Manager menu. The Main Window remains a launch surface only; it does not own
+execution or storage.
+
+The Download Data builder owns Qt fields, selection recap display, Preview
+Preflight display, progress display, and final recap display. Composition owns
+the bridge from GUI draft intent to Core Download Manager and Download
+Execution Manager services.
+
+Default Download Data execution is fixture-backed/offline and writes only under
+an explicit sandbox root. Sandbox storage-aware preflight detects `new_file`
+versus `update_existing`; if local sandbox OHLCV exists, the latest local
+timestamp becomes the update start point. Live Bybit public REST transport is
+opt-in only and is not used by default GUI execution.
+
+Sandbox output remains `accepted=false`, `loadable=false`, and
+`validated=false`. OHLCV Maintenance acceptance/loadability, Data Manager
+integration, production storage roots, cancellation, Runtime Manager controls,
+Object Map mutation, and AI helper behavior remain out of scope.
+
 ## Persisted Overrides
 
 Phase 003D allows composition to receive an optional

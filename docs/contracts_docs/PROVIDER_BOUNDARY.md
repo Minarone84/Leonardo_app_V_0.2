@@ -140,13 +140,11 @@ large datasets, account secrets, order secrets, or private runtime objects.
 
 ## Object Map Strategy
 
-Provider Object Map exposure remains future work.
-
-Future provider Object Map helpers should consume explicit descriptors and safe
-read models. They should produce read-only provider entries and sections through
-app composition. They must not create a mutable provider registry, scan the
-filesystem, scan modules, perform automatic discovery, or register at import
-time.
+Provider Object Map exposure is read-only and descriptor-driven. Provider
+Object Map helpers consume explicit descriptors and safe read models. They
+produce read-only provider entries and sections through app composition. They
+must not create a mutable provider registry, scan the filesystem, scan modules,
+perform automatic discovery, or register at import time.
 
 Likely provider object families are:
 
@@ -161,12 +159,11 @@ It is not a generic provider capability replacement.
 
 ## Runtime Manager Strategy
 
-Runtime Manager provider summaries remain future work.
-
-A future Runtime Manager provider summary should be compact, read-only, and
-provider-only. It may include provider ID, status, active session count, active
-subscription count, connection count, websocket channel count, warnings, errors,
-last heartbeat, degraded status, and unavailable reason.
+Runtime Manager provider summaries are compact, read-only, and provider-only
+when supplied through the accepted summary boundary. They may include provider
+ID, status, active session count, active subscription count, connection count,
+websocket channel count, warnings, errors, last heartbeat, degraded status, and
+unavailable reason.
 
 Runtime Manager must not expose connect, disconnect, retry, reconnect,
 subscribe, unsubscribe, credential, payload, or raw provider-control surfaces.
@@ -182,22 +179,23 @@ provider services into suite services through an explicit boundary.
 
 ## Relationship To Download Data
 
-Download Data remains future work.
+Download Data now has a sandboxed Bybit OHLCV execution path through the
+Download Manager area. It consumes capability-style facts and safe read models;
+it does not own provider sessions, raw clients, credentials, websocket
+subscriptions, reconnect behavior, or provider registries.
 
-Download Data will likely consume provider capability descriptors, static
-provider facts, connection readiness read models, rate-limit metadata, batching
-policy, provider session state, and storage/output preflight results. It should
-not proceed until provider boundary contracts are audited and accepted.
+The current default Download Data execution path is fixture-backed/offline and
+writes only under an explicit sandbox root. Live Bybit public REST transport is
+opt-in only and remains sandbox-only. Provider/Connection boundaries remain the
+owners of provider capability and transport facts.
 
 ## Validation
 
 Focused tests live in
 `tests/contracts_test/test_provider_boundary_contracts.py`.
 
-## Next Phase
+## Later Work
 
-If this contract phase is accepted, the next phase should be:
-
-`LEO-V2-POST-CORE-PROVIDER-BOUNDARY-CONTRACTS-AUDIT-001`
-
-Provider Object Map pattern work should wait until after that audit is accepted.
+Concrete provider adapters, registries, discovery, transport sessions,
+subscriptions, reconnect behavior, and provider-owned execution remain separate
+future phases.
