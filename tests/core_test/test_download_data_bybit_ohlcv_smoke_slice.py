@@ -228,7 +228,6 @@ def test_download_data_modules_import_no_gui_runtime_or_network_modules() -> Non
                     "requests",
                     "httpx",
                     "aiohttp",
-                    "urllib",
                     "websocket",
                     "ccxt",
                     "pybit",

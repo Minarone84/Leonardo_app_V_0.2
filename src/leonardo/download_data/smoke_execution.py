@@ -7,7 +7,9 @@ network APIs, integrate with GUI, or register runtime services.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import tempfile
 
 from leonardo.contracts.download_data_execution import (
     DownloadDataExecutionDirection,
@@ -21,6 +23,7 @@ from leonardo.contracts.download_data_execution import (
 )
 from leonardo.download_data.bybit_ohlcv import (
     BybitKlineTransport,
+    bybit_public_kline_http_transport,
     fetch_bybit_kline_page,
 )
 from leonardo.download_data.ohlcv_storage_writer import write_ohlcv_smoke_new_file
@@ -32,6 +35,7 @@ SMOKE_SYMBOL = "BTCUSDT"
 SMOKE_TIMEFRAME = "1m"
 SMOKE_INTERVAL = "1"
 SMOKE_LIMIT = 10
+LIVE_BYBIT_SMOKE_ENV_VAR = "LEONARDO_ALLOW_LIVE_BYBIT_SMOKE"
 
 
 def run_bybit_ohlcv_smoke_slice(
@@ -91,6 +95,30 @@ def run_bybit_ohlcv_smoke_slice(
             completed_event,
         ),
         total_bars_downloaded=len(page_result.candles),
+    )
+
+
+def run_bybit_ohlcv_live_smoke(
+    *,
+    sandbox_root: str | Path | None = None,
+    allow_live: bool = False,
+    transport: BybitKlineTransport | None = None,
+) -> DownloadDataExecutionResult:
+    """Run the Bybit public smoke only after an explicit live gate."""
+
+    if not allow_live and os.environ.get(LIVE_BYBIT_SMOKE_ENV_VAR) != "1":
+        raise PermissionError(
+            f"set {LIVE_BYBIT_SMOKE_ENV_VAR}=1 or pass allow_live=True"
+        )
+    root = (
+        Path(tempfile.mkdtemp(prefix="leonardo-bybit-live-smoke-"))
+        if sandbox_root is None
+        else sandbox_root
+    )
+    active_transport = transport or bybit_public_kline_http_transport
+    return run_bybit_ohlcv_smoke_slice(
+        sandbox_root=root,
+        transport=active_transport,
     )
 
 

@@ -8,6 +8,10 @@ No network transport or live Bybit client is implemented here.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import json
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from leonardo.contracts.download_data_execution import (
     DownloadDataCandleSortOrder,
@@ -18,9 +22,15 @@ from leonardo.contracts.download_data_execution import (
 )
 
 
+BYBIT_PUBLIC_API_BASE_URL = "https://api.bybit.com"
 BYBIT_KLINE_ENDPOINT = "/v5/market/kline"
 
 BybitKlineTransport = Callable[[Mapping[str, object]], Mapping[str, object]]
+BybitUrlOpener = Callable[..., object]
+
+
+class BybitPublicTransportError(RuntimeError):
+    """Raised when the opt-in Bybit public REST transport fails."""
 
 
 def build_bybit_kline_request(
@@ -49,6 +59,79 @@ def build_bybit_kline_request(
     }
 
 
+def build_bybit_kline_url(
+    params: Mapping[str, object],
+    *,
+    base_url: str = BYBIT_PUBLIC_API_BASE_URL,
+) -> str:
+    """Build a Bybit public kline URL without opening a network connection."""
+
+    _validate_live_kline_params(params)
+    query_values = {
+        key: str(value)
+        for key, value in params.items()
+        if value is not None
+    }
+    return (
+        f"{base_url.rstrip('/')}{BYBIT_KLINE_ENDPOINT}"
+        f"?{urlencode(query_values)}"
+    )
+
+
+def bybit_public_kline_http_transport(
+    params: Mapping[str, object],
+    *,
+    timeout: float = 10.0,
+    opener: BybitUrlOpener | None = None,
+    base_url: str = BYBIT_PUBLIC_API_BASE_URL,
+) -> Mapping[str, object]:
+    """Call Bybit public kline REST transport when explicitly invoked."""
+
+    url = build_bybit_kline_url(params, base_url=base_url)
+    request = Request(url, method="GET")
+    active_opener = opener or urlopen
+    try:
+        response = active_opener(request, timeout=timeout)
+    except HTTPError as error:
+        raise BybitPublicTransportError(
+            f"Bybit public kline HTTP status {error.code}"
+        ) from error
+    except URLError as error:
+        raise BybitPublicTransportError(
+            f"Bybit public kline transport failed: {error.reason}"
+        ) from error
+
+    try:
+        status = getattr(response, "status", getattr(response, "code", 200))
+        if type(status) is not int or status < 200 or status >= 300:
+            raise BybitPublicTransportError(
+                f"Bybit public kline HTTP status {status}"
+            )
+        body = response.read()
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BybitPublicTransportError(
+            "Bybit public kline response JSON is invalid"
+        ) from error
+    if not isinstance(parsed, Mapping):
+        raise BybitPublicTransportError(
+            "Bybit public kline response must be a JSON object"
+        )
+    ret_code = parsed.get("retCode")
+    if ret_code not in (0, "0"):
+        ret_msg = parsed.get("retMsg", "")
+        raise BybitPublicTransportError(
+            f"Bybit public kline retCode {ret_code}: {ret_msg}"
+        )
+    return parsed
+
+
 def fetch_bybit_kline_page(
     request: DownloadDataProviderPageRequest,
     transport: BybitKlineTransport,
@@ -60,6 +143,13 @@ def fetch_bybit_kline_page(
     descriptor = build_bybit_kline_request(request)
     response = transport(descriptor["params"])  # type: ignore[arg-type]
     return normalize_bybit_kline_response(request, response)
+
+
+def _validate_live_kline_params(params: Mapping[str, object]) -> None:
+    for field_name in ("category", "symbol", "interval", "limit"):
+        value = params.get(field_name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError(f"Bybit kline param {field_name} is required")
 
 
 def normalize_bybit_kline_response(
