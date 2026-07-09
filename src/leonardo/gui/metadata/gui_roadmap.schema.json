@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "leonardo_v2.gui_roadmap.schema",
+  "title": "Leonardo V2 GUI Roadmap Metadata",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "roadmap_id",
+    "schema_version",
+    "status",
+    "nsrr_policy",
+    "status_taxonomy",
+    "ownership_policy",
+    "id_conventions",
+    "areas",
+    "suites",
+    "windows",
+    "objects",
+    "actions",
+    "ai_agent_usage"
+  ],
+  "properties": {
+    "roadmap_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    },
+    "nsrr_policy": {
+      "type": "object",
+      "required": ["summary", "rules"],
+      "properties": {
+        "summary": {"type": "string"},
+        "rules": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "status_taxonomy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["status", "meaning"],
+        "properties": {
+          "status": {"$ref": "#/$defs/status"},
+          "meaning": {"type": "string"}
+        }
+      }
+    },
+    "ownership_policy": {
+      "type": "object",
+      "required": [
+        "gui_owns",
+        "core_owns",
+        "domain_suites_are_targets",
+        "metadata_does_not_transfer_ownership",
+        "ai_agent_rules"
+      ]
+    },
+    "id_conventions": {
+      "type": "object",
+      "required": ["pattern", "stable_id_rule"]
+    },
+    "areas": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/area"}
+    },
+    "suites": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/suite"}
+    },
+    "windows": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/window"}
+    },
+    "objects": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/object"}
+    },
+    "actions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/action"}
+    },
+    "ai_agent_usage": {
+      "type": "object",
+      "required": [
+        "purpose",
+        "allowed",
+        "forbidden",
+        "default_ai_agent"
+      ],
+      "properties": {
+        "default_ai_agent": {"$ref": "#/$defs/ai_agent"}
+      }
+    }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "implemented",
+        "shell_only",
+        "planned_shell",
+        "future_domain",
+        "legacy_reference_only",
+        "removed_do_not_resurrect",
+        "explicitly_out_of_scope"
+      ]
+    },
+    "area": {
+      "type": "object",
+      "required": [
+        "area_id",
+        "display_name",
+        "gui_role",
+        "domain_role",
+        "owner_scope"
+      ],
+      "properties": {
+        "area_id": {"type": "string"},
+        "display_name": {"type": "string"},
+        "gui_role": {"type": "string"},
+        "domain_role": {"type": "string"},
+        "owner_scope": {"type": "string"}
+      }
+    },
+    "suite": {
+      "type": "object",
+      "required": [
+        "suite_id",
+        "display_name",
+        "target_area_id",
+        "gui_status",
+        "domain_status",
+        "owned_domain_modules",
+        "planned_gui_surfaces"
+      ],
+      "properties": {
+        "suite_id": {"type": "string"},
+        "display_name": {"type": "string"},
+        "target_area_id": {"type": "string"},
+        "gui_status": {"$ref": "#/$defs/status"},
+        "domain_status": {"$ref": "#/$defs/status"},
+        "owned_domain_modules": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "planned_gui_surfaces": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "required": [
+        "window_id",
+        "object_id",
+        "display_name",
+        "owner_area",
+        "status",
+        "lifecycle_owner",
+        "metadata_file",
+        "parent_object_id",
+        "child_object_ids",
+        "action_ids",
+        "ai_agent",
+        "forbidden_behaviors"
+      ],
+      "properties": {
+        "window_id": {"type": "string"},
+        "object_id": {"type": "string"},
+        "display_name": {"type": "string"},
+        "class_name": {"type": ["string", "null"]},
+        "owner_area": {"type": "string"},
+        "target_area_id": {"type": ["string", "null"]},
+        "target_suite_id": {"type": ["string", "null"]},
+        "target_module_id": {"type": ["string", "null"]},
+        "status": {"$ref": "#/$defs/status"},
+        "lifecycle_owner": {"type": "string"},
+        "metadata_file": {"type": ["string", "null"]},
+        "parent_object_id": {"type": ["string", "null"]},
+        "child_object_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "action_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "ai_agent": {"$ref": "#/$defs/ai_agent"},
+        "forbidden_behaviors": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "action_id",
+        "display_label",
+        "kind",
+        "owner_area",
+        "status",
+        "source_object_id",
+        "window_id",
+        "runtime_observed",
+        "requires_human_confirmation",
+        "ai_agent",
+        "forbidden_behaviors"
+      ],
+      "properties": {
+        "action_id": {"type": "string"},
+        "display_label": {"type": "string"},
+        "kind": {"type": "string"},
+        "owner_area": {"type": "string"},
+        "target_area_id": {"type": ["string", "null"]},
+        "target_suite_id": {"type": ["string", "null"]},
+        "target_module_id": {"type": ["string", "null"]},
+        "status": {"$ref": "#/$defs/status"},
+        "source_object_id": {"type": "string"},
+        "window_id": {"type": "string"},
+        "runtime_observed": {"type": "boolean"},
+        "requires_human_confirmation": {"type": "boolean"},
+        "ai_agent": {"$ref": "#/$defs/ai_agent"},
+        "forbidden_behaviors": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "object": {
+      "type": "object",
+      "required": [
+        "object_id",
+        "object_type",
+        "window_id",
+        "parent_object_id",
+        "status",
+        "owner_area",
+        "target_area_id",
+        "target_suite_id",
+        "target_module_id",
+        "ai_agent"
+      ],
+      "properties": {
+        "object_id": {"type": "string"},
+        "object_type": {"type": "string"},
+        "window_id": {"type": "string"},
+        "parent_object_id": {"type": ["string", "null"]},
+        "status": {"$ref": "#/$defs/status"},
+        "owner_area": {"type": "string"},
+        "target_area_id": {"type": ["string", "null"]},
+        "target_suite_id": {"type": ["string", "null"]},
+        "target_module_id": {"type": ["string", "null"]},
+        "linked_action_id": {"type": "string"},
+        "linked_action_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "click_mapping_note": {"type": "string"},
+        "ai_agent": {"$ref": "#/$defs/ai_agent"}
+      }
+    },
+    "ai_agent": {
+      "type": "object",
+      "required": [
+        "visible_to_ai",
+        "agent_can_reference",
+        "agent_can_request_open",
+        "agent_can_request_click",
+        "agent_can_read_status",
+        "agent_can_mutate_directly",
+        "requires_human_confirmation",
+        "interaction_channel",
+        "notes"
+      ],
+      "properties": {
+        "visible_to_ai": {"type": "boolean"},
+        "agent_can_reference": {"type": "boolean"},
+        "agent_can_request_open": {"type": "boolean"},
+        "agent_can_request_click": {"type": "boolean"},
+        "agent_can_read_status": {"type": "boolean"},
+        "agent_can_mutate_directly": {"type": "boolean"},
+        "requires_human_confirmation": {"type": "boolean"},
+        "interaction_channel": {"type": "string"},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}
