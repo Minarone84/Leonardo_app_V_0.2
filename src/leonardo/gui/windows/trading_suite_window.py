@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,12 +21,21 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.gui.action_observer import GuiActionObserver
-from leonardo.gui.dummy_data import trading_account_rows, trading_position_rows
+from leonardo.gui.dummy_data import (
+    trading_account_rows,
+    trading_broker_account_rows,
+    trading_execution_control_rows,
+    trading_overview_rows,
+    trading_position_rows,
+    trading_risk_summary_rows,
+    trading_strategy_status_rows,
+)
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.windows.traceable_shell_widgets import (
     apply_trace,
     configure_table,
@@ -41,7 +51,12 @@ _TRADING_SUITE_METADATA_PATH = (
     / "trading_suite.window.toml"
 )
 _ACCOUNT_COLUMNS = ("field", "value", "status")
+_OVERVIEW_COLUMNS = ("surface", "state", "details")
+_BROKER_COLUMNS = ("component", "state", "details")
+_RISK_COLUMNS = ("metric", "value", "state")
 _POSITION_COLUMNS = ("ref", "symbol", "side", "status")
+_STRATEGY_COLUMNS = ("component", "state", "details")
+_EXECUTION_COLUMNS = ("control", "state", "details")
 
 
 def load_trading_suite_profile() -> EffectiveGuiMetadataProfile:
@@ -79,6 +94,7 @@ class TradingSuiteWindow(QWidget):
         self._log_area: QTextEdit | None = None
 
         self._apply_profile_metadata()
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_shell()
         self.load_dummy_trading_state()
 
@@ -104,21 +120,61 @@ class TradingSuiteWindow(QWidget):
         except KeyError as error:
             raise KeyError(f"Unknown Trading Suite table: {table_id}") from error
 
-    def load_dummy_trading_state(self) -> None:
-        """Render deterministic dummy account/risk/order rows."""
+    def status_text(self) -> str:
+        """Return the shell status label text."""
 
+        return "" if self._status_label is None else self._status_label.text()
+
+    def status_log_text(self) -> str:
+        """Return the local dummy status log text."""
+
+        return "" if self._log_area is None else self._log_area.toPlainText()
+
+    def load_dummy_trading_state(self) -> None:
+        """Render deterministic dummy trading shell rows."""
+
+        populate_table(
+            self._tables["trading_suite.table.overview_dummy"],
+            _OVERVIEW_COLUMNS,
+            trading_overview_rows(),
+        )
         populate_table(
             self._tables["trading_suite.table.account_risk_dummy"],
             _ACCOUNT_COLUMNS,
             trading_account_rows(),
         )
         populate_table(
+            self._tables["trading_suite.table.broker_account_dummy"],
+            _BROKER_COLUMNS,
+            trading_broker_account_rows(),
+        )
+        populate_table(
+            self._tables["trading_suite.table.risk_summary_dummy"],
+            _RISK_COLUMNS,
+            trading_risk_summary_rows(),
+        )
+        populate_table(
             self._tables["trading_suite.table.order_position_dummy"],
             _POSITION_COLUMNS,
             trading_position_rows(),
         )
-        self._set_status("DUMMY trading shell loaded: no broker/order behavior.")
-        self._append_log("Loaded dummy Trading Suite display. No order routing ran.")
+        populate_table(
+            self._tables["trading_suite.table.strategy_status_dummy"],
+            _STRATEGY_COLUMNS,
+            trading_strategy_status_rows(),
+        )
+        populate_table(
+            self._tables["trading_suite.table.execution_controls_dummy"],
+            _EXECUTION_COLUMNS,
+            trading_execution_control_rows(),
+        )
+        self._set_status(
+            "DUMMY trading shell loaded: no broker/order/risk behavior."
+        )
+        self._append_log(
+            "Loaded dummy Trading Suite display. No broker, order routing, "
+            "strategy, risk, or market data behavior ran."
+        )
 
     def _apply_profile_metadata(self) -> None:
         values = self._profile.values
@@ -146,6 +202,7 @@ class TradingSuiteWindow(QWidget):
             parent_object_id=TRADING_SUITE_METADATA_ID,
         )
         root.addWidget(self._build_header())
+        root.addWidget(self._build_overview_panel())
         root.addWidget(self._build_toolbar())
         root.addWidget(self._build_workspace(), stretch=1)
         root.addWidget(self._build_log_panel())
@@ -186,6 +243,47 @@ class TradingSuiteWindow(QWidget):
         layout.addStretch(1)
         layout.addWidget(status)
         return header
+
+    def _build_overview_panel(self) -> QWidget:
+        panel = QGroupBox("Trading Suite Overview", self)
+        apply_trace(
+            panel,
+            "trading_suite.panel.overview",
+            object_type="panel",
+            parent_object_id=TRADING_SUITE_METADATA_ID,
+        )
+        layout = QGridLayout(panel)
+        apply_trace(
+            layout,
+            "trading_suite.layout.overview",
+            object_type="layout",
+            parent_object_id="trading_suite.panel.overview",
+        )
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="trading_suite.table.overview_dummy",
+            columns=_OVERVIEW_COLUMNS,
+            labels=("Surface", "State", "Details"),
+            parent_object_id="trading_suite.panel.overview",
+        )
+        notice = QLabel(
+            "Shell-only: broker connections, account sync, order placement, "
+            "order cancellation, risk controls, strategies, and market data "
+            "subscriptions are not implemented here.",
+            panel,
+        )
+        notice.setWordWrap(True)
+        apply_trace(
+            notice,
+            "trading_suite.label.boundary_notice",
+            object_type="label",
+            display_label="Shell Boundary",
+            parent_object_id="trading_suite.panel.overview",
+        )
+        self._tables["trading_suite.table.overview_dummy"] = table
+        layout.addWidget(table, 0, 0)
+        layout.addWidget(notice, 0, 1)
+        return panel
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QGroupBox("Toolbar", self)
@@ -284,7 +382,25 @@ class TradingSuiteWindow(QWidget):
             parent_object_id="trading_suite.panel.account_risk_dummy",
         )
         self._tables["trading_suite.table.account_risk_dummy"] = table
+        broker_table = configure_table(
+            QTableWidget(panel),
+            object_id="trading_suite.table.broker_account_dummy",
+            columns=_BROKER_COLUMNS,
+            labels=("Component", "State", "Details"),
+            parent_object_id="trading_suite.panel.account_risk_dummy",
+        )
+        risk_table = configure_table(
+            QTableWidget(panel),
+            object_id="trading_suite.table.risk_summary_dummy",
+            columns=_RISK_COLUMNS,
+            labels=("Metric", "Value", "State"),
+            parent_object_id="trading_suite.panel.account_risk_dummy",
+        )
+        self._tables["trading_suite.table.broker_account_dummy"] = broker_table
+        self._tables["trading_suite.table.risk_summary_dummy"] = risk_table
         layout.addWidget(table)
+        layout.addWidget(broker_table)
+        layout.addWidget(risk_table)
         return panel
 
     def _build_position_panel(self) -> QWidget:
@@ -310,7 +426,16 @@ class TradingSuiteWindow(QWidget):
             parent_object_id="trading_suite.panel.order_position_dummy",
         )
         self._tables["trading_suite.table.order_position_dummy"] = table
+        strategy_table = configure_table(
+            QTableWidget(panel),
+            object_id="trading_suite.table.strategy_status_dummy",
+            columns=_STRATEGY_COLUMNS,
+            labels=("Component", "State", "Details"),
+            parent_object_id="trading_suite.panel.order_position_dummy",
+        )
+        self._tables["trading_suite.table.strategy_status_dummy"] = strategy_table
         layout.addWidget(table)
+        layout.addWidget(strategy_table)
         return panel
 
     def _build_kill_switch_panel(self) -> QWidget:
@@ -336,6 +461,15 @@ class TradingSuiteWindow(QWidget):
             parent_object_id="trading_suite.panel.kill_switch_visual_placeholder",
         )
         layout.addWidget(label)
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="trading_suite.table.execution_controls_dummy",
+            columns=_EXECUTION_COLUMNS,
+            labels=("Control", "State", "Details"),
+            parent_object_id="trading_suite.panel.kill_switch_visual_placeholder",
+        )
+        self._tables["trading_suite.table.execution_controls_dummy"] = table
+        layout.addWidget(table)
         layout.addStretch(1)
         return panel
 

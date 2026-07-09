@@ -642,6 +642,116 @@ def trading_account_rows() -> tuple[DummyRow, ...]:
     )
 
 
+def trading_overview_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Trading Suite overview rows."""
+
+    return (
+        {
+            "surface": "Trading Mode",
+            "state": "DUMMY paper shell",
+            "details": "Local display state only; no broker session exists.",
+        },
+        {
+            "surface": "Strategy Runtime",
+            "state": "offline placeholder",
+            "details": "No signal evaluation or automated action is present.",
+        },
+        {
+            "surface": "Execution Boundary",
+            "state": "locked",
+            "details": "No order routing, broker API, or market data subscription.",
+        },
+    )
+
+
+def trading_broker_account_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy broker/account readiness rows."""
+
+    return (
+        {
+            "component": "Broker Connection",
+            "state": "disconnected",
+            "details": "No client, session, account sync, or credential access.",
+        },
+        {
+            "component": "Account Snapshot",
+            "state": "unavailable",
+            "details": "No balances, equity, margin, or buying power are loaded.",
+        },
+        {
+            "component": "Market Data",
+            "state": "disabled",
+            "details": "No subscription, poller, websocket, or provider API call.",
+        },
+    )
+
+
+def trading_risk_summary_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy risk boundary rows."""
+
+    return (
+        {
+            "metric": "Risk Budget",
+            "value": "not configured",
+            "state": "read-only placeholder",
+        },
+        {
+            "metric": "Exposure Limit",
+            "value": "not available",
+            "state": "no account truth",
+        },
+        {
+            "metric": "Kill Switch",
+            "value": "visual only",
+            "state": "no runtime control",
+        },
+    )
+
+
+def trading_strategy_status_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy strategy status rows."""
+
+    return (
+        {
+            "component": "Signal Engine",
+            "state": "not attached",
+            "details": "No indicators, rules, or model inference run.",
+        },
+        {
+            "component": "Automation",
+            "state": "disabled",
+            "details": "No strategy loop or scheduling behavior exists.",
+        },
+        {
+            "component": "Paper Trading",
+            "state": "shell preview only",
+            "details": "No simulator, fill model, or position mutation exists.",
+        },
+    )
+
+
+def trading_execution_control_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy execution-control boundary rows."""
+
+    return (
+        {
+            "control": "Preview Paper Shell",
+            "state": "GUI-only",
+            "details": "Updates local status text only.",
+        },
+        {
+            "control": "Kill Switch Placeholder",
+            "state": "visual only",
+            "details": "No stop, cancel, close, or flatten command is wired.",
+        },
+        {
+            "control": "Order Routing",
+            "state": "forbidden",
+            "details": "No submit, cancel, amend, or route path exists.",
+        },
+    )
+
+
 def trading_position_rows() -> tuple[DummyRow, ...]:
     """Return deterministic dummy order/position rows."""
 

@@ -116,8 +116,15 @@ _NEW_SHELL_METADATA = {
         "required_widgets": {
             "trading_suite.button.load_dummy_trading_state",
             "trading_suite.button.kill_switch_visual",
+            "trading_suite.label.boundary_notice",
+            "trading_suite.panel.overview",
             "trading_suite.table.account_risk_dummy",
+            "trading_suite.table.broker_account_dummy",
+            "trading_suite.table.execution_controls_dummy",
             "trading_suite.table.order_position_dummy",
+            "trading_suite.table.overview_dummy",
+            "trading_suite.table.risk_summary_dummy",
+            "trading_suite.table.strategy_status_dummy",
             "trading_suite.panel.kill_switch_visual_placeholder",
         },
         "required_actions": {

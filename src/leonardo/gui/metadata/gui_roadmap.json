@@ -870,6 +870,7 @@
                         "child_object_ids":  [
                                                  "trading_suite.layout.root",
                                                  "trading_suite.panel.header",
+                                                 "trading_suite.panel.overview",
                                                  "trading_suite.toolbar.main",
                                                  "trading_suite.splitter.workspace",
                                                  "trading_suite.panel.status_log"
@@ -5404,6 +5405,102 @@
                         "target_module_id":  "analysis.gui_shell"
                     },
                     {
+                        "object_id":  "trading_suite.panel.overview",
+                        "object_type":  "panel",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Overview panel for Trading Suite dummy boundary state."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
+                        "object_id":  "trading_suite.layout.overview",
+                        "object_type":  "layout",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Overview layout for Trading Suite dummy boundary state."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
+                        "object_id":  "trading_suite.label.boundary_notice",
+                        "object_type":  "label",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Text notice describing the Trading Suite shell-only boundary."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
+                        "object_id":  "trading_suite.table.overview_dummy",
+                        "object_type":  "table",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy Trading Suite overview table."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
                         "object_id":  "trading_suite.toolbar.main",
                         "object_type":  "toolbar",
                         "window_id":  "trading_suite.window",
@@ -5532,6 +5629,54 @@
                         "target_module_id":  "trading.gui_shell"
                     },
                     {
+                        "object_id":  "trading_suite.table.broker_account_dummy",
+                        "object_type":  "table",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.account_risk_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy broker/account readiness table."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
+                        "object_id":  "trading_suite.table.risk_summary_dummy",
+                        "object_type":  "table",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.account_risk_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy risk summary table. No risk control is wired."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
                         "object_id":  "trading_suite.table.order_position_dummy",
                         "object_type":  "table",
                         "window_id":  "trading_suite.window",
@@ -5548,6 +5693,30 @@
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
                                                        "Local dummy order/position table. No order routing is present."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
+                        "object_id":  "trading_suite.table.strategy_status_dummy",
+                        "object_type":  "table",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.order_position_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy strategy status table. No strategy execution is wired."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5596,6 +5765,30 @@
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
                                                        "Visual placeholder only. No trading control exists."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "trading",
+                        "target_suite_id":  "trading_suite",
+                        "target_module_id":  "trading.gui_shell"
+                    },
+                    {
+                        "object_id":  "trading_suite.table.execution_controls_dummy",
+                        "object_type":  "table",
+                        "window_id":  "trading_suite.window",
+                        "parent_object_id":  "trading_suite.panel.kill_switch_visual_placeholder",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy execution-control table. No command path is wired."
                                                    ]
                                      },
                         "owner_area":  "gui",

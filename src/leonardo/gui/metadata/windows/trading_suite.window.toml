@@ -34,8 +34,16 @@ no_storage_write = true
 no_runtime_manager_control = true
 no_object_map_mutation = true
 no_trading_behavior = true
+no_exchange_connection = true
+no_broker_connection = true
+no_account_sync = true
+no_order_placement = true
+no_order_cancellation = true
 no_order_routing = true
 no_broker_api_call = true
+no_risk_engine = true
+no_strategy_execution = true
+no_market_data_subscription = true
 
 [metadata.dummy_data]
 source_module = "leonardo.gui.dummy_data"
@@ -52,16 +60,36 @@ region_id = "trading_suite.toolbar"
 label = "Toolbar"
 
 [[regions]]
+region_id = "trading_suite.overview"
+label = "Overview"
+
+[[regions]]
 region_id = "trading_suite.account_risk"
 label = "Account Risk Placeholder"
+
+[[regions]]
+region_id = "trading_suite.broker_account"
+label = "Broker Account Placeholder"
+
+[[regions]]
+region_id = "trading_suite.risk_summary"
+label = "Risk Summary Placeholder"
 
 [[regions]]
 region_id = "trading_suite.order_position"
 label = "Order Position Placeholder"
 
 [[regions]]
+region_id = "trading_suite.strategy_status"
+label = "Strategy Status Placeholder"
+
+[[regions]]
 region_id = "trading_suite.kill_switch_visual"
 label = "Kill Switch Visual Placeholder"
+
+[[regions]]
+region_id = "trading_suite.execution_controls"
+label = "Execution Controls Placeholder"
 
 [[regions]]
 region_id = "trading_suite.status_log"
@@ -88,6 +116,18 @@ widget_id = "trading_suite.toolbar.main"
 region_id = "trading_suite.toolbar"
 label = "Toolbar"
 widget_type = "toolbar"
+
+[[widgets]]
+widget_id = "trading_suite.panel.overview"
+region_id = "trading_suite.overview"
+label = "Overview Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "trading_suite.label.boundary_notice"
+region_id = "trading_suite.overview"
+label = "Boundary Notice"
+widget_type = "label"
 
 [[widgets]]
 widget_id = "trading_suite.button.load_dummy_trading_state"
@@ -125,6 +165,31 @@ region_id = "trading_suite.status_log"
 label = "Status Log"
 widget_type = "text_area"
 [[tables]]
+table_id = "trading_suite.table.overview_dummy"
+label = "Overview Dummy"
+
+[[tables.columns]]
+column_id = "surface"
+label = "Surface"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
+
+[[tables]]
 table_id = "trading_suite.table.account_risk_dummy"
 label = "Account Risk Dummy"
 
@@ -145,6 +210,56 @@ order = 2
 [[tables.columns]]
 column_id = "status"
 label = "Status"
+visible = true
+width = 180
+order = 3
+
+[[tables]]
+table_id = "trading_suite.table.broker_account_dummy"
+label = "Broker Account Dummy"
+
+[[tables.columns]]
+column_id = "component"
+label = "Component"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
+
+[[tables]]
+table_id = "trading_suite.table.risk_summary_dummy"
+label = "Risk Summary Dummy"
+
+[[tables.columns]]
+column_id = "metric"
+label = "Metric"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
 visible = true
 width = 180
 order = 3
@@ -180,6 +295,56 @@ label = "Status"
 visible = true
 width = 180
 order = 4
+
+[[tables]]
+table_id = "trading_suite.table.strategy_status_dummy"
+label = "Strategy Status Dummy"
+
+[[tables.columns]]
+column_id = "component"
+label = "Component"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
+
+[[tables]]
+table_id = "trading_suite.table.execution_controls_dummy"
+label = "Execution Controls Dummy"
+
+[[tables.columns]]
+column_id = "control"
+label = "Control"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
 
 [geometry]
 width = 1220
