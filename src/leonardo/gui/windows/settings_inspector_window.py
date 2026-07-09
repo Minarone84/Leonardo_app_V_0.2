@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -20,12 +21,14 @@ from PySide6.QtWidgets import (
 
 from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import EffectiveGuiMetadataProfile
+from leonardo.gui.style import load_default_theme
 from leonardo.gui.settings_inspector import (
     GuiSettingsInspectorDiagnostic,
     GuiSettingsInspectorResult,
     GuiSettingsInspectorRow,
     GuiSettingsInspectorViewModel,
 )
+from leonardo.gui.windows.traceable_shell_widgets import apply_trace
 
 
 SettingsApplyCallback = Callable[[str, EffectiveGuiMetadataProfile], None]
@@ -59,6 +62,8 @@ class SettingsInspectorWindow(QDialog):
             raise TypeError("action_observer must expose callable record_action")
         super().__init__(parent)
         self.setObjectName("settings_inspector_window")
+        self.setProperty("object_id", "settings_inspector.window")
+        self.setProperty("object_type", "dialog")
         self.setWindowTitle(f"Settings Inspector - {viewmodel.metadata_id}")
 
         self._viewmodel = viewmodel
@@ -66,9 +71,17 @@ class SettingsInspectorWindow(QDialog):
         self._action_observer = action_observer
         self._operation_diagnostics: tuple[GuiSettingsInspectorDiagnostic, ...] = ()
         self._saved_profile_pending_apply: EffectiveGuiMetadataProfile | None = None
+        self._theme = load_default_theme()
+        self.setProperty("theme_id", self._theme.theme_id)
 
         self.settings_table = QTableWidget(0, 9)
         self.settings_table.setObjectName("settings_inspector.settings_table")
+        self.settings_table.setProperty("object_id", "settings_inspector.settings_table")
+        self.settings_table.setProperty("object_type", "table")
+        self.settings_table.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.settings",
+        )
         self.settings_table.setHorizontalHeaderLabels(
             (
                 "Path",
@@ -85,39 +98,95 @@ class SettingsInspectorWindow(QDialog):
         self.settings_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.settings_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.settings_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.settings_table.setAlternatingRowColors(True)
+        self.settings_table.horizontalHeader().setStretchLastSection(True)
         self.settings_table.currentCellChanged.connect(self._handle_current_cell_changed)
 
         self.value_editor = QLineEdit()
         self.value_editor.setObjectName("settings_inspector.value_editor")
+        self.value_editor.setProperty("object_id", "settings_inspector.value_editor")
+        self.value_editor.setProperty("object_type", "input")
+        self.value_editor.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.editor",
+        )
         self.value_editor.editingFinished.connect(self.apply_selected_edit)
 
         self.diagnostics_view = QTextEdit()
         self.diagnostics_view.setObjectName("settings_inspector.diagnostics")
+        self.diagnostics_view.setProperty("object_id", "settings_inspector.diagnostics")
+        self.diagnostics_view.setProperty("object_type", "status_area")
+        self.diagnostics_view.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.diagnostics",
+        )
         self.diagnostics_view.setReadOnly(True)
 
         self.save_button = QPushButton("Save")
         self.save_button.setObjectName("settings_inspector.save")
+        self.save_button.setProperty("object_id", "settings_inspector.save")
+        self.save_button.setProperty("object_type", "button")
+        self.save_button.setProperty("action_id", "settings_inspector.save")
+        self.save_button.setProperty("parent_object_id", "settings_inspector.panel.controls")
         self.save_button.clicked.connect(self._handle_save_action)
 
         self.apply_button = QPushButton("Apply Changes")
         self.apply_button.setObjectName("settings_inspector.apply_changes")
+        self.apply_button.setProperty("object_id", "settings_inspector.apply_changes")
+        self.apply_button.setProperty("object_type", "button")
+        self.apply_button.setProperty("action_id", "settings_inspector.apply_changes")
+        self.apply_button.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.controls",
+        )
         self.apply_button.clicked.connect(self._handle_apply_changes_action)
 
         self.reset_field_button = QPushButton("Reset Field")
         self.reset_field_button.setObjectName("settings_inspector.reset_field")
-        self.reset_field_button.clicked.connect(self.reset_selected_field)
+        self.reset_field_button.setProperty("object_id", "settings_inspector.reset_field")
+        self.reset_field_button.setProperty("object_type", "button")
+        self.reset_field_button.setProperty("action_id", "settings_inspector.reset_field")
+        self.reset_field_button.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.controls",
+        )
+        self.reset_field_button.clicked.connect(self._handle_reset_field_action)
 
         self.reset_section_button = QPushButton("Reset Section")
         self.reset_section_button.setObjectName("settings_inspector.reset_section")
-        self.reset_section_button.clicked.connect(self.reset_selected_section)
+        self.reset_section_button.setProperty("object_id", "settings_inspector.reset_section")
+        self.reset_section_button.setProperty("object_type", "button")
+        self.reset_section_button.setProperty(
+            "action_id",
+            "settings_inspector.reset_section",
+        )
+        self.reset_section_button.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.controls",
+        )
+        self.reset_section_button.clicked.connect(self._handle_reset_section_action)
 
         self.reset_profile_button = QPushButton("Reset Profile")
         self.reset_profile_button.setObjectName("settings_inspector.reset_profile")
-        self.reset_profile_button.clicked.connect(self.reset_profile)
+        self.reset_profile_button.setProperty("object_id", "settings_inspector.reset_profile")
+        self.reset_profile_button.setProperty("object_type", "button")
+        self.reset_profile_button.setProperty(
+            "action_id",
+            "settings_inspector.reset_profile",
+        )
+        self.reset_profile_button.setProperty(
+            "parent_object_id",
+            "settings_inspector.panel.controls",
+        )
+        self.reset_profile_button.clicked.connect(self._handle_reset_profile_action)
 
         self.close_button = QPushButton("Close")
         self.close_button.setObjectName("settings_inspector.close")
-        self.close_button.clicked.connect(self.close)
+        self.close_button.setProperty("object_id", "settings_inspector.close")
+        self.close_button.setProperty("object_type", "button")
+        self.close_button.setProperty("action_id", "settings_inspector.close")
+        self.close_button.setProperty("parent_object_id", "settings_inspector.panel.controls")
+        self.close_button.clicked.connect(self._handle_close_action)
 
         self._build_layout()
         self._refresh_rows()
@@ -279,22 +348,122 @@ class SettingsInspectorWindow(QDialog):
 
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
-        root.addWidget(self.settings_table)
+        root.setContentsMargins(
+            self._theme.spacing.lg,
+            self._theme.spacing.lg,
+            self._theme.spacing.lg,
+            self._theme.spacing.lg,
+        )
+        root.setSpacing(self._theme.spacing.md)
+        root.addWidget(self._build_header_panel())
+        root.addWidget(self._build_settings_panel(), stretch=1)
+        root.addWidget(self._build_editor_panel())
+        root.addWidget(self._build_controls_panel())
+        root.addWidget(self._build_diagnostics_panel(), stretch=1)
 
-        root.addWidget(QLabel("Value"))
-        root.addWidget(self.value_editor)
+    def _build_header_panel(self) -> QWidget:
+        header = QGroupBox("Settings Cockpit")
+        apply_trace(
+            header,
+            "settings_inspector.panel.header",
+            object_type="panel",
+            parent_object_id="settings_inspector.window",
+        )
+        layout = QHBoxLayout(header)
 
-        controls = QHBoxLayout()
+        title = QLabel("Settings Inspector")
+        apply_trace(
+            title,
+            "settings_inspector.label.title",
+            object_type="label",
+            parent_object_id="settings_inspector.panel.header",
+        )
+        title_font = title.font()
+        title_font.setPointSize(self._theme.typography.title_font_size)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        source_status = QLabel(f"Profile: {self._viewmodel.metadata_id}")
+        apply_trace(
+            source_status,
+            "settings_inspector.label.source_status",
+            object_type="status_label",
+            parent_object_id="settings_inspector.panel.header",
+        )
+
+        theme_status = QLabel(f"Theme: {self._theme.identity.display_name}")
+        apply_trace(
+            theme_status,
+            "settings_inspector.label.theme_status",
+            object_type="status_label",
+            parent_object_id="settings_inspector.panel.header",
+        )
+
+        layout.addWidget(title)
+        layout.addWidget(source_status, stretch=1)
+        layout.addWidget(theme_status)
+        return header
+
+    def _build_settings_panel(self) -> QWidget:
+        panel = QGroupBox("Metadata Settings")
+        apply_trace(
+            panel,
+            "settings_inspector.panel.settings",
+            object_type="panel",
+            parent_object_id="settings_inspector.window",
+        )
+        layout = QVBoxLayout(panel)
+        layout.addWidget(self.settings_table)
+        return panel
+
+    def _build_editor_panel(self) -> QWidget:
+        panel = QGroupBox("Selected Value")
+        apply_trace(
+            panel,
+            "settings_inspector.panel.editor",
+            object_type="panel",
+            parent_object_id="settings_inspector.window",
+        )
+        layout = QHBoxLayout(panel)
+        value_label = QLabel("Value")
+        apply_trace(
+            value_label,
+            "settings_inspector.label.value",
+            object_type="label",
+            parent_object_id="settings_inspector.panel.editor",
+        )
+        layout.addWidget(value_label)
+        layout.addWidget(self.value_editor, stretch=1)
+        return panel
+
+    def _build_controls_panel(self) -> QWidget:
+        panel = QGroupBox("Settings Actions")
+        apply_trace(
+            panel,
+            "settings_inspector.panel.controls",
+            object_type="button_panel",
+            parent_object_id="settings_inspector.window",
+        )
+        controls = QHBoxLayout(panel)
         controls.addWidget(self.save_button)
         controls.addWidget(self.apply_button)
         controls.addWidget(self.reset_field_button)
         controls.addWidget(self.reset_section_button)
         controls.addWidget(self.reset_profile_button)
         controls.addWidget(self.close_button)
-        root.addLayout(controls)
+        return panel
 
-        root.addWidget(QLabel("Diagnostics"))
-        root.addWidget(self.diagnostics_view)
+    def _build_diagnostics_panel(self) -> QWidget:
+        panel = QGroupBox("Diagnostics")
+        apply_trace(
+            panel,
+            "settings_inspector.panel.diagnostics",
+            object_type="panel",
+            parent_object_id="settings_inspector.window",
+        )
+        layout = QVBoxLayout(panel)
+        layout.addWidget(self.diagnostics_view)
+        return panel
 
     def _handle_current_cell_changed(
         self,
@@ -319,6 +488,26 @@ class SettingsInspectorWindow(QDialog):
         if not self._record_action("settings_inspector.apply_changes"):
             return
         self.apply_changes()
+
+    def _handle_reset_field_action(self) -> None:
+        if not self._record_action("settings_inspector.reset_field"):
+            return
+        self.reset_selected_field()
+
+    def _handle_reset_section_action(self) -> None:
+        if not self._record_action("settings_inspector.reset_section"):
+            return
+        self.reset_selected_section()
+
+    def _handle_reset_profile_action(self) -> None:
+        if not self._record_action("settings_inspector.reset_profile"):
+            return
+        self.reset_profile()
+
+    def _handle_close_action(self) -> None:
+        if not self._record_action("settings_inspector.close"):
+            return
+        self.close()
 
     def _handle_operation_result(
         self,

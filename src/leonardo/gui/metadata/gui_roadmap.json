@@ -399,8 +399,16 @@
                         "child_object_ids":  [
                                                  "runtime_manager.layout.root",
                                                  "runtime_manager.panel.header",
+                                                 "runtime_manager.subtitle_label",
+                                                 "runtime_manager.theme_status_label",
                                                  "runtime_manager.toolbar.main",
                                                  "runtime_manager.panel.body",
+                                                 "runtime_manager.panel.overview",
+                                                 "runtime_manager.layout.overview",
+                                                 "runtime_manager.card.health",
+                                                 "runtime_manager.card.generated_at",
+                                                 "runtime_manager.card.summary_rows",
+                                                 "runtime_manager.card.audit_preview_rows",
                                                  "runtime_manager.panel.footer"
                                              ],
                         "action_ids":  [
@@ -447,6 +455,15 @@
                         "parent_object_id":  "main_window.window",
                         "child_object_ids":  [
                                                  "settings_inspector.settings_table",
+                                                 "settings_inspector.panel.header",
+                                                 "settings_inspector.label.title",
+                                                 "settings_inspector.label.source_status",
+                                                 "settings_inspector.label.theme_status",
+                                                 "settings_inspector.panel.settings",
+                                                 "settings_inspector.panel.editor",
+                                                 "settings_inspector.label.value",
+                                                 "settings_inspector.panel.controls",
+                                                 "settings_inspector.panel.diagnostics",
                                                  "settings_inspector.value_editor",
                                                  "settings_inspector.diagnostics",
                                                  "settings_inspector.save",
@@ -458,7 +475,11 @@
                                              ],
                         "action_ids":  [
                                            "settings_inspector.save",
-                                           "settings_inspector.apply_changes"
+                                           "settings_inspector.apply_changes",
+                                           "settings_inspector.reset_field",
+                                           "settings_inspector.reset_section",
+                                           "settings_inspector.reset_profile",
+                                           "settings_inspector.close"
                                        ],
                         "ai_agent":  {
                                          "visible_to_ai":  true,
@@ -2605,6 +2626,134 @@
                                                     "core_runtime_mutation",
                                                     "domain_execution"
                                                 ]
+                    },
+                    {
+                        "action_id":  "settings_inspector.reset_field",
+                        "display_label":  "Reset Field",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings",
+                        "status":  "implemented",
+                        "source_object_id":  "settings_inspector.reset_field",
+                        "window_id":  "settings_inspector.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  true,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Resets one persisted GUI setting override through the Settings Inspector viewmodel only."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "source_metadata_mutation",
+                                                    "core_runtime_mutation",
+                                                    "domain_execution"
+                                                ]
+                    },
+                    {
+                        "action_id":  "settings_inspector.reset_section",
+                        "display_label":  "Reset Section",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings",
+                        "status":  "implemented",
+                        "source_object_id":  "settings_inspector.reset_section",
+                        "window_id":  "settings_inspector.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  true,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Resets one persisted GUI settings section through the Settings Inspector viewmodel only."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "source_metadata_mutation",
+                                                    "core_runtime_mutation",
+                                                    "domain_execution"
+                                                ]
+                    },
+                    {
+                        "action_id":  "settings_inspector.reset_profile",
+                        "display_label":  "Reset Profile",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings",
+                        "status":  "implemented",
+                        "source_object_id":  "settings_inspector.reset_profile",
+                        "window_id":  "settings_inspector.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  true,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Resets persisted GUI settings overrides for the inspected profile through the viewmodel only."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "source_metadata_mutation",
+                                                    "core_runtime_mutation",
+                                                    "domain_execution"
+                                                ]
+                    },
+                    {
+                        "action_id":  "settings_inspector.close",
+                        "display_label":  "Close",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings",
+                        "status":  "implemented",
+                        "source_object_id":  "settings_inspector.close",
+                        "window_id":  "settings_inspector.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  true,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Closes the Settings Inspector dialog and preserves the existing GUI settings close behavior only."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "source_metadata_mutation",
+                                                    "core_runtime_mutation",
+                                                    "domain_execution"
+                                                ]
                     }
                 ],
     "objects":  [
@@ -3449,7 +3598,7 @@
                         "object_id":  "settings_inspector.settings_table",
                         "object_type":  "table",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.settings",
                         "status":  "implemented",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
@@ -3473,7 +3622,7 @@
                         "object_id":  "settings_inspector.value_editor",
                         "object_type":  "major_input",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.editor",
                         "status":  "implemented",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
@@ -3497,7 +3646,7 @@
                         "object_id":  "settings_inspector.diagnostics",
                         "object_type":  "status_area",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.diagnostics",
                         "status":  "implemented",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
@@ -3521,7 +3670,7 @@
                         "object_id":  "settings_inspector.save",
                         "object_type":  "button",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.controls",
                         "status":  "implemented",
                         "linked_action_id":  "settings_inspector.save",
                         "ai_agent":  {
@@ -3546,7 +3695,7 @@
                         "object_id":  "settings_inspector.apply_changes",
                         "object_type":  "button",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.controls",
                         "status":  "implemented",
                         "linked_action_id":  "settings_inspector.apply_changes",
                         "ai_agent":  {
@@ -6067,6 +6216,54 @@
                         "target_module_id":  "runtime_manager"
                     },
                     {
+                        "object_id":  "runtime_manager.subtitle_label",
+                        "object_type":  "status_label",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.header",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager scope/status label."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.theme_status_label",
+                        "object_type":  "status_label",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.header",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager active theme label."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
                         "object_id":  "runtime_manager.layout.toolbar",
                         "object_type":  "layout",
                         "window_id":  "runtime_manager.window",
@@ -6107,6 +6304,150 @@
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
                                                        "Body layout containing read-only Runtime Manager tabs."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.panel.overview",
+                        "object_type":  "status_card_panel",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.body",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager overview card panel."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.layout.overview",
+                        "object_type":  "layout",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.overview",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Layout for read-only Runtime Manager overview cards."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.card.health",
+                        "object_type":  "status_card",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.overview",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager health overview card."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.card.generated_at",
+                        "object_type":  "status_card",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.overview",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager generated-at overview card."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.card.summary_rows",
+                        "object_type":  "status_card",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.overview",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager summary row count card."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "runtime",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "runtime_manager"
+                    },
+                    {
+                        "object_id":  "runtime_manager.card.audit_preview_rows",
+                        "object_type":  "status_card",
+                        "window_id":  "runtime_manager.window",
+                        "parent_object_id":  "runtime_manager.panel.overview",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Runtime Manager audit preview row count card."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -6859,12 +7200,107 @@
                         "target_module_id":  "gui.settings"
                     },
                     {
-                        "object_id":  "settings_inspector.reset_field",
-                        "object_type":  "button",
+                        "object_id":  "settings_inspector.panel.header",
+                        "object_type":  "panel",
                         "window_id":  "settings_inspector.window",
                         "parent_object_id":  "settings_inspector.window",
                         "status":  "implemented",
-                        "click_mapping_note":  "No tracked roadmap action is declared for this local Settings Inspector button in this phase.",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Jarvish Settings Inspector header panel."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.label.title",
+                        "object_type":  "label",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.header",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Settings Inspector title label."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.label.source_status",
+                        "object_type":  "status_label",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.header",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only inspected metadata profile label."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.label.theme_status",
+                        "object_type":  "status_label",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.header",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Read-only Settings Inspector active theme label."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.panel.settings",
+                        "object_type":  "panel",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.window",
+                        "status":  "implemented",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
                                          "agent_can_reference":  true,
@@ -6875,7 +7311,128 @@
                                          "requires_human_confirmation":  true,
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
-                                                       "Settings Inspector reset_field button is represented as GUI metadata only in this phase."
+                                                       "Panel containing metadata-declared settings rows."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.panel.editor",
+                        "object_type":  "panel",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.window",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Panel containing the selected value editor."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.label.value",
+                        "object_type":  "label",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.editor",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Label for the selected settings value editor."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.panel.controls",
+                        "object_type":  "button_panel",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.window",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Panel containing Settings Inspector GUI action buttons."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.panel.diagnostics",
+                        "object_type":  "panel",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.window",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Panel containing read-only Settings Inspector diagnostics."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.settings"
+                    },
+                    {
+                        "object_id":  "settings_inspector.reset_field",
+                        "object_type":  "button",
+                        "window_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.controls",
+                        "status":  "implemented",
+                        "linked_action_id":  "settings_inspector.reset_field",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  true,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Resets one persisted GUI setting override through the Settings Inspector viewmodel only."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -6887,20 +7444,20 @@
                         "object_id":  "settings_inspector.reset_section",
                         "object_type":  "button",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.controls",
                         "status":  "implemented",
-                        "click_mapping_note":  "No tracked roadmap action is declared for this local Settings Inspector button in this phase.",
+                        "linked_action_id":  "settings_inspector.reset_section",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
                                          "agent_can_reference":  true,
                                          "agent_can_request_open":  false,
-                                         "agent_can_request_click":  false,
+                                         "agent_can_request_click":  true,
                                          "agent_can_read_status":  true,
                                          "agent_can_mutate_directly":  false,
                                          "requires_human_confirmation":  true,
-                                         "interaction_channel":  "metadata_reference_only",
+                                         "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Settings Inspector reset_section button is represented as GUI metadata only in this phase."
+                                                       "Resets one persisted GUI settings section through the Settings Inspector viewmodel only."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -6912,20 +7469,20 @@
                         "object_id":  "settings_inspector.reset_profile",
                         "object_type":  "button",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.controls",
                         "status":  "implemented",
-                        "click_mapping_note":  "No tracked roadmap action is declared for this local Settings Inspector button in this phase.",
+                        "linked_action_id":  "settings_inspector.reset_profile",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
                                          "agent_can_reference":  true,
                                          "agent_can_request_open":  false,
-                                         "agent_can_request_click":  false,
+                                         "agent_can_request_click":  true,
                                          "agent_can_read_status":  true,
                                          "agent_can_mutate_directly":  false,
                                          "requires_human_confirmation":  true,
-                                         "interaction_channel":  "metadata_reference_only",
+                                         "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Settings Inspector reset_profile button is represented as GUI metadata only in this phase."
+                                                       "Resets persisted GUI settings overrides for the inspected profile through the viewmodel only."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -6937,20 +7494,20 @@
                         "object_id":  "settings_inspector.close",
                         "object_type":  "button",
                         "window_id":  "settings_inspector.window",
-                        "parent_object_id":  "settings_inspector.window",
+                        "parent_object_id":  "settings_inspector.panel.controls",
                         "status":  "implemented",
-                        "click_mapping_note":  "No tracked roadmap action is declared for this local Settings Inspector button in this phase.",
+                        "linked_action_id":  "settings_inspector.close",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
                                          "agent_can_reference":  true,
                                          "agent_can_request_open":  false,
-                                         "agent_can_request_click":  false,
+                                         "agent_can_request_click":  true,
                                          "agent_can_read_status":  true,
                                          "agent_can_mutate_directly":  false,
                                          "requires_human_confirmation":  true,
-                                         "interaction_channel":  "metadata_reference_only",
+                                         "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Settings Inspector close button is represented as GUI metadata only in this phase."
+                                                       "Closes the Settings Inspector dialog and preserves the existing GUI settings close behavior only."
                                                    ]
                                      },
                         "owner_area":  "gui",

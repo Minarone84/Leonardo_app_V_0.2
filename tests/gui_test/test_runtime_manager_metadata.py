@@ -27,6 +27,16 @@ _REQUIRED_ACTIONS = {
     "runtime_manager.copy_snapshot_summary",
     "runtime_manager.close",
 }
+_REQUIRED_WIDGETS = {
+    "runtime_manager.subtitle_label",
+    "runtime_manager.theme_status_label",
+    "runtime_manager.panel.overview",
+    "runtime_manager.layout.overview",
+    "runtime_manager.card.health",
+    "runtime_manager.card.generated_at",
+    "runtime_manager.card.summary_rows",
+    "runtime_manager.card.audit_preview_rows",
+}
 _REQUIRED_TABLES = {
     "runtime_manager.summary_table",
     "runtime_manager.services_table",
@@ -129,6 +139,17 @@ def test_runtime_manager_required_actions_exist() -> None:
     assert _REQUIRED_ACTIONS <= action_ids
     assert "runtime_manager.export_snapshot" in action_ids
     assert "runtime_manager.open_details" in action_ids
+
+
+def test_runtime_manager_jarvish_overview_widgets_exist() -> None:
+    document = _load_runtime_manager_document()
+    widget_ids = {widget.widget_id for widget in document.widgets}
+
+    assert _REQUIRED_WIDGETS <= widget_ids
+    widgets = {widget.widget_id: widget for widget in document.widgets}
+    assert widgets["runtime_manager.panel.overview"].region_id == "body"
+    assert widgets["runtime_manager.card.health"].widget_type == "status_card"
+    assert widgets["runtime_manager.theme_status_label"].region_id == "header"
 
 
 def test_runtime_manager_required_tables_and_columns_exist() -> None:

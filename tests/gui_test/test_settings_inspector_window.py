@@ -1,14 +1,16 @@
 import ast
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton, QTableWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget, QWidget  # noqa: E402
 
+from leonardo.gui.action_observer import GuiActionDecision  # noqa: E402
 from leonardo.gui.metadata import (  # noqa: E402
     GuiMetadataOverrideDocument,
     GuiMetadataOverrideStore,
@@ -33,6 +35,14 @@ _MAIN_METADATA_PATH = (
 _WINDOW_SOURCE = (
     _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "settings_inspector_window.py"
 )
+_SETTINGS_BUTTON_ACTION_IDS = (
+    "settings_inspector.save",
+    "settings_inspector.apply_changes",
+    "settings_inspector.reset_field",
+    "settings_inspector.reset_section",
+    "settings_inspector.reset_profile",
+    "settings_inspector.close",
+)
 
 
 def test_dialog_constructs_with_injected_viewmodel(qapplication: QApplication, tmp_path: Path) -> None:
@@ -41,6 +51,11 @@ def test_dialog_constructs_with_injected_viewmodel(qapplication: QApplication, t
 
     assert window.viewmodel is viewmodel
     assert window.objectName() == "settings_inspector_window"
+    assert window.property("object_id") == "settings_inspector.window"
+    assert window.property("theme_id") == "leonardo_jarvish_cockpit"
+    assert window.findChild(QLabel, "settings_inspector.label.title") is not None
+    assert window.findChild(QLabel, "settings_inspector.label.source_status") is not None
+    assert window.findChild(QLabel, "settings_inspector.label.theme_status") is not None
     assert window.findChild(QTableWidget, "settings_inspector.settings_table") is not None
     assert window.findChild(QPushButton, "settings_inspector.save") is not None
     assert window.findChild(QPushButton, "settings_inspector.apply_changes") is not None
@@ -48,6 +63,64 @@ def test_dialog_constructs_with_injected_viewmodel(qapplication: QApplication, t
     assert window.findChild(QPushButton, "settings_inspector.reset_section") is not None
     assert window.findChild(QPushButton, "settings_inspector.reset_profile") is not None
     assert window.findChild(QPushButton, "settings_inspector.close") is not None
+
+    _dispose(qapplication, window)
+
+
+def test_dialog_uses_jarvish_utility_panel_structure(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, _store = _viewmodel(tmp_path)
+    window = SettingsInspectorWindow(viewmodel)
+
+    assert window.findChild(QLabel, "settings_inspector.label.theme_status").text() == (
+        "Theme: Leonardo Jarvish Cockpit"
+    )
+    assert window.findChild(QLabel, "settings_inspector.label.source_status").text() == (
+        "Profile: main_window.window"
+    )
+    for object_id in (
+        "settings_inspector.panel.header",
+        "settings_inspector.panel.settings",
+        "settings_inspector.panel.editor",
+        "settings_inspector.panel.controls",
+        "settings_inspector.panel.diagnostics",
+        "settings_inspector.label.value",
+    ):
+        assert window.findChild(QWidget, object_id) is not None
+
+    assert window.settings_table.property("parent_object_id") == (
+        "settings_inspector.panel.settings"
+    )
+    assert window.value_editor.property("parent_object_id") == (
+        "settings_inspector.panel.editor"
+    )
+    assert window.diagnostics_view.property("parent_object_id") == (
+        "settings_inspector.panel.diagnostics"
+    )
+    for action_id in _SETTINGS_BUTTON_ACTION_IDS:
+        button = window.findChild(QPushButton, action_id)
+        assert button is not None
+        assert button.property("action_id") == action_id
+
+    _dispose(qapplication, window)
+
+
+def test_dialog_clickable_buttons_have_stable_object_and_action_ids(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, _store = _viewmodel(tmp_path)
+    window = SettingsInspectorWindow(viewmodel)
+
+    for action_id in _SETTINGS_BUTTON_ACTION_IDS:
+        button = window.findChild(QPushButton, action_id)
+        assert button is not None
+        assert button.property("object_id") == action_id
+        assert button.property("object_type") == "button"
+        assert button.property("action_id") == action_id
+        assert button.property("parent_object_id") == "settings_inspector.panel.controls"
 
     _dispose(qapplication, window)
 
@@ -338,6 +411,72 @@ def test_reset_profile_deletes_override_file_and_refreshes_display(
     _dispose(qapplication, window)
 
 
+@pytest.mark.parametrize(
+    ("action_id", "selected_path"),
+    (
+        ("settings_inspector.reset_field", "style.font_size"),
+        ("settings_inspector.reset_section", "style.font_size"),
+        ("settings_inspector.reset_profile", None),
+    ),
+)
+def test_reset_button_actions_obey_blocked_action_observer(
+    qapplication: QApplication,
+    tmp_path: Path,
+    action_id: str,
+    selected_path: str | None,
+) -> None:
+    viewmodel, store = _viewmodel(
+        tmp_path,
+        overrides={
+            "style.font_size": 18,
+            "style.density": "compact",
+            "geometry.width": 1300,
+        },
+    )
+    observer = _RecordingActionObserver(blocked_action_ids={action_id})
+    window = SettingsInspectorWindow(viewmodel, action_observer=observer)
+    path = store.path_for(viewmodel.metadata_id)
+    before = _load_payload(path)
+
+    if selected_path is not None:
+        window.select_setting(selected_path)
+    window.findChild(QPushButton, action_id).click()
+    qapplication.processEvents()
+
+    assert observer.records == (
+        (action_id, {"target_metadata_id": "main_window.window"}),
+    )
+    assert _load_payload(path) == before
+
+    _dispose(qapplication, window)
+
+
+def test_close_button_action_obeys_blocked_action_observer(
+    qapplication: QApplication,
+    tmp_path: Path,
+) -> None:
+    viewmodel, _store = _viewmodel(tmp_path)
+    observer = _RecordingActionObserver(
+        blocked_action_ids={"settings_inspector.close"}
+    )
+    window = SettingsInspectorWindow(viewmodel, action_observer=observer)
+    window.show()
+    qapplication.processEvents()
+
+    window.findChild(QPushButton, "settings_inspector.close").click()
+    qapplication.processEvents()
+
+    assert observer.records == (
+        (
+            "settings_inspector.close",
+            {"target_metadata_id": "main_window.window"},
+        ),
+    )
+    assert window.isVisible() is True
+
+    _dispose(qapplication, window)
+
+
 def test_corrupt_override_diagnostics_are_displayed_without_crash(
     qapplication: QApplication,
     tmp_path: Path,
@@ -470,3 +609,24 @@ def _qapplication() -> QApplication:
 @pytest.fixture
 def qapplication() -> QApplication:
     return _qapplication()
+
+
+class _RecordingActionObserver:
+    def __init__(self, *, blocked_action_ids: set[str] | None = None) -> None:
+        self._blocked_action_ids = blocked_action_ids or set()
+        self.records: tuple[tuple[str, dict[str, object]], ...] = ()
+
+    def record_action(
+        self,
+        action_id: str,
+        *,
+        window_id: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> GuiActionDecision:
+        del window_id
+        record = (action_id, dict(metadata or {}))
+        self.records = (*self.records, record)
+        return GuiActionDecision(
+            action_id=action_id,
+            allowed=action_id not in self._blocked_action_ids,
+        )

@@ -68,8 +68,36 @@ def test_runtime_manager_window_constructs_without_leonardo_app(
     assert window.profile is profile
     assert window.windowTitle() == "Runtime Manager"
     assert window.objectName() == "runtime_manager_window"
+    assert window.property("theme_id") == "leonardo_jarvish_cockpit"
     assert window.findChild(QLabel, "runtime_manager.title_label").text() == (
         "Runtime Manager"
+    )
+    assert window.findChild(QLabel, "runtime_manager.subtitle_label").text() == (
+        "Generic read-only runtime inspection surface"
+    )
+    assert "Leonardo Jarvish Cockpit" in window.findChild(
+        QLabel,
+        "runtime_manager.theme_status_label",
+    ).text()
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_runtime_manager_overview_cards_render_snapshot_summary(
+    qapplication: QApplication,
+) -> None:
+    window = RuntimeManagerWindow(load_runtime_manager_profile(), snapshot=_fake_snapshot())
+
+    assert window.findChild(QLabel, "runtime_manager.card.health").text() == "Health: ok"
+    assert window.findChild(QLabel, "runtime_manager.card.generated_at").text() == (
+        "Generated: 2026-07-02T12:00:00+00:00"
+    )
+    assert window.findChild(QLabel, "runtime_manager.card.summary_rows").text() == (
+        "Sections: 3"
+    )
+    assert window.findChild(QLabel, "runtime_manager.card.audit_preview_rows").text() == (
+        "Audit Rows: 1"
     )
 
     window.deleteLater()

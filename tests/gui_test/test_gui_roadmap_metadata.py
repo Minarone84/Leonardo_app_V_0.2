@@ -151,6 +151,14 @@ _EXPECTED_IMPLEMENTED_GUI_SOURCE_IDS = frozenset(
         "runtime_manager.layout.footer",
         "runtime_manager.panel.header",
         "runtime_manager.panel.footer",
+        "runtime_manager.panel.overview",
+        "runtime_manager.subtitle_label",
+        "runtime_manager.theme_status_label",
+        "runtime_manager.layout.overview",
+        "runtime_manager.card.health",
+        "runtime_manager.card.generated_at",
+        "runtime_manager.card.summary_rows",
+        "runtime_manager.card.audit_preview_rows",
         "runtime_manager.title_label",
         "runtime_manager.summary_table",
         "runtime_manager.services_table",
@@ -174,6 +182,15 @@ _EXPECTED_IMPLEMENTED_GUI_SOURCE_IDS = frozenset(
         "ohlcv_download_task.layout.summary",
         "ohlcv_download_task.layout.actions",
         "settings_inspector.close",
+        "settings_inspector.label.source_status",
+        "settings_inspector.label.theme_status",
+        "settings_inspector.label.title",
+        "settings_inspector.label.value",
+        "settings_inspector.panel.controls",
+        "settings_inspector.panel.diagnostics",
+        "settings_inspector.panel.editor",
+        "settings_inspector.panel.header",
+        "settings_inspector.panel.settings",
         "settings_inspector.reset_field",
         "settings_inspector.reset_profile",
         "settings_inspector.reset_section",
@@ -352,6 +369,45 @@ def test_action_source_objects_exist_in_object_graph() -> None:
 
     for action in roadmap["actions"]:
         assert action["source_object_id"] in object_ids, action["action_id"]
+
+
+def test_settings_inspector_button_actions_are_declared_and_linked() -> None:
+    roadmap = _load_json(_ROADMAP_PATH)
+    actions = _by_id(roadmap["actions"], "action_id")
+    objects = _by_id(roadmap["objects"], "object_id")
+    window = _by_id(roadmap["windows"], "window_id")["settings_inspector.window"]
+    expected_action_ids = {
+        "settings_inspector.save",
+        "settings_inspector.apply_changes",
+        "settings_inspector.reset_field",
+        "settings_inspector.reset_section",
+        "settings_inspector.reset_profile",
+        "settings_inspector.close",
+    }
+
+    for action_id in expected_action_ids:
+        action = actions[action_id]
+        object_record = objects[action_id]
+
+        assert action_id in window["action_ids"]
+        assert action["owner_area"] == "gui"
+        assert action["target_area_id"] == "gui"
+        assert action["target_suite_id"] == "gui_service"
+        assert action["target_module_id"] == "gui.settings"
+        assert action["status"] == "implemented"
+        assert action["source_object_id"] == action_id
+        assert object_record["linked_action_id"] == action_id
+        assert object_record["ai_agent"]["agent_can_request_click"] is True
+        assert object_record["ai_agent"]["agent_can_mutate_directly"] is False
+        assert object_record["ai_agent"]["interaction_channel"] == "gui_action_observer"
+
+    for action_id in (
+        "settings_inspector.reset_field",
+        "settings_inspector.reset_section",
+        "settings_inspector.reset_profile",
+    ):
+        assert actions[action_id]["requires_human_confirmation"] is True
+        assert objects[action_id]["ai_agent"]["requires_human_confirmation"] is True
 
 
 def test_window_child_objects_exist_in_object_graph() -> None:

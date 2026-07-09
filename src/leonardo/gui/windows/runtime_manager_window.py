@@ -7,6 +7,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QGroupBox,
@@ -26,6 +27,8 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.style import load_default_theme
+from leonardo.gui.windows.traceable_shell_widgets import apply_trace
 
 
 RUNTIME_MANAGER_METADATA_ID = "runtime_manager.window"
@@ -56,6 +59,12 @@ _SECTION_SUMMARY_FIELDS = (
     "operations_summary",
     "audit_summary",
     "contracts_summary",
+)
+_OVERVIEW_CARDS = (
+    ("health", "runtime_manager.card.health", "Health"),
+    ("generated_at", "runtime_manager.card.generated_at", "Generated"),
+    ("summary_rows", "runtime_manager.card.summary_rows", "Sections"),
+    ("audit_preview_rows", "runtime_manager.card.audit_preview_rows", "Audit Rows"),
 )
 
 
@@ -116,12 +125,15 @@ class RuntimeManagerWindow(QWidget):
         self._action_observer = action_observer
         self._actions: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
+        self._overview_cards: dict[str, QLabel] = {}
         self._last_rendered_snapshot_summary: dict[str, object] = {}
         self._refresh_called = False
         self.close_requested_locally = False
         self._status_label: QLabel | None = None
+        self._theme = load_default_theme()
 
         self._apply_profile_metadata()
+        self.setProperty("theme_id", self._theme.theme_id)
         self._build_window()
         self.render_snapshot(snapshot)
 
@@ -200,6 +212,7 @@ class RuntimeManagerWindow(QWidget):
 
         summary = _snapshot_summary(snapshot, rows_by_table)
         self._last_rendered_snapshot_summary = summary
+        self._render_overview(summary)
         self._set_status(_string_value(summary, "status_message", "Runtime snapshot rendered."))
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -223,6 +236,10 @@ class RuntimeManagerWindow(QWidget):
             _int_value(geometry, "height", 900),
         )
 
+        self._apply_profile_font()
+
+    def _apply_profile_font(self) -> None:
+        style = _mapping_at(self._profile.values, "style")
         font = self.font()
         font.setPointSize(_int_value(style, "font_size", 14))
         self.setFont(font)
@@ -230,6 +247,13 @@ class RuntimeManagerWindow(QWidget):
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
         root.setObjectName("runtime_manager.layout.root")
+        root.setContentsMargins(
+            self._theme.spacing.lg,
+            self._theme.spacing.lg,
+            self._theme.spacing.lg,
+            self._theme.spacing.lg,
+        )
+        root.setSpacing(self._theme.spacing.md)
         root.addWidget(self._build_header())
         root.addWidget(self._build_toolbar())
         root.addWidget(self._build_body(), stretch=1)
@@ -241,13 +265,37 @@ class RuntimeManagerWindow(QWidget):
         title.setObjectName("runtime_manager.title_label")
         title.setProperty("object_id", "runtime_manager.title_label")
         title.setProperty("object_type", "label")
+        title_font = title.font()
+        title_font.setPointSize(self._theme.typography.title_font_size)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        subtitle = QLabel("Generic read-only runtime inspection surface")
+        apply_trace(
+            subtitle,
+            "runtime_manager.subtitle_label",
+            object_type="status_label",
+            display_label="Runtime Manager Scope",
+            parent_object_id="runtime_manager.panel.header",
+        )
+
+        theme_status = QLabel(f"Theme: {self._theme.identity.display_name}")
+        apply_trace(
+            theme_status,
+            "runtime_manager.theme_status_label",
+            object_type="status_label",
+            display_label="Runtime Manager Theme",
+            parent_object_id="runtime_manager.panel.header",
+        )
 
         header = QGroupBox(_region_label(self._profile.values, "header", "Header"))
         header.setObjectName("runtime_manager.panel.header")
         header.setProperty("object_id", "runtime_manager.panel.header")
-        layout = QVBoxLayout(header)
+        layout = QHBoxLayout(header)
         layout.setObjectName("runtime_manager.layout.header")
         layout.addWidget(title)
+        layout.addWidget(subtitle, stretch=1)
+        layout.addWidget(theme_status, alignment=Qt.AlignmentFlag.AlignRight)
         return header
 
     def _build_toolbar(self) -> QWidget:
@@ -273,6 +321,7 @@ class RuntimeManagerWindow(QWidget):
         body.setProperty("object_id", "runtime_manager.panel.body")
         layout = QVBoxLayout(body)
         layout.setObjectName("runtime_manager.layout.body")
+        layout.addWidget(self._build_overview())
         tabs = QTabWidget()
         tabs.setObjectName("runtime_manager.tables")
         tabs.setProperty("object_id", "runtime_manager.tables")
@@ -284,6 +333,31 @@ class RuntimeManagerWindow(QWidget):
         layout.addWidget(tabs)
         return body
 
+    def _build_overview(self) -> QWidget:
+        overview = QGroupBox("Runtime Overview")
+        apply_trace(
+            overview,
+            "runtime_manager.panel.overview",
+            object_type="status_card_panel",
+            parent_object_id="runtime_manager.panel.body",
+        )
+        layout = QHBoxLayout(overview)
+        layout.setObjectName("runtime_manager.layout.overview")
+        for key, object_id, label in _OVERVIEW_CARDS:
+            card = QLabel(f"{label}: --")
+            card.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card.setMinimumHeight(42)
+            apply_trace(
+                card,
+                object_id,
+                object_type="status_card",
+                display_label=label,
+                parent_object_id="runtime_manager.panel.overview",
+            )
+            self._overview_cards[key] = card
+            layout.addWidget(card)
+        return overview
+
     def _build_table(self, table_id: str, table_metadata: Mapping[str, object]) -> QTableWidget:
         columns = _sorted_columns(_mapping_at(table_metadata, "columns"))
         table = QTableWidget(0, len(columns))
@@ -291,6 +365,8 @@ class RuntimeManagerWindow(QWidget):
         table.setProperty("object_id", table_id)
         table.setProperty("object_type", "table")
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.horizontalHeader().setStretchLastSection(True)
         table.setHorizontalHeaderLabels(
             [_string_value(column, "label", column_id) for column_id, column in columns]
         )
@@ -326,6 +402,17 @@ class RuntimeManagerWindow(QWidget):
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:
             self._status_label.setText(message)
+
+    def _render_overview(self, summary: Mapping[str, object]) -> None:
+        values = {
+            "health": _text_value(summary.get("health", summary.get("status", "empty"))),
+            "generated_at": _text_value(summary.get("generated_at", "not available")),
+            "summary_rows": _text_value(summary.get("summary_rows", 0)),
+            "audit_preview_rows": _text_value(summary.get("audit_preview_rows", 0)),
+        }
+        labels = {key: label for key, _object_id, label in _OVERVIEW_CARDS}
+        for key, card in self._overview_cards.items():
+            card.setText(f"{labels[key]}: {values[key]}")
 
     def _record_action(self, action_id: str) -> bool:
         if (

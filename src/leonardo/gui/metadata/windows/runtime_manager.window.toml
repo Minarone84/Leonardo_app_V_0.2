@@ -60,6 +60,54 @@ label = "Status Area"
 region_id = "footer"
 label = "Footer"
 
+[[widgets]]
+widget_id = "runtime_manager.subtitle_label"
+region_id = "header"
+label = "Runtime Manager Scope"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "runtime_manager.theme_status_label"
+region_id = "header"
+label = "Runtime Manager Theme"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "runtime_manager.panel.overview"
+region_id = "body"
+label = "Runtime Overview"
+widget_type = "status_card_panel"
+
+[[widgets]]
+widget_id = "runtime_manager.layout.overview"
+region_id = "body"
+label = "Runtime Overview Layout"
+widget_type = "layout"
+
+[[widgets]]
+widget_id = "runtime_manager.card.health"
+region_id = "body"
+label = "Health"
+widget_type = "status_card"
+
+[[widgets]]
+widget_id = "runtime_manager.card.generated_at"
+region_id = "body"
+label = "Generated"
+widget_type = "status_card"
+
+[[widgets]]
+widget_id = "runtime_manager.card.summary_rows"
+region_id = "body"
+label = "Sections"
+widget_type = "status_card"
+
+[[widgets]]
+widget_id = "runtime_manager.card.audit_preview_rows"
+region_id = "body"
+label = "Audit Rows"
+widget_type = "status_card"
+
 [[actions]]
 action_id = "runtime_manager.refresh_snapshot"
 label = "Refresh Snapshot"
