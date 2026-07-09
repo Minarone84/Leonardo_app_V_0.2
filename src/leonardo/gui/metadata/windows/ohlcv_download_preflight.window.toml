@@ -18,7 +18,7 @@ instance_policy = "standalone"
 status = "shell_only"
 ownership_scope = "presentation_shell_only"
 dummy_data_status = "local_in_memory_gui_dummy_only"
-description = "GUI presentation shell for OHLCV work-plan confirmation."
+description = "GUI presentation shell for OHLCV request preflight and work-plan confirmation."
 object_family = "window"
 object_kind = "download_manager_preflight_shell"
 
@@ -33,13 +33,25 @@ gui_presentation_only = true
 domain_workflow_not_owned_by_gui = true
 no_backend_execution = true
 no_provider_api_call = true
+no_websocket_behavior = true
+no_download_execution = true
+no_ohlcv_validation_engine = true
+no_task_creation = true
 no_storage_write = true
+no_file_write = true
 no_runtime_manager_control = true
 no_object_map_mutation = true
 
+[metadata.dummy_data]
+source_module = "leonardo.gui.dummy_data"
+deterministic = true
+local_in_memory = true
+network_calls = false
+storage_writes = false
+
 [geometry]
-width = 980
-height = 520
+width = 1120
+height = 720
 
 [display]
 visible = true
@@ -55,8 +67,24 @@ region_id = "ohlcv_download_preflight.header"
 label = "Header"
 
 [[regions]]
+region_id = "ohlcv_download_preflight.request_summary"
+label = "Dummy Request Summary"
+
+[[regions]]
 region_id = "ohlcv_download_preflight.work_plan"
-label = "Work Plan"
+label = "Dummy Work Plan"
+
+[[regions]]
+region_id = "ohlcv_download_preflight.validation"
+label = "Dummy Validation Checklist"
+
+[[regions]]
+region_id = "ohlcv_download_preflight.workload"
+label = "Dummy Workload Estimate"
+
+[[regions]]
+region_id = "ohlcv_download_preflight.warnings"
+label = "Dummy Warnings"
 
 [[regions]]
 region_id = "ohlcv_download_preflight.actions"
@@ -68,7 +96,13 @@ label = "Cancel"
 
 [[actions]]
 action_id = "ohlcv_download_preflight.start_download"
-label = "Start Download"
+label = "Open Dummy Task Shell"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.panel.header"
+region_id = "ohlcv_download_preflight.header"
+label = "Header Panel"
+widget_type = "panel"
 
 [[widgets]]
 widget_id = "ohlcv_download_preflight.header"
@@ -77,10 +111,86 @@ label = "Confirm OHLCV Download"
 widget_type = "label"
 
 [[widgets]]
-widget_id = "ohlcv_download_preflight.work_plan_table"
+widget_id = "ohlcv_download_preflight.label.status"
+region_id = "ohlcv_download_preflight.header"
+label = "Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.panel.request_summary"
+region_id = "ohlcv_download_preflight.request_summary"
+label = "Dummy Request Summary"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.panel.work_plan"
 region_id = "ohlcv_download_preflight.work_plan"
-label = "Work Plan"
-widget_type = "table"
+label = "Dummy Work Plan"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.panel.validation_checklist"
+region_id = "ohlcv_download_preflight.validation"
+label = "Dummy Validation Checklist"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.panel.workload_estimate"
+region_id = "ohlcv_download_preflight.workload"
+label = "Dummy Workload Estimate"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.panel.warnings"
+region_id = "ohlcv_download_preflight.warnings"
+label = "Dummy Warnings"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.text.warnings"
+region_id = "ohlcv_download_preflight.warnings"
+label = "Warnings"
+widget_type = "text_area"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.actions"
+region_id = "ohlcv_download_preflight.actions"
+label = "Actions"
+widget_type = "action_container"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.cancel"
+region_id = "ohlcv_download_preflight.actions"
+label = "Cancel"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "ohlcv_download_preflight.start_download"
+region_id = "ohlcv_download_preflight.actions"
+label = "Open Dummy Task Shell"
+widget_type = "button"
+
+[[tables]]
+table_id = "ohlcv_download_preflight.request_summary_table"
+label = "Dummy Request Summary"
+
+[[tables.columns]]
+column_id = "item"
+label = "Item"
+visible = true
+order = 0
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
+visible = true
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+order = 2
 
 [[tables]]
 table_id = "ohlcv_download_preflight.work_plan_table"
@@ -145,6 +255,50 @@ column_id = "status"
 label = "Status"
 visible = true
 order = 9
+
+[[tables]]
+table_id = "ohlcv_download_preflight.validation_checklist_table"
+label = "Dummy Validation Checklist"
+
+[[tables.columns]]
+column_id = "check"
+label = "Check"
+visible = true
+order = 0
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+order = 1
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+order = 2
+
+[[tables]]
+table_id = "ohlcv_download_preflight.workload_estimate_table"
+label = "Dummy Workload Estimate"
+
+[[tables.columns]]
+column_id = "metric"
+label = "Metric"
+visible = true
+order = 0
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
+visible = true
+order = 1
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+order = 2
 
 [[settings]]
 path = "style.font_size"

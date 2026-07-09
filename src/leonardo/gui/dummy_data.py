@@ -204,6 +204,156 @@ def connection_activity_messages() -> tuple[str, ...]:
     )
 
 
+def ohlcv_preflight_request_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy OHLCV preflight request rows."""
+
+    return (
+        {
+            "item": "Provider",
+            "value": "Bybit dummy",
+            "state": "offline placeholder",
+        },
+        {
+            "item": "Market Type",
+            "value": "linear dummy",
+            "state": "not validated",
+        },
+        {
+            "item": "Symbol",
+            "value": "BTCUSDT dummy",
+            "state": "not resolved",
+        },
+        {
+            "item": "Timeframe",
+            "value": "1h dummy",
+            "state": "display only",
+        },
+        {
+            "item": "Storage Mode",
+            "value": "disabled",
+            "state": "writes forbidden",
+        },
+    )
+
+
+def ohlcv_preflight_validation_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy OHLCV preflight checklist rows."""
+
+    return (
+        {
+            "check": "Provider metadata",
+            "state": "not executed",
+            "details": "No provider catalog lookup occurs in the GUI shell.",
+        },
+        {
+            "check": "Symbol eligibility",
+            "state": "not executed",
+            "details": "No market metadata or symbol resolver is called.",
+        },
+        {
+            "check": "Date range",
+            "state": "placeholder",
+            "details": "Dummy text only; no backend range calculation.",
+        },
+        {
+            "check": "Storage availability",
+            "state": "disabled",
+            "details": "No file or database path is inspected.",
+        },
+    )
+
+
+def ohlcv_preflight_workload_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy OHLCV preflight workload rows."""
+
+    return (
+        {
+            "metric": "Expected Bars",
+            "value": "24 dummy",
+            "details": "Static fixture, not computed from dates.",
+        },
+        {
+            "metric": "Pages",
+            "value": "1 dummy",
+            "details": "Static fixture, not derived from provider limits.",
+        },
+        {
+            "metric": "Execution Backend",
+            "value": "not available",
+            "details": "Task creation is outside this shell.",
+        },
+    )
+
+
+def ohlcv_preflight_warning_messages() -> tuple[str, ...]:
+    """Return deterministic dummy OHLCV preflight warning messages."""
+
+    return (
+        "DUMMY preflight only: no validation engine is called.",
+        "Provider/API/network/storage checks are intentionally disabled.",
+        "Open Dummy Task Shell emits GUI intent only.",
+    )
+
+
+def ohlcv_task_stage_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy OHLCV task stage rows."""
+
+    return (
+        {
+            "stage": "Queued",
+            "state": "dummy",
+            "details": "No TaskManager registration is performed.",
+        },
+        {
+            "stage": "Preflight",
+            "state": "complete dummy",
+            "details": "Static fixture, not a validated backend result.",
+        },
+        {
+            "stage": "Provider",
+            "state": "offline dummy",
+            "details": "No provider transport exists in this shell.",
+        },
+        {
+            "stage": "Output",
+            "state": "disabled",
+            "details": "No file or database writes are authorized.",
+        },
+    )
+
+
+def ohlcv_task_output_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy OHLCV task output rows."""
+
+    return (
+        {
+            "item": "Rows Written",
+            "value": "0",
+            "state": "storage disabled",
+        },
+        {
+            "item": "Output Path",
+            "value": "not assigned",
+            "state": "no filesystem access",
+        },
+        {
+            "item": "Final State",
+            "value": "awaiting execution backend",
+            "state": "dummy only",
+        },
+    )
+
+
+def ohlcv_task_log_messages() -> tuple[str, ...]:
+    """Return deterministic dummy OHLCV task log messages."""
+
+    return (
+        "DUMMY task shell loaded.",
+        "No async task, provider transport, download loop, or storage writer exists here.",
+        "Progress bars are local display placeholders only.",
+    )
+
+
 def analysis_readiness_rows() -> tuple[DummyRow, ...]:
     """Return deterministic dummy Analysis Suite readiness rows."""
 

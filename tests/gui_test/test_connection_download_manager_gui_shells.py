@@ -279,6 +279,17 @@ def test_ohlcv_download_preflight_is_standalone_table_dialog(
         assert isinstance(window.table(), QTableWidget)
         assert window.table().columnCount() == len(OHLCV_PREFLIGHT_COLUMNS)
         assert _horizontal_header_labels(window.table()) == OHLCV_PREFLIGHT_COLUMNS
+        assert window.table_for_id(
+            "ohlcv_download_preflight.request_summary_table"
+        ).rowCount() == 5
+        assert window.table_for_id(
+            "ohlcv_download_preflight.validation_checklist_table"
+        ).rowCount() == 4
+        assert window.table_for_id(
+            "ohlcv_download_preflight.workload_estimate_table"
+        ).rowCount() == 3
+        assert "DUMMY preflight loaded" in window.status_text()
+        assert "no validation engine" in window.warnings_text()
         assert isinstance(window.button_for_id("cancel"), QPushButton)
         assert isinstance(window.button_for_id("start_download"), QPushButton)
     finally:
@@ -351,6 +362,9 @@ def test_ohlcv_download_task_is_standalone_progress_dialog(
         assert window.progress_log().isReadOnly() is True
         assert isinstance(window.final_recap(), QTextEdit)
         assert window.final_recap().isReadOnly() is True
+        assert window.table_for_id("ohlcv_download_task.stage_table").rowCount() == 4
+        assert window.table_for_id("ohlcv_download_task.output_summary_table").rowCount() == 3
+        assert "DUMMY task shell loaded" in window.status_text()
         assert isinstance(window.button_for_id("stop"), QPushButton)
         assert window.button_for_id("stop").isEnabled() is False
         assert isinstance(window.button_for_id("ok"), QPushButton)
@@ -457,10 +471,14 @@ def test_preflight_metadata_describes_table_like_work_plan() -> None:
 
     assert result.report.has_errors is False
     assert result.document is not None
-    assert tuple(table.table_id for table in result.document.tables) == (
+    tables = {table.table_id: table for table in result.document.tables}
+    assert {
+        "ohlcv_download_preflight.request_summary_table",
         "ohlcv_download_preflight.work_plan_table",
-    )
-    assert tuple(column.label for column in result.document.tables[0].columns) == (
+        "ohlcv_download_preflight.validation_checklist_table",
+        "ohlcv_download_preflight.workload_estimate_table",
+    } <= set(tables)
+    assert tuple(column.label for column in tables["ohlcv_download_preflight.work_plan_table"].columns) == (
         "Timeframe",
         "Local File",
         "Mode",
