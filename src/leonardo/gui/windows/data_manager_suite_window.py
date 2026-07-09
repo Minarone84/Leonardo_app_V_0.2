@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -23,7 +24,11 @@ from PySide6.QtWidgets import (
 from leonardo.gui.dummy_data import (
     data_manager_artifact_rows,
     data_manager_dataset_rows,
+    data_manager_import_export_rows,
+    data_manager_overview_rows,
+    data_manager_processing_queue_rows,
     data_manager_recipe_rows,
+    data_manager_storage_readiness_rows,
 )
 from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.metadata import (
@@ -31,6 +36,7 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.windows.traceable_shell_widgets import (
     apply_trace,
     configure_table,
@@ -48,6 +54,10 @@ _DATA_MANAGER_SUITE_METADATA_PATH = (
 _DATASET_COLUMNS = ("dataset_id", "market", "rows", "status")
 _ARTIFACT_COLUMNS = ("artifact_id", "kind", "source", "status")
 _RECIPE_COLUMNS = ("recipe_id", "kind", "status")
+_OVERVIEW_COLUMNS = ("surface", "state", "details")
+_STORAGE_COLUMNS = ("component", "state", "details")
+_IMPORT_EXPORT_COLUMNS = ("control", "state", "details")
+_QUEUE_COLUMNS = ("item", "progress", "state")
 
 
 def load_data_manager_suite_profile() -> EffectiveGuiMetadataProfile:
@@ -86,6 +96,7 @@ class DataManagerSuiteWindow(QWidget):
         self._build_progress = QProgressBar(self)
 
         self._apply_profile_metadata()
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_shell()
         self.load_dummy_catalogs()
 
@@ -111,9 +122,24 @@ class DataManagerSuiteWindow(QWidget):
         except KeyError as error:
             raise KeyError(f"Unknown Data Manager Suite table: {table_id}") from error
 
+    def status_text(self) -> str:
+        """Return the shell status label text."""
+
+        return "" if self._status_label is None else self._status_label.text()
+
+    def status_log_text(self) -> str:
+        """Return the local dummy status log text."""
+
+        return "" if self._log_area is None else self._log_area.toPlainText()
+
     def load_dummy_catalogs(self) -> None:
         """Render deterministic dummy catalogs into local tables."""
 
+        populate_table(
+            self._tables["data_manager.table.overview_dummy"],
+            _OVERVIEW_COLUMNS,
+            data_manager_overview_rows(),
+        )
         populate_table(
             self._tables["data_manager.table.dataset_catalog_dummy"],
             _DATASET_COLUMNS,
@@ -128,6 +154,21 @@ class DataManagerSuiteWindow(QWidget):
             self._tables["data_manager.table.recipe_catalog_dummy"],
             _RECIPE_COLUMNS,
             data_manager_recipe_rows(),
+        )
+        populate_table(
+            self._tables["data_manager.table.storage_readiness_dummy"],
+            _STORAGE_COLUMNS,
+            data_manager_storage_readiness_rows(),
+        )
+        populate_table(
+            self._tables["data_manager.table.import_export_controls_dummy"],
+            _IMPORT_EXPORT_COLUMNS,
+            data_manager_import_export_rows(),
+        )
+        populate_table(
+            self._tables["data_manager.table.processing_queue_dummy"],
+            _QUEUE_COLUMNS,
+            data_manager_processing_queue_rows(),
         )
         self._build_progress.setValue(0)
         self._set_status("DUMMY catalogs loaded: no storage/materialization ran.")
@@ -159,8 +200,10 @@ class DataManagerSuiteWindow(QWidget):
             parent_object_id=DATA_MANAGER_SUITE_METADATA_ID,
         )
         root.addWidget(self._build_header())
+        root.addWidget(self._build_overview_panel())
         root.addWidget(self._build_toolbar())
         root.addWidget(self._build_body(), stretch=1)
+        root.addWidget(self._build_processing_queue_panel())
         root.addWidget(self._build_status_panel())
 
     def _build_header(self) -> QWidget:
@@ -197,6 +240,44 @@ class DataManagerSuiteWindow(QWidget):
         layout.addStretch(1)
         layout.addWidget(status)
         return header
+
+    def _build_overview_panel(self) -> QWidget:
+        panel = QGroupBox("Data Manager Overview", self)
+        apply_trace(
+            panel,
+            "data_manager.panel.overview",
+            object_type="panel",
+            parent_object_id=DATA_MANAGER_SUITE_METADATA_ID,
+        )
+        layout = QGridLayout(panel)
+        apply_trace(
+            layout,
+            "data_manager.layout.overview",
+            object_type="layout",
+            parent_object_id="data_manager.panel.overview",
+        )
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="data_manager.table.overview_dummy",
+            columns=_OVERVIEW_COLUMNS,
+            labels=("Surface", "State", "Details"),
+            parent_object_id="data_manager.panel.overview",
+        )
+        notice = QLabel(
+            "Shell-only: no imports, exports, storage, materialization, recipes, "
+            "artifacts, or database workflows execute here.",
+            panel,
+        )
+        apply_trace(
+            notice,
+            "data_manager.label.boundary_notice",
+            object_type="label",
+            parent_object_id="data_manager.panel.overview",
+        )
+        self._tables["data_manager.table.overview_dummy"] = table
+        layout.addWidget(table, 0, 0)
+        layout.addWidget(notice, 0, 1)
+        return panel
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QGroupBox("Toolbar", self)
@@ -315,24 +396,42 @@ class DataManagerSuiteWindow(QWidget):
             object_type="layout",
             parent_object_id="data_manager.panel.artifact_recipe_dummy",
         )
+        artifact_panel = QGroupBox("Artifact Catalog Dummy", panel)
+        apply_trace(
+            artifact_panel,
+            "data_manager.panel.artifact_catalog_dummy",
+            object_type="panel",
+            parent_object_id="data_manager.panel.artifact_recipe_dummy",
+        )
+        artifact_layout = QVBoxLayout(artifact_panel)
         artifact_table = configure_table(
-            QTableWidget(panel),
+            QTableWidget(artifact_panel),
             object_id="data_manager.table.artifact_catalog_dummy",
             columns=_ARTIFACT_COLUMNS,
             labels=("Artifact", "Kind", "Source", "Status"),
+            parent_object_id="data_manager.panel.artifact_catalog_dummy",
+        )
+        artifact_layout.addWidget(artifact_table)
+        recipe_panel = QGroupBox("Recipe / Collection Placeholder", panel)
+        apply_trace(
+            recipe_panel,
+            "data_manager.panel.recipe_catalog_dummy",
+            object_type="panel",
             parent_object_id="data_manager.panel.artifact_recipe_dummy",
         )
+        recipe_layout = QVBoxLayout(recipe_panel)
         recipe_table = configure_table(
-            QTableWidget(panel),
+            QTableWidget(recipe_panel),
             object_id="data_manager.table.recipe_catalog_dummy",
             columns=_RECIPE_COLUMNS,
             labels=("Recipe", "Kind", "Status"),
-            parent_object_id="data_manager.panel.artifact_recipe_dummy",
+            parent_object_id="data_manager.panel.recipe_catalog_dummy",
         )
+        recipe_layout.addWidget(recipe_table)
         self._tables["data_manager.table.artifact_catalog_dummy"] = artifact_table
         self._tables["data_manager.table.recipe_catalog_dummy"] = recipe_table
-        layout.addWidget(artifact_table)
-        layout.addWidget(recipe_table)
+        layout.addWidget(artifact_panel)
+        layout.addWidget(recipe_panel)
         return panel
 
     def _build_database_panel(self) -> QWidget:
@@ -350,6 +449,20 @@ class DataManagerSuiteWindow(QWidget):
             object_type="layout",
             parent_object_id="data_manager.panel.database_build_dummy",
         )
+        storage_table = configure_table(
+            QTableWidget(panel),
+            object_id="data_manager.table.storage_readiness_dummy",
+            columns=_STORAGE_COLUMNS,
+            labels=("Component", "State", "Details"),
+            parent_object_id="data_manager.panel.database_build_dummy",
+        )
+        import_export_table = configure_table(
+            QTableWidget(panel),
+            object_id="data_manager.table.import_export_controls_dummy",
+            columns=_IMPORT_EXPORT_COLUMNS,
+            labels=("Control", "State", "Details"),
+            parent_object_id="data_manager.panel.database_build_dummy",
+        )
         label = QLabel("Analysis Database build placeholder", panel)
         apply_trace(
             label,
@@ -365,9 +478,41 @@ class DataManagerSuiteWindow(QWidget):
         )
         self._build_progress.setRange(0, 100)
         self._build_progress.setEnabled(False)
+        self._tables["data_manager.table.storage_readiness_dummy"] = storage_table
+        self._tables["data_manager.table.import_export_controls_dummy"] = (
+            import_export_table
+        )
+        layout.addWidget(storage_table)
+        layout.addWidget(import_export_table)
         layout.addWidget(label)
         layout.addWidget(self._build_progress)
         layout.addStretch(1)
+        return panel
+
+    def _build_processing_queue_panel(self) -> QWidget:
+        panel = QGroupBox("Materialization / Processing Queue Dummy", self)
+        apply_trace(
+            panel,
+            "data_manager.panel.processing_queue_dummy",
+            object_type="panel",
+            parent_object_id=DATA_MANAGER_SUITE_METADATA_ID,
+        )
+        layout = QVBoxLayout(panel)
+        apply_trace(
+            layout,
+            "data_manager.layout.processing_queue_dummy",
+            object_type="layout",
+            parent_object_id="data_manager.panel.processing_queue_dummy",
+        )
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="data_manager.table.processing_queue_dummy",
+            columns=_QUEUE_COLUMNS,
+            labels=("Item", "Progress", "State"),
+            parent_object_id="data_manager.panel.processing_queue_dummy",
+        )
+        self._tables["data_manager.table.processing_queue_dummy"] = table
+        layout.addWidget(table)
         return panel
 
     def _build_status_panel(self) -> QWidget:

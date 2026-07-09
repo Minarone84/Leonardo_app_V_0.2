@@ -34,6 +34,12 @@ no_storage_write = true
 no_runtime_manager_control = true
 no_object_map_mutation = true
 no_backend_materialization = true
+no_dataset_loading = true
+no_import_execution = true
+no_export_execution = true
+no_database_mutation = true
+no_artifact_execution = true
+no_recipe_execution = true
 
 [metadata.dummy_data]
 source_module = "leonardo.gui.dummy_data"
@@ -50,12 +56,20 @@ region_id = "data_manager.toolbar"
 label = "Toolbar"
 
 [[regions]]
+region_id = "data_manager.overview"
+label = "Overview"
+
+[[regions]]
 region_id = "data_manager.catalogs"
 label = "Catalogs"
 
 [[regions]]
 region_id = "data_manager.database_build"
-label = "Database Build Placeholder"
+label = "Storage / Database Readiness"
+
+[[regions]]
+region_id = "data_manager.processing_queue"
+label = "Processing Queue"
 
 [[regions]]
 region_id = "data_manager.metadata_status"
@@ -90,6 +104,18 @@ widget_id = "data_manager.toolbar.main"
 region_id = "data_manager.toolbar"
 label = "Toolbar"
 widget_type = "toolbar"
+
+[[widgets]]
+widget_id = "data_manager.panel.overview"
+region_id = "data_manager.overview"
+label = "Overview Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "data_manager.label.boundary_notice"
+region_id = "data_manager.overview"
+label = "Boundary Notice"
+widget_type = "label"
 
 [[widgets]]
 widget_id = "data_manager.button.load_dummy_catalogs"
@@ -128,9 +154,33 @@ label = "Catalogs Splitter"
 widget_type = "splitter"
 
 [[widgets]]
+widget_id = "data_manager.panel.dataset_catalog_dummy"
+region_id = "data_manager.catalogs"
+label = "Dataset Catalog Dummy"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "data_manager.panel.artifact_recipe_dummy"
+region_id = "data_manager.catalogs"
+label = "Artifact / Recipe Dummy"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "data_manager.panel.artifact_catalog_dummy"
+region_id = "data_manager.catalogs"
+label = "Artifact Catalog Dummy"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "data_manager.panel.recipe_catalog_dummy"
+region_id = "data_manager.catalogs"
+label = "Recipe / Collection Placeholder Dummy"
+widget_type = "panel"
+
+[[widgets]]
 widget_id = "data_manager.panel.database_build_dummy"
 region_id = "data_manager.database_build"
-label = "Database Build Dummy"
+label = "Storage / Database Readiness Dummy"
 widget_type = "panel"
 
 [[widgets]]
@@ -140,10 +190,41 @@ label = "Database Build Progress Dummy"
 widget_type = "progress_bar"
 
 [[widgets]]
+widget_id = "data_manager.panel.processing_queue_dummy"
+region_id = "data_manager.processing_queue"
+label = "Processing Queue Dummy"
+widget_type = "panel"
+
+[[widgets]]
 widget_id = "data_manager.text.metadata_status_dummy"
 region_id = "data_manager.metadata_status"
 label = "Metadata Status Dummy"
 widget_type = "text_area"
+
+[[tables]]
+table_id = "data_manager.table.overview_dummy"
+label = "Overview Dummy"
+
+[[tables.columns]]
+column_id = "surface"
+label = "Surface"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
 [[tables]]
 table_id = "data_manager.table.dataset_catalog_dummy"
 label = "Dataset Catalog Dummy"
@@ -229,6 +310,81 @@ order = 2
 [[tables.columns]]
 column_id = "status"
 label = "Status"
+visible = true
+width = 180
+order = 3
+
+[[tables]]
+table_id = "data_manager.table.storage_readiness_dummy"
+label = "Storage Readiness Dummy"
+
+[[tables.columns]]
+column_id = "component"
+label = "Component"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
+
+[[tables]]
+table_id = "data_manager.table.import_export_controls_dummy"
+label = "Import / Export Controls Dummy"
+
+[[tables.columns]]
+column_id = "control"
+label = "Control"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 300
+order = 3
+
+[[tables]]
+table_id = "data_manager.table.processing_queue_dummy"
+label = "Processing Queue Dummy"
+
+[[tables.columns]]
+column_id = "item"
+label = "Item"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "progress"
+label = "Progress"
+visible = true
+width = 120
+order = 2
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
 visible = true
 width = 180
 order = 3

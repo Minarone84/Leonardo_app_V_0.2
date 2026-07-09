@@ -751,8 +751,24 @@
                         "child_object_ids":  [
                                                  "data_manager.layout.root",
                                                  "data_manager.panel.header",
+                                                 "data_manager.panel.overview",
+                                                 "data_manager.table.overview_dummy",
+                                                 "data_manager.label.boundary_notice",
                                                  "data_manager.toolbar.main",
                                                  "data_manager.splitter.catalogs",
+                                                 "data_manager.panel.dataset_catalog_dummy",
+                                                 "data_manager.table.dataset_catalog_dummy",
+                                                 "data_manager.panel.artifact_recipe_dummy",
+                                                 "data_manager.panel.artifact_catalog_dummy",
+                                                 "data_manager.table.artifact_catalog_dummy",
+                                                 "data_manager.panel.recipe_catalog_dummy",
+                                                 "data_manager.table.recipe_catalog_dummy",
+                                                 "data_manager.panel.database_build_dummy",
+                                                 "data_manager.table.storage_readiness_dummy",
+                                                 "data_manager.table.import_export_controls_dummy",
+                                                 "data_manager.progress.database_build_dummy",
+                                                 "data_manager.panel.processing_queue_dummy",
+                                                 "data_manager.table.processing_queue_dummy",
                                                  "data_manager.panel.metadata_status_dummy"
                                              ],
                         "action_ids":  [
@@ -4598,6 +4614,102 @@
                         "target_module_id":  "research.gui_shell"
                     },
                     {
+                        "object_id":  "data_manager.panel.overview",
+                        "object_type":  "panel",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager_suite.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Data Manager shell overview panel with local dummy state only."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.layout.overview",
+                        "object_type":  "layout",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Data Manager overview layout."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.table.overview_dummy",
+                        "object_type":  "table",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy Data Manager overview table."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.label.boundary_notice",
+                        "object_type":  "label",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Boundary notice documenting shell-only Data Manager behavior."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
                         "object_id":  "data_manager.toolbar.main",
                         "object_type":  "toolbar",
                         "window_id":  "data_manager_suite.window",
@@ -4898,6 +5010,54 @@
                         "target_module_id":  "data_manager.gui_shell"
                     },
                     {
+                        "object_id":  "data_manager.table.storage_readiness_dummy",
+                        "object_type":  "table",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.database_build_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy storage and database readiness table."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.table.import_export_controls_dummy",
+                        "object_type":  "table",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.database_build_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy import/export control table; no file access exists."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
                         "object_id":  "data_manager.progress.database_build_dummy",
                         "object_type":  "progress_bar",
                         "window_id":  "data_manager_suite.window",
@@ -4914,6 +5074,78 @@
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
                                                        "Local dummy database build progress display."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.panel.processing_queue_dummy",
+                        "object_type":  "panel",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager_suite.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Materialization and processing queue dummy panel."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.layout.processing_queue_dummy",
+                        "object_type":  "layout",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.processing_queue_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Materialization and processing queue dummy layout."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "data_manager",
+                        "target_suite_id":  "data_manager_suite",
+                        "target_module_id":  "data_manager.gui_shell"
+                    },
+                    {
+                        "object_id":  "data_manager.table.processing_queue_dummy",
+                        "object_type":  "table",
+                        "window_id":  "data_manager_suite.window",
+                        "parent_object_id":  "data_manager.panel.processing_queue_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy materialization and processing queue table."
                                                    ]
                                      },
                         "owner_area":  "gui",

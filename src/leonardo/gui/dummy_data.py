@@ -140,6 +140,28 @@ def data_manager_dataset_rows() -> tuple[DummyRow, ...]:
     )
 
 
+def data_manager_overview_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Data Manager overview rows."""
+
+    return (
+        {
+            "surface": "Dataset Catalog",
+            "state": "dummy ready",
+            "details": "Local display rows only; no dataset scan.",
+        },
+        {
+            "surface": "Artifact Catalog",
+            "state": "dummy ready",
+            "details": "No artifact metadata or storage is loaded.",
+        },
+        {
+            "surface": "Analysis Database",
+            "state": "offline placeholder",
+            "details": "No database connection or materialization backend.",
+        },
+    )
+
+
 def data_manager_artifact_rows() -> tuple[DummyRow, ...]:
     """Return deterministic dummy artifact catalog rows."""
 
@@ -172,6 +194,72 @@ def data_manager_recipe_rows() -> tuple[DummyRow, ...]:
             "recipe_id": "dummy_recipe_volume_pack",
             "kind": "recipe placeholder",
             "status": "shell only",
+        },
+    )
+
+
+def data_manager_storage_readiness_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy storage and database readiness rows."""
+
+    return (
+        {
+            "component": "Storage Root",
+            "state": "disabled",
+            "details": "No path inspection or file access.",
+        },
+        {
+            "component": "Metadata Sidecars",
+            "state": "not loaded",
+            "details": "No sidecar reads or validation.",
+        },
+        {
+            "component": "Analysis Database",
+            "state": "not connected",
+            "details": "No database creation, rebuild, or mutation.",
+        },
+    )
+
+
+def data_manager_import_export_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy import/export control rows."""
+
+    return (
+        {
+            "control": "Import Dataset",
+            "state": "disabled",
+            "details": "No file picker, parser, or storage write.",
+        },
+        {
+            "control": "Export Artifact",
+            "state": "disabled",
+            "details": "No export path or file writer.",
+        },
+        {
+            "control": "Sync Metadata",
+            "state": "placeholder",
+            "details": "No backend metadata mutation.",
+        },
+    )
+
+
+def data_manager_processing_queue_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy materialization queue rows."""
+
+    return (
+        {
+            "item": "Artifact calculation",
+            "progress": "0%",
+            "state": "engine unavailable",
+        },
+        {
+            "item": "Recipe collection",
+            "progress": "0%",
+            "state": "execution disabled",
+        },
+        {
+            "item": "Database materialization",
+            "progress": "0%",
+            "state": "storage disabled",
         },
     )
 
