@@ -5,7 +5,15 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QAction  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QToolBar  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QTextEdit,
+    QToolBar,
+)
 
 from leonardo.gui.action_observer import GuiActionDecision  # noqa: E402
 from leonardo.gui.metadata import (  # noqa: E402
@@ -39,7 +47,7 @@ def test_main_window_constructs_from_metadata(qapplication: QApplication) -> Non
     assert window.windowTitle() == "Leonardo"
     assert window.metadata_title == "Leonardo"
     assert window.objectName() == "main_window"
-    assert window.findChild(QLabel, "main_window.title_label").text() == "Leonardo"
+    assert window.findChild(QLabel, "main_window.title_label").text() == "Leonardo V2"
     assert window.findChild(QLabel, "main_window.username_label").text() == "admin-dev"
     assert window.findChild(QLabel, "main_window.version_label").text() == "v0.2"
 
@@ -182,6 +190,70 @@ def test_main_window_central_placeholder_buttons_exist(
         assert button.text() == label
         assert button.property("action_id") == action_id
         assert button.minimumHeight() >= 80
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_cockpit_dummy_panels_are_traceable_and_inert(
+    qapplication: QApplication,
+) -> None:
+    window = LeonardoMainWindow(load_main_window_profile())
+
+    expected_labels = {
+        "main_window.label.shell_status": "GUI intent only",
+        "main_window.label.theme_status": "Jarvish Cockpit",
+        "main_window.label.system_status_dummy": "Domain execution: disabled",
+        "main_window.label.environment_weather_dummy": "Network calls: none",
+        "main_window.label.environment_context_dummy": "Location permission: not requested",
+        "main_window.label.visual_input_dummy": "Camera feed: offline",
+        "main_window.label.voice_control_dummy": "Microphone: not requested",
+        "main_window.label.cockpit_notice": "dummy/read-only",
+        "main_window.label.operator_console_dummy": "AI/operator channel placeholder",
+        "main_window.label.activity_log_dummy": "dummy-only",
+    }
+    for object_id, expected_text in expected_labels.items():
+        label = window.findChild(QLabel, object_id)
+        assert label is not None, object_id
+        assert label.property("object_id") == object_id
+        assert expected_text in label.text()
+
+    console = window.findChild(QTextEdit, "main_window.text.operator_console_dummy")
+    input_field = window.findChild(QLineEdit, "main_window.input.operator_console_dummy")
+    assert console is not None
+    assert console.isReadOnly() is True
+    assert "AI backend offline / placeholder" in console.toPlainText()
+    assert input_field is not None
+    assert input_field.isEnabled() is False
+    assert input_field.placeholderText() == "Dummy operator input (inactive)"
+
+    window.deleteLater()
+    qapplication.processEvents()
+
+
+def test_main_window_quick_actions_reuse_existing_action_ids(
+    qapplication: QApplication,
+) -> None:
+    window = LeonardoMainWindow(load_main_window_profile())
+
+    expected = {
+        "main_window.quick_action.download_data": "main_window.download_data",
+        "main_window.quick_action.runtime_manager": "main_window.open_runtime_manager",
+        "main_window.quick_action.settings": "main_window.open_settings_inspector",
+    }
+    for button_id, action_id in expected.items():
+        button = window.findChild(QPushButton, button_id)
+        assert button is not None, button_id
+        assert button.property("object_id") == button_id
+        assert button.property("action_id") == action_id
+
+    window.findChild(QPushButton, "main_window.quick_action.download_data").click()
+    qapplication.processEvents()
+
+    assert window.last_local_action_id == "main_window.download_data"
+    assert window.statusBar().currentMessage() == (
+        "Download Data shell launcher selected."
+    )
 
     window.deleteLater()
     qapplication.processEvents()

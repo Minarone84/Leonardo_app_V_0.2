@@ -11,11 +11,14 @@ from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QPushButton,
     QStatusBar,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -26,6 +29,7 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.windows.traceable_shell_widgets import apply_trace
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
 
 
@@ -70,6 +74,23 @@ _LAUNCHER_BUTTON_ACTION_IDS = (
     "main_window.open_trading_suite",
     "main_window.open_runtime_manager",
     "main_window.open_settings_inspector",
+)
+_QUICK_ACTIONS = (
+    (
+        "main_window.quick_action.download_data",
+        "Download Data",
+        "main_window.download_data",
+    ),
+    (
+        "main_window.quick_action.runtime_manager",
+        "Runtime Manager",
+        "main_window.open_runtime_manager",
+    ),
+    (
+        "main_window.quick_action.settings",
+        "Settings",
+        "main_window.open_settings_inspector",
+    ),
 )
 
 
@@ -330,48 +351,383 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_central_launcher(self) -> None:
         central = QWidget()
-        central.setObjectName("main_window.central")
-        central.setProperty("object_id", "main_window.central")
-        central.setProperty("object_type", "central_area")
-        central.setProperty("parent_object_id", MAIN_WINDOW_METADATA_ID)
+        apply_trace(
+            central,
+            "main_window.central",
+            object_type="central_area",
+            parent_object_id=MAIN_WINDOW_METADATA_ID,
+        )
         layout = QVBoxLayout(central)
-        layout.setObjectName("main_window.layout.central")
-        title_label = QLabel(self.metadata_title)
+        apply_trace(
+            layout,
+            "main_window.layout.central",
+            object_type="layout",
+            parent_object_id="main_window.central",
+        )
+
+        layout.addWidget(self._build_top_bar(central))
+        layout.addWidget(self._build_cockpit_body(central), stretch=1)
+        layout.addWidget(self._build_quick_actions(central))
+        self.setCentralWidget(central)
+
+    def _build_top_bar(self, parent: QWidget) -> QWidget:
+        top_bar = QGroupBox("Command Status", parent)
+        apply_trace(
+            top_bar,
+            "main_window.panel.top_bar",
+            object_type="panel",
+            parent_object_id="main_window.central",
+        )
+        layout = QHBoxLayout(top_bar)
+        apply_trace(
+            layout,
+            "main_window.layout.top_bar",
+            object_type="layout",
+            parent_object_id="main_window.panel.top_bar",
+        )
+
+        title_label = QLabel("Leonardo V2", top_bar)
         title_label.setObjectName("main_window.title_label")
         title_label.setProperty("object_id", "main_window.label.title")
         title_label.setProperty("object_type", "label")
-        title_label.setProperty("parent_object_id", "main_window.central")
-        placeholder = QLabel("Select a traceable shell launcher.")
+        title_label.setProperty("parent_object_id", "main_window.panel.top_bar")
+
+        shell_status = QLabel("Shell online | GUI intent only", top_bar)
+        apply_trace(
+            shell_status,
+            "main_window.label.shell_status",
+            object_type="status_label",
+            display_label="Shell Status",
+            parent_object_id="main_window.panel.top_bar",
+        )
+
+        theme_status = QLabel("Theme: Leonardo Jarvish Cockpit", top_bar)
+        apply_trace(
+            theme_status,
+            "main_window.label.theme_status",
+            object_type="status_label",
+            display_label="Active Theme",
+            parent_object_id="main_window.panel.top_bar",
+        )
+
+        layout.addWidget(title_label)
+        layout.addStretch(1)
+        layout.addWidget(shell_status)
+        layout.addWidget(theme_status)
+        return top_bar
+
+    def _build_cockpit_body(self, parent: QWidget) -> QWidget:
+        body = QWidget(parent)
+        apply_trace(
+            body,
+            "main_window.panel.body",
+            object_type="panel",
+            parent_object_id="main_window.central",
+        )
+        layout = QHBoxLayout(body)
+        apply_trace(
+            layout,
+            "main_window.layout.body",
+            object_type="layout",
+            parent_object_id="main_window.panel.body",
+        )
+        layout.addWidget(self._build_left_rail(body), stretch=1)
+        layout.addWidget(self._build_command_core(body), stretch=3)
+        layout.addWidget(self._build_right_rail(body), stretch=1)
+        return body
+
+    def _build_left_rail(self, parent: QWidget) -> QWidget:
+        rail = QGroupBox("Status / Context", parent)
+        apply_trace(
+            rail,
+            "main_window.panel.left_rail",
+            object_type="panel",
+            parent_object_id="main_window.panel.body",
+        )
+        layout = QVBoxLayout(rail)
+        apply_trace(
+            layout,
+            "main_window.layout.left_rail",
+            object_type="layout",
+            parent_object_id="main_window.panel.left_rail",
+        )
+        layout.addWidget(
+            self._build_dummy_status_card(
+                rail,
+                object_id="main_window.panel.system_status_dummy",
+                label_object_id="main_window.label.system_status_dummy",
+                title="System Runtime",
+                text="Runtime shell: online\nCore bridge: composition-owned\nDomain execution: disabled",
+                parent_object_id="main_window.panel.left_rail",
+            )
+        )
+        layout.addWidget(
+            self._build_dummy_status_card(
+                rail,
+                object_id="main_window.panel.environment_weather_dummy",
+                label_object_id="main_window.label.environment_weather_dummy",
+                title="Environment / Weather",
+                text="Weather: dummy offline\nExternal APIs: disabled\nNetwork calls: none",
+                parent_object_id="main_window.panel.left_rail",
+            )
+        )
+        layout.addWidget(
+            self._build_dummy_status_card(
+                rail,
+                object_id="main_window.panel.environment_context_dummy",
+                label_object_id="main_window.label.environment_context_dummy",
+                title="Environment Context",
+                text="City context: placeholder\nLocation permission: not requested\nPersistence: none",
+                parent_object_id="main_window.panel.left_rail",
+            )
+        )
+        layout.addWidget(
+            self._build_dummy_status_card(
+                rail,
+                object_id="main_window.panel.visual_input_dummy",
+                label_object_id="main_window.label.visual_input_dummy",
+                title="Visual Input",
+                text="Camera feed: offline\nDevice access: not requested\nImages: not captured",
+                parent_object_id="main_window.panel.left_rail",
+            )
+        )
+        layout.addWidget(
+            self._build_dummy_status_card(
+                rail,
+                object_id="main_window.panel.voice_control_dummy",
+                label_object_id="main_window.label.voice_control_dummy",
+                title="Voice Control",
+                text="Voice: offline\nMicrophone: not requested\nSpeech services: disabled",
+                parent_object_id="main_window.panel.left_rail",
+            )
+        )
+        layout.addStretch(1)
+        return rail
+
+    def _build_command_core(self, parent: QWidget) -> QWidget:
+        core = QGroupBox("Leonardo Command Core", parent)
+        apply_trace(
+            core,
+            "main_window.panel.command_core",
+            object_type="panel",
+            parent_object_id="main_window.panel.body",
+        )
+        layout = QVBoxLayout(core)
+        apply_trace(
+            layout,
+            "main_window.layout.command_core",
+            object_type="layout",
+            parent_object_id="main_window.panel.command_core",
+        )
+
+        notice = QLabel(
+            "Cockpit foundation only: suite buttons emit GUI intent and all "
+            "future panels remain dummy/read-only.",
+            core,
+        )
+        notice.setWordWrap(True)
+        apply_trace(
+            notice,
+            "main_window.label.cockpit_notice",
+            object_type="label",
+            display_label="Cockpit Notice",
+            parent_object_id="main_window.panel.command_core",
+        )
+
+        placeholder = QLabel("Select a traceable shell launcher.", core)
         placeholder.setObjectName("main_window.placeholder_label")
         placeholder.setProperty("object_id", "main_window.label.placeholder")
         placeholder.setProperty("object_type", "status_label")
-        placeholder.setProperty("parent_object_id", "main_window.central")
+        placeholder.setProperty(
+            "parent_object_id",
+            "main_window.panel.command_core",
+        )
         self._central_message_label = placeholder
 
-        launcher = QGroupBox("Traceable Shell Launchers", central)
-        launcher.setObjectName("main_window.panel.launcher")
-        launcher.setProperty("object_id", "main_window.panel.launcher")
-        launcher.setProperty("object_type", "launcher_panel")
-        launcher.setProperty("parent_object_id", "main_window.central")
+        launcher = QGroupBox("Suite Navigation", core)
+        apply_trace(
+            launcher,
+            "main_window.panel.launcher",
+            object_type="launcher_panel",
+            parent_object_id="main_window.panel.command_core",
+        )
         button_grid = QGridLayout(launcher)
-        button_grid.setObjectName("main_window.layout.launcher_grid")
+        apply_trace(
+            button_grid,
+            "main_window.layout.launcher_grid",
+            object_type="layout",
+            parent_object_id="main_window.panel.launcher",
+        )
         for index, action_id in enumerate(_LAUNCHER_BUTTON_ACTION_IDS):
             object_id = _launcher_button_object_id(action_id)
             button = QPushButton(self.action_for_id(action_id).text(), launcher)
-            button.setObjectName(object_id)
-            button.setProperty("object_id", object_id)
-            button.setProperty("object_type", "button")
-            button.setProperty("action_id", action_id)
-            button.setProperty("parent_object_id", "main_window.panel.launcher")
+            apply_trace(
+                button,
+                object_id,
+                object_type="button",
+                parent_object_id="main_window.panel.launcher",
+                action_id=action_id,
+                tooltip="GUI shell action only. No domain execution is started.",
+            )
             button.setMinimumHeight(80)
             button.clicked.connect(partial(self._handle_shell_action, action_id))
             self._placeholder_buttons[action_id] = button
             button_grid.addWidget(button, index // 2, index % 2)
 
-        layout.addWidget(title_label)
+        layout.addWidget(notice)
         layout.addWidget(placeholder)
         layout.addWidget(launcher, stretch=1)
-        self.setCentralWidget(central)
+        return core
+
+    def _build_right_rail(self, parent: QWidget) -> QWidget:
+        rail = QGroupBox("Operator Rail", parent)
+        apply_trace(
+            rail,
+            "main_window.panel.right_rail",
+            object_type="panel",
+            parent_object_id="main_window.panel.body",
+        )
+        layout = QVBoxLayout(rail)
+        apply_trace(
+            layout,
+            "main_window.layout.right_rail",
+            object_type="layout",
+            parent_object_id="main_window.panel.right_rail",
+        )
+
+        operator_panel = QGroupBox("Operator Console", rail)
+        apply_trace(
+            operator_panel,
+            "main_window.panel.operator_console_dummy",
+            object_type="panel",
+            parent_object_id="main_window.panel.right_rail",
+        )
+        operator_layout = QVBoxLayout(operator_panel)
+        apply_trace(
+            operator_layout,
+            "main_window.layout.operator_console_dummy",
+            object_type="layout",
+            parent_object_id="main_window.panel.operator_console_dummy",
+        )
+
+        operator_label = QLabel("AI/operator channel placeholder", operator_panel)
+        operator_label.setWordWrap(True)
+        apply_trace(
+            operator_label,
+            "main_window.label.operator_console_dummy",
+            object_type="label",
+            display_label="Operator Console",
+            parent_object_id="main_window.panel.operator_console_dummy",
+        )
+
+        console = QTextEdit(operator_panel)
+        console.setReadOnly(True)
+        console.setPlainText(
+            "Leonardo shell online.\n"
+            "AI backend offline / placeholder.\n"
+            "No messages are persisted."
+        )
+        apply_trace(
+            console,
+            "main_window.text.operator_console_dummy",
+            object_type="text_display",
+            display_label="Operator Console Messages",
+            parent_object_id="main_window.panel.operator_console_dummy",
+        )
+
+        input_field = QLineEdit(operator_panel)
+        input_field.setEnabled(False)
+        input_field.setPlaceholderText("Dummy operator input (inactive)")
+        apply_trace(
+            input_field,
+            "main_window.input.operator_console_dummy",
+            object_type="input",
+            display_label="Operator Console Input",
+            parent_object_id="main_window.panel.operator_console_dummy",
+        )
+
+        operator_layout.addWidget(operator_label)
+        operator_layout.addWidget(console, stretch=1)
+        operator_layout.addWidget(input_field)
+        layout.addWidget(operator_panel, stretch=1)
+        layout.addStretch(1)
+        return rail
+
+    def _build_quick_actions(self, parent: QWidget) -> QWidget:
+        panel = QGroupBox("Quick Actions / Activity", parent)
+        apply_trace(
+            panel,
+            "main_window.panel.quick_actions",
+            object_type="panel",
+            parent_object_id="main_window.central",
+        )
+        layout = QHBoxLayout(panel)
+        apply_trace(
+            layout,
+            "main_window.layout.quick_actions",
+            object_type="layout",
+            parent_object_id="main_window.panel.quick_actions",
+        )
+
+        activity = QLabel(
+            "Activity: ready | weather/camera/voice/operator panels are dummy-only.",
+            panel,
+        )
+        activity.setWordWrap(True)
+        apply_trace(
+            activity,
+            "main_window.label.activity_log_dummy",
+            object_type="status_label",
+            display_label="Activity Log",
+            parent_object_id="main_window.panel.quick_actions",
+        )
+        layout.addWidget(activity, stretch=1)
+
+        for object_id, label, action_id in _QUICK_ACTIONS:
+            button = QPushButton(label, panel)
+            apply_trace(
+                button,
+                object_id,
+                object_type="button",
+                display_label=label,
+                parent_object_id="main_window.panel.quick_actions",
+                action_id=action_id,
+                tooltip="Quick action reuses an existing Main Window GUI intent.",
+            )
+            button.clicked.connect(partial(self._handle_shell_action, action_id))
+            layout.addWidget(button)
+        return panel
+
+    def _build_dummy_status_card(
+        self,
+        parent: QWidget,
+        *,
+        object_id: str,
+        label_object_id: str,
+        title: str,
+        text: str,
+        parent_object_id: str,
+    ) -> QWidget:
+        card = QGroupBox(title, parent)
+        apply_trace(
+            card,
+            object_id,
+            object_type="dummy_status_card",
+            display_label=title,
+            parent_object_id=parent_object_id,
+        )
+        layout = QVBoxLayout(card)
+        label = QLabel(text, card)
+        label.setWordWrap(True)
+        apply_trace(
+            label,
+            label_object_id,
+            object_type="status_label",
+            display_label=title,
+            parent_object_id=object_id,
+        )
+        layout.addWidget(label)
+        return card
 
     def _build_status_bar(self) -> None:
         status_bar = QStatusBar()

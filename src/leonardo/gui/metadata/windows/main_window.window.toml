@@ -27,6 +27,62 @@ qt_object_name_policy = "objectName equals object_id for actions, menus, launche
 parent_child_policy = "Parent IDs are exposed in widget/action metadata and as Qt dynamic property parent_object_id where widgets are constructed."
 no_anonymous_widgets = true
 
+[metadata.cockpit]
+layout_status = "jarvish_cockpit_foundation"
+theme_id = "leonardo_jarvish_cockpit"
+dummy_only = true
+network_calls = false
+device_access = false
+storage_writes = false
+ai_backend_calls = false
+panels = [
+    "main_window.panel.top_bar",
+    "main_window.panel.left_rail",
+    "main_window.panel.command_core",
+    "main_window.panel.right_rail",
+    "main_window.panel.quick_actions",
+]
+
+[metadata.dummy_future_panels.environment_weather]
+object_id = "main_window.panel.environment_weather_dummy"
+label_object_id = "main_window.label.environment_weather_dummy"
+status = "dummy_only"
+network_calls = false
+storage_writes = false
+
+[metadata.dummy_future_panels.environment_context]
+object_id = "main_window.panel.environment_context_dummy"
+label_object_id = "main_window.label.environment_context_dummy"
+status = "dummy_only"
+location_permission = false
+network_calls = false
+storage_writes = false
+
+[metadata.dummy_future_panels.visual_input]
+object_id = "main_window.panel.visual_input_dummy"
+label_object_id = "main_window.label.visual_input_dummy"
+status = "dummy_only"
+camera_access = false
+device_permission = false
+storage_writes = false
+
+[metadata.dummy_future_panels.voice_control]
+object_id = "main_window.panel.voice_control_dummy"
+label_object_id = "main_window.label.voice_control_dummy"
+status = "dummy_only"
+microphone_access = false
+speech_recognition = false
+speech_synthesis = false
+
+[metadata.dummy_future_panels.operator_console]
+object_id = "main_window.panel.operator_console_dummy"
+text_object_id = "main_window.text.operator_console_dummy"
+input_object_id = "main_window.input.operator_console_dummy"
+status = "dummy_only"
+ai_backend_calls = false
+network_calls = false
+storage_writes = false
+
 [metadata.launch_surfaces.download_data]
 action_id = "main_window.download_data"
 launcher_button_id = "main_window.button.download_data"
@@ -196,11 +252,31 @@ label = "Menu Bar"
 
 [[regions]]
 region_id = "central"
-label = "Central Content"
+label = "Jarvish Cockpit Shell"
+
+[[regions]]
+region_id = "top_bar"
+label = "Top Command Status Bar"
+
+[[regions]]
+region_id = "left_rail"
+label = "Status Context Device Rail"
+
+[[regions]]
+region_id = "command_core"
+label = "Leonardo Command Core"
+
+[[regions]]
+region_id = "right_rail"
+label = "Operator Console Rail"
 
 [[regions]]
 region_id = "launcher_panel"
-label = "Traceable Shell Launcher Panel"
+label = "Suite Navigation Panel"
+
+[[regions]]
+region_id = "quick_actions"
+label = "Quick Actions Activity Strip"
 
 [[regions]]
 region_id = "status_bar"
@@ -262,9 +338,183 @@ widget_type = "menu_bar"
 
 [[widgets]]
 widget_id = "main_window.panel.launcher"
-region_id = "launcher_panel"
-label = "Traceable Shell Launcher Panel"
+region_id = "command_core"
+label = "Suite Navigation Panel"
 widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.panel.top_bar"
+region_id = "top_bar"
+label = "Top Command Status Bar"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.title"
+region_id = "top_bar"
+label = "Leonardo V2"
+widget_type = "label"
+
+[[widgets]]
+widget_id = "main_window.label.shell_status"
+region_id = "top_bar"
+label = "Shell Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.label.theme_status"
+region_id = "top_bar"
+label = "Active Theme"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.body"
+region_id = "central"
+label = "Cockpit Body"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.panel.left_rail"
+region_id = "left_rail"
+label = "Status Context Device Rail"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.panel.system_status_dummy"
+region_id = "left_rail"
+label = "System Runtime"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.system_status_dummy"
+region_id = "left_rail"
+label = "System Runtime Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.environment_weather_dummy"
+region_id = "left_rail"
+label = "Environment Weather"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.environment_weather_dummy"
+region_id = "left_rail"
+label = "Environment Weather Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.environment_context_dummy"
+region_id = "left_rail"
+label = "Environment Context"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.environment_context_dummy"
+region_id = "left_rail"
+label = "Environment Context Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.visual_input_dummy"
+region_id = "left_rail"
+label = "Visual Input"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.visual_input_dummy"
+region_id = "left_rail"
+label = "Visual Input Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.voice_control_dummy"
+region_id = "left_rail"
+label = "Voice Control"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.voice_control_dummy"
+region_id = "left_rail"
+label = "Voice Control Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.command_core"
+region_id = "command_core"
+label = "Leonardo Command Core"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.cockpit_notice"
+region_id = "command_core"
+label = "Cockpit Notice"
+widget_type = "label"
+
+[[widgets]]
+widget_id = "main_window.label.placeholder"
+region_id = "command_core"
+label = "Command Core Status"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.panel.right_rail"
+region_id = "right_rail"
+label = "Operator Console Rail"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.panel.operator_console_dummy"
+region_id = "right_rail"
+label = "Operator Console"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.operator_console_dummy"
+region_id = "right_rail"
+label = "Operator Console Label"
+widget_type = "label"
+
+[[widgets]]
+widget_id = "main_window.text.operator_console_dummy"
+region_id = "right_rail"
+label = "Operator Console Messages"
+widget_type = "text_display"
+
+[[widgets]]
+widget_id = "main_window.input.operator_console_dummy"
+region_id = "right_rail"
+label = "Operator Console Input"
+widget_type = "input"
+
+[[widgets]]
+widget_id = "main_window.panel.quick_actions"
+region_id = "quick_actions"
+label = "Quick Actions Activity Strip"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.label.activity_log_dummy"
+region_id = "quick_actions"
+label = "Activity Log"
+widget_type = "status_label"
+
+[[widgets]]
+widget_id = "main_window.quick_action.download_data"
+region_id = "quick_actions"
+label = "Download Data"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.quick_action.runtime_manager"
+region_id = "quick_actions"
+label = "Runtime Manager"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "main_window.quick_action.settings"
+region_id = "quick_actions"
+label = "Settings"
+widget_type = "button"
 
 [[widgets]]
 widget_id = "main_window.button.download_data"

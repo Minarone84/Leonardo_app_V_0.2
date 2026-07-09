@@ -60,7 +60,12 @@ def test_main_window_required_shell_regions_exist() -> None:
     assert {
         "menu_bar",
         "central",
+        "top_bar",
+        "left_rail",
+        "command_core",
+        "right_rail",
         "launcher_panel",
+        "quick_actions",
         "status_bar",
         "user_display",
         "version_display",
@@ -152,6 +157,28 @@ def test_main_window_metadata_documents_traceable_suite_launch_surfaces() -> Non
         assert surface["ownership_scope"] == "launch_surface_only"
         assert surface["execution_owner"] == "none_shell_only"
         assert surface["storage_owner"] == "none_shell_only"
+
+
+def test_main_window_metadata_documents_cockpit_dummy_boundaries() -> None:
+    document = _load_main_window_document()
+    cockpit = document.metadata["cockpit"]
+    dummy_panels = document.metadata["dummy_future_panels"]
+
+    assert cockpit["layout_status"] == "jarvish_cockpit_foundation"
+    assert cockpit["theme_id"] == "leonardo_jarvish_cockpit"
+    assert cockpit["dummy_only"] is True
+    assert cockpit["network_calls"] is False
+    assert cockpit["device_access"] is False
+    assert cockpit["storage_writes"] is False
+    assert cockpit["ai_backend_calls"] is False
+    assert "main_window.panel.command_core" in cockpit["panels"]
+    assert dummy_panels["environment_weather"]["network_calls"] is False
+    assert dummy_panels["environment_context"]["location_permission"] is False
+    assert dummy_panels["visual_input"]["camera_access"] is False
+    assert dummy_panels["voice_control"]["microphone_access"] is False
+    assert dummy_panels["voice_control"]["speech_recognition"] is False
+    assert dummy_panels["operator_console"]["ai_backend_calls"] is False
+    assert dummy_panels["operator_console"]["storage_writes"] is False
 
 
 def test_main_window_metadata_is_inspectable_without_ai_helper_behavior() -> None:
