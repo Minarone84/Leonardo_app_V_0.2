@@ -23,7 +23,7 @@ object_id = "main_window.menu_bar"
 
 [metadata.traceability]
 object_id_policy = "stable_readable_deterministic_ids"
-qt_object_name_policy = "objectName equals object_id for actions, menus, launcher buttons, panels, and display widgets; top-level window objectName maps through metadata.object_name while metadata.window_id remains the window object_id."
+qt_object_name_policy = "objectName equals object_id for actions, menus, Suite Navigation controls, panels, and display widgets; top-level window objectName maps through metadata.object_name while metadata.window_id remains the window object_id."
 parent_child_policy = "Parent IDs are exposed in widget/action metadata and as Qt dynamic property parent_object_id where widgets are constructed."
 no_anonymous_widgets = true
 
@@ -39,9 +39,90 @@ panels = [
     "main_window.panel.top_bar",
     "main_window.panel.left_rail",
     "main_window.panel.command_core",
+    "main_window.panel.suite_navigation",
     "main_window.panel.right_rail",
     "main_window.panel.quick_actions",
 ]
+
+[metadata.suite_navigation]
+terminology = "Suite Navigation"
+panel_object_id = "main_window.panel.suite_navigation"
+layout_object_id = "main_window.layout.suite_navigation"
+donut_object_id = "main_window.widget.suite_navigation_donut"
+utility_panel_object_id = "main_window.panel.suite_navigation_utilities"
+utility_layout_object_id = "main_window.layout.suite_navigation_utilities"
+status = "gui_intent_only"
+segment_count = 5
+segment_degrees = 72
+inner_diameter_ratio = 0.80
+theme_id = "leonardo_jarvish_cockpit"
+network_calls = false
+device_access = false
+storage_writes = false
+domain_execution = false
+
+[metadata.suite_navigation.segments.connection_suite]
+object_id = "main_window.donut.segment.connection_suite"
+label = "Connection Suite"
+action_id = "main_window.download_data"
+target_area_id = "connection"
+target_suite_id = "connection_suite"
+target_module_id = "connection.download_manager"
+status = "shell_only"
+
+[metadata.suite_navigation.segments.research_suite]
+object_id = "main_window.donut.segment.research_suite"
+label = "Research Suite"
+action_id = "main_window.open_research_suite"
+target_area_id = "research"
+target_suite_id = "research_suite"
+target_module_id = "research.gui_shell"
+status = "shell_only"
+
+[metadata.suite_navigation.segments.data_manager]
+object_id = "main_window.donut.segment.data_manager"
+label = "Data Manager Suite"
+action_id = "main_window.open_data_manager_suite"
+target_area_id = "data_manager"
+target_suite_id = "data_manager_suite"
+target_module_id = "data_manager.gui_shell"
+status = "shell_only"
+
+[metadata.suite_navigation.segments.analysis_suite]
+object_id = "main_window.donut.segment.analysis_suite"
+label = "Analysis Suite"
+action_id = "main_window.open_analysis_suite"
+target_area_id = "analysis"
+target_suite_id = "analysis_suite"
+target_module_id = "analysis.gui_shell"
+status = "shell_only"
+
+[metadata.suite_navigation.segments.trading_suite]
+object_id = "main_window.donut.segment.trading_suite"
+label = "Trading Suite"
+action_id = "main_window.open_trading_suite"
+target_area_id = "trading"
+target_suite_id = "trading_suite"
+target_module_id = "trading.gui_shell"
+status = "shell_only"
+
+[metadata.suite_navigation.utilities.runtime_manager]
+object_id = "main_window.utility_button.runtime_manager"
+label = "Runtime Manager"
+action_id = "main_window.open_runtime_manager"
+target_area_id = "runtime"
+target_suite_id = "gui_service"
+target_module_id = "runtime_manager"
+status = "active_read_only"
+
+[metadata.suite_navigation.utilities.settings]
+object_id = "main_window.utility_button.settings"
+label = "Settings"
+action_id = "main_window.open_settings_inspector"
+target_area_id = "gui"
+target_suite_id = "gui_service"
+target_module_id = "gui.settings"
+status = "optional_local_gui_settings"
 
 [metadata.dummy_future_panels.environment_weather]
 object_id = "main_window.panel.environment_weather_dummy"
@@ -85,7 +166,7 @@ storage_writes = false
 
 [metadata.launch_surfaces.download_data]
 action_id = "main_window.download_data"
-launcher_button_id = "main_window.button.download_data"
+suite_navigation_segment_id = "main_window.donut.segment.connection_suite"
 label = "Download Data"
 target_area_id = "connection"
 target_suite_id = "connection_suite"
@@ -123,7 +204,7 @@ storage_owner = "none_shell_only"
 
 [metadata.launch_surfaces.research_suite]
 action_id = "main_window.open_research_suite"
-launcher_button_id = "main_window.button.open_research_suite"
+suite_navigation_segment_id = "main_window.donut.segment.research_suite"
 label = "Research Suite"
 target_area_id = "research"
 target_suite_id = "research_suite"
@@ -137,7 +218,7 @@ charts_logic = "forbidden"
 
 [metadata.launch_surfaces.data_manager_suite]
 action_id = "main_window.open_data_manager_suite"
-launcher_button_id = "main_window.button.open_data_manager_suite"
+suite_navigation_segment_id = "main_window.donut.segment.data_manager"
 label = "Data Manager Suite"
 target_area_id = "data_manager"
 target_suite_id = "data_manager_suite"
@@ -150,7 +231,7 @@ storage_owner = "none_shell_only"
 
 [metadata.launch_surfaces.analysis_suite]
 action_id = "main_window.open_analysis_suite"
-launcher_button_id = "main_window.button.open_analysis_suite"
+suite_navigation_segment_id = "main_window.donut.segment.analysis_suite"
 label = "Analysis Suite"
 target_area_id = "analysis"
 target_suite_id = "analysis_suite"
@@ -163,7 +244,7 @@ storage_owner = "none_shell_only"
 
 [metadata.launch_surfaces.trading_suite]
 action_id = "main_window.open_trading_suite"
-launcher_button_id = "main_window.button.open_trading_suite"
+suite_navigation_segment_id = "main_window.donut.segment.trading_suite"
 label = "Trading Suite"
 target_area_id = "trading"
 target_suite_id = "trading_suite"
@@ -177,7 +258,7 @@ trading_behavior = "forbidden"
 
 [metadata.launch_surfaces.runtime_manager]
 action_id = "main_window.open_runtime_manager"
-launcher_button_id = "main_window.button.open_runtime_manager"
+utility_button_id = "main_window.utility_button.runtime_manager"
 label = "Runtime Manager"
 target_area_id = "runtime"
 target_module_id = "runtime_manager"
@@ -189,7 +270,7 @@ storage_owner = "none_shell_only"
 
 [metadata.launch_surfaces.settings]
 action_id = "main_window.open_settings_inspector"
-launcher_button_id = "main_window.button.open_settings_inspector"
+utility_button_id = "main_window.utility_button.settings"
 label = "Settings"
 target_area_id = "gui"
 target_module_id = "gui.settings"
@@ -271,7 +352,7 @@ region_id = "right_rail"
 label = "Operator Console Rail"
 
 [[regions]]
-region_id = "launcher_panel"
+region_id = "suite_navigation"
 label = "Suite Navigation Panel"
 
 [[regions]]
@@ -337,7 +418,7 @@ label = "Menu Bar"
 widget_type = "menu_bar"
 
 [[widgets]]
-widget_id = "main_window.panel.launcher"
+widget_id = "main_window.panel.suite_navigation"
 region_id = "command_core"
 label = "Suite Navigation Panel"
 widget_type = "panel"
@@ -517,44 +598,68 @@ label = "Settings"
 widget_type = "button"
 
 [[widgets]]
-widget_id = "main_window.button.download_data"
-region_id = "launcher_panel"
-label = "Download Data"
-widget_type = "button"
+widget_id = "main_window.layout.suite_navigation"
+region_id = "suite_navigation"
+label = "Suite Navigation Layout"
+widget_type = "layout"
 
 [[widgets]]
-widget_id = "main_window.button.open_research_suite"
-region_id = "launcher_panel"
+widget_id = "main_window.widget.suite_navigation_donut"
+region_id = "suite_navigation"
+label = "Suite Navigation Donut"
+widget_type = "donut_navigation"
+
+[[widgets]]
+widget_id = "main_window.donut.segment.connection_suite"
+region_id = "suite_navigation"
+label = "Connection Suite"
+widget_type = "donut_segment"
+
+[[widgets]]
+widget_id = "main_window.donut.segment.research_suite"
+region_id = "suite_navigation"
 label = "Research Suite"
-widget_type = "button"
+widget_type = "donut_segment"
 
 [[widgets]]
-widget_id = "main_window.button.open_data_manager_suite"
-region_id = "launcher_panel"
+widget_id = "main_window.donut.segment.data_manager"
+region_id = "suite_navigation"
 label = "Data Manager Suite"
-widget_type = "button"
+widget_type = "donut_segment"
 
 [[widgets]]
-widget_id = "main_window.button.open_analysis_suite"
-region_id = "launcher_panel"
+widget_id = "main_window.donut.segment.analysis_suite"
+region_id = "suite_navigation"
 label = "Analysis Suite"
-widget_type = "button"
+widget_type = "donut_segment"
 
 [[widgets]]
-widget_id = "main_window.button.open_trading_suite"
-region_id = "launcher_panel"
+widget_id = "main_window.donut.segment.trading_suite"
+region_id = "suite_navigation"
 label = "Trading Suite"
-widget_type = "button"
+widget_type = "donut_segment"
 
 [[widgets]]
-widget_id = "main_window.button.open_runtime_manager"
-region_id = "launcher_panel"
+widget_id = "main_window.panel.suite_navigation_utilities"
+region_id = "suite_navigation"
+label = "Suite Navigation Utilities"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "main_window.layout.suite_navigation_utilities"
+region_id = "suite_navigation"
+label = "Suite Navigation Utilities Layout"
+widget_type = "layout"
+
+[[widgets]]
+widget_id = "main_window.utility_button.runtime_manager"
+region_id = "suite_navigation"
 label = "Runtime Manager"
 widget_type = "button"
 
 [[widgets]]
-widget_id = "main_window.button.open_settings_inspector"
-region_id = "launcher_panel"
+widget_id = "main_window.utility_button.settings"
+region_id = "suite_navigation"
 label = "Settings"
 widget_type = "button"
 

@@ -48,6 +48,7 @@ _AI_AGENT_FIELDS = {
 _ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 _GUI_ROADMAP_STABLE_SOURCE_FILES = (
     _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "main_window.py",
+    _REPO_ROOT / "src" / "leonardo" / "gui" / "widgets" / "suite_navigation_donut.py",
     _REPO_ROOT
     / "src"
     / "leonardo"
@@ -111,14 +112,17 @@ _EXPECTED_IMPLEMENTED_GUI_SOURCE_IDS = frozenset(
         "main_window.label.username",
         "main_window.label.version",
         "main_window.layout.central",
-        "main_window.layout.launcher_grid",
-        "main_window.button.download_data",
-        "main_window.button.open_research_suite",
-        "main_window.button.open_data_manager_suite",
-        "main_window.button.open_analysis_suite",
-        "main_window.button.open_trading_suite",
-        "main_window.button.open_runtime_manager",
-        "main_window.button.open_settings_inspector",
+        "main_window.layout.suite_navigation",
+        "main_window.widget.suite_navigation_donut",
+        "main_window.donut.segment.connection_suite",
+        "main_window.donut.segment.research_suite",
+        "main_window.donut.segment.data_manager",
+        "main_window.donut.segment.analysis_suite",
+        "main_window.donut.segment.trading_suite",
+        "main_window.panel.suite_navigation_utilities",
+        "main_window.layout.suite_navigation_utilities",
+        "main_window.utility_button.runtime_manager",
+        "main_window.utility_button.settings",
         "historical_download_manager.title",
         "historical_download_manager.label.timeframes",
         "historical_download_manager.layout.root",

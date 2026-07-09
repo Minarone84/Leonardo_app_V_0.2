@@ -224,6 +224,7 @@ def test_new_gui_shell_sources_do_not_import_domain_execution_layers() -> None:
         _GUI_ROOT / "windows" / "analysis_suite_window.py",
         _GUI_ROOT / "windows" / "trading_suite_window.py",
         _GUI_ROOT / "windows" / "traceable_shell_widgets.py",
+        _GUI_ROOT / "widgets" / "suite_navigation_donut.py",
         _GUI_ROOT / "dummy_data.py",
     )
     for path in source_paths:

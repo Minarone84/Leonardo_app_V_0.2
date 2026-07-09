@@ -26,6 +26,7 @@ from leonardo.gui.windows.main_window import (  # noqa: E402
     _MAIN_WINDOW_METADATA_PATH,
     load_main_window_profile,
 )
+from leonardo.gui.widgets import SuiteNavigationDonut  # noqa: E402
 from leonardo.gui.windows.runtime_manager_window import (  # noqa: E402
     load_runtime_manager_profile,
 )
@@ -152,44 +153,60 @@ def test_main_window_menu_layout_has_expected_sections(
     qapplication.processEvents()
 
 
-def test_main_window_central_placeholder_buttons_exist(
+def test_main_window_suite_navigation_donut_and_utilities_exist(
     qapplication: QApplication,
 ) -> None:
     window = LeonardoMainWindow(load_main_window_profile())
 
-    expected = {
-        "main_window.download_data": ("main_window.button.download_data", "Download Data"),
-        "main_window.open_research_suite": (
-            "main_window.button.open_research_suite",
+    donut = window.suite_navigation_donut()
+    assert window.findChild(SuiteNavigationDonut, "main_window.widget.suite_navigation_donut") is donut
+    assert donut.property("object_id") == "main_window.widget.suite_navigation_donut"
+    assert donut.property("parent_object_id") == "main_window.panel.suite_navigation"
+    assert donut.segment_count() == 5
+    assert {
+        segment.object_id: (segment.label, segment.action_id)
+        for segment in donut.segments()
+    } == {
+        "main_window.donut.segment.connection_suite": (
+            "Connection Suite",
+            "main_window.download_data",
+        ),
+        "main_window.donut.segment.research_suite": (
             "Research Suite",
+            "main_window.open_research_suite",
         ),
-        "main_window.open_data_manager_suite": (
-            "main_window.button.open_data_manager_suite",
+        "main_window.donut.segment.data_manager": (
             "Data Manager Suite",
+            "main_window.open_data_manager_suite",
         ),
-        "main_window.open_analysis_suite": (
-            "main_window.button.open_analysis_suite",
+        "main_window.donut.segment.analysis_suite": (
             "Analysis Suite",
+            "main_window.open_analysis_suite",
         ),
-        "main_window.open_trading_suite": (
-            "main_window.button.open_trading_suite",
+        "main_window.donut.segment.trading_suite": (
             "Trading Suite",
+            "main_window.open_trading_suite",
         ),
+    }
+
+    expected_utilities = {
         "main_window.open_runtime_manager": (
-            "main_window.button.open_runtime_manager",
+            "main_window.utility_button.runtime_manager",
             "Runtime Manager",
         ),
         "main_window.open_settings_inspector": (
-            "main_window.button.open_settings_inspector",
+            "main_window.utility_button.settings",
             "Settings",
         ),
     }
-    for action_id, (button_id, label) in expected.items():
+    for action_id, (button_id, label) in expected_utilities.items():
         button = window.placeholder_button_for_id(action_id)
         assert window.findChild(QPushButton, button_id) is button
         assert button.text() == label
         assert button.property("action_id") == action_id
-        assert button.minimumHeight() >= 80
+        assert button.property("parent_object_id") == (
+            "main_window.panel.suite_navigation_utilities"
+        )
 
     window.deleteLater()
     qapplication.processEvents()
@@ -316,7 +333,9 @@ def test_main_window_placeholder_actions_update_status_without_windows(
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
 
-    window.placeholder_button_for_id("main_window.open_trading_suite").click()
+    window.suite_navigation_donut().segment_activated.emit(
+        "main_window.open_trading_suite"
+    )
     qapplication.processEvents()
 
     assert window.last_local_action_id == "main_window.open_trading_suite"

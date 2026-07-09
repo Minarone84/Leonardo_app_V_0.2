@@ -2860,7 +2860,7 @@
                                      }
                     },
                     {
-                        "object_id":  "main_window.panel.launcher",
+                        "object_id":  "main_window.panel.suite_navigation",
                         "object_type":  "panel",
                         "window_id":  "main_window.window",
                         "parent_object_id":  "main_window.panel.command_core",
@@ -2875,7 +2875,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
-                                                       "Launcher panel container; individual actions remain declared separately."
+                                                       "Suite Navigation panel container; donut segments and utility controls are declared separately."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5067,10 +5067,10 @@
                         "target_module_id":  "gui.main_window"
                     },
                     {
-                        "object_id":  "main_window.layout.launcher_grid",
+                        "object_id":  "main_window.layout.suite_navigation",
                         "object_type":  "layout",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.panel.suite_navigation",
                         "status":  "implemented",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
@@ -5082,7 +5082,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
-                                                       "Grid layout containing traceable launcher buttons."
+                                                       "Suite Navigation layout with a donut selector and bottom utility row."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5187,10 +5187,34 @@
                         "target_module_id":  "gui.main_window"
                     },
                     {
-                        "object_id":  "main_window.button.download_data",
-                        "object_type":  "button",
+                        "object_id":  "main_window.widget.suite_navigation_donut",
+                        "object_type":  "donut_navigation",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.panel.suite_navigation",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Suite Navigation donut container. Individual segment objects carry click mappings."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.main_window"
+                    },
+                    {
+                        "object_id":  "main_window.donut.segment.connection_suite",
+                        "object_type":  "donut_segment",
+                        "window_id":  "main_window.window",
+                        "parent_object_id":  "main_window.widget.suite_navigation_donut",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.download_data",
                         "ai_agent":  {
@@ -5203,7 +5227,7 @@
                                          "requires_human_confirmation":  true,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the Connection Suite Download Data shell."
+                                                       "Suite Navigation segment for the Connection Suite shell intent, currently mapped to Download Data."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5212,10 +5236,10 @@
                         "target_module_id":  "connection.download_manager"
                     },
                     {
-                        "object_id":  "main_window.button.open_research_suite",
-                        "object_type":  "button",
+                        "object_id":  "main_window.donut.segment.research_suite",
+                        "object_type":  "donut_segment",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.widget.suite_navigation_donut",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.open_research_suite",
                         "ai_agent":  {
@@ -5228,7 +5252,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the Research Suite dummy shell."
+                                                       "Suite Navigation segment for the Research Suite dummy shell."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5237,10 +5261,10 @@
                         "target_module_id":  "research.gui_shell"
                     },
                     {
-                        "object_id":  "main_window.button.open_data_manager_suite",
-                        "object_type":  "button",
+                        "object_id":  "main_window.donut.segment.data_manager",
+                        "object_type":  "donut_segment",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.widget.suite_navigation_donut",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.open_data_manager_suite",
                         "ai_agent":  {
@@ -5253,7 +5277,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the Data Manager dummy shell."
+                                                       "Suite Navigation segment for the Data Manager Suite dummy shell."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5262,10 +5286,10 @@
                         "target_module_id":  "data_manager.gui_shell"
                     },
                     {
-                        "object_id":  "main_window.button.open_analysis_suite",
-                        "object_type":  "button",
+                        "object_id":  "main_window.donut.segment.analysis_suite",
+                        "object_type":  "donut_segment",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.widget.suite_navigation_donut",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.open_analysis_suite",
                         "ai_agent":  {
@@ -5278,7 +5302,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the Analysis Suite dummy shell."
+                                                       "Suite Navigation segment for the Analysis Suite dummy shell."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5287,10 +5311,10 @@
                         "target_module_id":  "analysis.gui_shell"
                     },
                     {
-                        "object_id":  "main_window.button.open_trading_suite",
-                        "object_type":  "button",
+                        "object_id":  "main_window.donut.segment.trading_suite",
+                        "object_type":  "donut_segment",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.widget.suite_navigation_donut",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.open_trading_suite",
                         "ai_agent":  {
@@ -5303,7 +5327,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the Trading Suite dummy shell."
+                                                       "Suite Navigation segment for the Trading Suite dummy shell."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5312,10 +5336,62 @@
                         "target_module_id":  "trading.gui_shell"
                     },
                     {
-                        "object_id":  "main_window.button.open_runtime_manager",
+                        "object_id":  "main_window.panel.suite_navigation_utilities",
+                        "object_type":  "panel",
+                        "window_id":  "main_window.window",
+                        "parent_object_id":  "main_window.panel.suite_navigation",
+                        "status":  "implemented",
+                        "linked_action_ids":  [
+                                                  "main_window.open_runtime_manager",
+                                                  "main_window.open_settings_inspector"
+                                              ],
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Bottom utility row for Runtime Manager and Settings; utilities are not donut segments."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  null,
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  null
+                    },
+                    {
+                        "object_id":  "main_window.layout.suite_navigation_utilities",
+                        "object_type":  "layout",
+                        "window_id":  "main_window.window",
+                        "parent_object_id":  "main_window.panel.suite_navigation_utilities",
+                        "status":  "implemented",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Horizontal layout for Suite Navigation utility buttons."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.main_window"
+                    },
+                    {
+                        "object_id":  "main_window.utility_button.runtime_manager",
                         "object_type":  "button",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.panel.suite_navigation_utilities",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.open_runtime_manager",
                         "ai_agent":  {
@@ -5328,7 +5404,7 @@
                                          "requires_human_confirmation":  false,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the read-only Runtime Manager."
+                                                       "Suite Navigation utility button for the read-only Runtime Manager."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -5337,10 +5413,10 @@
                         "target_module_id":  "runtime_manager"
                     },
                     {
-                        "object_id":  "main_window.button.open_settings_inspector",
+                        "object_id":  "main_window.utility_button.settings",
                         "object_type":  "button",
                         "window_id":  "main_window.window",
-                        "parent_object_id":  "main_window.panel.launcher",
+                        "parent_object_id":  "main_window.panel.suite_navigation_utilities",
                         "status":  "implemented",
                         "linked_action_id":  "main_window.open_settings_inspector",
                         "ai_agent":  {
@@ -5353,7 +5429,7 @@
                                          "requires_human_confirmation":  true,
                                          "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Launcher button for the Settings Inspector dialog."
+                                                       "Suite Navigation utility button for the Settings Inspector dialog."
                                                    ]
                                      },
                         "owner_area":  "gui",

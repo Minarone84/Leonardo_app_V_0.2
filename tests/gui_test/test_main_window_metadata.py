@@ -64,7 +64,7 @@ def test_main_window_required_shell_regions_exist() -> None:
         "left_rail",
         "command_core",
         "right_rail",
-        "launcher_panel",
+        "suite_navigation",
         "quick_actions",
         "status_bar",
         "user_display",
@@ -179,6 +179,47 @@ def test_main_window_metadata_documents_cockpit_dummy_boundaries() -> None:
     assert dummy_panels["voice_control"]["speech_recognition"] is False
     assert dummy_panels["operator_console"]["ai_backend_calls"] is False
     assert dummy_panels["operator_console"]["storage_writes"] is False
+
+
+def test_main_window_metadata_documents_suite_navigation_donut() -> None:
+    document = _load_main_window_document()
+    suite_navigation = document.metadata["suite_navigation"]
+    segments = suite_navigation["segments"]
+    utilities = suite_navigation["utilities"]
+
+    assert suite_navigation["terminology"] == "Suite Navigation"
+    assert suite_navigation["panel_object_id"] == "main_window.panel.suite_navigation"
+    assert suite_navigation["donut_object_id"] == (
+        "main_window.widget.suite_navigation_donut"
+    )
+    assert suite_navigation["segment_count"] == 5
+    assert suite_navigation["segment_degrees"] == 72
+    assert suite_navigation["inner_diameter_ratio"] == 0.80
+    assert suite_navigation["theme_id"] == "leonardo_jarvish_cockpit"
+    assert suite_navigation["network_calls"] is False
+    assert suite_navigation["device_access"] is False
+    assert suite_navigation["storage_writes"] is False
+    assert suite_navigation["domain_execution"] is False
+    assert {
+        key: segment["action_id"]
+        for key, segment in segments.items()
+    } == {
+        "connection_suite": "main_window.download_data",
+        "research_suite": "main_window.open_research_suite",
+        "data_manager": "main_window.open_data_manager_suite",
+        "analysis_suite": "main_window.open_analysis_suite",
+        "trading_suite": "main_window.open_trading_suite",
+    }
+    assert utilities["runtime_manager"]["object_id"] == (
+        "main_window.utility_button.runtime_manager"
+    )
+    assert utilities["runtime_manager"]["action_id"] == (
+        "main_window.open_runtime_manager"
+    )
+    assert utilities["settings"]["object_id"] == "main_window.utility_button.settings"
+    assert utilities["settings"]["action_id"] == (
+        "main_window.open_settings_inspector"
+    )
 
 
 def test_main_window_metadata_is_inspectable_without_ai_helper_behavior() -> None:

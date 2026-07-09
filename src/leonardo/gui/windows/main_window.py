@@ -9,7 +9,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -29,6 +28,7 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.widgets import SuiteNavigationDonut
 from leonardo.gui.windows.traceable_shell_widgets import apply_trace
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
 
@@ -66,14 +66,15 @@ _TRACKED_MAIN_WINDOW_ACTION_IDS = frozenset(
         "main_window.open_settings_inspector",
     )
 ) | _DOWNLOAD_SHELL_ACTION_IDS | _SUITE_SHELL_ACTION_IDS
-_LAUNCHER_BUTTON_ACTION_IDS = (
-    "main_window.download_data",
-    "main_window.open_research_suite",
-    "main_window.open_data_manager_suite",
-    "main_window.open_analysis_suite",
-    "main_window.open_trading_suite",
-    "main_window.open_runtime_manager",
-    "main_window.open_settings_inspector",
+_SUITE_NAVIGATION_UTILITY_ACTIONS = (
+    (
+        "main_window.utility_button.runtime_manager",
+        "main_window.open_runtime_manager",
+    ),
+    (
+        "main_window.utility_button.settings",
+        "main_window.open_settings_inspector",
+    ),
 )
 _QUICK_ACTIONS = (
     (
@@ -162,6 +163,7 @@ class LeonardoMainWindow(QMainWindow):
         self._actions: dict[str, QAction] = {}
         self._menus: dict[str, QMenu] = {}
         self._placeholder_buttons: dict[str, QPushButton] = {}
+        self._suite_navigation_donut: SuiteNavigationDonut | None = None
         self._last_local_action_id = ""
         self._action_observer = action_observer
         self._runtime_manager_window_factory = runtime_manager_window_factory
@@ -239,12 +241,19 @@ class LeonardoMainWindow(QMainWindow):
             raise KeyError(f"Unknown Main Window menu: {menu_id}") from error
 
     def placeholder_button_for_id(self, action_id: str) -> QPushButton:
-        """Return a central launcher button by stable action ID."""
+        """Return a Suite Navigation utility button by stable action ID."""
 
         try:
             return self._placeholder_buttons[action_id]
         except KeyError as error:
-            raise KeyError(f"Unknown Main Window launcher button: {action_id}") from error
+            raise KeyError(f"Unknown Main Window utility button: {action_id}") from error
+
+    def suite_navigation_donut(self) -> SuiteNavigationDonut:
+        """Return the Main Window Suite Navigation donut widget."""
+
+        if self._suite_navigation_donut is None:
+            raise RuntimeError("Suite Navigation donut has not been constructed")
+        return self._suite_navigation_donut
 
     def apply_effective_profile(self, profile: EffectiveGuiMetadataProfile) -> None:
         """
@@ -547,32 +556,61 @@ class LeonardoMainWindow(QMainWindow):
         launcher = QGroupBox("Suite Navigation", core)
         apply_trace(
             launcher,
-            "main_window.panel.launcher",
-            object_type="launcher_panel",
+            "main_window.panel.suite_navigation",
+            object_type="suite_navigation_panel",
             parent_object_id="main_window.panel.command_core",
         )
-        button_grid = QGridLayout(launcher)
+        suite_layout = QVBoxLayout(launcher)
         apply_trace(
-            button_grid,
-            "main_window.layout.launcher_grid",
+            suite_layout,
+            "main_window.layout.suite_navigation",
             object_type="layout",
-            parent_object_id="main_window.panel.launcher",
+            parent_object_id="main_window.panel.suite_navigation",
         )
-        for index, action_id in enumerate(_LAUNCHER_BUTTON_ACTION_IDS):
-            object_id = _launcher_button_object_id(action_id)
-            button = QPushButton(self.action_for_id(action_id).text(), launcher)
+
+        donut = SuiteNavigationDonut(parent=launcher)
+        apply_trace(
+            donut,
+            "main_window.widget.suite_navigation_donut",
+            object_type="donut_navigation",
+            display_label="Suite Navigation",
+            parent_object_id="main_window.panel.suite_navigation",
+            tooltip="Suite Navigation segments emit existing GUI shell intents only.",
+        )
+        donut.segment_activated.connect(self._handle_shell_action)
+        self._suite_navigation_donut = donut
+        suite_layout.addWidget(donut, stretch=1)
+
+        utilities = QWidget(launcher)
+        apply_trace(
+            utilities,
+            "main_window.panel.suite_navigation_utilities",
+            object_type="utility_button_panel",
+            display_label="Suite Navigation Utilities",
+            parent_object_id="main_window.panel.suite_navigation",
+        )
+        utility_layout = QHBoxLayout(utilities)
+        apply_trace(
+            utility_layout,
+            "main_window.layout.suite_navigation_utilities",
+            object_type="layout",
+            parent_object_id="main_window.panel.suite_navigation_utilities",
+        )
+        for object_id, action_id in _SUITE_NAVIGATION_UTILITY_ACTIONS:
+            button = QPushButton(self.action_for_id(action_id).text(), utilities)
             apply_trace(
                 button,
                 object_id,
                 object_type="button",
-                parent_object_id="main_window.panel.launcher",
+                parent_object_id="main_window.panel.suite_navigation_utilities",
                 action_id=action_id,
-                tooltip="GUI shell action only. No domain execution is started.",
+                tooltip="Suite Navigation utility action only. No domain execution is started.",
             )
-            button.setMinimumHeight(80)
+            button.setMinimumHeight(42)
             button.clicked.connect(partial(self._handle_shell_action, action_id))
             self._placeholder_buttons[action_id] = button
-            button_grid.addWidget(button, index // 2, index % 2)
+            utility_layout.addWidget(button)
+        suite_layout.addWidget(utilities)
 
         layout.addWidget(notice)
         layout.addWidget(placeholder)
@@ -872,11 +910,6 @@ class LeonardoMainWindow(QMainWindow):
         if not isinstance(window, QWidget):
             raise TypeError("Settings Inspector factory must return a QWidget")
         return window
-
-
-def _launcher_button_object_id(action_id: str) -> str:
-    suffix = action_id.removeprefix("main_window.")
-    return f"main_window.button.{suffix}"
 
 
 def _mapping_at(values: Mapping[str, object], key: str) -> Mapping[str, object]:

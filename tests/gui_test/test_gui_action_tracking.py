@@ -70,6 +70,12 @@ _WINDOW_SOURCES = (
     / "src"
     / "leonardo"
     / "gui"
+    / "widgets"
+    / "suite_navigation_donut.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
     / "windows"
     / "historical_download_manager_window.py",
     _REPO_ROOT
@@ -266,10 +272,11 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
 
     window.action_for_id("main_window.download_data").trigger()
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
-    window.placeholder_button_for_id("main_window.open_trading_suite").click()
-    window.placeholder_button_for_id("main_window.open_research_suite").click()
-    window.placeholder_button_for_id("main_window.open_data_manager_suite").click()
-    window.placeholder_button_for_id("main_window.open_analysis_suite").click()
+    donut = window.suite_navigation_donut()
+    donut.segment_activated.emit("main_window.open_trading_suite")
+    donut.segment_activated.emit("main_window.open_research_suite")
+    donut.segment_activated.emit("main_window.open_data_manager_suite")
+    donut.segment_activated.emit("main_window.open_analysis_suite")
     qapplication.processEvents()
 
     expected_action_ids = (
@@ -362,7 +369,7 @@ def test_suite_shell_internal_buttons_record_action_ids_not_button_ids(
         "main_window.open_analysis_suite",
         "main_window.open_trading_suite",
     ):
-        window.placeholder_button_for_id(action_id).click()
+        window.suite_navigation_donut().segment_activated.emit(action_id)
         qapplication.processEvents()
 
     assert root.research_suite_window is not None
