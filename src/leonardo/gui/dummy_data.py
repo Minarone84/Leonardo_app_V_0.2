@@ -19,6 +19,72 @@ def research_workspace_status() -> str:
     return "DUMMY workspace loaded: shell only, no chart engine."
 
 
+def research_overview_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Research Suite overview rows."""
+
+    return (
+        {
+            "surface": "Active Workspace",
+            "state": "Research Lab / dummy",
+            "details": "GUI shell display state only.",
+        },
+        {
+            "surface": "Chart Renderer",
+            "state": "offline placeholder",
+            "details": "No candles, viewport, or renderer are constructed.",
+        },
+        {
+            "surface": "Study Runtime",
+            "state": "not available",
+            "details": "No indicators or study calculations run.",
+        },
+    )
+
+
+def research_market_context_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy market context rows."""
+
+    return (
+        {
+            "field": "Dataset",
+            "value": "DUMMY BTCUSDT 1h",
+            "status": "not loaded",
+        },
+        {
+            "field": "Source",
+            "value": "disconnected",
+            "status": "no provider/API call",
+        },
+        {
+            "field": "Persistence",
+            "value": "disabled",
+            "status": "no storage read/write",
+        },
+    )
+
+
+def research_chart_control_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy chart control rows."""
+
+    return (
+        {
+            "control": "Crosshair",
+            "value": "visual placeholder",
+            "state": "inert",
+        },
+        {
+            "control": "Zoom",
+            "value": "locked",
+            "state": "no viewport engine",
+        },
+        {
+            "control": "Study Overlay",
+            "value": "none",
+            "state": "no calculation",
+        },
+    )
+
+
 def research_study_rows() -> tuple[DummyRow, ...]:
     """Return deterministic dummy study sidebar rows."""
 
@@ -371,6 +437,28 @@ def analysis_readiness_rows() -> tuple[DummyRow, ...]:
     )
 
 
+def analysis_overview_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Analysis Suite overview rows."""
+
+    return (
+        {
+            "surface": "Analysis Mode",
+            "state": "offline placeholder",
+            "details": "No analysis engine is attached.",
+        },
+        {
+            "surface": "Input Dataset",
+            "state": "not loaded",
+            "details": "No dataset or storage access occurs.",
+        },
+        {
+            "surface": "Run Status",
+            "state": "idle dummy",
+            "details": "No run execution or report generation.",
+        },
+    )
+
+
 def analysis_feature_rows() -> tuple[DummyRow, ...]:
     """Return deterministic dummy feature planning rows."""
 
@@ -384,6 +472,67 @@ def analysis_feature_rows() -> tuple[DummyRow, ...]:
             "feature_set": "dummy_feature_set_volatility",
             "status": "placeholder",
             "notes": "No diagnostics engine.",
+        },
+    )
+
+
+def analysis_result_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy result summary rows."""
+
+    return (
+        {
+            "result": "Score",
+            "value": "unavailable",
+            "state": "engine pending",
+        },
+        {
+            "result": "Candidate Rules",
+            "value": "0",
+            "state": "not scanned",
+        },
+        {
+            "result": "Report",
+            "value": "not generated",
+            "state": "writes forbidden",
+        },
+    )
+
+
+def analysis_diagnostics_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy diagnostics rows."""
+
+    return (
+        {
+            "check": "Target Readiness",
+            "state": "placeholder",
+            "details": "No labels or targets generated.",
+        },
+        {
+            "check": "Feature Readiness",
+            "state": "placeholder",
+            "details": "No feature calculation occurs.",
+        },
+        {
+            "check": "Temporal Validation",
+            "state": "not available",
+            "details": "No validation workflow runs.",
+        },
+    )
+
+
+def analysis_queue_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy analysis queue rows."""
+
+    return (
+        {
+            "queue": "Analysis Runs",
+            "state": "empty",
+            "details": "No queued execution tasks.",
+        },
+        {
+            "queue": "Diagnostics",
+            "state": "idle",
+            "details": "No diagnostics runtime is attached.",
         },
     )
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,12 +21,20 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.gui.action_observer import GuiActionObserver
-from leonardo.gui.dummy_data import analysis_feature_rows, analysis_readiness_rows
+from leonardo.gui.dummy_data import (
+    analysis_diagnostics_rows,
+    analysis_feature_rows,
+    analysis_overview_rows,
+    analysis_queue_rows,
+    analysis_readiness_rows,
+    analysis_result_rows,
+)
 from leonardo.gui.metadata import (
     EffectiveGuiMetadataProfile,
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.windows.traceable_shell_widgets import (
     apply_trace,
     configure_table,
@@ -42,6 +51,10 @@ _ANALYSIS_SUITE_METADATA_PATH = (
 )
 _READINESS_COLUMNS = ("item", "state", "details")
 _FEATURE_COLUMNS = ("feature_set", "status", "notes")
+_OVERVIEW_COLUMNS = ("surface", "state", "details")
+_RESULT_COLUMNS = ("result", "value", "state")
+_DIAGNOSTICS_COLUMNS = ("check", "state", "details")
+_QUEUE_COLUMNS = ("queue", "state", "details")
 
 
 def load_analysis_suite_profile() -> EffectiveGuiMetadataProfile:
@@ -80,6 +93,7 @@ class AnalysisSuiteWindow(QWidget):
         self._log_area: QTextEdit | None = None
 
         self._apply_profile_metadata()
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_shell()
         self.load_dummy_analysis_state()
 
@@ -105,9 +119,29 @@ class AnalysisSuiteWindow(QWidget):
         except KeyError as error:
             raise KeyError(f"Unknown Analysis Suite table: {table_id}") from error
 
+    def status_text(self) -> str:
+        """Return the shell status label text."""
+
+        return "" if self._status_label is None else self._status_label.text()
+
+    def report_text(self) -> str:
+        """Return the local dummy diagnostics report text."""
+
+        return "" if self._report_area is None else self._report_area.toPlainText()
+
+    def status_log_text(self) -> str:
+        """Return the local dummy status log text."""
+
+        return "" if self._log_area is None else self._log_area.toPlainText()
+
     def load_dummy_analysis_state(self) -> None:
         """Render deterministic dummy Analysis Suite state."""
 
+        populate_table(
+            self._tables["analysis_suite.table.overview_dummy"],
+            _OVERVIEW_COLUMNS,
+            analysis_overview_rows(),
+        )
         populate_table(
             self._tables["analysis_suite.table.readiness_dummy"],
             _READINESS_COLUMNS,
@@ -117,6 +151,21 @@ class AnalysisSuiteWindow(QWidget):
             self._tables["analysis_suite.table.feature_plan_dummy"],
             _FEATURE_COLUMNS,
             analysis_feature_rows(),
+        )
+        populate_table(
+            self._tables["analysis_suite.table.result_summary_dummy"],
+            _RESULT_COLUMNS,
+            analysis_result_rows(),
+        )
+        populate_table(
+            self._tables["analysis_suite.table.diagnostics_dummy"],
+            _DIAGNOSTICS_COLUMNS,
+            analysis_diagnostics_rows(),
+        )
+        populate_table(
+            self._tables["analysis_suite.table.queue_status_dummy"],
+            _QUEUE_COLUMNS,
+            analysis_queue_rows(),
         )
         if self._report_area is not None:
             self._report_area.setPlainText(
@@ -151,6 +200,7 @@ class AnalysisSuiteWindow(QWidget):
             parent_object_id=ANALYSIS_SUITE_METADATA_ID,
         )
         root.addWidget(self._build_header())
+        root.addWidget(self._build_overview_panel())
         root.addWidget(self._build_toolbar())
         root.addWidget(self._build_body(), stretch=1)
         root.addWidget(self._build_status_log())
@@ -189,6 +239,46 @@ class AnalysisSuiteWindow(QWidget):
         layout.addStretch(1)
         layout.addWidget(status)
         return header
+
+    def _build_overview_panel(self) -> QWidget:
+        panel = QGroupBox("Analysis Workspace Overview", self)
+        apply_trace(
+            panel,
+            "analysis_suite.panel.overview",
+            object_type="panel",
+            parent_object_id=ANALYSIS_SUITE_METADATA_ID,
+        )
+        layout = QGridLayout(panel)
+        apply_trace(
+            layout,
+            "analysis_suite.layout.overview",
+            object_type="layout",
+            parent_object_id="analysis_suite.panel.overview",
+        )
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="analysis_suite.table.overview_dummy",
+            columns=_OVERVIEW_COLUMNS,
+            labels=("Surface", "State", "Details"),
+            parent_object_id="analysis_suite.panel.overview",
+        )
+        self._tables["analysis_suite.table.overview_dummy"] = table
+        boundary = QLabel(
+            "Shell boundary: analysis execution, dataset loading, report writing, "
+            "and diagnostics engines are not implemented here.",
+            panel,
+        )
+        boundary.setWordWrap(True)
+        apply_trace(
+            boundary,
+            "analysis_suite.label.boundary_notice",
+            object_type="label",
+            display_label="Shell Boundary",
+            parent_object_id="analysis_suite.panel.overview",
+        )
+        layout.addWidget(table, 0, 0)
+        layout.addWidget(boundary, 0, 1)
+        return panel
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QGroupBox("Toolbar", self)
@@ -258,6 +348,7 @@ class AnalysisSuiteWindow(QWidget):
         splitter.addWidget(self._build_readiness_panel())
         splitter.addWidget(self._build_planning_panel())
         splitter.addWidget(self._build_report_panel())
+        splitter.addWidget(self._build_queue_panel())
         return splitter
 
     def _build_readiness_panel(self) -> QWidget:
@@ -316,8 +407,17 @@ class AnalysisSuiteWindow(QWidget):
             parent_object_id="analysis_suite.panel.target_feature_dummy",
         )
         self._tables["analysis_suite.table.feature_plan_dummy"] = table
+        results = configure_table(
+            QTableWidget(panel),
+            object_id="analysis_suite.table.result_summary_dummy",
+            columns=_RESULT_COLUMNS,
+            labels=("Result", "Value", "State"),
+            parent_object_id="analysis_suite.panel.target_feature_dummy",
+        )
+        self._tables["analysis_suite.table.result_summary_dummy"] = results
         layout.addWidget(target)
         layout.addWidget(table)
+        layout.addWidget(results)
         return panel
 
     def _build_report_panel(self) -> QWidget:
@@ -344,7 +444,42 @@ class AnalysisSuiteWindow(QWidget):
         )
         report.setReadOnly(True)
         self._report_area = report
+        diagnostics = configure_table(
+            QTableWidget(panel),
+            object_id="analysis_suite.table.diagnostics_dummy",
+            columns=_DIAGNOSTICS_COLUMNS,
+            labels=("Check", "State", "Details"),
+            parent_object_id="analysis_suite.panel.diagnostics_report_dummy",
+        )
+        self._tables["analysis_suite.table.diagnostics_dummy"] = diagnostics
+        layout.addWidget(diagnostics)
         layout.addWidget(report)
+        return panel
+
+    def _build_queue_panel(self) -> QWidget:
+        panel = QGroupBox("Queue / Status Dummy", self)
+        apply_trace(
+            panel,
+            "analysis_suite.panel.queue_status_dummy",
+            object_type="panel",
+            parent_object_id="analysis_suite.splitter.workspace",
+        )
+        layout = QVBoxLayout(panel)
+        apply_trace(
+            layout,
+            "analysis_suite.layout.queue_status_dummy",
+            object_type="layout",
+            parent_object_id="analysis_suite.panel.queue_status_dummy",
+        )
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="analysis_suite.table.queue_status_dummy",
+            columns=_QUEUE_COLUMNS,
+            labels=("Queue", "State", "Details"),
+            parent_object_id="analysis_suite.panel.queue_status_dummy",
+        )
+        self._tables["analysis_suite.table.queue_status_dummy"] = table
+        layout.addWidget(table)
         return panel
 
     def _build_status_log(self) -> QWidget:

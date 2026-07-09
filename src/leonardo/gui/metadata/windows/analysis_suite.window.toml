@@ -34,6 +34,10 @@ no_storage_write = true
 no_runtime_manager_control = true
 no_object_map_mutation = true
 no_analysis_engine = true
+no_analysis_execution = true
+no_dataset_loading = true
+no_report_generation = true
+no_calculation = true
 
 [metadata.dummy_data]
 source_module = "leonardo.gui.dummy_data"
@@ -44,6 +48,10 @@ storage_writes = false
 [[regions]]
 region_id = "analysis_suite.header"
 label = "Header"
+
+[[regions]]
+region_id = "analysis_suite.overview"
+label = "Analysis Workspace Overview"
 
 [[regions]]
 region_id = "analysis_suite.toolbar"
@@ -60,6 +68,14 @@ label = "Feature Plan Placeholder"
 [[regions]]
 region_id = "analysis_suite.diagnostics_report"
 label = "Diagnostics Report Placeholder"
+
+[[regions]]
+region_id = "analysis_suite.results"
+label = "Result Summary Placeholder"
+
+[[regions]]
+region_id = "analysis_suite.queue_status"
+label = "Queue Status Placeholder"
 
 [[regions]]
 region_id = "analysis_suite.status_log"
@@ -84,6 +100,18 @@ widget_id = "analysis_suite.panel.header"
 region_id = "analysis_suite.header"
 label = "Header Panel"
 widget_type = "panel"
+
+[[widgets]]
+widget_id = "analysis_suite.panel.overview"
+region_id = "analysis_suite.overview"
+label = "Overview Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "analysis_suite.label.boundary_notice"
+region_id = "analysis_suite.overview"
+label = "Shell Boundary Notice"
+widget_type = "label"
 
 [[widgets]]
 widget_id = "analysis_suite.toolbar.main"
@@ -128,10 +156,41 @@ label = "Diagnostics Report Dummy"
 widget_type = "text_area"
 
 [[widgets]]
+widget_id = "analysis_suite.panel.queue_status_dummy"
+region_id = "analysis_suite.queue_status"
+label = "Queue Status Dummy"
+widget_type = "panel"
+
+[[widgets]]
 widget_id = "analysis_suite.text.status_log"
 region_id = "analysis_suite.status_log"
 label = "Status Log"
 widget_type = "text_area"
+[[tables]]
+table_id = "analysis_suite.table.overview_dummy"
+label = "Analysis Overview Dummy"
+
+[[tables.columns]]
+column_id = "surface"
+label = "Surface"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 260
+order = 3
+
 [[tables]]
 table_id = "analysis_suite.table.readiness_dummy"
 label = "Readiness Dummy"
@@ -180,6 +239,81 @@ column_id = "notes"
 label = "Notes"
 visible = true
 width = 180
+order = 3
+
+[[tables]]
+table_id = "analysis_suite.table.result_summary_dummy"
+label = "Result Summary Dummy"
+
+[[tables.columns]]
+column_id = "result"
+label = "Result"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 3
+
+[[tables]]
+table_id = "analysis_suite.table.diagnostics_dummy"
+label = "Diagnostics Dummy"
+
+[[tables.columns]]
+column_id = "check"
+label = "Check"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 260
+order = 3
+
+[[tables]]
+table_id = "analysis_suite.table.queue_status_dummy"
+label = "Queue Status Dummy"
+
+[[tables.columns]]
+column_id = "queue"
+label = "Queue"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 260
 order = 3
 
 [geometry]

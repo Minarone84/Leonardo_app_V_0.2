@@ -35,6 +35,9 @@ no_runtime_manager_control = true
 no_object_map_mutation = true
 no_chart_calculation = true
 no_chart_renderer = true
+no_study_execution = true
+no_indicator_calculation = true
+no_dataset_loading = true
 
 [metadata.dummy_data]
 source_module = "leonardo.gui.dummy_data"
@@ -45,6 +48,10 @@ storage_writes = false
 [[regions]]
 region_id = "research_suite.header"
 label = "Header"
+
+[[regions]]
+region_id = "research_suite.overview"
+label = "Workspace Overview"
 
 [[regions]]
 region_id = "research_suite.toolbar"
@@ -59,8 +66,16 @@ region_id = "research_suite.study_sidebar"
 label = "Study Sidebar Placeholder"
 
 [[regions]]
+region_id = "research_suite.market_context"
+label = "Market Context Placeholder"
+
+[[regions]]
 region_id = "research_suite.chart_placeholder"
 label = "Chart Placeholder"
+
+[[regions]]
+region_id = "research_suite.chart_controls"
+label = "Chart Controls Placeholder"
 
 [[regions]]
 region_id = "research_suite.status_log"
@@ -81,6 +96,18 @@ widget_id = "research_suite.panel.header"
 region_id = "research_suite.header"
 label = "Header Panel"
 widget_type = "panel"
+
+[[widgets]]
+widget_id = "research_suite.panel.workspace_overview"
+region_id = "research_suite.overview"
+label = "Workspace Overview Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "research_suite.label.boundary_notice"
+region_id = "research_suite.overview"
+label = "Shell Boundary Notice"
+widget_type = "label"
 
 [[widgets]]
 widget_id = "research_suite.toolbar.main"
@@ -131,10 +158,41 @@ label = "Primary Chart Placeholder"
 widget_type = "placeholder_panel"
 
 [[widgets]]
+widget_id = "research_suite.panel.chart_controls"
+region_id = "research_suite.chart_controls"
+label = "Chart Controls Placeholder"
+widget_type = "panel"
+
+[[widgets]]
 widget_id = "research_suite.text.status_log"
 region_id = "research_suite.status_log"
 label = "Status Log"
 widget_type = "text_area"
+[[tables]]
+table_id = "research_suite.table.overview_dummy"
+label = "Workspace Overview Dummy"
+
+[[tables.columns]]
+column_id = "surface"
+label = "Surface"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 260
+order = 3
+
 [[tables]]
 table_id = "research_suite.table.study_sidebar_dummy"
 label = "Study Sidebar Dummy"
@@ -149,6 +207,31 @@ order = 1
 [[tables.columns]]
 column_id = "name"
 label = "Name"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "status"
+label = "Status"
+visible = true
+width = 180
+order = 3
+
+[[tables]]
+table_id = "research_suite.table.market_context_dummy"
+label = "Market Context Dummy"
+
+[[tables.columns]]
+column_id = "field"
+label = "Field"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
 visible = true
 width = 180
 order = 2
@@ -191,6 +274,31 @@ label = "Status"
 visible = true
 width = 180
 order = 4
+
+[[tables]]
+table_id = "research_suite.table.chart_controls_dummy"
+label = "Chart Controls Dummy"
+
+[[tables.columns]]
+column_id = "control"
+label = "Control"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "value"
+label = "Value"
+visible = true
+width = 180
+order = 2
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 180
+order = 3
 
 [geometry]
 width = 1280

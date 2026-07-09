@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QGridLayout,
     QComboBox,
     QFrame,
     QGroupBox,
@@ -23,6 +24,9 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.gui.dummy_data import (
+    research_chart_control_rows,
+    research_market_context_rows,
+    research_overview_rows,
     research_study_rows,
     research_workspace_rows,
     research_workspace_status,
@@ -33,6 +37,7 @@ from leonardo.gui.metadata import (
     GuiMetadataResolver,
     load_metadata_document,
 )
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.windows.traceable_shell_widgets import (
     apply_trace,
     configure_table,
@@ -49,6 +54,9 @@ _RESEARCH_SUITE_METADATA_PATH = (
 )
 _RESEARCH_STUDY_COLUMNS = ("slot", "name", "status")
 _RESEARCH_WORKSPACE_COLUMNS = ("pane", "symbol", "timeframe", "status")
+_RESEARCH_OVERVIEW_COLUMNS = ("surface", "state", "details")
+_RESEARCH_MARKET_COLUMNS = ("field", "value", "status")
+_RESEARCH_CONTROL_COLUMNS = ("control", "value", "state")
 
 
 def load_research_suite_profile() -> EffectiveGuiMetadataProfile:
@@ -86,6 +94,7 @@ class ResearchSuiteWindow(QWidget):
         self._log_area: QTextEdit | None = None
 
         self._apply_profile_metadata()
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_shell()
         self.load_dummy_workspace()
 
@@ -116,18 +125,38 @@ class ResearchSuiteWindow(QWidget):
 
         return "" if self._status_label is None else self._status_label.text()
 
+    def status_log_text(self) -> str:
+        """Return the local dummy status log text."""
+
+        return "" if self._log_area is None else self._log_area.toPlainText()
+
     def load_dummy_workspace(self) -> None:
         """Render deterministic local dummy data into the shell."""
 
+        populate_table(
+            self._tables["research_suite.table.overview_dummy"],
+            _RESEARCH_OVERVIEW_COLUMNS,
+            research_overview_rows(),
+        )
         populate_table(
             self._tables["research_suite.table.study_sidebar_dummy"],
             _RESEARCH_STUDY_COLUMNS,
             research_study_rows(),
         )
         populate_table(
+            self._tables["research_suite.table.market_context_dummy"],
+            _RESEARCH_MARKET_COLUMNS,
+            research_market_context_rows(),
+        )
+        populate_table(
             self._tables["research_suite.table.workspace_dummy"],
             _RESEARCH_WORKSPACE_COLUMNS,
             research_workspace_rows(),
+        )
+        populate_table(
+            self._tables["research_suite.table.chart_controls_dummy"],
+            _RESEARCH_CONTROL_COLUMNS,
+            research_chart_control_rows(),
         )
         self._set_status(research_workspace_status())
         self._append_log("Loaded dummy Research Suite workspace. No chart logic ran.")
@@ -163,6 +192,7 @@ class ResearchSuiteWindow(QWidget):
             parent_object_id=RESEARCH_SUITE_METADATA_ID,
         )
         root.addWidget(self._build_header())
+        root.addWidget(self._build_overview_panel())
         root.addWidget(self._build_toolbar())
         root.addWidget(self._build_workspace(), stretch=1)
         root.addWidget(self._build_log_panel())
@@ -203,6 +233,46 @@ class ResearchSuiteWindow(QWidget):
         layout.addStretch(1)
         layout.addWidget(status)
         return header
+
+    def _build_overview_panel(self) -> QWidget:
+        panel = QGroupBox("Workspace Overview", self)
+        apply_trace(
+            panel,
+            "research_suite.panel.workspace_overview",
+            object_type="panel",
+            parent_object_id=RESEARCH_SUITE_METADATA_ID,
+        )
+        layout = QGridLayout(panel)
+        apply_trace(
+            layout,
+            "research_suite.layout.workspace_overview",
+            object_type="layout",
+            parent_object_id="research_suite.panel.workspace_overview",
+        )
+        table = configure_table(
+            QTableWidget(panel),
+            object_id="research_suite.table.overview_dummy",
+            columns=_RESEARCH_OVERVIEW_COLUMNS,
+            labels=("Surface", "State", "Details"),
+            parent_object_id="research_suite.panel.workspace_overview",
+        )
+        self._tables["research_suite.table.overview_dummy"] = table
+        boundary = QLabel(
+            "Shell boundary: chart rendering, OHLCV loading, study calculation, "
+            "and persistence are not implemented here.",
+            panel,
+        )
+        boundary.setWordWrap(True)
+        apply_trace(
+            boundary,
+            "research_suite.label.boundary_notice",
+            object_type="label",
+            display_label="Shell Boundary",
+            parent_object_id="research_suite.panel.workspace_overview",
+        )
+        layout.addWidget(table, 0, 0)
+        layout.addWidget(boundary, 0, 1)
+        return panel
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QGroupBox("Toolbar", self)
@@ -307,9 +377,18 @@ class ResearchSuiteWindow(QWidget):
             parent_object_id="research_suite.panel.study_sidebar",
         )
         self._tables["research_suite.table.study_sidebar_dummy"] = table
+        market_table = configure_table(
+            QTableWidget(sidebar),
+            object_id="research_suite.table.market_context_dummy",
+            columns=_RESEARCH_MARKET_COLUMNS,
+            labels=("Field", "Value", "Status"),
+            parent_object_id="research_suite.panel.study_sidebar",
+        )
+        self._tables["research_suite.table.market_context_dummy"] = market_table
         layout.addWidget(label)
         layout.addWidget(combo)
         layout.addWidget(table, stretch=1)
+        layout.addWidget(market_table, stretch=1)
         return sidebar
 
     def _build_tabs(self) -> QWidget:
@@ -360,6 +439,30 @@ class ResearchSuiteWindow(QWidget):
         )
         layout.addWidget(title)
         layout.addWidget(message)
+        control_panel = QGroupBox("Chart Controls Placeholder", panel)
+        apply_trace(
+            control_panel,
+            "research_suite.panel.chart_controls",
+            object_type="panel",
+            parent_object_id="research_suite.panel.chart_placeholder.primary",
+        )
+        control_layout = QVBoxLayout(control_panel)
+        apply_trace(
+            control_layout,
+            "research_suite.layout.chart_controls",
+            object_type="layout",
+            parent_object_id="research_suite.panel.chart_controls",
+        )
+        controls = configure_table(
+            QTableWidget(control_panel),
+            object_id="research_suite.table.chart_controls_dummy",
+            columns=_RESEARCH_CONTROL_COLUMNS,
+            labels=("Control", "Value", "State"),
+            parent_object_id="research_suite.panel.chart_controls",
+        )
+        self._tables["research_suite.table.chart_controls_dummy"] = controls
+        control_layout.addWidget(controls)
+        layout.addWidget(control_panel)
         layout.addStretch(1)
         return panel
 

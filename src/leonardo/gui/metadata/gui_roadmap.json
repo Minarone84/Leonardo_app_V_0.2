@@ -699,8 +699,13 @@
                         "child_object_ids":  [
                                                  "research_suite.layout.root",
                                                  "research_suite.panel.header",
+                                                 "research_suite.panel.workspace_overview",
+                                                 "research_suite.table.overview_dummy",
                                                  "research_suite.toolbar.main",
                                                  "research_suite.splitter.workspace",
+                                                 "research_suite.table.market_context_dummy",
+                                                 "research_suite.panel.chart_controls",
+                                                 "research_suite.table.chart_controls_dummy",
                                                  "research_suite.panel.status_log"
                                              ],
                         "action_ids":  [
@@ -795,8 +800,14 @@
                         "child_object_ids":  [
                                                  "analysis_suite.layout.root",
                                                  "analysis_suite.panel.header",
+                                                 "analysis_suite.panel.overview",
+                                                 "analysis_suite.table.overview_dummy",
                                                  "analysis_suite.toolbar.main",
                                                  "analysis_suite.splitter.workspace",
+                                                 "analysis_suite.table.result_summary_dummy",
+                                                 "analysis_suite.table.diagnostics_dummy",
+                                                 "analysis_suite.panel.queue_status_dummy",
+                                                 "analysis_suite.table.queue_status_dummy",
                                                  "analysis_suite.panel.status_log"
                                              ],
                         "action_ids":  [
@@ -8589,6 +8600,102 @@
                         "target_module_id":  "research.gui_shell"
                     },
                     {
+                        "object_id":  "research_suite.panel.workspace_overview",
+                        "object_type":  "panel",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Workspace overview panel for deterministic dummy Research Suite state."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
+                        "object_id":  "research_suite.layout.workspace_overview",
+                        "object_type":  "layout",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.workspace_overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Workspace overview layout for the Research Suite shell."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
+                        "object_id":  "research_suite.table.overview_dummy",
+                        "object_type":  "table",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.workspace_overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy Research Suite overview table."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
+                        "object_id":  "research_suite.label.boundary_notice",
+                        "object_type":  "label",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.workspace_overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Research Suite shell-only boundary notice."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
                         "object_id":  "research_suite.panel.header",
                         "object_type":  "panel",
                         "window_id":  "research_suite.window",
@@ -8829,6 +8936,30 @@
                         "target_module_id":  "research.gui_shell"
                     },
                     {
+                        "object_id":  "research_suite.table.market_context_dummy",
+                        "object_type":  "table",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.study_sidebar",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy market context table. No dataset or provider access occurs."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
                         "object_id":  "research_suite.tabs.workspace",
                         "object_type":  "tab_widget",
                         "window_id":  "research_suite.window",
@@ -8941,6 +9072,78 @@
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
                                                        "Chart placeholder boundary message label."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
+                        "object_id":  "research_suite.panel.chart_controls",
+                        "object_type":  "panel",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.chart_placeholder.primary",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Inert chart controls placeholder. No chart engine is present."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
+                        "object_id":  "research_suite.layout.chart_controls",
+                        "object_type":  "layout",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.chart_controls",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Chart controls placeholder layout."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "research",
+                        "target_suite_id":  "research_suite",
+                        "target_module_id":  "research.gui_shell"
+                    },
+                    {
+                        "object_id":  "research_suite.table.chart_controls_dummy",
+                        "object_type":  "table",
+                        "window_id":  "research_suite.window",
+                        "parent_object_id":  "research_suite.panel.chart_controls",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy chart control table. Controls are inert."
                                                    ]
                                      },
                         "owner_area":  "gui",
@@ -9453,6 +9656,102 @@
                         "target_module_id":  "analysis.gui_shell"
                     },
                     {
+                        "object_id":  "analysis_suite.panel.overview",
+                        "object_type":  "panel",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Analysis workspace overview panel with local dummy state only."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.layout.overview",
+                        "object_type":  "layout",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Analysis overview layout."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.table.overview_dummy",
+                        "object_type":  "table",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy Analysis Suite overview table."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.label.boundary_notice",
+                        "object_type":  "label",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Analysis Suite shell-only boundary notice."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
                         "object_id":  "analysis_suite.panel.header",
                         "object_type":  "panel",
                         "window_id":  "analysis_suite.window",
@@ -9717,6 +10016,30 @@
                         "target_module_id":  "analysis.gui_shell"
                     },
                     {
+                        "object_id":  "analysis_suite.table.result_summary_dummy",
+                        "object_type":  "table",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.target_feature_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy result summary table. No reports are generated."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
                         "object_id":  "analysis_suite.layout.diagnostics_report_dummy",
                         "object_type":  "layout",
                         "window_id":  "analysis_suite.window",
@@ -9733,6 +10056,102 @@
                                          "interaction_channel":  "metadata_reference_only",
                                          "notes":  [
                                                        "Diagnostics report dummy layout."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.table.diagnostics_dummy",
+                        "object_type":  "table",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.diagnostics_report_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy diagnostics table. No diagnostics runtime executes."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.panel.queue_status_dummy",
+                        "object_type":  "panel",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.splitter.workspace",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy analysis queue/status panel."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.layout.queue_status_dummy",
+                        "object_type":  "layout",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.queue_status_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy analysis queue/status layout."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "analysis",
+                        "target_suite_id":  "analysis_suite",
+                        "target_module_id":  "analysis.gui_shell"
+                    },
+                    {
+                        "object_id":  "analysis_suite.table.queue_status_dummy",
+                        "object_type":  "table",
+                        "window_id":  "analysis_suite.window",
+                        "parent_object_id":  "analysis_suite.panel.queue_status_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local dummy analysis queue/status table."
                                                    ]
                                      },
                         "owner_area":  "gui",
