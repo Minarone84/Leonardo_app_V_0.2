@@ -517,12 +517,17 @@
                         "parent_object_id":  "main_window.window",
                         "child_object_ids":  [
                                                  "historical_download_manager.layout.root",
+                                                 "historical_download_manager.panel.header",
                                                  "historical_download_manager.title",
                                                  "historical_download_manager.layout.selection_form",
                                                  "historical_download_manager.label.timeframes",
                                                  "historical_download_manager.timeframes",
+                                                 "historical_download_manager.panel.queue_status_dummy",
+                                                 "historical_download_manager.progress.queue_dummy",
+                                                 "historical_download_manager.table.queue_dummy",
                                                  "historical_download_manager.layout.timeframe_buttons",
                                                  "historical_download_manager.layout.action_buttons",
+                                                 "historical_download_manager.panel.status_log",
                                                  "historical_download_manager.status_log"
                                              ],
                         "action_ids":  [
@@ -1036,37 +1041,50 @@
                         "window_id":  "connection_suite.home.window",
                         "object_id":  "connection_suite.home.window",
                         "display_name":  "Connection Suite Home",
-                        "class_name":  null,
+                        "class_name":  "ConnectionSuiteWindow",
                         "owner_area":  "gui",
                         "target_area_id":  "connection",
                         "target_suite_id":  "connection_suite",
                         "target_module_id":  "connection.gui_home",
-                        "status":  "planned_shell",
-                        "lifecycle_owner":  "future_gui_composition",
-                        "metadata_file":  null,
+                        "status":  "shell_only",
+                        "lifecycle_owner":  "GuiCompositionRoot",
+                        "metadata_file":  "src/leonardo/gui/metadata/windows/connection_suite.window.toml",
                         "parent_object_id":  "main_window.window",
                         "child_object_ids":  [
-
+                                                 "connection_suite.layout.root",
+                                                 "connection_suite.panel.header",
+                                                 "connection_suite.toolbar.main",
+                                                 "connection_suite.splitter.overview",
+                                                 "connection_suite.panel.provider_status",
+                                                 "connection_suite.panel.websocket_status",
+                                                 "connection_suite.panel.download_overview",
+                                                 "connection_suite.panel.activity_log",
+                                                 "connection_suite.panel.footer"
                                              ],
                         "action_ids":  [
-
+                                           "connection_suite.action.refresh_dummy_status",
+                                           "connection_suite.action.clear_dummy_log",
+                                           "connection_suite.action.view_historical_download_manager"
                                        ],
                         "ai_agent":  {
                                          "visible_to_ai":  true,
                                          "agent_can_reference":  true,
-                                         "agent_can_request_open":  false,
-                                         "agent_can_request_click":  false,
-                                         "agent_can_read_status":  false,
+                                         "agent_can_request_open":  true,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
                                          "agent_can_mutate_directly":  false,
-                                         "requires_human_confirmation":  true,
-                                         "interaction_channel":  "planned_gui_action",
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "gui_action_observer",
                                          "notes":  [
-                                                       "Planned shell only until a future Connection Suite phase."
+                                                       "Buttons update local dummy Connection Suite display state only.",
+                                                       "No provider/API/websocket/download/storage behavior is authorized."
                                                    ]
                                      },
                         "forbidden_behaviors":  [
                                                     "provider_api_call",
                                                     "network_call",
+                                                    "websocket_behavior",
+                                                    "download_execution",
                                                     "storage_write",
                                                     "domain_execution"
                                                 ]
@@ -1407,7 +1425,7 @@
                         "owner_area":  "gui",
                         "target_area_id":  "connection",
                         "target_suite_id":  "connection_suite",
-                        "target_module_id":  "connection.download_manager",
+                        "target_module_id":  "connection.gui_home",
                         "status":  "shell_only",
                         "source_object_id":  "main_window.menu.connection",
                         "window_id":  "main_window.window",
@@ -1422,8 +1440,8 @@
                                          "agent_can_mutate_directly":  false,
                                          "requires_human_confirmation":  true,
                                          "interaction_channel":  "gui_action_observer",
-                                         "notes":  [
-                                                       "Launches the Connection Suite Download Manager shell only."
+                        "notes":  [
+                                                       "Launches the Connection Suite shell only."
                                                    ]
                                      },
                         "forbidden_behaviors":  [
@@ -1496,6 +1514,106 @@
                                                     "chart_logic",
                                                     "study_calculation",
                                                     "domain_execution"
+                                                ]
+                    },
+                    {
+                        "action_id":  "connection_suite.action.refresh_dummy_status",
+                        "display_label":  "Refresh Dummy Status",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home",
+                        "status":  "shell_only",
+                        "source_object_id":  "connection_suite.button.refresh_dummy_status",
+                        "window_id":  "connection_suite.home.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  false,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Reloads local dummy Connection Suite display rows only."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "provider_api_call",
+                                                    "network_call",
+                                                    "websocket_behavior",
+                                                    "download_execution",
+                                                    "storage_write"
+                                                ]
+                    },
+                    {
+                        "action_id":  "connection_suite.action.clear_dummy_log",
+                        "display_label":  "Clear Dummy Log",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home",
+                        "status":  "shell_only",
+                        "source_object_id":  "connection_suite.button.clear_dummy_log",
+                        "window_id":  "connection_suite.home.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  false,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Clears local dummy GUI log text only."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "audit_log_mutation",
+                                                    "provider_api_call",
+                                                    "network_call",
+                                                    "storage_write"
+                                                ]
+                    },
+                    {
+                        "action_id":  "connection_suite.action.view_historical_download_manager",
+                        "display_label":  "Historical Download Manager",
+                        "kind":  "button",
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager",
+                        "status":  "shell_only",
+                        "source_object_id":  "connection_suite.button.view_historical_download_manager",
+                        "window_id":  "connection_suite.home.window",
+                        "runtime_observed":  true,
+                        "requires_human_confirmation":  false,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  true,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "gui_action_observer",
+                                         "notes":  [
+                                                       "Records local GUI intent only; it does not open or execute backend workflows."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "download_execution",
+                                                    "provider_api_call",
+                                                    "network_call",
+                                                    "storage_write"
                                                 ]
                     },
                     {
@@ -3414,7 +3532,7 @@
                         "owner_area": "gui",
                         "target_area_id": "connection",
                         "target_suite_id": "connection_suite",
-                        "target_module_id": "connection.download_manager",
+                        "target_module_id": "connection.gui_home",
                         "ai_agent": {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": true, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": true, "interaction_channel": "gui_action_observer", "notes": ["Quick action reusing the existing Download Data GUI intent."]}
                     },
                     {
@@ -3841,10 +3959,58 @@
                         "target_module_id":  "connection.download_manager"
                     },
                     {
+                        "object_id":  "historical_download_manager.panel.status_log",
+                        "object_type":  "panel",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Wrapper panel for the shell-only local status log."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.layout.status_log",
+                        "object_type":  "layout",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.status_log",
+                        "status":  "shell_only",
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Layout for the shell-only local status log."
+                                                   ]
+                                     },
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
                         "object_id":  "historical_download_manager.status_log",
                         "object_type":  "status_area",
                         "window_id":  "historical_download_manager.window",
-                        "parent_object_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.status_log",
                         "status":  "shell_only",
                         "ai_agent":  {
                                          "visible_to_ai":  true,
@@ -5382,7 +5548,7 @@
                         "owner_area":  "gui",
                         "target_area_id":  "connection",
                         "target_suite_id":  "connection_suite",
-                        "target_module_id":  "connection.download_manager"
+                        "target_module_id":  "connection.gui_home"
                     },
                     {
                         "object_id":  "main_window.donut.segment.research_suite",
@@ -5587,6 +5753,322 @@
                         "target_module_id":  "gui.settings"
                     },
                     {
+                        "object_id":  "connection_suite.layout.root",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.home.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Root layout for the Connection Suite shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.panel.header",
+                        "object_type":  "panel",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.home.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Header panel for the Connection Suite shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.header",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.header",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Header layout for the Connection Suite shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.label.title",
+                        "object_type":  "label",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.header",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Title label for the Connection Suite shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.label.status",
+                        "object_type":  "status_label",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.header",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Status label for local dummy Connection Suite state."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.toolbar.main",
+                        "object_type":  "toolbar",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.home.window",
+                        "status":  "shell_only",
+                        "linked_action_ids":  ["connection_suite.action.refresh_dummy_status", "connection_suite.action.clear_dummy_log", "connection_suite.action.view_historical_download_manager"],
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Toolbar containing Connection Suite shell-only buttons."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  null
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.toolbar",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.toolbar.main",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Toolbar layout for the Connection Suite shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.button.refresh_dummy_status",
+                        "object_type":  "button",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.toolbar.main",
+                        "status":  "shell_only",
+                        "linked_action_id":  "connection_suite.action.refresh_dummy_status",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": true, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "gui_action_observer", "notes": ["Reloads local dummy display rows only."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.button.clear_dummy_log",
+                        "object_type":  "button",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.toolbar.main",
+                        "status":  "shell_only",
+                        "linked_action_id":  "connection_suite.action.clear_dummy_log",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": true, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "gui_action_observer", "notes": ["Clears local dummy activity text only."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.button.view_historical_download_manager",
+                        "object_type":  "button",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.toolbar.main",
+                        "status":  "shell_only",
+                        "linked_action_id":  "connection_suite.action.view_historical_download_manager",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": true, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "gui_action_observer", "notes": ["Records local GUI intent for the historical manager shell only."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "connection_suite.splitter.overview",
+                        "object_type":  "splitter",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.home.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Overview splitter for local dummy connection panels."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.panel.provider_status",
+                        "object_type":  "panel",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.splitter.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Provider/account/API dummy status panel."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.provider_status",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.provider_status",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Layout for provider/account/API dummy status table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.table.provider_status_dummy",
+                        "object_type":  "table",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.provider_status",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Read-only dummy provider/account/API status table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.panel.websocket_status",
+                        "object_type":  "panel",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.splitter.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["WebSocket/connection dummy status panel."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.websocket_status",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.websocket_status",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Layout for websocket dummy status table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.table.websocket_status_dummy",
+                        "object_type":  "table",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.websocket_status",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Read-only dummy websocket/connection status table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.panel.download_overview",
+                        "object_type":  "panel",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.splitter.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Historical Download Manager overview panel with local dummy rows."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.download_overview",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.download_overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Layout for historical download overview dummy table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.table.download_overview_dummy",
+                        "object_type":  "table",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.download_overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Read-only dummy historical download overview table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.panel.activity_log",
+                        "object_type":  "panel",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.splitter.overview",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Local dummy activity log panel."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.activity_log",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.activity_log",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Layout for local dummy activity log."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.text.activity_log",
+                        "object_type":  "status_area",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.activity_log",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Read-only local dummy activity log."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.panel.footer",
+                        "object_type":  "panel",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.home.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Footer boundary panel for the Connection Suite shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.layout.footer",
+                        "object_type":  "layout",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.footer",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Footer layout for the Connection Suite boundary label."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
+                        "object_id":  "connection_suite.label.footer_status",
+                        "object_type":  "status_label",
+                        "window_id":  "connection_suite.home.window",
+                        "parent_object_id":  "connection_suite.panel.footer",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Footer label stating the non-execution boundary."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.gui_home"
+                    },
+                    {
                         "object_id":  "historical_download_manager_window",
                         "object_type":  "qt_object_name",
                         "window_id":  "historical_download_manager.window",
@@ -5605,6 +6087,54 @@
                                                        "Qt objectName alias for the Historical Download Manager shell."
                                                    ]
                                      },
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.panel.header",
+                        "object_type":  "panel",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.window",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Header panel for the Historical Download Manager shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.layout.header",
+                        "object_type":  "layout",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.header",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Header layout for the Historical Download Manager shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.label.shell_status",
+                        "object_type":  "status_label",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.header",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Header status label for the shell-only Historical Download Manager."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.layout.timeframe_panel",
+                        "object_type":  "layout",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.timeframes",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Outer layout for the shell-only timeframe panel."]},
                         "owner_area":  "gui",
                         "target_area_id":  "connection",
                         "target_suite_id":  "connection_suite",
@@ -5917,6 +6447,54 @@
                                                        "Label for shell-only timeframe selection."
                                                    ]
                                      },
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.panel.queue_status_dummy",
+                        "object_type":  "panel",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.layout.root",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Dummy queue status panel for the Historical Download Manager shell."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.layout.queue_status_dummy",
+                        "object_type":  "layout",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.queue_status_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Layout for dummy queue status progress and table."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.progress.queue_dummy",
+                        "object_type":  "progress",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.queue_status_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Static dummy queue progress indicator with no execution semantics."]},
+                        "owner_area":  "gui",
+                        "target_area_id":  "connection",
+                        "target_suite_id":  "connection_suite",
+                        "target_module_id":  "connection.download_manager"
+                    },
+                    {
+                        "object_id":  "historical_download_manager.table.queue_dummy",
+                        "object_type":  "table",
+                        "window_id":  "historical_download_manager.window",
+                        "parent_object_id":  "historical_download_manager.panel.queue_status_dummy",
+                        "status":  "shell_only",
+                        "ai_agent":  {"visible_to_ai": true, "agent_can_reference": true, "agent_can_request_open": false, "agent_can_request_click": false, "agent_can_read_status": true, "agent_can_mutate_directly": false, "requires_human_confirmation": false, "interaction_channel": "metadata_reference_only", "notes": ["Read-only dummy queue overview table."]},
                         "owner_area":  "gui",
                         "target_area_id":  "connection",
                         "target_suite_id":  "connection_suite",

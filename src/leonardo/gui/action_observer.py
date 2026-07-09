@@ -133,6 +133,27 @@ TRACKED_GUI_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         window_id="main_window.window",
     ),
     ActionDefinition(
+        action_id="connection_suite.action.refresh_dummy_status",
+        label="Refresh Dummy Status",
+        kind=ActionKind.BUTTON,
+        window_id="connection_suite.home.window",
+        is_placeholder=True,
+    ),
+    ActionDefinition(
+        action_id="connection_suite.action.clear_dummy_log",
+        label="Clear Dummy Log",
+        kind=ActionKind.BUTTON,
+        window_id="connection_suite.home.window",
+        is_placeholder=True,
+    ),
+    ActionDefinition(
+        action_id="connection_suite.action.view_historical_download_manager",
+        label="Historical Download Manager",
+        kind=ActionKind.BUTTON,
+        window_id="connection_suite.home.window",
+        is_placeholder=True,
+    ),
+    ActionDefinition(
         action_id="main_window.open_research_suite",
         label="Research Suite",
         kind=ActionKind.MENU,

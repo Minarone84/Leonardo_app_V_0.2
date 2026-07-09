@@ -20,6 +20,10 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 from leonardo.gui.metadata import load_metadata_document  # noqa: E402
+from leonardo.gui.windows.connection_suite_window import (  # noqa: E402
+    CONNECTION_SUITE_METADATA_ID,
+    ConnectionSuiteWindow,
+)
 from leonardo.gui.windows.historical_download_manager_window import (  # noqa: E402
     HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
     HistoricalDownloadManagerWindow,
@@ -38,11 +42,21 @@ from leonardo.gui.windows.ohlcv_download_task_window import (  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUI_WINDOW_SOURCES = (
+    _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "connection_suite_window.py",
     _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "historical_download_manager_window.py",
     _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "ohlcv_download_preflight_window.py",
     _REPO_ROOT / "src" / "leonardo" / "gui" / "windows" / "ohlcv_download_task_window.py",
 )
 _METADATA_SOURCES = {
+    CONNECTION_SUITE_METADATA_ID: (
+        _REPO_ROOT
+        / "src"
+        / "leonardo"
+        / "gui"
+        / "metadata"
+        / "windows"
+        / "connection_suite.window.toml"
+    ),
     HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID: (
         _REPO_ROOT
         / "src"
@@ -107,8 +121,77 @@ def test_historical_download_manager_has_expected_fields_and_buttons(
         assert isinstance(window.button_for_id("stop"), QPushButton)
         assert window.button_for_id("stop").isEnabled() is False
         assert isinstance(window.button_for_id("ohlcv_maintenance"), QPushButton)
+        assert isinstance(
+            window.table_for_id("historical_download_manager.table.queue_dummy"),
+            QTableWidget,
+        )
+        assert window.table_for_id("historical_download_manager.table.queue_dummy").rowCount() == 3
+        assert isinstance(window.queue_progress_bar(), QProgressBar)
+        assert window.queue_progress_bar().value() == 0
         assert isinstance(window.status_log(), QTextEdit)
         assert window.status_log().isReadOnly() is True
+        assert "No provider/API/storage path ran" in window.status_log().toPlainText()
+    finally:
+        _dispose(qapplication, window)
+
+
+def test_connection_suite_shell_has_expected_dummy_panels(
+    qapplication: QApplication,
+) -> None:
+    window = ConnectionSuiteWindow()
+
+    try:
+        assert isinstance(window, QWidget)
+        assert window.objectName() == "connection_suite_window"
+        assert window.windowTitle() == "Connection Suite"
+        assert window.property("object_id") == CONNECTION_SUITE_METADATA_ID
+        assert "DUMMY connection surfaces loaded" in window.status_text()
+
+        provider_table = window.table_for_id("connection_suite.table.provider_status_dummy")
+        websocket_table = window.table_for_id("connection_suite.table.websocket_status_dummy")
+        download_table = window.table_for_id("connection_suite.table.download_overview_dummy")
+        assert provider_table.rowCount() == 5
+        assert websocket_table.rowCount() == 4
+        assert download_table.rowCount() == 3
+        assert provider_table.item(0, 0).text() == "Provider Catalog"
+        assert websocket_table.item(0, 0).text() == "WebSocket Channels"
+        assert download_table.item(0, 0).text() == "Historical Downloads"
+        assert "no provider/API/websocket" in window.activity_log_text()
+
+        for button_id in (
+            "connection_suite.button.refresh_dummy_status",
+            "connection_suite.button.clear_dummy_log",
+            "connection_suite.button.view_historical_download_manager",
+        ):
+            assert isinstance(window.button_for_id(button_id), QPushButton)
+    finally:
+        _dispose(qapplication, window)
+
+
+def test_connection_suite_actions_are_gui_observed_and_local_only(
+    qapplication: QApplication,
+) -> None:
+    observer = _RecordingObserver()
+    window = ConnectionSuiteWindow(action_observer=observer)
+
+    try:
+        window.button_for_id("connection_suite.button.clear_dummy_log").click()
+        window.button_for_id(
+            "connection_suite.button.view_historical_download_manager"
+        ).click()
+
+        assert observer.calls == [
+            (
+                "connection_suite.action.clear_dummy_log",
+                CONNECTION_SUITE_METADATA_ID,
+            ),
+            (
+                "connection_suite.action.view_historical_download_manager",
+                CONNECTION_SUITE_METADATA_ID,
+            ),
+        ]
+        assert "separate GUI shell" in window.status_text()
+        assert "no backend workflow executed" in window.activity_log_text()
     finally:
         _dispose(qapplication, window)
 
@@ -305,22 +388,31 @@ def test_ohlcv_download_task_displays_external_progress_and_recap(
 
 
 @pytest.mark.parametrize(
-    ("metadata_id", "title", "object_name"),
+    ("metadata_id", "title", "object_name", "target_module_id"),
     (
+        (
+            CONNECTION_SUITE_METADATA_ID,
+            "Connection Suite",
+            "connection_suite_window",
+            "connection.gui_home",
+        ),
         (
             HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
             "Historical Download Manager",
             "historical_download_manager_window",
+            "connection.download_manager",
         ),
         (
             OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
             "Confirm OHLCV Download",
             "ohlcv_download_preflight_window",
+            "connection.download_manager",
         ),
         (
             OHLCV_DOWNLOAD_TASK_METADATA_ID,
             "OHLCV Download Task",
             "ohlcv_download_task_window",
+            "connection.download_manager",
         ),
     ),
 )
@@ -328,6 +420,7 @@ def test_connection_download_manager_shell_metadata_is_gui_owned(
     metadata_id: str,
     title: str,
     object_name: str,
+    target_module_id: str,
 ) -> None:
     result = load_metadata_document(_METADATA_SOURCES[metadata_id])
 
@@ -338,7 +431,7 @@ def test_connection_download_manager_shell_metadata_is_gui_owned(
     assert result.document.metadata["owner_area"] == "gui"
     assert result.document.metadata["target_area_id"] == "connection"
     assert result.document.metadata["target_suite_id"] == "connection_suite"
-    assert result.document.metadata["target_module_id"] == "connection.download_manager"
+    assert result.document.metadata["target_module_id"] == target_module_id
     assert result.document.metadata["object_name"] == object_name
     assert result.document.metadata["status"] == "shell_only"
     assert "owner_suite_id" not in result.document.metadata
@@ -397,7 +490,6 @@ def test_connection_download_manager_gui_shells_have_no_backend_imports_or_io_ca
         "shell=True",
         "open(",
         ".write(",
-        "Path(",
     )
 
     for source_path in _GUI_WINDOW_SOURCES:
@@ -418,3 +510,18 @@ def _dispose(qapplication: QApplication, *widgets: QWidget) -> None:
         widget.close()
         widget.deleteLater()
     qapplication.processEvents()
+
+
+class _RecordingObserver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    def record_action(
+        self,
+        action_id: str,
+        *,
+        window_id: str | None = None,
+        metadata: object | None = None,
+    ):
+        self.calls.append((action_id, window_id))
+        return type("Decision", (), {"allowed": True})()

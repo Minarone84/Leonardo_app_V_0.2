@@ -1,0 +1,290 @@
+metadata_id = "connection_suite.home.window"
+kind = "window"
+schema_version = "1"
+title = "Connection Suite"
+label = "Connection Suite"
+
+[metadata]
+contract_id = "connection_suite.home.window"
+logical_kind = "connection_suite_shell"
+owner_area = "gui"
+target_area_id = "connection"
+target_suite_id = "connection_suite"
+target_module_id = "connection.gui_home"
+window_id = "connection_suite.home.window"
+object_name = "connection_suite_window"
+test_id = "connection_suite_window"
+instance_policy = "standalone"
+status = "shell_only"
+ownership_scope = "presentation_shell_only"
+dummy_data_status = "local_in_memory_gui_dummy_only"
+description = "GUI presentation shell for Connection Suite provider, account, API, websocket, and historical download overview placeholders."
+object_family = "window"
+object_kind = "connection_suite_shell"
+
+[metadata.traceability]
+object_id_policy = "stable_readable_deterministic_ids"
+qt_object_name_policy = "objectName equals object_id for constructed controls; top-level window objectName maps through metadata.object_name."
+parent_child_policy = "Parent IDs are exposed through metadata and Qt dynamic property parent_object_id."
+no_anonymous_widgets = true
+
+[metadata.boundary_guarantees]
+gui_presentation_only = true
+domain_workflow_not_owned_by_gui = true
+no_backend_execution = true
+no_provider_api_call = true
+no_websocket_behavior = true
+no_account_sync = true
+no_credential_load = true
+no_download_execution = true
+no_storage_write = true
+no_runtime_manager_control = true
+no_object_map_mutation = true
+
+[metadata.dummy_data]
+source_module = "leonardo.gui.dummy_data"
+deterministic = true
+local_in_memory = true
+network_calls = false
+storage_writes = false
+
+[geometry]
+width = 1280
+height = 820
+
+[display]
+visible = true
+enabled = true
+theme = "system"
+
+[style]
+font_size = 14
+density = "comfortable"
+
+[[regions]]
+region_id = "connection_suite.header"
+label = "Header"
+
+[[regions]]
+region_id = "connection_suite.toolbar"
+label = "Toolbar"
+
+[[regions]]
+region_id = "connection_suite.overview"
+label = "Overview"
+
+[[regions]]
+region_id = "connection_suite.provider_status"
+label = "Provider Account API Status"
+
+[[regions]]
+region_id = "connection_suite.websocket_status"
+label = "WebSocket Connection Status"
+
+[[regions]]
+region_id = "connection_suite.download_overview"
+label = "Historical Download Overview"
+
+[[regions]]
+region_id = "connection_suite.activity_log"
+label = "Activity Log"
+
+[[regions]]
+region_id = "connection_suite.footer"
+label = "Footer"
+
+[[actions]]
+action_id = "connection_suite.action.refresh_dummy_status"
+label = "Refresh Dummy Status"
+
+[[actions]]
+action_id = "connection_suite.action.clear_dummy_log"
+label = "Clear Dummy Log"
+
+[[actions]]
+action_id = "connection_suite.action.view_historical_download_manager"
+label = "Historical Download Manager"
+
+[[widgets]]
+widget_id = "connection_suite.panel.header"
+region_id = "connection_suite.header"
+label = "Header Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "connection_suite.toolbar.main"
+region_id = "connection_suite.toolbar"
+label = "Toolbar"
+widget_type = "toolbar"
+
+[[widgets]]
+widget_id = "connection_suite.button.refresh_dummy_status"
+region_id = "connection_suite.toolbar"
+label = "Refresh Dummy Status"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "connection_suite.button.clear_dummy_log"
+region_id = "connection_suite.toolbar"
+label = "Clear Dummy Log"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "connection_suite.button.view_historical_download_manager"
+region_id = "connection_suite.toolbar"
+label = "Historical Download Manager"
+widget_type = "button"
+
+[[widgets]]
+widget_id = "connection_suite.splitter.overview"
+region_id = "connection_suite.overview"
+label = "Overview Splitter"
+widget_type = "splitter"
+
+[[widgets]]
+widget_id = "connection_suite.panel.provider_status"
+region_id = "connection_suite.provider_status"
+label = "Provider Account API Status"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "connection_suite.panel.websocket_status"
+region_id = "connection_suite.websocket_status"
+label = "WebSocket Connection Status"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "connection_suite.panel.download_overview"
+region_id = "connection_suite.download_overview"
+label = "Historical Download Overview"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "connection_suite.panel.activity_log"
+region_id = "connection_suite.activity_log"
+label = "Activity Log Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "connection_suite.text.activity_log"
+region_id = "connection_suite.activity_log"
+label = "Activity Log"
+widget_type = "text_area"
+
+[[widgets]]
+widget_id = "connection_suite.panel.footer"
+region_id = "connection_suite.footer"
+label = "Boundary Footer"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "connection_suite.label.footer_status"
+region_id = "connection_suite.footer"
+label = "Boundary Footer Status"
+widget_type = "status_label"
+
+[[tables]]
+table_id = "connection_suite.table.provider_status_dummy"
+label = "Provider Account API Status Dummy"
+
+[[tables.columns]]
+column_id = "surface"
+label = "Surface"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 140
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 280
+order = 3
+
+[[tables]]
+table_id = "connection_suite.table.websocket_status_dummy"
+label = "WebSocket Connection Status Dummy"
+
+[[tables.columns]]
+column_id = "channel"
+label = "Channel"
+visible = true
+width = 180
+order = 1
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 140
+order = 2
+
+[[tables.columns]]
+column_id = "details"
+label = "Details"
+visible = true
+width = 280
+order = 3
+
+[[tables]]
+table_id = "connection_suite.table.download_overview_dummy"
+label = "Historical Download Overview Dummy"
+
+[[tables.columns]]
+column_id = "queue"
+label = "Queue"
+visible = true
+width = 170
+order = 1
+
+[[tables.columns]]
+column_id = "scope"
+label = "Scope"
+visible = true
+width = 190
+order = 2
+
+[[tables.columns]]
+column_id = "progress"
+label = "Progress"
+visible = true
+width = 110
+order = 3
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 170
+order = 4
+
+[[settings]]
+path = "style.font_size"
+label = "Font Size"
+value_type = "integer"
+description = "Presentation font size for the shell."
+
+[[settings]]
+path = "style.density"
+label = "Density"
+value_type = "string"
+description = "Presentation density for the shell."
+
+[[settings]]
+path = "geometry.width"
+label = "Width"
+value_type = "int"
+description = "Default shell width."
+
+[[settings]]
+path = "geometry.height"
+label = "Height"
+value_type = "int"
+description = "Default shell height."

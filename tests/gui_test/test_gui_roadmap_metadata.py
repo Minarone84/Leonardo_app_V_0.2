@@ -79,6 +79,12 @@ _GUI_ROADMAP_STABLE_SOURCE_FILES = (
     / "leonardo"
     / "gui"
     / "windows"
+    / "connection_suite_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
     / "research_suite_window.py",
     _REPO_ROOT
     / "src"

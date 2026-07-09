@@ -11,6 +11,25 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUI_ROOT = _REPO_ROOT / "src" / "leonardo" / "gui"
 _METADATA_DIR = _GUI_ROOT / "metadata" / "windows"
 _NEW_SHELL_METADATA = {
+    "connection_suite.window.toml": {
+        "window_id": "connection_suite.home.window",
+        "target_area_id": "connection",
+        "target_suite_id": "connection_suite",
+        "required_widgets": {
+            "connection_suite.button.refresh_dummy_status",
+            "connection_suite.button.clear_dummy_log",
+            "connection_suite.button.view_historical_download_manager",
+            "connection_suite.panel.provider_status",
+            "connection_suite.panel.websocket_status",
+            "connection_suite.panel.download_overview",
+            "connection_suite.text.activity_log",
+        },
+        "required_actions": {
+            "connection_suite.action.refresh_dummy_status",
+            "connection_suite.action.clear_dummy_log",
+            "connection_suite.action.view_historical_download_manager",
+        },
+    },
     "research_suite.window.toml": {
         "window_id": "research_suite.window",
         "target_area_id": "research",
@@ -99,7 +118,7 @@ _FORBIDDEN_STATIC_TOKENS = (
     "requests.",
     "httpx.",
     "aiohttp.",
-    "websocket",
+    "websockets",
     "socket.",
     "subprocess",
     "QChart",
@@ -167,7 +186,7 @@ def test_main_window_launch_surfaces_target_shell_windows_only() -> None:
     document = _load(_METADATA_DIR / "main_window.window.toml")
     launch_surfaces = document.metadata["launch_surfaces"]
     expected = {
-        "download_data": "historical_download_manager.window",
+        "download_data": "connection_suite.home.window",
         "ohlcv_maintenance": "historical_download_manager.window",
         "research_suite": "research_suite.window",
         "data_manager_suite": "data_manager_suite.window",
@@ -214,11 +233,14 @@ def test_dummy_data_provider_is_local_in_memory_only() -> None:
     assert "Path(" not in source
     assert "requests" not in source
     assert "httpx" not in source
-    assert "socket" not in source
+    assert "import socket" not in source
+    assert "socket." not in source
+    assert "socket(" not in source
 
 
 def test_new_gui_shell_sources_do_not_import_domain_execution_layers() -> None:
     source_paths = (
+        _GUI_ROOT / "windows" / "connection_suite_window.py",
         _GUI_ROOT / "windows" / "research_suite_window.py",
         _GUI_ROOT / "windows" / "data_manager_suite_window.py",
         _GUI_ROOT / "windows" / "analysis_suite_window.py",

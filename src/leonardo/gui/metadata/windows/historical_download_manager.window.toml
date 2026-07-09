@@ -37,9 +37,16 @@ no_storage_write = true
 no_runtime_manager_control = true
 no_object_map_mutation = true
 
+[metadata.dummy_data]
+source_module = "leonardo.gui.dummy_data"
+deterministic = true
+local_in_memory = true
+network_calls = false
+storage_writes = false
+
 [geometry]
-width = 720
-height = 640
+width = 980
+height = 760
 
 [display]
 visible = true
@@ -55,8 +62,16 @@ region_id = "historical_download_manager.selection"
 label = "Selection"
 
 [[regions]]
+region_id = "historical_download_manager.header"
+label = "Header"
+
+[[regions]]
 region_id = "historical_download_manager.timeframes"
 label = "Timeframes"
+
+[[regions]]
+region_id = "historical_download_manager.queue_status"
+label = "Dummy Queue Status"
 
 [[regions]]
 region_id = "historical_download_manager.actions"
@@ -91,6 +106,18 @@ widget_id = "historical_download_manager.exchange"
 region_id = "historical_download_manager.selection"
 label = "Exchange"
 widget_type = "combo"
+
+[[widgets]]
+widget_id = "historical_download_manager.panel.header"
+region_id = "historical_download_manager.header"
+label = "Header Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "historical_download_manager.label.shell_status"
+region_id = "historical_download_manager.header"
+label = "Shell Status"
+widget_type = "status_label"
 
 [[widgets]]
 widget_id = "historical_download_manager.market_type"
@@ -133,6 +160,56 @@ widget_id = "historical_download_manager.status_log"
 region_id = "historical_download_manager.status_log"
 label = "Status Log"
 widget_type = "text_area"
+
+[[widgets]]
+widget_id = "historical_download_manager.panel.status_log"
+region_id = "historical_download_manager.status_log"
+label = "Status Log Panel"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "historical_download_manager.panel.queue_status_dummy"
+region_id = "historical_download_manager.queue_status"
+label = "Dummy Queue Overview"
+widget_type = "panel"
+
+[[widgets]]
+widget_id = "historical_download_manager.progress.queue_dummy"
+region_id = "historical_download_manager.queue_status"
+label = "Dummy Queue Progress"
+widget_type = "progress_bar"
+
+[[tables]]
+table_id = "historical_download_manager.table.queue_dummy"
+label = "Dummy Queue Overview"
+
+[[tables.columns]]
+column_id = "queue"
+label = "Queue"
+visible = true
+width = 170
+order = 1
+
+[[tables.columns]]
+column_id = "scope"
+label = "Scope"
+visible = true
+width = 190
+order = 2
+
+[[tables.columns]]
+column_id = "progress"
+label = "Progress"
+visible = true
+width = 110
+order = 3
+
+[[tables.columns]]
+column_id = "state"
+label = "State"
+visible = true
+width = 170
+order = 4
 
 [[settings]]
 path = "style.font_size"

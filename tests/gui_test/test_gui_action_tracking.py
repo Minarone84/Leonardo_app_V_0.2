@@ -47,6 +47,12 @@ _WINDOW_SOURCES = (
     / "leonardo"
     / "gui"
     / "windows"
+    / "connection_suite_window.py",
+    _REPO_ROOT
+    / "src"
+    / "leonardo"
+    / "gui"
+    / "windows"
     / "research_suite_window.py",
     _REPO_ROOT
     / "src"
@@ -126,6 +132,9 @@ def test_composition_registers_first_gui_action_definitions(
         "historical_download_manager.select_all_timeframes",
         "historical_download_manager.start",
         "historical_download_manager.stop",
+        "connection_suite.action.clear_dummy_log",
+        "connection_suite.action.refresh_dummy_status",
+        "connection_suite.action.view_historical_download_manager",
         "main_window.download_data",
         "main_window.ohlcv_maintenance",
         "research_suite.action.load_dummy_workspace",
@@ -182,6 +191,15 @@ def test_composition_registers_first_gui_action_definitions(
         assert definitions[action_id].is_placeholder is False
         assert definitions[action_id].kind is ActionKind.BUTTON
         assert definitions[action_id].window_id == "historical_download_manager.window"
+    for action_id in (
+        "connection_suite.action.clear_dummy_log",
+        "connection_suite.action.refresh_dummy_status",
+        "connection_suite.action.view_historical_download_manager",
+    ):
+        assert definitions[action_id].required_permissions == ()
+        assert definitions[action_id].is_placeholder is True
+        assert definitions[action_id].kind is ActionKind.BUTTON
+        assert definitions[action_id].window_id == "connection_suite.home.window"
     for action_id in (
         "main_window.open_analysis_suite",
         "main_window.open_data_manager_suite",
@@ -312,6 +330,8 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
 
     assert window.runtime_manager_window is None
     assert window.settings_inspector_window is None
+    assert root.connection_suite_window is not None
+    assert root.connection_suite_window.isVisible() is True
     assert root.historical_download_manager_window is not None
     assert root.historical_download_manager_window.isVisible() is True
     assert "downloads" not in initial_section_ids
@@ -320,7 +340,12 @@ def test_main_window_placeholder_actions_are_recorded_without_permissions(
     assert runtime_section_ids == initial_section_ids
     assert download_events == ()
 
-    _dispose(qapplication, window, root.historical_download_manager_window)
+    _dispose(
+        qapplication,
+        window,
+        root.connection_suite_window,
+        root.historical_download_manager_window,
+    )
     app.shutdown()
 
 
@@ -332,7 +357,7 @@ def test_historical_download_manager_shell_buttons_remain_local_signals(
     window = root.create_main_window()
     signals: list[str] = []
 
-    window.action_for_id("main_window.download_data").trigger()
+    window.action_for_id("main_window.ohlcv_maintenance").trigger()
     qapplication.processEvents()
     shell = root.historical_download_manager_window
     assert shell is not None
@@ -364,6 +389,7 @@ def test_suite_shell_internal_buttons_record_action_ids_not_button_ids(
     window = root.create_main_window()
 
     for action_id in (
+        "main_window.download_data",
         "main_window.open_research_suite",
         "main_window.open_data_manager_suite",
         "main_window.open_analysis_suite",
@@ -373,11 +399,30 @@ def test_suite_shell_internal_buttons_record_action_ids_not_button_ids(
         qapplication.processEvents()
 
     assert root.research_suite_window is not None
+    assert root.connection_suite_window is not None
     assert root.data_manager_suite_window is not None
     assert root.analysis_suite_window is not None
     assert root.trading_suite_window is not None
 
     cases = (
+        (
+            root.connection_suite_window,
+            "connection_suite.home.window",
+            (
+                (
+                    "connection_suite.button.refresh_dummy_status",
+                    "connection_suite.action.refresh_dummy_status",
+                ),
+                (
+                    "connection_suite.button.clear_dummy_log",
+                    "connection_suite.action.clear_dummy_log",
+                ),
+                (
+                    "connection_suite.button.view_historical_download_manager",
+                    "connection_suite.action.view_historical_download_manager",
+                ),
+            ),
+        ),
         (
             root.research_suite_window,
             "research_suite.window",
@@ -483,6 +528,7 @@ def test_suite_shell_internal_buttons_record_action_ids_not_button_ids(
     _dispose(
         qapplication,
         window,
+        root.connection_suite_window,
         root.research_suite_window,
         root.data_manager_suite_window,
         root.analysis_suite_window,

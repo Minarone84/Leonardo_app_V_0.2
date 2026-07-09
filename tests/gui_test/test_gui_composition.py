@@ -13,6 +13,7 @@ from leonardo.gui.composition import (  # noqa: E402
     create_main_window_for_context,
 )
 from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow  # noqa: E402
+from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow  # noqa: E402
 from leonardo.gui.windows.data_manager_suite_window import (  # noqa: E402
     DataManagerSuiteWindow,
 )
@@ -57,6 +58,7 @@ def test_composition_creates_main_window_from_context_without_startup(
     assert isinstance(window, LeonardoMainWindow)
     assert QApplication.instance() is app_instance
     assert root.tracker_for("main_window.window") is not None
+    assert root.connection_suite_window is None
     assert window.runtime_manager_window is None
     assert root.historical_download_manager_window is None
     assert root.research_suite_window is None
@@ -105,7 +107,7 @@ def test_runtime_manager_factory_is_injected_and_uses_snapshot_provider_lazily(
     app.shutdown()
 
 
-def test_download_manager_menu_opens_gui_only_historical_shell(
+def test_download_data_menu_opens_gui_only_connection_suite_shell(
     qapplication: QApplication,
 ) -> None:
     app = LeonardoApp()
@@ -115,29 +117,28 @@ def test_download_manager_menu_opens_gui_only_historical_shell(
 
     window.action_for_id("main_window.download_data").trigger()
     qapplication.processEvents()
-    shell = root.historical_download_manager_window
+    shell = root.connection_suite_window
 
-    assert isinstance(shell, HistoricalDownloadManagerWindow)
+    assert isinstance(shell, ConnectionSuiteWindow)
     assert shell.isVisible() is True
-    assert shell.available_timeframes() == ()
-    assert root.tracker_for("historical_download_manager.window") is not None
+    assert shell.table_for_id("connection_suite.table.provider_status_dummy").rowCount() == 5
+    assert root.tracker_for("connection_suite.home.window") is not None
     assert (
-        app.window_registry.get_window_definition("historical_download_manager.window")
+        app.window_registry.get_window_definition("connection_suite.home.window")
         is not None
     )
-    assert "historical_download_manager.window" in _open_window_ids(app)
-    assert window.statusBar().currentMessage() == (
-        "Historical Download Manager shell opened."
-    )
+    assert "connection_suite.home.window" in _open_window_ids(app)
+    assert window.statusBar().currentMessage() == "Connection Suite shell opened."
     assert _download_event_types(app.audit_log.snapshot()) == _download_event_types(
         before_events
     )
 
     window.action_for_id("main_window.ohlcv_maintenance").trigger()
     qapplication.processEvents()
+    historical_shell = root.historical_download_manager_window
 
-    assert root.historical_download_manager_window is shell
-    assert shell.isVisible() is True
+    assert isinstance(historical_shell, HistoricalDownloadManagerWindow)
+    assert historical_shell.isVisible() is True
     assert window.statusBar().currentMessage() == (
         "Historical Download Manager shell opened."
     )
@@ -146,11 +147,13 @@ def test_download_manager_menu_opens_gui_only_historical_shell(
     )
 
     shell.close()
+    historical_shell.close()
     qapplication.processEvents()
 
+    assert "connection_suite.home.window" not in _open_window_ids(app)
     assert "historical_download_manager.window" not in _open_window_ids(app)
 
-    _dispose(qapplication, window, shell)
+    _dispose(qapplication, window, shell, historical_shell)
     app.shutdown()
 
 
@@ -163,6 +166,13 @@ def test_main_window_suite_actions_open_gui_only_dummy_shells(
     before_events = app.audit_log.snapshot()
 
     for action_id, attr_name, window_type, message, tracker_id in (
+        (
+            "main_window.download_data",
+            "connection_suite_window",
+            ConnectionSuiteWindow,
+            "Connection Suite shell opened.",
+            "connection_suite.home.window",
+        ),
         (
             "main_window.open_research_suite",
             "research_suite_window",
@@ -210,6 +220,7 @@ def test_main_window_suite_actions_open_gui_only_dummy_shells(
     _dispose(
         qapplication,
         window,
+        root.connection_suite_window,
         root.research_suite_window,
         root.data_manager_suite_window,
         root.analysis_suite_window,
@@ -227,6 +238,7 @@ def test_closing_main_window_releases_suite_shells_and_registry_state(
 
     window.show()
     for action_id in (
+        "main_window.download_data",
         "main_window.open_research_suite",
         "main_window.open_data_manager_suite",
         "main_window.open_analysis_suite",
@@ -240,8 +252,10 @@ def test_closing_main_window_releases_suite_shells_and_registry_state(
         "data_manager_suite.window",
         "analysis_suite.window",
         "trading_suite.window",
+        "connection_suite.home.window",
     )
     assert set(suite_window_ids) <= set(_open_window_ids(app))
+    assert root.connection_suite_window is not None
     assert root.research_suite_window is not None
     assert root.data_manager_suite_window is not None
     assert root.analysis_suite_window is not None
@@ -250,6 +264,7 @@ def test_closing_main_window_releases_suite_shells_and_registry_state(
     window.close()
     qapplication.processEvents()
 
+    assert root.connection_suite_window is None
     assert root.research_suite_window is None
     assert root.data_manager_suite_window is None
     assert root.analysis_suite_window is None
@@ -274,11 +289,11 @@ def test_composition_can_disable_window_tracking(qapplication: QApplication) -> 
     qapplication.processEvents()
 
     assert root.window_trackers == {}
-    assert root.historical_download_manager_window is not None
-    assert root.historical_download_manager_window.isVisible() is True
+    assert root.connection_suite_window is not None
+    assert root.connection_suite_window.isVisible() is True
     assert app.window_registry.open_windows() == ()
 
-    _dispose(qapplication, window, root.historical_download_manager_window)
+    _dispose(qapplication, window, root.connection_suite_window)
     app.shutdown()
 
 
@@ -322,7 +337,8 @@ def test_old_download_request_builder_files_are_not_active_gui_files() -> None:
 
 def test_composed_windows_destroy_cleanly(qapplication: QApplication) -> None:
     app = LeonardoApp()
-    window = GuiCompositionRoot(app.context).create_main_window()
+    root = GuiCompositionRoot(app.context)
+    window = root.create_main_window()
 
     window.show()
     window.action_for_id("main_window.open_runtime_manager").trigger()
@@ -332,10 +348,11 @@ def test_composed_windows_destroy_cleanly(qapplication: QApplication) -> None:
     runtime_window = window.runtime_manager_window
 
     assert runtime_window is not None
+    assert root.connection_suite_window is not None
     assert window.runtime_manager_window is not None
     assert window.isVisible() is True
     window.close()
-    _dispose(qapplication, window, runtime_window)
+    _dispose(qapplication, window, runtime_window, root.connection_suite_window)
     app.shutdown()
 
     assert window.close_requested_locally is True

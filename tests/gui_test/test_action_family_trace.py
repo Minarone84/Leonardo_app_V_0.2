@@ -26,6 +26,7 @@ _RUNTIME_MANAGER_METADATA = _METADATA_DIR / "runtime_manager.window.toml"
 _HISTORICAL_DOWNLOAD_MANAGER_METADATA = (
     _METADATA_DIR / "historical_download_manager.window.toml"
 )
+_CONNECTION_SUITE_METADATA = _METADATA_DIR / "connection_suite.window.toml"
 
 
 def test_action_trace_provider_descriptor_is_read_only() -> None:
@@ -84,6 +85,15 @@ def test_historical_download_manager_actions_have_trace_summaries() -> None:
 
     assert "historical_download_manager.start" in summary_ids
     assert "historical_download_manager.ohlcv_maintenance" in summary_ids
+
+
+def test_connection_suite_actions_have_trace_summaries() -> None:
+    summaries = _summaries_for(_CONNECTION_SUITE_METADATA)
+    summary_ids = {summary.object_ref.object_id for summary in summaries}
+
+    assert "connection_suite.action.refresh_dummy_status" in summary_ids
+    assert "connection_suite.action.clear_dummy_log" in summary_ids
+    assert "connection_suite.action.view_historical_download_manager" in summary_ids
 
 
 def test_action_summary_includes_static_metadata_fields() -> None:
@@ -178,6 +188,7 @@ def test_action_object_map_section_includes_summaries_legend_and_relationship_de
     assert section.family_id == "action"
     assert "main_window.open_runtime_manager" in summary_ids
     assert "runtime_manager.refresh_snapshot" in summary_ids
+    assert "connection_suite.action.refresh_dummy_status" in summary_ids
     assert "historical_download_manager.start" in summary_ids
     assert section.legends[0].family_id == "action"
     assert "contains_action" in relationship_types
@@ -267,6 +278,7 @@ def test_default_action_metadata_paths_are_static_and_existing() -> None:
 
     assert _MAIN_WINDOW_METADATA in paths
     assert _RUNTIME_MANAGER_METADATA in paths
+    assert _CONNECTION_SUITE_METADATA in paths
     assert _HISTORICAL_DOWNLOAD_MANAGER_METADATA in paths
     assert all(path.exists() for path in paths)
 

@@ -26,6 +26,7 @@ _RUNTIME_MANAGER_METADATA = _METADATA_DIR / "runtime_manager.window.toml"
 _HISTORICAL_DOWNLOAD_MANAGER_METADATA = (
     _METADATA_DIR / "historical_download_manager.window.toml"
 )
+_CONNECTION_SUITE_METADATA = _METADATA_DIR / "connection_suite.window.toml"
 
 
 def test_window_trace_provider_descriptor_is_read_only() -> None:
@@ -86,6 +87,15 @@ def test_historical_download_manager_window_summary_is_available() -> None:
     assert summary.metadata["object_name"] == "historical_download_manager_window"
 
 
+def test_connection_suite_window_summary_is_available() -> None:
+    summary = _summary_for(_CONNECTION_SUITE_METADATA)
+
+    assert summary.object_ref.object_id == "connection_suite.home.window"
+    assert summary.metadata["metadata_id"] == "connection_suite.home.window"
+    assert summary.metadata["owner_area"] == "gui"
+    assert summary.metadata["object_name"] == "connection_suite_window"
+
+
 def test_window_summaries_include_static_metadata_fields() -> None:
     summary = _summary_for(_MAIN_WINDOW_METADATA)
 
@@ -142,6 +152,7 @@ def test_window_object_map_section_includes_summaries_and_legend() -> None:
     assert section.family_id == "window"
     assert "main_window.window" in summary_ids
     assert "runtime_manager.window" in summary_ids
+    assert "connection_suite.home.window" in summary_ids
     assert "historical_download_manager.window" in summary_ids
     assert section.legends[0].family_id == "window"
     assert "contains_action" in relationship_types
@@ -218,6 +229,7 @@ def test_default_window_metadata_paths_are_static_and_existing() -> None:
 
     assert _MAIN_WINDOW_METADATA in paths
     assert _RUNTIME_MANAGER_METADATA in paths
+    assert _CONNECTION_SUITE_METADATA in paths
     assert _HISTORICAL_DOWNLOAD_MANAGER_METADATA in paths
     assert all(path.exists() for path in paths)
 

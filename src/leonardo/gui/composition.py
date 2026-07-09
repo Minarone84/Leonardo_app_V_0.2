@@ -27,6 +27,10 @@ from leonardo.gui.windows.analysis_suite_window import (
     AnalysisSuiteWindow,
     load_analysis_suite_profile,
 )
+from leonardo.gui.windows.connection_suite_window import (
+    ConnectionSuiteWindow,
+    load_connection_suite_profile,
+)
 from leonardo.gui.windows.data_manager_suite_window import (
     DataManagerSuiteWindow,
     load_data_manager_suite_profile,
@@ -59,6 +63,7 @@ _METADATA_WINDOWS_DIR = Path(__file__).resolve().parent / "metadata" / "windows"
 _HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH = (
     _METADATA_WINDOWS_DIR / "historical_download_manager.window.toml"
 )
+_CONNECTION_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "connection_suite.window.toml"
 _RESEARCH_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "research_suite.window.toml"
 _DATA_MANAGER_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "data_manager_suite.window.toml"
 _ANALYSIS_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "analysis_suite.window.toml"
@@ -133,6 +138,7 @@ class GuiCompositionRoot:
         self._action_observer: GuiActionObserver | None = build_gui_action_observer(
             context
         )
+        self._connection_suite_window: ConnectionSuiteWindow | None = None
         self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = (
             None
         )
@@ -165,6 +171,12 @@ class GuiCompositionRoot:
         """Return the retained Historical Download Manager shell, if created."""
 
         return self._historical_download_manager_window
+
+    @property
+    def connection_suite_window(self) -> ConnectionSuiteWindow | None:
+        """Return the retained Connection Suite shell, if created."""
+
+        return self._connection_suite_window
 
     @property
     def research_suite_window(self) -> ResearchSuiteWindow | None:
@@ -214,7 +226,7 @@ class GuiCompositionRoot:
                 raise ValueError("Download Data callback received unexpected action ID")
             if main_window is None:
                 raise RuntimeError("Main Window is not available for download shell")
-            return self._open_historical_download_manager(main_window)
+            return self._open_connection_suite(main_window)
 
         def ohlcv_maintenance_requested(action_id: str) -> str:
             if action_id != "main_window.ohlcv_maintenance":
@@ -269,6 +281,27 @@ class GuiCompositionRoot:
         self._historical_download_manager_window.raise_()
         self._historical_download_manager_window.activateWindow()
         return "Historical Download Manager shell opened."
+
+    def _open_connection_suite(
+        self,
+        parent: LeonardoMainWindow,
+    ) -> str:
+        if self._connection_suite_window is None:
+            profile = self._load_connection_suite_profile()
+            self._connection_suite_window = ConnectionSuiteWindow(
+                profile,
+                action_observer=self._action_observer,
+                parent=parent,
+            )
+            if self._track_windows:
+                self._install_tracker(
+                    self._connection_suite_window,
+                    profile,
+                    fallback_window_type="connection_suite",
+                )
+
+        self._show_window(self._connection_suite_window)
+        return "Connection Suite shell opened."
 
     def _open_suite_shell(self, action_id: str, parent: LeonardoMainWindow) -> str:
         if action_id == "main_window.open_research_suite":
@@ -335,6 +368,7 @@ class GuiCompositionRoot:
 
     def _close_suite_shells(self) -> None:
         for window_id, attr_name in (
+            ("connection_suite.home.window", "_connection_suite_window"),
             ("research_suite.window", "_research_suite_window"),
             ("data_manager_suite.window", "_data_manager_suite_window"),
             ("analysis_suite.window", "_analysis_suite_window"),
@@ -444,6 +478,11 @@ class GuiCompositionRoot:
                 raise ValueError(f"Invalid GUI metadata profile: {messages}")
             return GuiMetadataResolver().resolve(result.document)
         return self._load_profile_with_overrides(_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH)
+
+    def _load_connection_suite_profile(self) -> EffectiveGuiMetadataProfile:
+        if self._override_store is None:
+            return load_connection_suite_profile()
+        return self._load_profile_with_overrides(_CONNECTION_SUITE_METADATA_PATH)
 
     def _load_research_suite_profile(self) -> EffectiveGuiMetadataProfile:
         if self._override_store is None:

@@ -110,6 +110,100 @@ def data_manager_recipe_rows() -> tuple[DummyRow, ...]:
     )
 
 
+def connection_provider_status_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Connection Suite provider status rows."""
+
+    return (
+        {
+            "surface": "Provider Catalog",
+            "state": "offline",
+            "details": "DUMMY catalog placeholder; no discovery or API call.",
+        },
+        {
+            "surface": "Account Profiles",
+            "state": "not connected",
+            "details": "DUMMY profile placeholder; no account sync.",
+        },
+        {
+            "surface": "API Transport",
+            "state": "disabled",
+            "details": "DUMMY transport placeholder; no client exists.",
+        },
+        {
+            "surface": "Credentials",
+            "state": "not loaded",
+            "details": "DUMMY credential status; no environment read.",
+        },
+        {
+            "surface": "Rate Limits",
+            "state": "placeholder",
+            "details": "DUMMY rate-limit context; no provider policy loaded.",
+        },
+    )
+
+
+def connection_websocket_status_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Connection Suite websocket status rows."""
+
+    return (
+        {
+            "channel": "WebSocket Channels",
+            "state": "offline",
+            "details": "DUMMY stream list; no websocket client.",
+        },
+        {
+            "channel": "Live Stream",
+            "state": "disabled",
+            "details": "DUMMY live-feed placeholder only.",
+        },
+        {
+            "channel": "Heartbeat",
+            "state": "placeholder",
+            "details": "DUMMY heartbeat row; no timer or network.",
+        },
+        {
+            "channel": "Reconnect Policy",
+            "state": "future module",
+            "details": "DUMMY policy placeholder; no reconnect logic.",
+        },
+    )
+
+
+def connection_download_overview_rows() -> tuple[DummyRow, ...]:
+    """Return deterministic dummy Connection Suite download overview rows."""
+
+    return (
+        {
+            "queue": "Historical Downloads",
+            "scope": "DUMMY BTCUSDT / 1m",
+            "progress": "0%",
+            "state": "idle shell",
+        },
+        {
+            "queue": "Preflight",
+            "scope": "DUMMY validation preview",
+            "progress": "0%",
+            "state": "not executed",
+        },
+        {
+            "queue": "Storage",
+            "scope": "DUMMY target path",
+            "progress": "0%",
+            "state": "writes forbidden",
+        },
+    )
+
+
+def connection_activity_messages() -> tuple[str, ...]:
+    """Return deterministic dummy Connection Suite activity messages."""
+
+    return (
+        "Connection Suite shell loaded from GUI-only dummy fixtures.",
+        "no provider/API/websocket behavior exists in this shell.",
+        "Historical download overview is inert; no request builder or execution path exists.",
+    )
+
+
 def analysis_readiness_rows() -> tuple[DummyRow, ...]:
     """Return deterministic dummy Analysis Suite readiness rows."""
 
