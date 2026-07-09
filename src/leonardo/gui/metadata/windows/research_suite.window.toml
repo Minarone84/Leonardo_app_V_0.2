@@ -107,10 +107,10 @@ label = "Add Chart Placeholder"
 widget_type = "button"
 
 [[widgets]]
-widget_id = "research_suite.combo.workspace_profile"
+widget_id = "research_suite.combo.study_environment_dummy"
 region_id = "research_suite.toolbar"
-label = "Workspace Profile"
-widget_type = "combo"
+label = "Study Environment Dummy"
+widget_type = "combo_box"
 
 [[widgets]]
 widget_id = "research_suite.splitter.workspace"
@@ -119,9 +119,9 @@ label = "Workspace Splitter"
 widget_type = "splitter"
 
 [[widgets]]
-widget_id = "research_suite.panel.study_sidebar_dummy"
+widget_id = "research_suite.panel.study_sidebar"
 region_id = "research_suite.study_sidebar"
-label = "Study Sidebar Dummy"
+label = "Study Sidebar"
 widget_type = "panel"
 
 [[widgets]]

@@ -436,6 +436,39 @@ def test_current_window_metadata_files_are_represented_and_gui_owned() -> None:
             assert windows_by_id[document.metadata_id]["status"] in _ACTIVE_WINDOW_STATUSES
 
 
+def test_active_window_toml_actions_widgets_and_tables_are_roadmap_represented() -> None:
+    roadmap = _load_json(_ROADMAP_PATH)
+    windows_by_id = _by_id(roadmap["windows"], "window_id")
+    action_ids = set(_by_id(roadmap["actions"], "action_id"))
+    represented_object_ids = _object_or_window_ids(roadmap)
+    missing: list[str] = []
+
+    for metadata_path in sorted(_GUI_METADATA_WINDOWS_DIR.glob("*.window.toml")):
+        result = load_metadata_document(metadata_path)
+        assert result.report.has_errors is False
+        assert result.document is not None
+        document = result.document
+        roadmap_window = windows_by_id[document.metadata_id]
+        if roadmap_window["status"] not in _ACTIVE_WINDOW_STATUSES:
+            continue
+
+        for action in document.actions:
+            if action.action_id not in action_ids:
+                missing.append(f"{document.metadata_id} action {action.action_id}")
+            elif action.action_id not in roadmap_window["action_ids"]:
+                missing.append(
+                    f"{document.metadata_id} window action {action.action_id}"
+                )
+        for widget in document.widgets:
+            if widget.widget_id not in represented_object_ids:
+                missing.append(f"{document.metadata_id} widget {widget.widget_id}")
+        for table in document.tables:
+            if table.table_id not in represented_object_ids:
+                missing.append(f"{document.metadata_id} table {table.table_id}")
+
+    assert missing == []
+
+
 def test_gui_windows_remain_gui_owned_and_domain_suites_are_targets_only() -> None:
     roadmap = _load_json(_ROADMAP_PATH)
     suite_ids = {suite["suite_id"] for suite in roadmap["suites"]}

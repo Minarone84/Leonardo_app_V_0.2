@@ -21,6 +21,8 @@ Those two things must not be mixed. The current implementation is what the repos
 
 A legacy Leonardo capability is not current V2 behavior unless the V2 code implements it and tests prove it. A GUI shell is not backend execution. A contract is not a finished workflow. A markdown heading is not a feature, despite humanity's brave attempts to make documents do engineering.
 
+`AGENTS.md` remains the implementation-agent authority for Codex/Goblin work inside this repository. `RICK_PROTOCOL_10_COMMANDMENTS.md` documents the Rick-side workflow for task shaping, package audits, workplan design, prompt preparation, implementation-report review, POST/PATCH validation, and workflow ledger tracking.
+
 ---
 
 ## Status legend

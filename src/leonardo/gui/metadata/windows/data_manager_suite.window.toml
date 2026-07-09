@@ -122,9 +122,9 @@ label = "Plan Dummy Database"
 widget_type = "button"
 
 [[widgets]]
-widget_id = "data_manager.splitter.workspace"
+widget_id = "data_manager.splitter.catalogs"
 region_id = "data_manager.catalogs"
-label = "Workspace Splitter"
+label = "Catalogs Splitter"
 widget_type = "splitter"
 
 [[widgets]]

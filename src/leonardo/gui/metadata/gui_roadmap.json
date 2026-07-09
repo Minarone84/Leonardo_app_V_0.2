@@ -351,6 +351,7 @@
                         "action_ids":  [
                                            "main_window.open_runtime_manager",
                                            "main_window.open_settings_inspector",
+                                           "main_window.open_dummy_metadata_test",
                                            "main_window.download_data",
                                            "main_window.ohlcv_maintenance",
                                            "main_window.open_research_suite",
@@ -1341,6 +1342,41 @@
                         "forbidden_behaviors":  [
                                                     "source_metadata_mutation",
                                                     "domain_execution"
+                                                ]
+                    },
+                    {
+                        "action_id":  "main_window.open_dummy_metadata_test",
+                        "display_label":  "Open Dummy Metadata Test",
+                        "kind":  "test_hook",
+                        "owner_area":  "gui",
+                        "target_area_id":  "gui",
+                        "target_suite_id":  "gui_service",
+                        "target_module_id":  "gui.metadata_test",
+                        "status":  "explicitly_out_of_scope",
+                        "source_object_id":  "main_window.menu_bar",
+                        "window_id":  "main_window.window",
+                        "runtime_observed":  false,
+                        "requires_human_confirmation":  false,
+                        "ai_agent":  {
+                                         "visible_to_ai":  true,
+                                         "agent_can_reference":  true,
+                                         "agent_can_request_open":  false,
+                                         "agent_can_request_click":  false,
+                                         "agent_can_read_status":  true,
+                                         "agent_can_mutate_directly":  false,
+                                         "requires_human_confirmation":  false,
+                                         "interaction_channel":  "metadata_reference_only",
+                                         "notes":  [
+                                                       "Local inert test hook retained for metadata fixture validation.",
+                                                       "Not a production launch surface or domain workflow."
+                                                   ]
+                                     },
+                        "forbidden_behaviors":  [
+                                                    "production_feature",
+                                                    "domain_execution",
+                                                    "provider_api_call",
+                                                    "network_call",
+                                                    "storage_write"
                                                 ]
                     },
                     {
