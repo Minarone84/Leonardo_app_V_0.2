@@ -45,7 +45,11 @@ class FakeCoreApp:
 
 
 class FakeQtApplication:
-    pass
+    def __init__(self) -> None:
+        self.stylesheet = ""
+
+    def setStyleSheet(self, stylesheet: str) -> None:
+        self.stylesheet = stylesheet
 
 
 class FakeOverrideStore:
@@ -219,6 +223,8 @@ def test_runner_orders_startup_composition_event_loop_and_shutdown(
     assert harness.composition.main_window.show_calls == 1
     assert harness.composition.main_window.close_calls == 1
     assert harness.event_loop_applications == [harness.qapplication]
+    assert harness.qapplication is not None
+    assert "#24C8DB" in harness.qapplication.stylesheet
 
 
 def test_run_gui_app_wrapper_uses_injected_boundaries(tmp_path: Path) -> None:

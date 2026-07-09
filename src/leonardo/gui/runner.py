@@ -12,6 +12,7 @@ from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AppConfig
 from leonardo.gui.composition import GuiCompositionRoot
 from leonardo.gui.metadata import GuiMetadataOverrideStore
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 
 
 class CoreAppBoundary(Protocol):
@@ -48,6 +49,7 @@ QApplicationFactory = Callable[[], object]
 OverrideStoreFactory = Callable[[Path], object]
 CompositionFactory = Callable[[object, object], GuiCompositionBoundary]
 EventLoopRunner = Callable[[object], int]
+ThemeApplier = Callable[[object], None]
 
 
 class LeonardoGuiRunner:
@@ -75,6 +77,7 @@ class LeonardoGuiRunner:
         override_store_factory: OverrideStoreFactory | None = None,
         composition_factory: CompositionFactory | None = None,
         event_loop_runner: EventLoopRunner | None = None,
+        theme_applier: ThemeApplier | None = None,
     ) -> None:
         if override_store_root is None:
             raise TypeError("override_store_root is required")
@@ -87,6 +90,7 @@ class LeonardoGuiRunner:
         )
         self._composition_factory = composition_factory or _default_composition_factory
         self._event_loop_runner = event_loop_runner or _default_event_loop_runner
+        self._theme_applier = theme_applier or _default_theme_applier
 
     @property
     def override_store_root(self) -> Path:
@@ -122,6 +126,7 @@ class LeonardoGuiRunner:
             core_started = True
 
             qapplication = self._qapplication_factory()
+            self._theme_applier(qapplication)
             override_store = self._override_store_factory(self._override_store_root)
             composition = self._composition_factory(app.context, override_store)
             main_window = composition.create_main_window()
@@ -161,6 +166,7 @@ def run_gui_app(
     override_store_factory: OverrideStoreFactory | None = None,
     composition_factory: CompositionFactory | None = None,
     event_loop_runner: EventLoopRunner | None = None,
+    theme_applier: ThemeApplier | None = None,
 ) -> int:
     """
     Run the minimal Leonardo GUI startup sequence.
@@ -178,6 +184,7 @@ def run_gui_app(
         override_store_factory=override_store_factory,
         composition_factory=composition_factory,
         event_loop_runner=event_loop_runner,
+        theme_applier=theme_applier,
     ).run()
 
 
@@ -208,3 +215,7 @@ def _default_composition_factory(
 def _default_event_loop_runner(application: object) -> int:
     event_loop = getattr(application, "exec")
     return int(event_loop())
+
+
+def _default_theme_applier(application: object) -> None:
+    apply_theme_stylesheet(application, load_default_theme())
