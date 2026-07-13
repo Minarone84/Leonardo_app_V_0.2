@@ -1,264 +1,205 @@
-"""Controlled process supervision for Leonardo V2 Core."""
+"""Controlled external-process lifecycle owner for Leonardo Light V2."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from threading import RLock
 from typing import Protocol
+from uuid import uuid4
 
-from leonardo.contracts.errors import ErrorSeverity
-from leonardo.contracts.processes import (
-    ProcessLaunchRequest,
-    ProcessRuntimeState,
-)
+from leonardo.audit import AuditEventV1
 from leonardo.core.audit_log import AuditLog
 from leonardo.core.error_router import ErrorRouter
-from leonardo.core.state_store import StateStore
 
 
 class ManagedProcessHandle(Protocol):
-    """Minimal handle required for supervised process lifecycle control."""
-
     pid: int | None
 
-    def poll(self) -> int | None:
-        """Return the exit code when the process has completed."""
-
-    def terminate(self) -> None:
-        """Request graceful process termination."""
-
-    def kill(self) -> None:
-        """Force process termination."""
-
-    def wait(self, timeout: float | None = None) -> int:
-        """Wait for process completion."""
+    def poll(self) -> int | None: ...
+    def terminate(self) -> None: ...
+    def kill(self) -> None: ...
 
 
 class ProcessLauncher(Protocol):
-    """Boundary used by ProcessManager to start processes."""
+    def __call__(
+        self,
+        command: tuple[str, ...],
+        *,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+    ) -> ManagedProcessHandle: ...
 
-    def start(self, request: ProcessLaunchRequest) -> ManagedProcessHandle:
-        """Start a process for an explicit launch request."""
+
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    process_id: str
+    label: str
+    command: tuple[str, ...]
+    status: str
+    pid: int | None
+    exit_code: int | None
+    started_at_utc: datetime
+    finished_at_utc: datetime | None
+    error_message: str | None
 
 
-class SubprocessLauncher:
-    """Standard-library process launcher used outside tests."""
-
-    def start(self, request: ProcessLaunchRequest) -> ManagedProcessHandle:
-        """Start a process through ``subprocess.Popen``."""
-
-        env = None
-        if request.env:
-            env = dict(os.environ)
-            env.update(request.env)
-        return subprocess.Popen(
-            list(request.command),
-            cwd=request.cwd,
-            env=env,
-        )
+@dataclass
+class _ProcessRecord:
+    process_id: str
+    label: str
+    command: tuple[str, ...]
+    handle: ManagedProcessHandle
+    status: str = "running"
+    pid: int | None = None
+    exit_code: int | None = None
+    started_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
+    finished_at_utc: datetime | None = None
+    error_message: str | None = None
 
 
 class ProcessManager:
-    """
-    Supervise explicitly launched operating-system processes.
-
-    The manager owns only process lifecycle supervision. It does not register
-    domain processes, execute actions, own TaskManager behavior, or start
-    processes during application startup.
-    """
-
     def __init__(
         self,
-        state_store: StateStore,
         audit_log: AuditLog,
         *,
-        launcher: ProcessLauncher | None = None,
         error_router: ErrorRouter | None = None,
+        launcher: ProcessLauncher | None = None,
     ) -> None:
-        if not isinstance(state_store, StateStore):
-            raise TypeError("state_store must be a StateStore")
         if not isinstance(audit_log, AuditLog):
             raise TypeError("audit_log must be an AuditLog")
-        if error_router is not None and not isinstance(error_router, ErrorRouter):
-            raise TypeError("error_router must be an ErrorRouter")
-        self._state_store = state_store
         self._audit_log = audit_log
-        self._launcher = launcher if launcher is not None else SubprocessLauncher()
         self._error_router = error_router
-        self._handles: dict[str, ManagedProcessHandle] = {}
+        self._launcher = launcher or _default_launcher
+        self._records: dict[str, _ProcessRecord] = {}
+        self._lock = RLock()
 
-    def launch_process(
+    def launch(
         self,
-        request: ProcessLaunchRequest,
-    ) -> ProcessRuntimeState:
-        """
-        Start a process from an explicit launch request.
-
-        The process command is executed through the configured launcher boundary.
-        Duplicate active process identifiers are rejected.
-        """
-
-        if not isinstance(request, ProcessLaunchRequest):
-            raise TypeError("request must be a ProcessLaunchRequest")
-        if self._is_active_process_id(request.process_id):
-            raise ValueError(f"Process is already active: {request.process_id}")
-
-        self._state_store.process_starting(request)
+        command: tuple[str, ...] | list[str],
+        *,
+        label: str,
+        process_id: str | None = None,
+        cwd: Path | str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        normalized = tuple(command)
+        if not normalized or any(not isinstance(part, str) or not part for part in normalized):
+            raise ValueError("command must contain non-empty strings")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("label must be a non-empty string")
+        identity = process_id or uuid4().hex
+        with self._lock:
+            if identity in self._records:
+                raise ValueError(f"Process already registered: {identity}")
         try:
-            handle = self._launcher.start(request)
+            handle = self._launcher(
+                normalized,
+                cwd=Path(cwd) if cwd is not None else None,
+                env=dict(env) if env is not None else None,
+            )
         except Exception as exc:
-            self._state_store.process_failed(
-                request.process_id,
-                error_message=str(exc) or type(exc).__name__,
-            )
-            self._route_exception(
-                exc,
-                message=f"Process launch failed: {request.label}",
-                correlation_id=request.correlation_id,
-                context={"process_id": request.process_id},
-            )
+            if self._error_router is not None:
+                self._error_router.route_exception(
+                    exc,
+                    message=f"Process launch failed: {label}",
+                    process_id=identity,
+                    context={"command": normalized},
+                )
             raise
-
-        self._handles[request.process_id] = handle
-        return self._state_store.process_running(
-            request.process_id,
+        record = _ProcessRecord(
+            process_id=identity,
+            label=label.strip(),
+            command=normalized,
+            handle=handle,
             pid=handle.pid,
         )
-
-    def active_processes(self) -> tuple[ProcessRuntimeState, ...]:
-        """Return defensive active process runtime state snapshots."""
-
-        return self._state_store.processes_state()
-
-    def poll_process(self, process_id: str) -> ProcessRuntimeState:
-        """Refresh one active process from its handle status."""
-
-        handle = self._require_handle(process_id)
-        try:
-            exit_code = handle.poll()
-        except Exception as exc:
-            state = self._current_state(process_id)
-            terminal = self._state_store.process_failed(
-                process_id,
-                error_message=str(exc) or type(exc).__name__,
+        with self._lock:
+            self._records[identity] = record
+        self._audit_log.emit(
+            AuditEventV1(
+                event_type="process.started",
+                category="runtime",
+                message=f"Process started: {record.label}",
+                process_id=identity,
+                details={"command": normalized, "pid": record.pid},
             )
-            self._handles.pop(process_id, None)
-            self._route_exception(
-                exc,
-                message=f"Process poll failed: {state.label}",
-                correlation_id=state.correlation_id,
-                context={"process_id": process_id},
-            )
-            return terminal
-
-        if exit_code is None:
-            return self._current_state(process_id)
-
-        self._handles.pop(process_id, None)
-        if exit_code == 0:
-            return self._state_store.process_stopped(
-                process_id,
-                exit_code=exit_code,
-            )
-        return self._state_store.process_failed(
-            process_id,
-            exit_code=exit_code,
-            error_message=f"Process exited with code {exit_code}",
         )
+        return identity
 
-    def refresh_process(self, process_id: str) -> ProcessRuntimeState:
-        """Alias for ``poll_process``."""
+    def poll(self, process_id: str) -> ProcessSnapshot:
+        with self._lock:
+            record = self._require_locked(process_id)
+            handle = record.handle
+        exit_code = handle.poll()
+        if exit_code is not None:
+            with self._lock:
+                record.status = "completed" if exit_code == 0 else "failed"
+                record.exit_code = int(exit_code)
+                record.finished_at_utc = datetime.now(UTC)
+        return self.get_snapshot(process_id)
 
-        return self.poll_process(process_id)
-
-    def stop_process(self, process_id: str) -> ProcessRuntimeState:
-        """Request graceful termination for one active process."""
-
-        handle = self._require_handle(process_id)
-        state = self._state_store.process_stop_requested(process_id)
-        try:
-            handle.terminate()
-        except Exception as exc:
-            terminal = self._state_store.process_failed(
-                process_id,
-                error_message=str(exc) or type(exc).__name__,
-            )
-            self._handles.pop(process_id, None)
-            self._route_exception(
-                exc,
-                message=f"Process stop failed: {state.label}",
-                correlation_id=state.correlation_id,
-                context={"process_id": process_id},
-            )
-            return terminal
-        return state
-
-    def kill_process(self, process_id: str) -> ProcessRuntimeState:
-        """Force termination for one active process."""
-
-        handle = self._require_handle(process_id)
-        state = self._current_state(process_id)
-        try:
+    def terminate(self, process_id: str, *, force: bool = False) -> bool:
+        with self._lock:
+            record = self._records.get(process_id)
+            if record is None or record.status not in {"running", "terminate_requested"}:
+                return False
+            record.status = "terminate_requested"
+            handle = record.handle
+        if force:
             handle.kill()
-            exit_code = handle.wait(timeout=1.0)
-        except Exception as exc:
-            self._route_exception(
-                exc,
-                message=f"Process kill failed: {state.label}",
-                correlation_id=state.correlation_id,
-                context={"process_id": process_id},
-            )
-            raise
+        else:
+            handle.terminate()
+        return True
 
-        self._handles.pop(process_id, None)
-        return self._state_store.process_killed(
-            process_id,
-            exit_code=exit_code,
-            error_message="Process killed",
-        )
+    def active_processes(self) -> tuple[ProcessSnapshot, ...]:
+        with self._lock:
+            identities = tuple(self._records)
+        snapshots = tuple(self.poll(identity) for identity in identities)
+        return tuple(item for item in snapshots if item.status in {"running", "terminate_requested"})
 
-    def stop_all(self) -> tuple[ProcessRuntimeState, ...]:
-        """Request graceful termination for all active process handles."""
+    def snapshots(self) -> tuple[ProcessSnapshot, ...]:
+        with self._lock:
+            identities = tuple(self._records)
+        return tuple(self.poll(identity) for identity in identities)
 
-        states: list[ProcessRuntimeState] = []
-        for process_id in tuple(sorted(self._handles)):
-            states.append(self.stop_process(process_id))
-        return tuple(states)
+    def get_snapshot(self, process_id: str) -> ProcessSnapshot:
+        with self._lock:
+            return _snapshot(self._require_locked(process_id))
 
-    def _is_active_process_id(self, process_id: str) -> bool:
-        if process_id in self._handles:
-            return True
-        return any(
-            state.process_id == process_id
-            for state in self._state_store.processes_state()
-        )
+    def shutdown(self) -> None:
+        for snapshot in self.active_processes():
+            self.terminate(snapshot.process_id)
 
-    def _require_handle(self, process_id: str) -> ManagedProcessHandle:
-        handle = self._handles.get(process_id)
-        if handle is None:
-            raise KeyError(f"Process is not active: {process_id}")
-        return handle
+    def _require_locked(self, process_id: str) -> _ProcessRecord:
+        record = self._records.get(process_id)
+        if record is None:
+            raise KeyError(f"Unknown process: {process_id}")
+        return record
 
-    def _current_state(self, process_id: str) -> ProcessRuntimeState:
-        for state in self._state_store.processes_state():
-            if state.process_id == process_id:
-                return state
-        raise KeyError(f"Process runtime state is not active: {process_id}")
 
-    def _route_exception(
-        self,
-        exception: Exception,
-        *,
-        message: str,
-        correlation_id: str | None,
-        context: dict[str, object],
-    ) -> None:
-        if self._error_router is None:
-            return
-        self._error_router.route_exception(
-            exception,
-            message=message,
-            severity=ErrorSeverity.ERROR,
-            correlation_id=correlation_id,
-            context=context,
-        )
+def _snapshot(record: _ProcessRecord) -> ProcessSnapshot:
+    return ProcessSnapshot(
+        process_id=record.process_id,
+        label=record.label,
+        command=record.command,
+        status=record.status,
+        pid=record.pid,
+        exit_code=record.exit_code,
+        started_at_utc=record.started_at_utc,
+        finished_at_utc=record.finished_at_utc,
+        error_message=record.error_message,
+    )
+
+
+def _default_launcher(
+    command: tuple[str, ...],
+    *,
+    cwd: Path | None,
+    env: dict[str, str] | None,
+) -> ManagedProcessHandle:
+    merged_env = None if env is None else {**os.environ, **env}
+    return subprocess.Popen(command, cwd=cwd, env=merged_env)  # noqa: S603

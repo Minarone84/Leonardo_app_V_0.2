@@ -1,776 +1,197 @@
-"""Read-only Runtime Manager window driven by GUI metadata."""
+"""Read-only Runtime Manager backed by direct manager snapshots."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
-from functools import partial
-from pathlib import Path
+from dataclasses import asdict, is_dataclass
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from leonardo.gui.action_observer import GuiActionObserver
-from leonardo.gui.metadata import (
-    EffectiveGuiMetadataProfile,
-    GuiMetadataResolver,
-    load_metadata_document,
-)
-from leonardo.gui.style import load_default_theme
-from leonardo.gui.windows.traceable_shell_widgets import apply_trace
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
+from leonardo.gui.windows.shell_widgets import apply_identity, configure_table, populate_table
 
-
-RUNTIME_MANAGER_METADATA_ID = "runtime_manager.window"
-_RUNTIME_MANAGER_METADATA_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "metadata"
-    / "windows"
-    / "runtime_manager.window.toml"
-)
-_SUMMARY_TABLE_ID = "runtime_manager.summary_table"
-_SERVICES_TABLE_ID = "runtime_manager.services_table"
-_TASKS_TABLE_ID = "runtime_manager.tasks_table"
-_PROCESSES_TABLE_ID = "runtime_manager.processes_table"
-_CONNECTIONS_TABLE_ID = "runtime_manager.connections_table"
-_WINDOWS_TABLE_ID = "runtime_manager.windows_table"
-_ACTIONS_TABLE_ID = "runtime_manager.actions_table"
-_OPERATIONS_TABLE_ID = "runtime_manager.operations_table"
-_AUDIT_PREVIEW_TABLE_ID = "runtime_manager.audit_preview_table"
-_SECTION_SUMMARY_FIELDS = (
-    "app_summary",
-    "session_summary",
-    "services_summary",
-    "tasks_summary",
-    "processes_summary",
-    "connections_summary",
-    "windows_summary",
-    "actions_summary",
-    "operations_summary",
-    "audit_summary",
-    "contracts_summary",
-)
-_OVERVIEW_CARDS = (
-    ("health", "runtime_manager.card.health", "Health"),
-    ("generated_at", "runtime_manager.card.generated_at", "Generated"),
-    ("summary_rows", "runtime_manager.card.summary_rows", "Sections"),
-    ("audit_preview_rows", "runtime_manager.card.audit_preview_rows", "Audit Rows"),
-)
-
-
-SnapshotProvider = Callable[[], object]
-_TRACKED_RUNTIME_MANAGER_ACTION_IDS = frozenset(
-    (
-        "runtime_manager.refresh_snapshot",
-        "runtime_manager.close",
-    )
-)
-
-
-def load_runtime_manager_profile() -> EffectiveGuiMetadataProfile:
-    """Load and resolve the Runtime Manager metadata profile."""
-
-    result = load_metadata_document(_RUNTIME_MANAGER_METADATA_PATH)
-    if result.document is None or result.report.has_errors:
-        messages = "; ".join(issue.message for issue in result.report.issues)
-        raise ValueError(f"Invalid Runtime Manager metadata profile: {messages}")
-    return GuiMetadataResolver().resolve(result.document)
+RUNTIME_MANAGER_WINDOW_ID = "runtime_manager.window"
+_TABLES = {
+    "runtime_manager.table.tasks": (("task_id", "Task ID"), ("task_name", "Task"), ("status", "Status"), ("progress_message", "Progress")),
+    "runtime_manager.table.processes": (("process_id", "Process ID"), ("label", "Label"), ("status", "Status"), ("pid", "PID")),
+    "runtime_manager.table.connections": (("connection_id", "Connection ID"), ("label", "Label"), ("status", "Status"), ("protocol", "Protocol")),
+    "runtime_manager.table.windows": (("window_id", "Window ID"), ("title", "Title"), ("status", "Status"), ("window_type", "Type")),
+    "runtime_manager.table.actions": (("action_id", "Action ID"), ("label", "Label"), ("window_id", "Window"), ("risk_level", "Risk")),
+    "runtime_manager.table.audit": (("timestamp_utc", "Timestamp"), ("severity", "Severity"), ("event_type", "Event"), ("message", "Message")),
+}
+_TAB_LABELS = {
+    "runtime_manager.table.tasks": "Tasks",
+    "runtime_manager.table.processes": "Processes",
+    "runtime_manager.table.connections": "Connections",
+    "runtime_manager.table.windows": "Windows",
+    "runtime_manager.table.actions": "Actions",
+    "runtime_manager.table.audit": "Audit",
+}
 
 
 class RuntimeManagerWindow(QWidget):
-    """Read-only Runtime Manager view backed by an injected snapshot provider.
-
-    The window consumes `runtime_manager.window` metadata for its identity,
-    action labels, and table headers. Refresh reads a snapshot from the
-    configured provider or backend and renders local table state. The class does
-    not construct Core services, mutate registries, execute operations, or own
-    application lifecycle.
-    """
-
     def __init__(
         self,
-        profile: EffectiveGuiMetadataProfile | None = None,
         *,
-        snapshot_provider: SnapshotProvider | None = None,
-        backend: object | None = None,
-        snapshot: object | None = None,
+        snapshot_provider: Callable[[], object] | None = None,
         action_observer: GuiActionObserver | None = None,
+        parent: QWidget | None = None,
     ) -> None:
-        super().__init__()
-        self._profile = profile if profile is not None else load_runtime_manager_profile()
-        if self._profile.metadata_id != RUNTIME_MANAGER_METADATA_ID:
-            raise ValueError("profile must describe runtime_manager.window")
-        if snapshot_provider is not None and backend is not None:
-            raise ValueError("Provide either snapshot_provider or backend, not both")
-        if action_observer is not None and not callable(
-            getattr(action_observer, "record_action", None)
-        ):
-            raise TypeError("action_observer must expose callable record_action")
-
-        self._snapshot_provider = (
-            snapshot_provider
-            if snapshot_provider is not None
-            else _snapshot_provider_from_backend(backend)
-        )
+        super().__init__(parent)
+        self.setWindowTitle("Runtime Manager")
+        self.setObjectName("runtime_manager_window")
+        self.setProperty("object_id", RUNTIME_MANAGER_WINDOW_ID)
+        self.resize(1200, 760)
+        self.setMinimumSize(900, 560)
+        self._snapshot_provider = snapshot_provider
         self._action_observer = action_observer
-        self._actions: dict[str, QPushButton] = {}
         self._tables: dict[str, QTableWidget] = {}
-        self._overview_cards: dict[str, QLabel] = {}
-        self._last_rendered_snapshot_summary: dict[str, object] = {}
-        self._refresh_called = False
-        self.close_requested_locally = False
+        self._buttons: dict[str, QPushButton] = {}
         self._status_label: QLabel | None = None
-        self._theme = load_default_theme()
-
-        self._apply_profile_metadata()
-        self.setProperty("theme_id", self._theme.theme_id)
+        self._last_rendered_snapshot_summary = ""
+        self._refresh_called = False
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_window()
-        self.render_snapshot(snapshot)
-
-    @property
-    def profile(self) -> EffectiveGuiMetadataProfile:
-        """Return the effective Runtime Manager metadata profile."""
-
-        return self._profile
 
     @property
     def refresh_called(self) -> bool:
-        """Return whether local refresh has been requested."""
-
         return self._refresh_called
 
     @property
-    def last_rendered_snapshot_summary(self) -> Mapping[str, object]:
-        """Return a defensive summary of the last rendered snapshot."""
-
-        return dict(self._last_rendered_snapshot_summary)
+    def last_rendered_snapshot_summary(self) -> str:
+        return self._last_rendered_snapshot_summary
 
     def table_ids(self) -> tuple[str, ...]:
-        """Return metadata table IDs in display order."""
-
         return tuple(self._tables)
 
     def action_labels(self) -> Mapping[str, str]:
-        """Return metadata action labels by action ID."""
-
-        return {action_id: button.text() for action_id, button in self._actions.items()}
+        return {key: button.text() for key, button in self._buttons.items()}
 
     def action_button_for_id(self, action_id: str) -> QPushButton:
-        """Return a Runtime Manager action button by stable action ID."""
-
-        try:
-            return self._actions[action_id]
-        except KeyError as error:
-            raise KeyError(f"Unknown Runtime Manager action: {action_id}") from error
+        return self._buttons[action_id]
 
     def table_for_id(self, table_id: str) -> QTableWidget:
-        """Return a Runtime Manager table widget by metadata table ID."""
-
-        try:
-            return self._tables[table_id]
-        except KeyError as error:
-            raise KeyError(f"Unknown Runtime Manager table: {table_id}") from error
+        return self._tables[table_id]
 
     def table_headers(self, table_id: str) -> tuple[str, ...]:
-        """Return visible table header labels for a metadata table ID."""
-
         table = self.table_for_id(table_id)
         return tuple(
             table.horizontalHeaderItem(index).text()
             for index in range(table.columnCount())
         )
 
-    def refresh_snapshot(self) -> None:
-        """Read the current snapshot from the provider and render it locally."""
+    def status_text(self) -> str:
+        return "" if self._status_label is None else self._status_label.text()
 
+    def refresh_snapshot(self) -> object | None:
         self._refresh_called = True
         if self._snapshot_provider is None:
-            self.render_snapshot(None)
-            self._set_status("No runtime snapshot provider configured.")
-            return
-
+            self._set_status("Runtime snapshot provider is unavailable.")
+            return None
         snapshot = self._snapshot_provider()
         self.render_snapshot(snapshot)
+        return snapshot
 
-    def render_snapshot(self, snapshot: object | None) -> None:
-        """Render a read-only snapshot into metadata-defined local tables."""
-
-        rows_by_table = _rows_by_table(snapshot)
-        for table_id, table in self._tables.items():
-            columns = _table_column_ids(self._profile.values, table_id)
-            _render_table_rows(table, columns, rows_by_table.get(table_id, ()))
-
-        summary = _snapshot_summary(snapshot, rows_by_table)
-        self._last_rendered_snapshot_summary = summary
-        self._render_overview(summary)
-        self._set_status(_string_value(summary, "status_message", "Runtime snapshot rendered."))
-
-    def closeEvent(self, event: QCloseEvent) -> None:
-        """Record that closing remained local to the widget."""
-
-        self.close_requested_locally = True
-        super().closeEvent(event)
-
-    def _apply_profile_metadata(self) -> None:
-        values = self._profile.values
-        identity = _mapping_at(values, "identity")
-        metadata = _mapping_at(values, "metadata")
-        geometry = _mapping_at(values, "geometry")
-        style = _mapping_at(values, "style")
-
-        self.setWindowTitle(_string_value(identity, "title", "Runtime Manager"))
-        self.setObjectName(_string_value(metadata, "object_name", "runtime_manager_window"))
-        self.setProperty("object_id", RUNTIME_MANAGER_METADATA_ID)
-        self.resize(
-            _int_value(geometry, "width", 1440),
-            _int_value(geometry, "height", 900),
+    def render_snapshot(self, snapshot: object) -> None:
+        mapping = _mapping(snapshot)
+        table_rows = {
+            "runtime_manager.table.tasks": _rows(mapping.get("tasks")),
+            "runtime_manager.table.processes": _rows(mapping.get("processes")),
+            "runtime_manager.table.connections": _rows(mapping.get("connections")),
+            "runtime_manager.table.windows": _rows(mapping.get("windows")),
+            "runtime_manager.table.actions": _rows(mapping.get("actions")),
+            "runtime_manager.table.audit": _rows(mapping.get("recent_events")),
+        }
+        for table_id, rows in table_rows.items():
+            columns = tuple(column_id for column_id, _ in _TABLES[table_id])
+            populate_table(self._tables[table_id], columns, rows)
+        app_status = str(mapping.get("app_status", "unknown"))
+        counts = ", ".join(
+            f"{_TAB_LABELS[table_id].lower()}={len(rows)}"
+            for table_id, rows in table_rows.items()
         )
-
-        self._apply_profile_font()
-
-    def _apply_profile_font(self) -> None:
-        style = _mapping_at(self._profile.values, "style")
-        font = self.font()
-        font.setPointSize(_int_value(style, "font_size", 14))
-        self.setFont(font)
+        self._last_rendered_snapshot_summary = f"app={app_status}; {counts}"
+        self._set_status(f"Runtime snapshot rendered: {self._last_rendered_snapshot_summary}")
 
     def _build_window(self) -> None:
         root = QVBoxLayout(self)
-        root.setObjectName("runtime_manager.layout.root")
-        root.setContentsMargins(
-            self._theme.spacing.lg,
-            self._theme.spacing.lg,
-            self._theme.spacing.lg,
-            self._theme.spacing.lg,
-        )
-        root.setSpacing(self._theme.spacing.md)
-        root.addWidget(self._build_header())
-        root.addWidget(self._build_toolbar())
-        root.addWidget(self._build_body(), stretch=1)
-        root.addWidget(self._build_footer())
+        apply_identity(root, "runtime_manager.layout.root", object_type="layout")
 
-    def _build_header(self) -> QWidget:
-        identity = _mapping_at(self._profile.values, "identity")
-        title = QLabel(_string_value(identity, "title", "Runtime Manager"))
-        title.setObjectName("runtime_manager.title_label")
-        title.setProperty("object_id", "runtime_manager.title_label")
-        title.setProperty("object_type", "label")
-        title_font = title.font()
-        title_font.setPointSize(self._theme.typography.title_font_size)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        header = QGroupBox("Runtime Manager", self)
+        apply_identity(header, "runtime_manager.panel.header", object_type="panel")
+        header_layout = QHBoxLayout(header)
+        title = QLabel("Live application state from authoritative managers", header)
+        apply_identity(title, "runtime_manager.label.title", object_type="label")
+        self._status_label = QLabel("Ready", header)
+        apply_identity(self._status_label, "runtime_manager.label.status", object_type="status_label")
+        header_layout.addWidget(title)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self._status_label)
+        root.addWidget(header)
 
-        subtitle = QLabel("Generic read-only runtime inspection surface")
-        apply_trace(
-            subtitle,
-            "runtime_manager.subtitle_label",
-            object_type="status_label",
-            display_label="Runtime Manager Scope",
-            parent_object_id="runtime_manager.panel.header",
-        )
+        toolbar = QGroupBox("Actions", self)
+        toolbar_layout = QHBoxLayout(toolbar)
+        refresh = QPushButton("Refresh", toolbar)
+        apply_identity(refresh, "runtime_manager.refresh_snapshot", object_type="button", action_id="runtime_manager.refresh_snapshot")
+        refresh.clicked.connect(self._handle_refresh)
+        close = QPushButton("Close", toolbar)
+        apply_identity(close, "runtime_manager.close", object_type="button", action_id="runtime_manager.close")
+        close.clicked.connect(self.close)
+        self._buttons["runtime_manager.refresh_snapshot"] = refresh
+        self._buttons["runtime_manager.close"] = close
+        toolbar_layout.addWidget(refresh)
+        toolbar_layout.addWidget(close)
+        toolbar_layout.addStretch(1)
+        root.addWidget(toolbar)
 
-        theme_status = QLabel(f"Theme: {self._theme.identity.display_name}")
-        apply_trace(
-            theme_status,
-            "runtime_manager.theme_status_label",
-            object_type="status_label",
-            display_label="Runtime Manager Theme",
-            parent_object_id="runtime_manager.panel.header",
-        )
-
-        header = QGroupBox(_region_label(self._profile.values, "header", "Header"))
-        header.setObjectName("runtime_manager.panel.header")
-        header.setProperty("object_id", "runtime_manager.panel.header")
-        layout = QHBoxLayout(header)
-        layout.setObjectName("runtime_manager.layout.header")
-        layout.addWidget(title)
-        layout.addWidget(subtitle, stretch=1)
-        layout.addWidget(theme_status, alignment=Qt.AlignmentFlag.AlignRight)
-        return header
-
-    def _build_toolbar(self) -> QWidget:
-        toolbar = QGroupBox(_region_label(self._profile.values, "toolbar", "Toolbar"))
-        toolbar.setObjectName("runtime_manager.toolbar.main")
-        toolbar.setProperty("object_id", "runtime_manager.toolbar.main")
-        layout = QHBoxLayout(toolbar)
-        layout.setObjectName("runtime_manager.layout.toolbar")
-        for action_id, action in _metadata_items(_mapping_at(self._profile.values, "actions")):
-            button = QPushButton(_string_value(action, "label", action_id))
-            button.setObjectName(action_id)
-            button.setProperty("object_id", action_id)
-            button.setProperty("object_type", "button")
-            button.setProperty("action_id", action_id)
-            _connect_signal(button.clicked, partial(self._handle_action, action_id))
-            self._actions[action_id] = button
-            layout.addWidget(button)
-        return toolbar
-
-    def _build_body(self) -> QWidget:
-        body = QGroupBox(_region_label(self._profile.values, "body", "Body"))
-        body.setObjectName("runtime_manager.panel.body")
-        body.setProperty("object_id", "runtime_manager.panel.body")
-        layout = QVBoxLayout(body)
-        layout.setObjectName("runtime_manager.layout.body")
-        layout.addWidget(self._build_overview())
-        tabs = QTabWidget()
-        tabs.setObjectName("runtime_manager.tables")
-        tabs.setProperty("object_id", "runtime_manager.tables")
-        tabs.setProperty("object_type", "tabs")
-        for table_id, table_metadata in _metadata_items(_mapping_at(self._profile.values, "tables")):
-            table = self._build_table(table_id, table_metadata)
+        tabs = QTabWidget(self)
+        tabs.setObjectName("runtime_manager.tabs")
+        for table_id, columns in _TABLES.items():
+            table = QTableWidget(tabs)
+            apply_identity(table, table_id, object_type="table")
+            configure_table(table, columns)
             self._tables[table_id] = table
-            tabs.addTab(table, _string_value(table_metadata, "label", table_id))
-        layout.addWidget(tabs)
-        return body
+            tabs.addTab(table, _TAB_LABELS[table_id])
+        root.addWidget(tabs, stretch=1)
 
-    def _build_overview(self) -> QWidget:
-        overview = QGroupBox("Runtime Overview")
-        apply_trace(
-            overview,
-            "runtime_manager.panel.overview",
-            object_type="status_card_panel",
-            parent_object_id="runtime_manager.panel.body",
-        )
-        layout = QHBoxLayout(overview)
-        layout.setObjectName("runtime_manager.layout.overview")
-        for key, object_id, label in _OVERVIEW_CARDS:
-            card = QLabel(f"{label}: --")
-            card.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            card.setMinimumHeight(42)
-            apply_trace(
-                card,
-                object_id,
-                object_type="status_card",
-                display_label=label,
-                parent_object_id="runtime_manager.panel.overview",
+    def _handle_refresh(self) -> None:
+        if self._action_observer is not None:
+            self._action_observer.record_action(
+                "runtime_manager.refresh_snapshot",
+                window_id=RUNTIME_MANAGER_WINDOW_ID,
             )
-            self._overview_cards[key] = card
-            layout.addWidget(card)
-        return overview
-
-    def _build_table(self, table_id: str, table_metadata: Mapping[str, object]) -> QTableWidget:
-        columns = _sorted_columns(_mapping_at(table_metadata, "columns"))
-        table = QTableWidget(0, len(columns))
-        table.setObjectName(table_id)
-        table.setProperty("object_id", table_id)
-        table.setProperty("object_type", "table")
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setAlternatingRowColors(True)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.setHorizontalHeaderLabels(
-            [_string_value(column, "label", column_id) for column_id, column in columns]
-        )
-        return table
-
-    def _build_footer(self) -> QWidget:
-        footer = QGroupBox(_region_label(self._profile.values, "footer", "Footer"))
-        footer.setObjectName("runtime_manager.panel.footer")
-        footer.setProperty("object_id", "runtime_manager.panel.footer")
-        layout = QHBoxLayout(footer)
-        layout.setObjectName("runtime_manager.layout.footer")
-        status = QLabel("No runtime snapshot rendered.")
-        status.setObjectName("runtime_manager.status_label")
-        status.setProperty("object_id", "runtime_manager.status_label")
-        status.setProperty("object_type", "status_label")
-        self._status_label = status
-        layout.addWidget(status)
-        return footer
-
-    def _handle_action(self, action_id: str) -> None:
-        if action_id == "runtime_manager.refresh_snapshot":
-            if not self._record_action(action_id):
-                return
-            self.refresh_snapshot()
-            return
-        if action_id == "runtime_manager.close":
-            if not self._record_action(action_id):
-                return
-            self.close()
-            return
-        self._set_status(f"{action_id} is read-only metadata-only behavior in this phase.")
+        self.refresh_snapshot()
 
     def _set_status(self, message: str) -> None:
         if self._status_label is not None:
             self._status_label.setText(message)
 
-    def _render_overview(self, summary: Mapping[str, object]) -> None:
-        values = {
-            "health": _text_value(summary.get("health", summary.get("status", "empty"))),
-            "generated_at": _text_value(summary.get("generated_at", "not available")),
-            "summary_rows": _text_value(summary.get("summary_rows", 0)),
-            "audit_preview_rows": _text_value(summary.get("audit_preview_rows", 0)),
-        }
-        labels = {key: label for key, _object_id, label in _OVERVIEW_CARDS}
-        for key, card in self._overview_cards.items():
-            card.setText(f"{labels[key]}: {values[key]}")
 
-    def _record_action(self, action_id: str) -> bool:
-        if (
-            self._action_observer is None
-            or action_id not in _TRACKED_RUNTIME_MANAGER_ACTION_IDS
-        ):
-            return True
-        decision = self._action_observer.record_action(
-            action_id,
-            window_id=RUNTIME_MANAGER_METADATA_ID,
-        )
-        return decision.allowed
-
-
-def _snapshot_provider_from_backend(backend: object | None) -> SnapshotProvider | None:
-    if backend is None:
-        return None
-    snapshot = getattr(backend, "snapshot", None)
-    if not callable(snapshot):
-        raise TypeError("backend must expose a callable snapshot method")
-    return snapshot
-
-
-def _connect_signal(signal: object, handler: object) -> None:
-    connect = getattr(signal, "connect")
-    connect(handler)
-
-
-def _rows_by_table(snapshot: object | None) -> dict[str, tuple[Mapping[str, object], ...]]:
-    if snapshot is None:
-        return {}
+def _mapping(value: object) -> dict[str, object]:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return dict(value)
     return {
-        _SUMMARY_TABLE_ID: _summary_rows(snapshot),
-        _SERVICES_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="services",
-            list_key="services",
-            item_key="service",
-            ids_metadata_key="service_ids",
-            names_metadata_key=None,
-        ),
-        _TASKS_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="tasks",
-            list_key="tasks",
-            item_key="task",
-            ids_metadata_key="task_ids",
-            names_metadata_key="task_names",
-        ),
-        _PROCESSES_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="processes",
-            list_key="processes",
-            item_key="process",
-            ids_metadata_key="process_ids",
-            names_metadata_key="process_labels",
-        ),
-        _CONNECTIONS_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="connections",
-            list_key="connections",
-            item_key="connection",
-            ids_metadata_key="connection_ids",
-            names_metadata_key="connection_labels",
-        ),
-        _WINDOWS_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="windows",
-            list_key="windows",
-            item_key="window",
-            ids_metadata_key="open_window_ids",
-            names_metadata_key=None,
-        ),
-        _ACTIONS_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="actions",
-            list_key="actions",
-            item_key="action",
-            ids_metadata_key="recent_action_ids",
-            names_metadata_key=None,
-        ),
-        _OPERATIONS_TABLE_ID: _section_detail_rows(
-            snapshot,
-            section_id="operations",
-            list_key="operations",
-            item_key="operation",
-            ids_metadata_key="operation_ids",
-            names_metadata_key="operation_labels",
-        ),
-        _AUDIT_PREVIEW_TABLE_ID: _audit_preview_rows(snapshot),
+        name: getattr(value, name)
+        for name in dir(value)
+        if not name.startswith("_") and not callable(getattr(value, name))
     }
 
 
-def _summary_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
-    return tuple(
-        {
-            "section": _text_value(_field(section, "section_id", "")),
-            "status": _status_text(_field(section, "status", "")),
-            "count": _field(section, "count", 0),
-            "details": _text_value(_field(section, "message", "")),
-        }
-        for section in _snapshot_sections(snapshot)
-    )
-
-
-def _section_detail_rows(
-    snapshot: object,
-    *,
-    section_id: str,
-    list_key: str,
-    item_key: str,
-    ids_metadata_key: str,
-    names_metadata_key: str | None,
-) -> tuple[Mapping[str, object], ...]:
-    explicit_rows = _sequence_field(snapshot, list_key)
-    if explicit_rows:
-        return tuple(_normalize_row(item) for item in explicit_rows)
-
-    section = _section_by_id(snapshot, section_id)
-    if section is None:
+def _rows(value: object) -> tuple[Mapping[str, object], ...]:
+    if value is None:
         return ()
-
-    metadata = _mapping_at_object(_field(section, "metadata", {}))
-    ids = tuple(_sequence_value(metadata.get(ids_metadata_key)))
-    names = (
-        tuple(_sequence_value(metadata.get(names_metadata_key)))
-        if names_metadata_key is not None
-        else ()
-    )
-    if ids:
-        rows: list[Mapping[str, object]] = []
-        for index, item_id in enumerate(ids):
-            item_label = names[index] if index < len(names) else item_id
-            rows.append(
-                {
-                    item_key: _text_value(item_label),
-                    "status": _status_text(_field(section, "status", "")),
-                    "started_at": "",
-                    "details": _text_value(_field(section, "message", "")),
-                }
-            )
-        return tuple(rows)
-
-    if _field(section, "count", 0) or _field(section, "message", ""):
-        return (
-            {
-                item_key: section_id,
-                "status": _status_text(_field(section, "status", "")),
-                "started_at": "",
-                "details": _text_value(_field(section, "message", "")),
-            },
-        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(_mapping(item) for item in value)
     return ()
-
-
-def _audit_preview_rows(snapshot: object) -> tuple[Mapping[str, object], ...]:
-    events = _sequence_field(snapshot, "recent_audit_events")
-    return tuple(
-        {
-            "timestamp": _text_value(
-                _field(event, "timestamp", _field(event, "timestamp_utc", ""))
-            ),
-            "severity": _text_value(_field(event, "severity", "")),
-            "event_type": _text_value(_field(event, "event_type", "")),
-            "message": _text_value(_field(event, "message", "")),
-            "event_id": _text_value(_field(event, "event_id", "")),
-            "category": _text_value(_field(event, "category", "")),
-            "actor_id": _text_value(_field(event, "actor_id", "")),
-            "session_id": _text_value(_field(event, "session_id", "")),
-            "window_id": _text_value(_field(event, "window_id", "")),
-            "action_id": _text_value(_field(event, "action_id", "")),
-            "operation_id": _text_value(_field(event, "operation_id", "")),
-            "task_id": _text_value(_field(event, "task_id", "")),
-            "correlation_id": _text_value(_field(event, "correlation_id", "")),
-        }
-        for event in events
-    )
-
-
-def _snapshot_summary(
-    snapshot: object | None,
-    rows_by_table: Mapping[str, Sequence[Mapping[str, object]]],
-) -> dict[str, object]:
-    if snapshot is None:
-        return {
-            "status": "empty",
-            "status_message": "No runtime snapshot available.",
-            "summary_rows": 0,
-            "service_rows": 0,
-            "task_rows": 0,
-            "audit_preview_rows": 0,
-        }
-
-    health = _text_value(_field(snapshot, "health", "unknown"))
-    generated_at = _text_value(
-        _field(snapshot, "generated_at", _field(snapshot, "generated_at_utc", ""))
-    )
-    summary_rows = len(rows_by_table.get(_SUMMARY_TABLE_ID, ()))
-    service_rows = len(rows_by_table.get(_SERVICES_TABLE_ID, ()))
-    task_rows = len(rows_by_table.get(_TASKS_TABLE_ID, ()))
-    audit_rows = len(rows_by_table.get(_AUDIT_PREVIEW_TABLE_ID, ()))
-    return {
-        "status": "rendered",
-        "health": health,
-        "generated_at": generated_at,
-        "summary_rows": summary_rows,
-        "service_rows": service_rows,
-        "task_rows": task_rows,
-        "audit_preview_rows": audit_rows,
-        "status_message": f"Runtime snapshot rendered: {health}",
-    }
-
-
-def _render_table_rows(
-    table: QTableWidget,
-    columns: Sequence[str],
-    rows: Sequence[Mapping[str, object]],
-) -> None:
-    table.setRowCount(len(rows))
-    for row_index, row in enumerate(rows):
-        for column_index, column_id in enumerate(columns):
-            table.setItem(
-                row_index,
-                column_index,
-                QTableWidgetItem(_text_value(row.get(column_id, ""))),
-            )
-
-
-def _snapshot_sections(snapshot: object) -> tuple[object, ...]:
-    sections = _field(snapshot, "sections", None)
-    if sections is not None:
-        return tuple(_sequence_value(sections))
-    return tuple(
-        section
-        for field_name in _SECTION_SUMMARY_FIELDS
-        if (section := _field(snapshot, field_name, None)) is not None
-    )
-
-
-def _section_by_id(snapshot: object, section_id: str) -> object | None:
-    for section in _snapshot_sections(snapshot):
-        if _field(section, "section_id", "") == section_id:
-            return section
-    return None
-
-
-def _sequence_field(value: object, key: str) -> tuple[object, ...]:
-    return tuple(_sequence_value(_field(value, key, ())))
-
-
-def _sequence_value(value: object) -> tuple[object, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, tuple):
-        return value
-    if isinstance(value, list):
-        return tuple(value)
-    if isinstance(value, (str, bytes, bytearray)):
-        return (value,)
-    if isinstance(value, Mapping):
-        return (value,)
-    try:
-        return tuple(value)
-    except TypeError:
-        return (value,)
-
-
-def _normalize_row(item: object) -> Mapping[str, object]:
-    if isinstance(item, Mapping):
-        return item
-    return {
-        "service": _text_value(_field(item, "service", _field(item, "service_id", ""))),
-        "task": _text_value(_field(item, "task", _field(item, "task_name", _field(item, "task_id", "")))),
-        "status": _status_text(_field(item, "status", "")),
-        "started_at": _text_value(_field(item, "started_at", _field(item, "started_at_utc", ""))),
-        "details": _text_value(_field(item, "details", _field(item, "message", ""))),
-    }
-
-
-def _table_column_ids(values: Mapping[str, object], table_id: str) -> tuple[str, ...]:
-    tables = _mapping_at(values, "tables")
-    table = _mapping_at(tables, table_id)
-    return tuple(column_id for column_id, _ in _sorted_columns(_mapping_at(table, "columns")))
-
-
-def _mapping_at(values: Mapping[str, object], key: str) -> Mapping[str, object]:
-    value = values.get(key, {})
-    if isinstance(value, Mapping):
-        return value
-    return {}
-
-
-def _mapping_at_object(value: object) -> Mapping[str, object]:
-    if isinstance(value, Mapping):
-        return value
-    return {}
-
-
-def _field(value: object, key: str, fallback: object = None) -> object:
-    if isinstance(value, Mapping):
-        return value.get(key, fallback)
-    return getattr(value, key, fallback)
-
-
-def _string_value(values: Mapping[str, object], key: str, fallback: str) -> str:
-    value = values.get(key)
-    if isinstance(value, str) and value:
-        return value
-    return fallback
-
-
-def _int_value(values: Mapping[str, object], key: str, fallback: int) -> int:
-    value = values.get(key)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return fallback
-
-
-def _text_value(value: object) -> str:
-    if value is None:
-        return ""
-    enum_value = getattr(value, "value", None)
-    if isinstance(enum_value, str):
-        return enum_value
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, Mapping):
-        return ", ".join(f"{key}={_text_value(item)}" for key, item in value.items())
-    if isinstance(value, tuple | list):
-        return ", ".join(_text_value(item) for item in value)
-    return str(value)
-
-
-def _status_text(value: object) -> str:
-    return _text_value(value)
-
-
-def _region_label(values: Mapping[str, object], region_id: str, fallback: str) -> str:
-    region = _mapping_at(_mapping_at(values, "regions"), region_id)
-    return _string_value(region, "label", fallback)
-
-
-def _metadata_items(values: Mapping[str, object]) -> tuple[tuple[str, Mapping[str, object]], ...]:
-    return tuple(
-        (key, item)
-        for key, item in values.items()
-        if isinstance(key, str) and isinstance(item, Mapping)
-    )
-
-
-def _sorted_columns(values: Mapping[str, object]) -> tuple[tuple[str, Mapping[str, object]], ...]:
-    return tuple(
-        (key, item)
-        for key, item in sorted(
-            values.items(),
-            key=lambda entry: _int_value(entry[1], "order", 0)
-            if isinstance(entry[1], Mapping)
-            else 0,
-        )
-        if isinstance(key, str) and isinstance(item, Mapping)
-    )

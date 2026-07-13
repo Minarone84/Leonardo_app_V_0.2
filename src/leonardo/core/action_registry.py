@@ -1,50 +1,96 @@
-"""Action observability registry for Leonardo V2 Core."""
+"""Application-wide discoverable action registry."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from threading import RLock
 
-from leonardo.contracts.gui import ActionDefinition, ActionTriggerRecord
-from leonardo.contracts.identity import ActorOrigin
-from leonardo.core.state_store import StateStore
+from leonardo.audit import AuditEventV1
+from leonardo.core.audit_log import AuditLog
+
+
+@dataclass(frozen=True)
+class ActionDefinition:
+    action_id: str
+    label: str
+    handler: Callable[..., object] | None = None
+    window_id: str | None = None
+    risk_level: str = "normal"
+    confirmation_required: bool = False
+    audit_enabled: bool = True
+    metadata: dict[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action_id, str) or not self.action_id.strip():
+            raise ValueError("action_id must be a non-empty string")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("label must be a non-empty string")
+        if self.handler is not None and not callable(self.handler):
+            raise TypeError("handler must be callable or None")
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True)
+class ActionTrigger:
+    action_id: str
+    triggered_at_utc: datetime
+    actor_id: str
+    window_id: str | None
+    correlation_id: str | None
+    metadata: dict[str, object]
 
 
 class ActionRegistry:
-    """
-    Register action definitions and record action triggers.
-
-    The registry tracks trigger history only. It does not execute commands,
-    start operations, or store GUI widgets.
-    """
-
-    def __init__(self, state_store: StateStore) -> None:
-        if not isinstance(state_store, StateStore):
-            raise TypeError("state_store must be a StateStore")
-        self._state_store = state_store
+    def __init__(self, audit_log: AuditLog, *, actor_id: str = "local-user") -> None:
+        if not isinstance(audit_log, AuditLog):
+            raise TypeError("audit_log must be an AuditLog")
+        self._audit_log = audit_log
+        self._actor_id = actor_id
         self._definitions: dict[str, ActionDefinition] = {}
+        self._triggers: list[ActionTrigger] = []
+        self._lock = RLock()
 
-    def register_action(self, definition: ActionDefinition) -> ActionDefinition:
-        """Register an action definition by stable action identifier."""
-
-        if not isinstance(definition, ActionDefinition):
-            raise TypeError("definition must be an ActionDefinition")
-        if definition.action_id in self._definitions:
-            raise ValueError(f"Action already registered: {definition.action_id}")
-        self._definitions[definition.action_id] = definition
-        return definition
+    def register_action(
+        self,
+        definition: ActionDefinition | None = None,
+        *,
+        action_id: str | None = None,
+        label: str | None = None,
+        handler: Callable[..., object] | None = None,
+        window_id: str | None = None,
+        risk_level: str = "normal",
+        confirmation_required: bool = False,
+        audit_enabled: bool = True,
+        metadata: dict[str, object] | None = None,
+    ) -> ActionDefinition:
+        resolved = definition or ActionDefinition(
+            action_id=action_id or "",
+            label=label or action_id or "",
+            handler=handler,
+            window_id=window_id,
+            risk_level=risk_level,
+            confirmation_required=confirmation_required,
+            audit_enabled=audit_enabled,
+            metadata=dict(metadata or {}),
+        )
+        with self._lock:
+            existing = self._definitions.get(resolved.action_id)
+            if existing is not None:
+                if existing == resolved:
+                    return existing
+                raise ValueError(f"Action already registered: {resolved.action_id}")
+            self._definitions[resolved.action_id] = resolved
+        return resolved
 
     def get_action_definition(self, action_id: str) -> ActionDefinition | None:
-        """Return a registered action definition, if present."""
-
-        return self._definitions.get(action_id)
+        with self._lock:
+            return self._definitions.get(action_id)
 
     def list_actions(self) -> tuple[ActionDefinition, ...]:
-        """Return registered action definitions in deterministic order."""
-
-        return tuple(
-            self._definitions[action_id]
-            for action_id in sorted(self._definitions)
-        )
+        with self._lock:
+            return tuple(self._definitions[key] for key in sorted(self._definitions))
 
     def record_trigger(
         self,
@@ -52,33 +98,66 @@ class ActionRegistry:
         *,
         window_id: str | None = None,
         actor_id: str | None = None,
-        session_id: str | None = None,
-        origin: ActorOrigin | None = None,
         correlation_id: str | None = None,
         metadata: dict[str, object] | None = None,
-    ) -> ActionTriggerRecord:
-        """Record that a registered action was triggered."""
-
-        self._require_definition(action_id)
-        record = ActionTriggerRecord(
+    ) -> ActionTrigger:
+        definition = self._require(action_id)
+        record = ActionTrigger(
             action_id=action_id,
-            window_id=window_id,
-            actor_id=actor_id,
-            session_id=session_id,
-            origin=origin,
             triggered_at_utc=datetime.now(UTC),
+            actor_id=actor_id or self._actor_id,
+            window_id=window_id or definition.window_id,
             correlation_id=correlation_id,
-            metadata=metadata or {},
+            metadata=dict(metadata or {}),
         )
-        return self._state_store.action_triggered(record)
+        with self._lock:
+            self._triggers.append(record)
+            if len(self._triggers) > 500:
+                del self._triggers[:-500]
+        if definition.audit_enabled:
+            self._audit_log.emit(
+                AuditEventV1(
+                    event_type="action.triggered",
+                    category="action",
+                    message=f"Action triggered: {definition.label}",
+                    actor_id=record.actor_id,
+                    action_id=action_id,
+                    window_id=record.window_id,
+                    correlation_id=correlation_id,
+                    details=record.metadata,
+                )
+            )
+        return record
 
-    def recent_triggers(self) -> tuple[ActionTriggerRecord, ...]:
-        """Return bounded recent action trigger records."""
+    def invoke(
+        self,
+        action_id: str,
+        *args: object,
+        actor_id: str | None = None,
+        window_id: str | None = None,
+        correlation_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> object:
+        definition = self._require(action_id)
+        self.record_trigger(
+            action_id,
+            actor_id=actor_id,
+            window_id=window_id,
+            correlation_id=correlation_id,
+            metadata=metadata,
+        )
+        if definition.handler is None:
+            return None
+        return definition.handler(*args, **kwargs)
 
-        return self._state_store.recent_action_triggers()
+    def recent_triggers(self) -> tuple[ActionTrigger, ...]:
+        with self._lock:
+            return tuple(self._triggers)
 
-    def _require_definition(self, action_id: str) -> ActionDefinition:
-        definition = self._definitions.get(action_id)
+    def _require(self, action_id: str) -> ActionDefinition:
+        with self._lock:
+            definition = self._definitions.get(action_id)
         if definition is None:
             raise KeyError(f"Action is not registered: {action_id}")
         return definition

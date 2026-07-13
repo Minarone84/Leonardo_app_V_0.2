@@ -1,10 +1,9 @@
-"""Minimal Main Window shell that consumes GUI metadata."""
+"""Leonardo Light V2 Main Window shell."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from functools import partial
-from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent
@@ -23,26 +22,26 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.gui.action_observer import GuiActionObserver
-from leonardo.gui.metadata import (
-    EffectiveGuiMetadataProfile,
-    GuiMetadataResolver,
-    load_metadata_document,
-)
 from leonardo.gui.widgets import SuiteNavigationDonut
-from leonardo.gui.windows.traceable_shell_widgets import apply_trace
+from leonardo.gui.windows.shell_widgets import apply_identity
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
 
 
-MAIN_WINDOW_METADATA_ID = "main_window.window"
-_MAIN_WINDOW_METADATA_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "metadata"
-    / "windows"
-    / "main_window.window.toml"
+MAIN_WINDOW_ID = "main_window.window"
+
+_MAIN_WINDOW_ACTIONS = (
+    ("main_window.download_data", "Download Data"),
+    ("main_window.exit", "Exit"),
+    ("main_window.ohlcv_maintenance", "OHLCV Maintenance"),
+    ("main_window.open_analysis_suite", "Analysis Suite"),
+    ("main_window.open_data_manager_suite", "Data Manager Suite"),
+    ("main_window.open_research_suite", "Research Suite"),
+    ("main_window.open_runtime_manager", "Runtime Manager"),
+    ("main_window.open_settings_inspector", "Settings"),
+    ("main_window.open_trading_suite", "Trading Suite"),
 )
 RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
-SettingsInspectorFactory = Callable[[], QWidget]
 ShellActionIntentCallback = Callable[[str], str | None]
 DownloadActionIntentCallback = ShellActionIntentCallback
 MainWindowCloseCallback = Callable[[], None]
@@ -95,32 +94,20 @@ _QUICK_ACTIONS = (
 )
 
 
-def load_main_window_profile() -> EffectiveGuiMetadataProfile:
-    """Load and resolve the Main Window shell metadata profile."""
-
-    result = load_metadata_document(_MAIN_WINDOW_METADATA_PATH)
-    if result.document is None or result.report.has_errors:
-        messages = "; ".join(issue.message for issue in result.report.issues)
-        raise ValueError(f"Invalid Main Window metadata profile: {messages}")
-    return GuiMetadataResolver().resolve(result.document)
-
-
 class LeonardoMainWindow(QMainWindow):
-    """Minimal metadata-driven Leonardo Main Window shell.
+    """Minimal direct-code Leonardo Main Window shell.
 
-    The shell consumes metadata for title, action labels, and basic presentation
-    defaults. Runtime Manager and suite shell handoff is GUI-local through
+    Title, action labels, geometry, and presentation defaults are explicit code.
+    Runtime Manager and suite shell handoff is GUI-local through
     injected factories/callbacks. The class does not call provider, storage,
     chart, trading, or domain execution services.
     """
 
     def __init__(
         self,
-        profile: EffectiveGuiMetadataProfile | None = None,
         *,
         runtime_manager_window_factory: RuntimeManagerWindowFactory | None = None,
         runtime_snapshot_provider: RuntimeSnapshotProvider | None = None,
-        settings_inspector_factory: SettingsInspectorFactory | None = None,
         action_observer: GuiActionObserver | None = None,
         on_download_data_requested: DownloadActionIntentCallback | None = None,
         on_ohlcv_maintenance_requested: DownloadActionIntentCallback | None = None,
@@ -130,19 +117,12 @@ class LeonardoMainWindow(QMainWindow):
         version_label: str = "v0.2",
     ) -> None:
         super().__init__()
-        self._profile = profile if profile is not None else load_main_window_profile()
-        if self._profile.metadata_id != MAIN_WINDOW_METADATA_ID:
-            raise ValueError("profile must describe main_window.window")
         if runtime_manager_window_factory is not None and not callable(
             runtime_manager_window_factory
         ):
             raise TypeError("runtime_manager_window_factory must be callable")
         if runtime_snapshot_provider is not None and not callable(runtime_snapshot_provider):
             raise TypeError("runtime_snapshot_provider must be callable")
-        if settings_inspector_factory is not None and not callable(
-            settings_inspector_factory
-        ):
-            raise TypeError("settings_inspector_factory must be callable")
         if action_observer is not None and not callable(
             getattr(action_observer, "record_action", None)
         ):
@@ -169,8 +149,6 @@ class LeonardoMainWindow(QMainWindow):
         self._runtime_manager_window_factory = runtime_manager_window_factory
         self._runtime_snapshot_provider = runtime_snapshot_provider
         self._runtime_manager_window: QWidget | None = None
-        self._settings_inspector_factory = settings_inspector_factory
-        self._settings_inspector_window: QWidget | None = None
         self._on_download_data_requested = on_download_data_requested
         self._on_ohlcv_maintenance_requested = on_ohlcv_maintenance_requested
         self._on_suite_shell_requested = on_suite_shell_requested
@@ -178,23 +156,12 @@ class LeonardoMainWindow(QMainWindow):
         self._username = _string_or_fallback(username, "admin-dev")
         self._version_label = _string_or_fallback(version_label, "v0.2")
         self._central_message_label: QLabel | None = None
-        self._apply_profile_metadata()
+        self._apply_window_defaults()
         self._build_menu_bar()
         self._build_central_launcher()
         self._build_status_bar()
 
-    @property
-    def profile(self) -> EffectiveGuiMetadataProfile:
-        """Return the effective metadata profile consumed by the shell."""
 
-        return self._profile
-
-    @property
-    def metadata_title(self) -> str:
-        """Return the metadata-derived shell title."""
-
-        identity = _mapping_at(self._profile.values, "identity")
-        return _string_value(identity, "title", "Leonardo")
 
     @property
     def last_local_action_id(self) -> str:
@@ -208,19 +175,14 @@ class LeonardoMainWindow(QMainWindow):
 
         return self._runtime_manager_window
 
-    @property
-    def settings_inspector_window(self) -> QWidget | None:
-        """Return the locally retained Settings Inspector dialog, if created."""
-
-        return self._settings_inspector_window
 
     def action_ids(self) -> tuple[str, ...]:
-        """Return metadata action IDs in deterministic order."""
+        """Return action IDs in deterministic order."""
 
         return tuple(self._actions)
 
     def action_labels(self) -> Mapping[str, str]:
-        """Return metadata action labels by action ID."""
+        """Return action labels by action ID."""
 
         return {action_id: action.text() for action_id, action in self._actions.items()}
 
@@ -255,22 +217,6 @@ class LeonardoMainWindow(QMainWindow):
             raise RuntimeError("Suite Navigation donut has not been constructed")
         return self._suite_navigation_donut
 
-    def apply_effective_profile(self, profile: EffectiveGuiMetadataProfile) -> None:
-        """
-        Apply safe live visual settings from a Main Window effective profile.
-
-        The method intentionally limits live updates to visual fields that can
-        be changed without rebuilding the shell, rewiring actions, changing
-        stable object names, or mutating Core state.
-        """
-
-        if not isinstance(profile, EffectiveGuiMetadataProfile):
-            raise TypeError("profile must be an EffectiveGuiMetadataProfile")
-        if profile.metadata_id != MAIN_WINDOW_METADATA_ID:
-            raise ValueError("profile must describe main_window.window")
-        self._profile = profile
-        self._apply_visual_profile_metadata()
-
     def closeEvent(self, event: QCloseEvent) -> None:
         """Record that the shell close path stayed local."""
 
@@ -279,32 +225,16 @@ class LeonardoMainWindow(QMainWindow):
             self._on_close_requested()
         if self._runtime_manager_window is not None:
             self._runtime_manager_window.close()
-        if self._settings_inspector_window is not None:
-            self._settings_inspector_window.close()
         super().closeEvent(event)
 
-    def _apply_profile_metadata(self) -> None:
-        values = self._profile.values
-        metadata = _mapping_at(values, "metadata")
-        geometry = _mapping_at(values, "geometry")
-
-        self.setWindowTitle(self.metadata_title)
-        self.setObjectName(_string_value(metadata, "object_name", "main_window"))
-        self.setProperty(
-            "object_id",
-            _string_value(metadata, "window_id", MAIN_WINDOW_METADATA_ID),
-        )
-        self.resize(
-            _int_value(geometry, "width", 1440),
-            _int_value(geometry, "height", 900),
-        )
-
-        self._apply_visual_profile_metadata()
-
-    def _apply_visual_profile_metadata(self) -> None:
-        style = _mapping_at(self._profile.values, "style")
+    def _apply_window_defaults(self) -> None:
+        self.setWindowTitle("Leonardo")
+        self.setObjectName("main_window")
+        self.setProperty("object_id", MAIN_WINDOW_ID)
+        self.resize(1440, 900)
+        self.setMinimumSize(1024, 700)
         font = self.font()
-        font.setPointSize(_int_value(style, "font_size", 14))
+        font.setPointSize(14)
         self.setFont(font)
 
     def _build_menu_bar(self) -> None:
@@ -312,15 +242,11 @@ class LeonardoMainWindow(QMainWindow):
         menu_bar.setObjectName("main_window.menu_bar")
         menu_bar.setProperty("object_id", "main_window.menu_bar")
         menu_bar.setProperty("object_type", "menu_bar")
-        menu_bar.setProperty("parent_object_id", MAIN_WINDOW_METADATA_ID)
-        for action_id, action_metadata in _sorted_metadata_items(
-            _mapping_at(self._profile.values, "actions")
-        ):
-            action = QAction(_string_value(action_metadata, "label", action_id), self)
+        for action_id, label in _MAIN_WINDOW_ACTIONS:
+            action = QAction(label, self)
             action.setObjectName(action_id)
             action.setProperty("object_id", action_id)
             action.setProperty("object_type", "menu_action")
-            action.setProperty("parent_object_id", "main_window.menu_bar")
             action.triggered.connect(partial(self._handle_shell_action, action_id))
             self._actions[action_id] = action
 
@@ -352,26 +278,23 @@ class LeonardoMainWindow(QMainWindow):
         self._add_menu("user", "User")
 
         username_label = QLabel(self._username, menu_bar)
-        username_label.setObjectName("main_window.username_label")
+        username_label.setObjectName("main_window.label.username")
         username_label.setProperty("object_id", "main_window.label.username")
         username_label.setProperty("object_type", "label")
-        username_label.setProperty("parent_object_id", "main_window.menu_bar")
         menu_bar.setCornerWidget(username_label, Qt.Corner.TopRightCorner)
 
     def _build_central_launcher(self) -> None:
         central = QWidget()
-        apply_trace(
+        apply_identity(
             central,
             "main_window.central",
             object_type="central_area",
-            parent_object_id=MAIN_WINDOW_METADATA_ID,
         )
         layout = QVBoxLayout(central)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.central",
             object_type="layout",
-            parent_object_id="main_window.central",
         )
 
         layout.addWidget(self._build_top_bar(central))
@@ -381,42 +304,37 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:
         top_bar = QGroupBox("Command Status", parent)
-        apply_trace(
+        apply_identity(
             top_bar,
             "main_window.panel.top_bar",
             object_type="panel",
-            parent_object_id="main_window.central",
         )
         layout = QHBoxLayout(top_bar)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.top_bar",
             object_type="layout",
-            parent_object_id="main_window.panel.top_bar",
         )
 
         title_label = QLabel("Leonardo V2", top_bar)
-        title_label.setObjectName("main_window.title_label")
+        title_label.setObjectName("main_window.label.title")
         title_label.setProperty("object_id", "main_window.label.title")
         title_label.setProperty("object_type", "label")
-        title_label.setProperty("parent_object_id", "main_window.panel.top_bar")
 
         shell_status = QLabel("Shell online | GUI intent only", top_bar)
-        apply_trace(
+        apply_identity(
             shell_status,
             "main_window.label.shell_status",
             object_type="status_label",
             display_label="Shell Status",
-            parent_object_id="main_window.panel.top_bar",
         )
 
         theme_status = QLabel("Theme: Leonardo Jarvish Cockpit", top_bar)
-        apply_trace(
+        apply_identity(
             theme_status,
             "main_window.label.theme_status",
             object_type="status_label",
             display_label="Active Theme",
-            parent_object_id="main_window.panel.top_bar",
         )
 
         layout.addWidget(title_label)
@@ -427,18 +345,16 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_cockpit_body(self, parent: QWidget) -> QWidget:
         body = QWidget(parent)
-        apply_trace(
+        apply_identity(
             body,
             "main_window.panel.body",
             object_type="panel",
-            parent_object_id="main_window.central",
         )
         layout = QHBoxLayout(body)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.body",
             object_type="layout",
-            parent_object_id="main_window.panel.body",
         )
         layout.addWidget(self._build_left_rail(body), stretch=1)
         layout.addWidget(self._build_command_core(body), stretch=3)
@@ -447,18 +363,16 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_left_rail(self, parent: QWidget) -> QWidget:
         rail = QGroupBox("Status / Context", parent)
-        apply_trace(
+        apply_identity(
             rail,
             "main_window.panel.left_rail",
             object_type="panel",
-            parent_object_id="main_window.panel.body",
         )
         layout = QVBoxLayout(rail)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.left_rail",
             object_type="layout",
-            parent_object_id="main_window.panel.left_rail",
         )
         layout.addWidget(
             self._build_dummy_status_card(
@@ -466,8 +380,7 @@ class LeonardoMainWindow(QMainWindow):
                 object_id="main_window.panel.system_status_dummy",
                 label_object_id="main_window.label.system_status_dummy",
                 title="System Runtime",
-                text="Runtime shell: online\nCore bridge: composition-owned\nDomain execution: disabled",
-                parent_object_id="main_window.panel.left_rail",
+                text="Runtime: available\nDomain services: not connected",
             )
         )
         layout.addWidget(
@@ -476,8 +389,7 @@ class LeonardoMainWindow(QMainWindow):
                 object_id="main_window.panel.environment_weather_dummy",
                 label_object_id="main_window.label.environment_weather_dummy",
                 title="Environment / Weather",
-                text="Weather: dummy offline\nExternal APIs: disabled\nNetwork calls: none",
-                parent_object_id="main_window.panel.left_rail",
+                text="Weather service: not configured",
             )
         )
         layout.addWidget(
@@ -486,8 +398,7 @@ class LeonardoMainWindow(QMainWindow):
                 object_id="main_window.panel.environment_context_dummy",
                 label_object_id="main_window.label.environment_context_dummy",
                 title="Environment Context",
-                text="City context: placeholder\nLocation permission: not requested\nPersistence: none",
-                parent_object_id="main_window.panel.left_rail",
+                text="Environment context: not configured",
             )
         )
         layout.addWidget(
@@ -496,8 +407,7 @@ class LeonardoMainWindow(QMainWindow):
                 object_id="main_window.panel.visual_input_dummy",
                 label_object_id="main_window.label.visual_input_dummy",
                 title="Visual Input",
-                text="Camera feed: offline\nDevice access: not requested\nImages: not captured",
-                parent_object_id="main_window.panel.left_rail",
+                text="Visual input: not configured",
             )
         )
         layout.addWidget(
@@ -506,8 +416,7 @@ class LeonardoMainWindow(QMainWindow):
                 object_id="main_window.panel.voice_control_dummy",
                 label_object_id="main_window.label.voice_control_dummy",
                 title="Voice Control",
-                text="Voice: offline\nMicrophone: not requested\nSpeech services: disabled",
-                parent_object_id="main_window.panel.left_rail",
+                text="Voice control: not configured",
             )
         )
         layout.addStretch(1)
@@ -515,66 +424,56 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_command_core(self, parent: QWidget) -> QWidget:
         core = QGroupBox("Leonardo Command Core", parent)
-        apply_trace(
+        apply_identity(
             core,
             "main_window.panel.command_core",
             object_type="panel",
-            parent_object_id="main_window.panel.body",
         )
         layout = QVBoxLayout(core)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.command_core",
             object_type="layout",
-            parent_object_id="main_window.panel.command_core",
         )
 
         notice = QLabel(
             "Cockpit foundation only: suite buttons emit GUI intent and all "
-            "future panels remain dummy/read-only.",
+            "unconnected panels remain read-only.",
             core,
         )
         notice.setWordWrap(True)
-        apply_trace(
+        apply_identity(
             notice,
             "main_window.label.cockpit_notice",
             object_type="label",
             display_label="Cockpit Notice",
-            parent_object_id="main_window.panel.command_core",
         )
 
         placeholder = QLabel("Select a traceable shell launcher.", core)
-        placeholder.setObjectName("main_window.placeholder_label")
+        placeholder.setObjectName("main_window.label.placeholder")
         placeholder.setProperty("object_id", "main_window.label.placeholder")
         placeholder.setProperty("object_type", "status_label")
-        placeholder.setProperty(
-            "parent_object_id",
-            "main_window.panel.command_core",
-        )
         self._central_message_label = placeholder
 
         launcher = QGroupBox("Suite Navigation", core)
-        apply_trace(
+        apply_identity(
             launcher,
             "main_window.panel.suite_navigation",
             object_type="suite_navigation_panel",
-            parent_object_id="main_window.panel.command_core",
         )
         suite_layout = QVBoxLayout(launcher)
-        apply_trace(
+        apply_identity(
             suite_layout,
             "main_window.layout.suite_navigation",
             object_type="layout",
-            parent_object_id="main_window.panel.suite_navigation",
         )
 
         donut = SuiteNavigationDonut(parent=launcher)
-        apply_trace(
+        apply_identity(
             donut,
             "main_window.widget.suite_navigation_donut",
             object_type="donut_navigation",
             display_label="Suite Navigation",
-            parent_object_id="main_window.panel.suite_navigation",
             tooltip="Suite Navigation segments emit existing GUI shell intents only.",
         )
         donut.segment_activated.connect(self._handle_shell_action)
@@ -582,27 +481,24 @@ class LeonardoMainWindow(QMainWindow):
         suite_layout.addWidget(donut, stretch=1)
 
         utilities = QWidget(launcher)
-        apply_trace(
+        apply_identity(
             utilities,
             "main_window.panel.suite_navigation_utilities",
             object_type="utility_button_panel",
             display_label="Suite Navigation Utilities",
-            parent_object_id="main_window.panel.suite_navigation",
         )
         utility_layout = QHBoxLayout(utilities)
-        apply_trace(
+        apply_identity(
             utility_layout,
             "main_window.layout.suite_navigation_utilities",
             object_type="layout",
-            parent_object_id="main_window.panel.suite_navigation_utilities",
         )
         for object_id, action_id in _SUITE_NAVIGATION_UTILITY_ACTIONS:
             button = QPushButton(self.action_for_id(action_id).text(), utilities)
-            apply_trace(
+            apply_identity(
                 button,
                 object_id,
                 object_type="button",
-                parent_object_id="main_window.panel.suite_navigation_utilities",
                 action_id=action_id,
                 tooltip="Suite Navigation utility action only. No domain execution is started.",
             )
@@ -619,69 +515,62 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_right_rail(self, parent: QWidget) -> QWidget:
         rail = QGroupBox("Operator Rail", parent)
-        apply_trace(
+        apply_identity(
             rail,
             "main_window.panel.right_rail",
             object_type="panel",
-            parent_object_id="main_window.panel.body",
         )
         layout = QVBoxLayout(rail)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.right_rail",
             object_type="layout",
-            parent_object_id="main_window.panel.right_rail",
         )
 
         operator_panel = QGroupBox("Operator Console", rail)
-        apply_trace(
+        apply_identity(
             operator_panel,
             "main_window.panel.operator_console_dummy",
             object_type="panel",
-            parent_object_id="main_window.panel.right_rail",
         )
         operator_layout = QVBoxLayout(operator_panel)
-        apply_trace(
+        apply_identity(
             operator_layout,
             "main_window.layout.operator_console_dummy",
             object_type="layout",
-            parent_object_id="main_window.panel.operator_console_dummy",
         )
 
-        operator_label = QLabel("AI/operator channel placeholder", operator_panel)
+        operator_label = QLabel("AI/operator channel is not configured", operator_panel)
         operator_label.setWordWrap(True)
-        apply_trace(
+        apply_identity(
             operator_label,
             "main_window.label.operator_console_dummy",
             object_type="label",
             display_label="Operator Console",
-            parent_object_id="main_window.panel.operator_console_dummy",
         )
 
         console = QTextEdit(operator_panel)
         console.setReadOnly(True)
         console.setPlainText(
             "Leonardo shell online.\n"
-            "AI backend offline / placeholder.\n"
+            "AI backend is not configured.\n"
             "No messages are persisted."
         )
-        apply_trace(
+        apply_identity(
             console,
             "main_window.text.operator_console_dummy",
             object_type="text_display",
             display_label="Operator Console Messages",
-            parent_object_id="main_window.panel.operator_console_dummy",
         )
 
         input_field = QLineEdit(operator_panel)
         input_field.setEnabled(False)
-        input_field.setPlaceholderText("Dummy operator input (inactive)")
-        apply_trace(
+        input_field.setPlaceholderText("Operator input unavailable")
+        apply_identity(
             input_field,
             "main_window.input.operator_console_dummy",
             object_type="input",
             display_label="Operator Console Input",
-            parent_object_id="main_window.panel.operator_console_dummy",
         )
 
         operator_layout.addWidget(operator_label)
@@ -693,42 +582,38 @@ class LeonardoMainWindow(QMainWindow):
 
     def _build_quick_actions(self, parent: QWidget) -> QWidget:
         panel = QGroupBox("Quick Actions / Activity", parent)
-        apply_trace(
+        apply_identity(
             panel,
             "main_window.panel.quick_actions",
             object_type="panel",
-            parent_object_id="main_window.central",
         )
         layout = QHBoxLayout(panel)
-        apply_trace(
+        apply_identity(
             layout,
             "main_window.layout.quick_actions",
             object_type="layout",
-            parent_object_id="main_window.panel.quick_actions",
         )
 
         activity = QLabel(
-            "Activity: ready | weather/camera/voice/operator panels are dummy-only.",
+            "Activity: ready | optional services are not configured.",
             panel,
         )
         activity.setWordWrap(True)
-        apply_trace(
+        apply_identity(
             activity,
             "main_window.label.activity_log_dummy",
             object_type="status_label",
             display_label="Activity Log",
-            parent_object_id="main_window.panel.quick_actions",
         )
         layout.addWidget(activity, stretch=1)
 
         for object_id, label, action_id in _QUICK_ACTIONS:
             button = QPushButton(label, panel)
-            apply_trace(
+            apply_identity(
                 button,
                 object_id,
                 object_type="button",
                 display_label=label,
-                parent_object_id="main_window.panel.quick_actions",
                 action_id=action_id,
                 tooltip="Quick action reuses an existing Main Window GUI intent.",
             )
@@ -744,25 +629,22 @@ class LeonardoMainWindow(QMainWindow):
         label_object_id: str,
         title: str,
         text: str,
-        parent_object_id: str,
     ) -> QWidget:
         card = QGroupBox(title, parent)
-        apply_trace(
+        apply_identity(
             card,
             object_id,
             object_type="dummy_status_card",
             display_label=title,
-            parent_object_id=parent_object_id,
         )
         layout = QVBoxLayout(card)
         label = QLabel(text, card)
         label.setWordWrap(True)
-        apply_trace(
+        apply_identity(
             label,
             label_object_id,
             object_type="status_label",
             display_label=title,
-            parent_object_id=object_id,
         )
         layout.addWidget(label)
         return card
@@ -772,12 +654,10 @@ class LeonardoMainWindow(QMainWindow):
         status_bar.setObjectName("main_window.status_bar")
         status_bar.setProperty("object_id", "main_window.status_bar")
         status_bar.setProperty("object_type", "status_bar")
-        status_bar.setProperty("parent_object_id", MAIN_WINDOW_METADATA_ID)
         version = QLabel(self._version_label)
-        version.setObjectName("main_window.version_label")
+        version.setObjectName("main_window.label.version")
         version.setProperty("object_id", "main_window.label.version")
         version.setProperty("object_type", "label")
-        version.setProperty("parent_object_id", "main_window.status_bar")
         status_bar.addPermanentWidget(version)
         self.setStatusBar(status_bar)
         status_bar.showMessage("Ready")
@@ -788,7 +668,6 @@ class LeonardoMainWindow(QMainWindow):
         menu.setObjectName(object_id)
         menu.setProperty("object_id", object_id)
         menu.setProperty("object_type", "menu")
-        menu.setProperty("parent_object_id", "main_window.menu_bar")
         self._menus[menu_id] = menu
         return menu
 
@@ -799,9 +678,6 @@ class LeonardoMainWindow(QMainWindow):
         if action_id == "main_window.exit":
             self.statusBar().showMessage("Exit requested locally.")
             self.close()
-            return
-        if action_id == "main_window.open_dummy_metadata_test":
-            self.statusBar().showMessage("Dummy metadata test action is local/inert.")
             return
         if action_id == "main_window.open_settings_inspector":
             self._open_settings_inspector_window()
@@ -822,7 +698,7 @@ class LeonardoMainWindow(QMainWindow):
             return True
         decision = self._action_observer.record_action(
             action_id,
-            window_id=MAIN_WINDOW_METADATA_ID,
+            window_id=MAIN_WINDOW_ID,
         )
         return decision.allowed
 
@@ -886,64 +762,12 @@ class LeonardoMainWindow(QMainWindow):
         return window
 
     def _open_settings_inspector_window(self) -> None:
-        if self._settings_inspector_factory is None:
-            self.statusBar().showMessage("Settings inspector action is local/inert.")
-            return
-
-        created = False
-        if self._settings_inspector_window is None:
-            self._settings_inspector_window = self._create_settings_inspector_window()
-            created = True
-
-        self._settings_inspector_window.show()
-        self._settings_inspector_window.raise_()
-        self._settings_inspector_window.activateWindow()
-        if created:
-            self.statusBar().showMessage("Settings inspector opened locally.")
-            return
-        self.statusBar().showMessage("Settings inspector raised locally.")
-
-    def _create_settings_inspector_window(self) -> QWidget:
-        if self._settings_inspector_factory is None:
-            raise RuntimeError("settings_inspector_factory is not configured")
-        window = self._settings_inspector_factory()
-        if not isinstance(window, QWidget):
-            raise TypeError("Settings Inspector factory must return a QWidget")
-        return window
-
-
-def _mapping_at(values: Mapping[str, object], key: str) -> Mapping[str, object]:
-    value = values.get(key, {})
-    if isinstance(value, Mapping):
-        return value
-    return {}
-
-
-def _string_value(values: Mapping[str, object], key: str, fallback: str) -> str:
-    value = values.get(key)
-    if isinstance(value, str) and value:
-        return value
-    return fallback
+        self.statusBar().showMessage(
+            "Appearance settings are not implemented in the reset baseline."
+        )
 
 
 def _string_or_fallback(value: object, fallback: str) -> str:
     if isinstance(value, str) and value:
         return value
     return fallback
-
-
-def _int_value(values: Mapping[str, object], key: str, fallback: int) -> int:
-    value = values.get(key)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return fallback
-
-
-def _sorted_metadata_items(
-    values: Mapping[str, object],
-) -> tuple[tuple[str, Mapping[str, object]], ...]:
-    return tuple(
-        (key, item)
-        for key, item in sorted(values.items(), key=lambda entry: entry[0])
-        if isinstance(key, str) and isinstance(item, Mapping)
-    )

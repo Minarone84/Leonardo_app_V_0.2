@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QProgressBar,
     QPushButton,
     QTableWidget,
     QTextEdit,
@@ -21,18 +20,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from leonardo.gui.dummy_data import connection_download_overview_rows
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
-from leonardo.gui.windows.traceable_shell_widgets import (
-    apply_trace,
+from leonardo.gui.windows.shell_widgets import (
+    apply_identity,
     configure_table,
-    populate_table,
 )
 
 
-HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID = "historical_download_manager.window"
-_QUEUE_COLUMNS = ("queue", "scope", "progress", "state")
-
+HISTORICAL_DOWNLOAD_MANAGER_WINDOW_ID = "historical_download_manager.window"
 
 class HistoricalDownloadManagerWindow(QWidget):
     """
@@ -56,15 +51,14 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._timeframe_layout = QVBoxLayout()
         self._timeframe_layout.setObjectName("historical_download_manager.layout.timeframes")
         self._status_log = QTextEdit(self)
-        self._queue_progress = QProgressBar(self)
 
         self.setObjectName("historical_download_manager_window")
-        self.setProperty("object_id", HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID)
+        self.setProperty("object_id", HISTORICAL_DOWNLOAD_MANAGER_WINDOW_ID)
         self.setWindowTitle("Historical Download Manager")
         self.resize(980, 760)
         apply_theme_stylesheet(self, load_default_theme())
         self._build_layout()
-        self.load_dummy_queue_overview()
+        self.clear_view()
 
     def set_available_timeframes(self, timeframes: Iterable[str]) -> None:
         """Replace displayed timeframe checkboxes with externally supplied values."""
@@ -76,7 +70,6 @@ class HistoricalDownloadManagerWindow(QWidget):
             checkbox.setObjectName(f"historical_download_manager.timeframe.{timeframe}")
             checkbox.setProperty("object_id", checkbox.objectName())
             checkbox.setProperty("object_type", "checkbox")
-            checkbox.setProperty("parent_object_id", "historical_download_manager.timeframes")
             self._timeframe_checkboxes[timeframe] = checkbox
             self._timeframe_layout.addWidget(checkbox)
         self._timeframe_layout.addStretch(1)
@@ -131,10 +124,7 @@ class HistoricalDownloadManagerWindow(QWidget):
         except KeyError as error:
             raise KeyError(f"Unknown Historical Download Manager table: {table_id}") from error
 
-    def queue_progress_bar(self) -> QProgressBar:
-        """Return the shell-only dummy queue progress bar."""
 
-        return self._queue_progress
 
     def timeframe_checkbox_for_value(self, timeframe: str) -> QCheckBox:
         """Return the checkbox for a displayed timeframe value."""
@@ -149,42 +139,35 @@ class HistoricalDownloadManagerWindow(QWidget):
 
         return self._status_log
 
-    def load_dummy_queue_overview(self) -> None:
-        """Render deterministic local dummy queue data without execution."""
+    def clear_view(self) -> None:
+        """Reset the shell to an honest empty state."""
 
-        populate_table(
-            self._tables["historical_download_manager.table.queue_dummy"],
-            _QUEUE_COLUMNS,
-            connection_download_overview_rows(),
+        self._status_log.clear()
+        self._status_log.setPlaceholderText(
+            "Download status will appear after the workflow is connected."
         )
-        self._queue_progress.setValue(0)
-        self._status_log.append(
-            "Loaded dummy historical download queue. No provider/API/storage path ran."
-        )
+
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        apply_trace(
+        apply_identity(
             layout,
             "historical_download_manager.layout.root",
             object_type="layout",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
         )
         layout.addWidget(self._build_header())
 
         selection_panel = QGroupBox("Selection", self)
-        apply_trace(
+        apply_identity(
             selection_panel,
             "historical_download_manager.selection",
             object_type="panel",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
         )
         form = QFormLayout()
-        apply_trace(
+        apply_identity(
             form,
             "historical_download_manager.layout.selection_form",
             object_type="layout",
-            parent_object_id="historical_download_manager.selection",
         )
         self._add_field(form, "exchange", "Exchange", QComboBox(self))
         self._add_field(form, "market_type", "Market Type", QComboBox(self))
@@ -198,37 +181,26 @@ class HistoricalDownloadManagerWindow(QWidget):
         layout.addWidget(selection_panel)
 
         timeframe_panel = QGroupBox("Timeframes", self)
-        apply_trace(
+        apply_identity(
             timeframe_panel,
             "historical_download_manager.timeframes",
             object_type="checklist",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
         )
         timeframe_panel_layout = QVBoxLayout(timeframe_panel)
-        apply_trace(
+        apply_identity(
             timeframe_panel_layout,
             "historical_download_manager.layout.timeframe_panel",
             object_type="layout",
-            parent_object_id="historical_download_manager.timeframes",
         )
-        timeframes_label = QLabel("Timeframes", self)
-        apply_trace(
-            timeframes_label,
-            "historical_download_manager.label.timeframes",
-            object_type="label",
-            parent_object_id="historical_download_manager.timeframes",
-        )
-        timeframe_panel_layout.addWidget(timeframes_label)
         timeframe_container = QWidget(self)
         timeframe_container.setLayout(self._timeframe_layout)
         timeframe_panel_layout.addWidget(timeframe_container)
 
         timeframe_buttons = QHBoxLayout()
-        apply_trace(
+        apply_identity(
             timeframe_buttons,
             "historical_download_manager.layout.timeframe_buttons",
             object_type="layout",
-            parent_object_id="historical_download_manager.timeframes",
         )
         select_all = self._add_button(
             "select_all_timeframes",
@@ -247,52 +219,43 @@ class HistoricalDownloadManagerWindow(QWidget):
         timeframe_panel_layout.addLayout(timeframe_buttons)
         layout.addWidget(timeframe_panel)
 
-        layout.addWidget(self._build_dummy_queue_panel())
-
         action_buttons = QHBoxLayout()
-        apply_trace(
+        apply_identity(
             action_buttons,
             "historical_download_manager.layout.action_buttons",
             object_type="layout",
-            parent_object_id="historical_download_manager.actions",
         )
         start = self._add_button("start", "Start", enabled=True)
-        stop = self._add_button("stop", "Stop", enabled=False)
         maintenance = self._add_button("ohlcv_maintenance", "OHLCV Maintenance", enabled=True)
         start.clicked.connect(self.start_requested.emit)
         maintenance.clicked.connect(self.maintenance_requested.emit)
         action_buttons.addWidget(start)
-        action_buttons.addWidget(stop)
         action_buttons.addWidget(maintenance)
         actions_panel = QGroupBox("Actions", self)
-        apply_trace(
+        apply_identity(
             actions_panel,
             "historical_download_manager.actions",
             object_type="action_container",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
         )
         actions_panel.setLayout(action_buttons)
         layout.addWidget(actions_panel)
 
         status_panel = QGroupBox("Status Log", self)
-        apply_trace(
+        apply_identity(
             status_panel,
             "historical_download_manager.panel.status_log",
             object_type="panel",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
         )
         status_layout = QVBoxLayout(status_panel)
-        apply_trace(
+        apply_identity(
             status_layout,
             "historical_download_manager.layout.status_log",
             object_type="layout",
-            parent_object_id="historical_download_manager.panel.status_log",
         )
-        apply_trace(
+        apply_identity(
             self._status_log,
             "historical_download_manager.status_log",
             object_type="text_area",
-            parent_object_id="historical_download_manager.panel.status_log",
         )
         self._status_log.setReadOnly(True)
         self._status_log.setPlaceholderText("Status and log output")
@@ -300,73 +263,37 @@ class HistoricalDownloadManagerWindow(QWidget):
         layout.addWidget(status_panel)
 
     def _build_header(self) -> QWidget:
-        header = QGroupBox("Historical Download Manager Shell", self)
-        apply_trace(
+        header = QGroupBox("Historical Download Manager", self)
+        apply_identity(
             header,
             "historical_download_manager.panel.header",
             object_type="panel",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
         )
         header_layout = QHBoxLayout(header)
-        apply_trace(
+        apply_identity(
             header_layout,
             "historical_download_manager.layout.header",
             object_type="layout",
-            parent_object_id="historical_download_manager.panel.header",
         )
         title = QLabel("Historical Download Manager", self)
-        apply_trace(
+        apply_identity(
             title,
             "historical_download_manager.title",
             object_type="label",
-            parent_object_id="historical_download_manager.panel.header",
         )
-        status = QLabel("DUMMY queue/progress shell only", self)
-        apply_trace(
+        status = QLabel("Services not connected", self)
+        apply_identity(
             status,
             "historical_download_manager.label.shell_status",
             object_type="status_label",
-            parent_object_id="historical_download_manager.panel.header",
         )
         header_layout.addWidget(title)
         header_layout.addStretch(1)
         header_layout.addWidget(status)
         return header
 
-    def _build_dummy_queue_panel(self) -> QWidget:
-        panel = QGroupBox("Dummy Queue Overview", self)
-        apply_trace(
-            panel,
-            "historical_download_manager.panel.queue_status_dummy",
-            object_type="panel",
-            parent_object_id=HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID,
-        )
-        layout = QVBoxLayout(panel)
-        apply_trace(
-            layout,
-            "historical_download_manager.layout.queue_status_dummy",
-            object_type="layout",
-            parent_object_id="historical_download_manager.panel.queue_status_dummy",
-        )
-        self._queue_progress.setRange(0, 100)
-        self._queue_progress.setValue(0)
-        apply_trace(
-            self._queue_progress,
-            "historical_download_manager.progress.queue_dummy",
-            object_type="progress_bar",
-            parent_object_id="historical_download_manager.panel.queue_status_dummy",
-        )
-        table = configure_table(
-            QTableWidget(panel),
-            object_id="historical_download_manager.table.queue_dummy",
-            columns=_QUEUE_COLUMNS,
-            labels=("Queue", "Scope", "Progress", "State"),
-            parent_object_id="historical_download_manager.panel.queue_status_dummy",
-        )
-        self._tables["historical_download_manager.table.queue_dummy"] = table
-        layout.addWidget(self._queue_progress)
-        layout.addWidget(table)
-        return panel
+
+
 
     def _add_field(self, form: QFormLayout, field_id: str, label: str, widget: QWidget) -> None:
         label_widget = QLabel(label, self)
@@ -376,7 +303,6 @@ class HistoricalDownloadManagerWindow(QWidget):
         widget.setObjectName(f"historical_download_manager.{field_id}")
         widget.setProperty("object_id", widget.objectName())
         widget.setProperty("object_type", widget.__class__.__name__)
-        widget.setProperty("parent_object_id", "historical_download_manager.selection")
         self._field_widgets[field_id] = widget
         form.addRow(label_widget, widget)
 

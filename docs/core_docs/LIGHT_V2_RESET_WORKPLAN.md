@@ -1,8 +1,8 @@
 # Leonardo Light V2 Fast-Track Reset Workplan
 
-**Document ID:** `LEO-LV2-FAST-TRACK-RESET-WORKPLAN-001`  
-**Status:** Approved  
-**Architecture authority:** `LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md`  
+**Document ID:** `LEO-LV2-FAST-TRACK-RESET-WORKPLAN-001`
+**Status:** In progress
+**Architecture authority:** `LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md`
 **Governance authority:** `AGENTS.md`, `RICK_PROTOCOL_12_COMMANDMENTS.md`, `RICK_CODEX_EXECUTION_PROTOCOL.md`
 
 ## Objective
@@ -21,12 +21,16 @@ Package-based validation remains mandatory.
 
 ### 0046 — Freeze Light baseline and install Governance 2.3 FINAL
 
-**Execution owner:** Rick  
+**Status:** PASS / completed
+
+**Execution owner:** Rick
 **Objective:** Reconstruct the accepted Task 0011 baseline, create the Light reset branch, install Governance 2.3 FINAL, record the starting inventory, and produce a clean frozen baseline.
 
 ### 0047 — Remove Heavy V2 machinery and repair Core + GUI
 
-**Execution owner:** Rick  
+**Status:** PASS / completed
+
+**Execution owner:** Rick
 **Objective:** Delete Contract Registry, Object Map, trace providers, unnecessary contract families, GUI metadata/TOMLs/roadmap, and repair active Core and GUI consumers using ordinary typed Python and direct runtime snapshots.
 
 **Keep:**
@@ -60,7 +64,9 @@ speculative plugin or AI contract frameworks
 
 ### 0048 — Validate and freeze the Light V2 baseline
 
-**Execution owner:** Rick  
+**Status:** Ready to start
+
+**Execution owner:** Rick
 **Objective:** Prove startup, shutdown, async jobs, progress, cancellation, failure, runtime tracking, audit, Runtime Manager snapshots, multi-window responsiveness, GUI smoke, and complete absence of retired Heavy V2 imports.
 
 ## Superseded workflow

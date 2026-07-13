@@ -1,125 +1,99 @@
-"""Audit log sinks for the Leonardo V2 Core runtime foundation."""
+"""Operational audit sinks for Leonardo Light V2."""
 
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
+from typing import Protocol
 
-from leonardo.contracts.audit import AuditEvent
+from leonardo.audit import AuditEventV1
+
+
+class AuditSink(Protocol):
+    def emit(self, event: AuditEventV1) -> AuditEventV1: ...
+    def snapshot(self) -> tuple[AuditEventV1, ...]: ...
+    def flush(self) -> None: ...
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
 class AuditSinkFailure:
-    """Structured failure captured when an audit sink operation fails."""
-
     sink_name: str
     operation: str
-    exception_type: str
+    error_type: str
     message: str
-    event_id: str | None = None
 
 
 class InMemoryAuditSink:
-    """
-    Bounded in-memory sink for normalized audit events.
-
-    The sink is intended for the runtime foundation and tests. Persistent file
-    sinks are intentionally outside this phase.
-    """
-
     def __init__(self, max_events: int = 1000) -> None:
-        if max_events < 1:
-            raise ValueError("max_events must be greater than zero")
-        self._max_events = max_events
-        self._events: list[AuditEvent] = []
+        if type(max_events) is not int or max_events <= 0:
+            raise ValueError("max_events must be a positive integer")
+        self._events: deque[AuditEventV1] = deque(maxlen=max_events)
+        self._lock = RLock()
 
     @property
     def max_events(self) -> int:
-        """Return the maximum number of retained events."""
+        return int(self._events.maxlen or 0)
 
-        return self._max_events
-
-    def emit(self, event: AuditEvent) -> AuditEvent:
-        """Store an audit event and enforce bounded retention."""
-
-        if not isinstance(event, AuditEvent):
-            raise TypeError("event must be an AuditEvent")
-        self._events.append(event)
-        if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events :]
+    def emit(self, event: AuditEventV1) -> AuditEventV1:
+        if not isinstance(event, AuditEventV1):
+            raise TypeError("event must be an AuditEventV1")
+        with self._lock:
+            self._events.append(event)
         return event
 
-    def snapshot(self) -> tuple[AuditEvent, ...]:
-        """Return an immutable snapshot of retained events."""
-
-        return tuple(self._events)
+    def snapshot(self) -> tuple[AuditEventV1, ...]:
+        with self._lock:
+            return tuple(self._events)
 
     def flush(self) -> None:
-        """Flush retained events. In-memory retention requires no operation."""
+        return None
 
     def close(self) -> None:
-        """Close the sink. In-memory retention requires no operation."""
-
-    def sink_failures(self) -> tuple[AuditSinkFailure, ...]:
-        """Return sink failures captured by this sink."""
-
-        return ()
+        return None
 
 
 class JsonlAuditSink:
-    """
-    Durable JSONL audit sink.
-
-    The sink opens lazily and creates parent directories only when the first
-    event is written. Each line contains one serialized audit event.
-    """
-
-    def __init__(self, path: Path | str, *, auto_flush: bool = True) -> None:
+    def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
-        self._auto_flush = auto_flush
         self._handle = None
+        self._lock = RLock()
 
     @property
     def path(self) -> Path:
-        """Return the configured JSONL file path."""
-
         return self._path
 
-    def emit(self, event: AuditEvent) -> AuditEvent:
-        """Append an event as one JSON object line."""
-
-        if not isinstance(event, AuditEvent):
-            raise TypeError("event must be an AuditEvent")
-        handle = self._open_handle()
-        handle.write(json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True))
-        handle.write("\n")
-        if self._auto_flush:
+    def emit(self, event: AuditEventV1) -> AuditEventV1:
+        if not isinstance(event, AuditEventV1):
+            raise TypeError("event must be an AuditEventV1")
+        with self._lock:
+            handle = self._open_handle()
+            handle.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
             handle.flush()
         return event
 
-    def snapshot(self) -> tuple[AuditEvent, ...]:
-        """Return retained events. Durable sinks do not keep live snapshots."""
-
-        return ()
+    def snapshot(self) -> tuple[AuditEventV1, ...]:
+        if not self._path.exists():
+            return ()
+        events: list[AuditEventV1] = []
+        for line in self._path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(AuditEventV1.from_dict(json.loads(line)))
+        return tuple(events)
 
     def flush(self) -> None:
-        """Flush pending writes if the sink has been opened."""
-
-        if self._handle is not None:
-            self._handle.flush()
+        with self._lock:
+            if self._handle is not None:
+                self._handle.flush()
 
     def close(self) -> None:
-        """Close the underlying file handle. Closing is idempotent."""
-
-        if self._handle is not None:
-            self._handle.close()
-            self._handle = None
-
-    def sink_failures(self) -> tuple[AuditSinkFailure, ...]:
-        """Return sink failures captured by this sink."""
-
-        return ()
+        with self._lock:
+            if self._handle is not None:
+                self._handle.close()
+                self._handle = None
 
     def _open_handle(self):
         if self._handle is None:
@@ -129,157 +103,78 @@ class JsonlAuditSink:
 
 
 class CompositeAuditSink:
-    """
-    Fan out audit events to multiple sinks.
-
-    Sink failures are captured structurally and do not prevent later sinks from
-    receiving the same event.
-    """
-
-    def __init__(self, sinks: tuple[object, ...]) -> None:
+    def __init__(self, sinks: tuple[AuditSink, ...]) -> None:
         if not sinks:
-            raise ValueError("sinks must contain at least one sink")
+            raise ValueError("sinks cannot be empty")
         self._sinks = tuple(sinks)
         self._failures: list[AuditSinkFailure] = []
 
-    def emit(self, event: AuditEvent) -> AuditEvent:
-        """Emit one event to every configured sink."""
-
-        if not isinstance(event, AuditEvent):
-            raise TypeError("event must be an AuditEvent")
+    def emit(self, event: AuditEventV1) -> AuditEventV1:
+        delivered = False
         for sink in self._sinks:
             try:
                 sink.emit(event)
-            except Exception as exc:
-                self._failures.append(
-                    _failure_from_exception(
-                        sink,
-                        "emit",
-                        exc,
-                        event_id=event.event_id,
-                    )
-                )
+                delivered = True
+            except Exception as exc:  # final sink boundary
+                self._failures.append(_failure(sink, "emit", exc))
+        if not delivered:
+            raise RuntimeError("No audit sink accepted the event")
         return event
 
-    def snapshot(self) -> tuple[AuditEvent, ...]:
-        """Return the first non-empty live snapshot from configured sinks."""
-
+    def snapshot(self) -> tuple[AuditEventV1, ...]:
         for sink in self._sinks:
-            snapshot = _call_optional_snapshot(sink)
-            if snapshot:
-                return snapshot
+            try:
+                events = sink.snapshot()
+            except Exception as exc:  # final sink boundary
+                self._failures.append(_failure(sink, "snapshot", exc))
+                continue
+            if events:
+                return events
         return ()
 
     def flush(self) -> None:
-        """Flush all sinks and capture sink failures."""
-
         for sink in self._sinks:
             try:
-                _call_optional(sink, "flush")
-            except Exception as exc:
-                self._failures.append(_failure_from_exception(sink, "flush", exc))
+                sink.flush()
+            except Exception as exc:  # final sink boundary
+                self._failures.append(_failure(sink, "flush", exc))
 
     def close(self) -> None:
-        """Close all sinks and capture sink failures. Closing is idempotent."""
-
         for sink in self._sinks:
             try:
-                _call_optional(sink, "close")
-            except Exception as exc:
-                self._failures.append(_failure_from_exception(sink, "close", exc))
+                sink.close()
+            except Exception as exc:  # final sink boundary
+                self._failures.append(_failure(sink, "close", exc))
 
     def sink_failures(self) -> tuple[AuditSinkFailure, ...]:
-        """Return failures captured by this sink and child sinks."""
-
-        failures = list(self._failures)
-        for sink in self._sinks:
-            failures.extend(_call_optional_failures(sink))
-        return tuple(failures)
+        return tuple(self._failures)
 
 
 class AuditLog:
-    """Facade used by Core services to emit audit events."""
+    def __init__(self, sink: AuditSink) -> None:
+        self._sink = sink
 
-    def __init__(self, sink: object | None = None) -> None:
-        self._sink = sink if sink is not None else InMemoryAuditSink()
-        self._failures: list[AuditSinkFailure] = []
+    def emit(self, event: AuditEventV1) -> AuditEventV1:
+        return self._sink.emit(event)
 
-    def emit(self, event: AuditEvent) -> AuditEvent:
-        """Emit an audit event through the configured sink."""
-
-        if not isinstance(event, AuditEvent):
-            raise TypeError("event must be an AuditEvent")
-        try:
-            self._sink.emit(event)
-        except Exception as exc:
-            self._failures.append(
-                _failure_from_exception(
-                    self._sink,
-                    "emit",
-                    exc,
-                    event_id=event.event_id,
-                )
-            )
-        return event
-
-    def snapshot(self) -> tuple[AuditEvent, ...]:
-        """Return an immutable snapshot of retained audit events."""
-
-        return _call_optional_snapshot(self._sink)
+    def snapshot(self) -> tuple[AuditEventV1, ...]:
+        return self._sink.snapshot()
 
     def flush(self) -> None:
-        """Flush the configured sink. Flush is idempotent."""
-
-        try:
-            _call_optional(self._sink, "flush")
-        except Exception as exc:
-            self._failures.append(_failure_from_exception(self._sink, "flush", exc))
+        self._sink.flush()
 
     def close(self) -> None:
-        """Close the configured sink. Close is idempotent."""
-
-        try:
-            _call_optional(self._sink, "close")
-        except Exception as exc:
-            self._failures.append(_failure_from_exception(self._sink, "close", exc))
+        self._sink.close()
 
     def sink_failures(self) -> tuple[AuditSinkFailure, ...]:
-        """Return structured sink failures captured by the audit log."""
+        method = getattr(self._sink, "sink_failures", None)
+        return tuple(method()) if callable(method) else ()
 
-        return tuple(self._failures) + _call_optional_failures(self._sink)
 
-
-def _failure_from_exception(
-    sink: object,
-    operation: str,
-    exception: Exception,
-    *,
-    event_id: str | None = None,
-) -> AuditSinkFailure:
+def _failure(sink: object, operation: str, exc: Exception) -> AuditSinkFailure:
     return AuditSinkFailure(
         sink_name=type(sink).__name__,
         operation=operation,
-        exception_type=type(exception).__name__,
-        message=str(exception),
-        event_id=event_id,
+        error_type=type(exc).__name__,
+        message=str(exc),
     )
-
-
-def _call_optional(sink: object, method_name: str) -> None:
-    method = getattr(sink, method_name, None)
-    if method is not None:
-        method()
-
-
-def _call_optional_snapshot(sink: object) -> tuple[AuditEvent, ...]:
-    method = getattr(sink, "snapshot", None)
-    if method is None:
-        return ()
-    return tuple(method())
-
-
-def _call_optional_failures(sink: object) -> tuple[AuditSinkFailure, ...]:
-    method = getattr(sink, "sink_failures", None)
-    if method is None:
-        return ()
-    return tuple(method())

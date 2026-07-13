@@ -19,21 +19,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from leonardo.gui.dummy_data import (
-    ohlcv_preflight_request_rows,
-    ohlcv_preflight_validation_rows,
-    ohlcv_preflight_warning_messages,
-    ohlcv_preflight_workload_rows,
-)
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
-from leonardo.gui.windows.traceable_shell_widgets import (
-    apply_trace,
+from leonardo.gui.windows.shell_widgets import (
+    apply_identity,
     configure_table,
     populate_table,
 )
 
 
-OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID = "ohlcv_download_preflight.window"
+OHLCV_DOWNLOAD_PREFLIGHT_WINDOW_ID = "ohlcv_download_preflight.window"
 OHLCV_PREFLIGHT_COLUMNS = (
     "Timeframe",
     "Local File",
@@ -76,7 +70,7 @@ class OhlcvDownloadPreflightWindow(QDialog):
     """
     Standalone GUI shell for OHLCV download confirmation.
 
-    The dialog renders local dummy preflight context and externally supplied
+    The dialog renders externally supplied preflight context and externally supplied
     work-plan rows only. It does not call Download Manager, provider, storage,
     or Core execution services.
     """
@@ -92,12 +86,12 @@ class OhlcvDownloadPreflightWindow(QDialog):
         self._table = QTableWidget(self)
 
         self.setObjectName("ohlcv_download_preflight_window")
-        self.setProperty("object_id", OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID)
+        self.setProperty("object_id", OHLCV_DOWNLOAD_PREFLIGHT_WINDOW_ID)
         self.setWindowTitle("Confirm OHLCV Download")
         self.resize(1120, 720)
         apply_theme_stylesheet(self, load_default_theme())
         self._build_layout()
-        self.load_dummy_preflight()
+        self.clear_preflight()
 
     def set_work_plan(
         self,
@@ -124,44 +118,21 @@ class OhlcvDownloadPreflightWindow(QDialog):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row_index, column_index, item)
-        self._table.resizeColumnsToContents()
 
-    def load_dummy_preflight(self) -> None:
-        """Render deterministic local dummy preflight status."""
+    def clear_preflight(self) -> None:
+        """Reset all preflight presentation surfaces to an empty state."""
 
-        populate_table(
-            self._tables["ohlcv_download_preflight.request_summary_table"],
-            _REQUEST_COLUMNS,
-            ohlcv_preflight_request_rows(),
-        )
-        populate_table(
-            self._tables["ohlcv_download_preflight.validation_checklist_table"],
-            _VALIDATION_COLUMNS,
-            ohlcv_preflight_validation_rows(),
-        )
-        populate_table(
-            self._tables["ohlcv_download_preflight.workload_estimate_table"],
-            _WORKLOAD_COLUMNS,
-            ohlcv_preflight_workload_rows(),
-        )
-        self.set_work_plan(
-            (
-                OhlcvDownloadPlanRow(
-                    timeframe="1h",
-                    local_file_exists=False,
-                    update_existing=False,
-                    local_rows=0,
-                    local_range="DUMMY none",
-                    planned_range="DUMMY 2026-01-01 to 2026-01-02",
-                    expected_bars=24,
-                    pages=1,
-                    page_limit=200,
-                    status="dummy only",
-                ),
-            )
-        )
-        self._warnings.setPlainText("\n".join(ohlcv_preflight_warning_messages()))
-        self._set_status("DUMMY preflight loaded: no validation/provider/storage.")
+        for table_id, columns in (
+            ("ohlcv_download_preflight.request_summary_table", _REQUEST_COLUMNS),
+            ("ohlcv_download_preflight.validation_checklist_table", _VALIDATION_COLUMNS),
+            ("ohlcv_download_preflight.workload_estimate_table", _WORKLOAD_COLUMNS),
+        ):
+            populate_table(self._tables[table_id], columns, ())
+        self._table.setRowCount(0)
+        self._warnings.setPlainText("")
+        self._warnings.setPlaceholderText("Warnings and blockers will appear here.")
+        self._set_status("No request loaded")
+
 
     def table(self) -> QTableWidget:
         """Return the read-only work-plan table widget."""
@@ -190,22 +161,21 @@ class OhlcvDownloadPreflightWindow(QDialog):
         return "" if self._status_label is None else self._status_label.text()
 
     def warnings_text(self) -> str:
-        """Return the read-only dummy warning panel text."""
+        """Return the read-only warning panel text."""
 
         return self._warnings.toPlainText()
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        apply_trace(
+        apply_identity(
             layout,
             "ohlcv_download_preflight.layout.root",
             object_type="layout",
-            parent_object_id=OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
         )
         layout.addWidget(self._build_header())
         layout.addWidget(
             self._build_table_panel(
-                "Dummy Request Summary",
+                "Request Summary",
                 panel_id="ohlcv_download_preflight.panel.request_summary",
                 table_id="ohlcv_download_preflight.request_summary_table",
                 columns=_REQUEST_COLUMNS,
@@ -213,10 +183,10 @@ class OhlcvDownloadPreflightWindow(QDialog):
         )
         layout.addWidget(self._build_work_plan_panel(), stretch=1)
         lower = QHBoxLayout()
-        lower.setObjectName("ohlcv_download_preflight.layout.dummy_checks")
+        lower.setObjectName("ohlcv_download_preflight.layout.checks")
         lower.addWidget(
             self._build_table_panel(
-                "Dummy Validation Checklist",
+                "Validation Checklist",
                 panel_id="ohlcv_download_preflight.panel.validation_checklist",
                 table_id="ohlcv_download_preflight.validation_checklist_table",
                 columns=_VALIDATION_COLUMNS,
@@ -224,7 +194,7 @@ class OhlcvDownloadPreflightWindow(QDialog):
         )
         lower.addWidget(
             self._build_table_panel(
-                "Dummy Workload Estimate",
+                "Workload Estimate",
                 panel_id="ohlcv_download_preflight.panel.workload_estimate",
                 table_id="ohlcv_download_preflight.workload_estimate_table",
                 columns=_WORKLOAD_COLUMNS,
@@ -235,33 +205,29 @@ class OhlcvDownloadPreflightWindow(QDialog):
         layout.addWidget(self._build_actions())
 
     def _build_header(self) -> QWidget:
-        panel = QGroupBox("Preflight Shell", self)
-        apply_trace(
+        panel = QGroupBox("Download Preflight", self)
+        apply_identity(
             panel,
             "ohlcv_download_preflight.panel.header",
             object_type="panel",
-            parent_object_id=OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
         )
         layout = QHBoxLayout(panel)
-        apply_trace(
+        apply_identity(
             layout,
             "ohlcv_download_preflight.layout.header",
             object_type="layout",
-            parent_object_id="ohlcv_download_preflight.panel.header",
         )
         header = QLabel("Confirm OHLCV Download", panel)
-        apply_trace(
+        apply_identity(
             header,
             "ohlcv_download_preflight.header",
             object_type="label",
-            parent_object_id="ohlcv_download_preflight.panel.header",
         )
-        status = QLabel("DUMMY shell only", panel)
-        apply_trace(
+        status = QLabel("No request loaded", panel)
+        apply_identity(
             status,
             "ohlcv_download_preflight.label.status",
             object_type="status_label",
-            parent_object_id="ohlcv_download_preflight.panel.header",
         )
         self._status_label = status
         layout.addWidget(header)
@@ -278,11 +244,10 @@ class OhlcvDownloadPreflightWindow(QDialog):
         columns: Sequence[str],
     ) -> QWidget:
         panel = QGroupBox(title, self)
-        apply_trace(
+        apply_identity(
             panel,
             panel_id,
             object_type="panel",
-            parent_object_id=OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
         )
         layout = QVBoxLayout(panel)
         layout.setObjectName(f"{panel_id}.layout")
@@ -291,19 +256,17 @@ class OhlcvDownloadPreflightWindow(QDialog):
             table,
             object_id=table_id,
             columns=columns,
-            parent_object_id=panel_id,
         )
         self._tables[table_id] = table
         layout.addWidget(table)
         return panel
 
     def _build_work_plan_panel(self) -> QWidget:
-        panel = QGroupBox("Dummy Work Plan", self)
-        apply_trace(
+        panel = QGroupBox("Work Plan", self)
+        apply_identity(
             panel,
             "ohlcv_download_preflight.panel.work_plan",
             object_type="panel",
-            parent_object_id=OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
         )
         layout = QVBoxLayout(panel)
         layout.setObjectName("ohlcv_download_preflight.layout.work_plan")
@@ -311,27 +274,24 @@ class OhlcvDownloadPreflightWindow(QDialog):
             self._table,
             object_id="ohlcv_download_preflight.work_plan_table",
             columns=OHLCV_PREFLIGHT_COLUMNS,
-            parent_object_id="ohlcv_download_preflight.panel.work_plan",
         )
         self._tables["ohlcv_download_preflight.work_plan_table"] = self._table
         layout.addWidget(self._table)
         return panel
 
     def _build_warning_panel(self) -> QWidget:
-        panel = QGroupBox("Dummy Warnings", self)
-        apply_trace(
+        panel = QGroupBox("Warnings", self)
+        apply_identity(
             panel,
             "ohlcv_download_preflight.panel.warnings",
             object_type="panel",
-            parent_object_id=OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
         )
         layout = QVBoxLayout(panel)
         layout.setObjectName("ohlcv_download_preflight.layout.warnings")
-        apply_trace(
+        apply_identity(
             self._warnings,
             "ohlcv_download_preflight.text.warnings",
             object_type="text_area",
-            parent_object_id="ohlcv_download_preflight.panel.warnings",
         )
         self._warnings.setReadOnly(True)
         layout.addWidget(self._warnings)
@@ -339,22 +299,20 @@ class OhlcvDownloadPreflightWindow(QDialog):
 
     def _build_actions(self) -> QWidget:
         panel = QGroupBox("Shell Actions", self)
-        apply_trace(
+        apply_identity(
             panel,
             "ohlcv_download_preflight.actions",
             object_type="action_container",
-            parent_object_id=OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID,
         )
         buttons = QHBoxLayout(panel)
-        apply_trace(
+        apply_identity(
             buttons,
             "ohlcv_download_preflight.layout.actions",
             object_type="layout",
-            parent_object_id="ohlcv_download_preflight.actions",
         )
         buttons.addStretch(1)
         cancel = self._add_button("cancel", "Cancel")
-        start = self._add_button("start_download", "Open Dummy Task Shell")
+        start = self._add_button("start_download", "Start Download")
         cancel.clicked.connect(self.close)
         start.clicked.connect(self.start_download_requested.emit)
         buttons.addWidget(cancel)
@@ -364,11 +322,10 @@ class OhlcvDownloadPreflightWindow(QDialog):
     def _add_button(self, button_id: str, label: str) -> QPushButton:
         button = QPushButton(label, self)
         button.setObjectName(f"ohlcv_download_preflight.{button_id}")
-        apply_trace(
+        apply_identity(
             button,
             button.objectName(),
             object_type="button",
-            parent_object_id="ohlcv_download_preflight.actions",
             action_id=button.objectName(),
             display_label=label,
         )

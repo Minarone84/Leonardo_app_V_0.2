@@ -1,13 +1,13 @@
-"""Core-supervised asyncio task manager for Leonardo V2."""
+"""Canonical task lifecycle owner for Leonardo Light V2."""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from threading import RLock
 from uuid import uuid4
 
-from leonardo.contracts.errors import ErrorSeverity
-from leonardo.contracts.runtime import TaskRuntimeState
 from leonardo.core.async_runtime import (
     CoroutineObject,
     close_coroutine_if_needed,
@@ -15,40 +15,54 @@ from leonardo.core.async_runtime import (
     normalize_task_name,
 )
 from leonardo.core.error_router import ErrorRouter
-from leonardo.core.state_store import StateStore
 
 
 @dataclass(frozen=True)
-class _ManagedTask:
+class TaskSnapshot:
+    task_id: str
+    task_name: str
+    status: str
+    created_at_utc: datetime
+    started_at_utc: datetime | None
+    finished_at_utc: datetime | None
+    progress_current: int | None
+    progress_total: int | None
+    progress_message: str
+    correlation_id: str | None
+    error_message: str | None
+    metadata: dict[str, object]
+
+
+@dataclass
+class _TaskRecord:
     task_id: str
     task_name: str
     asyncio_task: asyncio.Task[object]
-    operation_id: str | None
-    service_id: str | None
-    correlation_id: str | None
+    status: str = "running"
+    created_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
+    started_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
+    finished_at_utc: datetime | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
+    progress_message: str = ""
+    correlation_id: str | None = None
+    error_message: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class TaskManager:
-    """
-    Supervise Core-managed asyncio tasks on the currently running event loop.
+    """Own active and recent task state. Business logic remains outside Core."""
 
-    The manager owns task supervision only. It does not implement operation
-    lifecycle, OS process management, GUI worker ownership, or business logic.
-    """
-
-    def __init__(
-        self,
-        state_store: StateStore,
-        *,
-        error_router: ErrorRouter | None = None,
-    ) -> None:
-        if not isinstance(state_store, StateStore):
-            raise TypeError("state_store must be a StateStore")
+    def __init__(self, *, error_router: ErrorRouter | None = None, history_limit: int = 500) -> None:
         if error_router is not None and not isinstance(error_router, ErrorRouter):
             raise TypeError("error_router must be an ErrorRouter")
-        self._state_store = state_store
+        if type(history_limit) is not int or history_limit <= 0:
+            raise ValueError("history_limit must be a positive integer")
         self._error_router = error_router
-        self._tasks: dict[str, _ManagedTask] = {}
+        self._history_limit = history_limit
+        self._records: dict[str, _TaskRecord] = {}
+        self._order: list[str] = []
+        self._lock = RLock()
 
     def create_task(
         self,
@@ -56,124 +70,172 @@ class TaskManager:
         *,
         task_name: str,
         allow_duplicate_name: bool = False,
-        operation_id: str | None = None,
-        service_id: str | None = None,
         correlation_id: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> str:
-        """
-        Create a supervised task on the currently running event loop.
-
-        Duplicate active task names are rejected by default. Rejected coroutine
-        objects are closed before the exception is raised.
-        """
-
-        normalized_name = normalize_task_name(task_name)
-        if not allow_duplicate_name and self._has_active_task_name(normalized_name):
-            close_coroutine_if_needed(coroutine)
-            raise ValueError(f"Task name is already active: {normalized_name}")
+        normalized = normalize_task_name(task_name)
         if not is_coroutine_object(coroutine):
             raise TypeError("coroutine must be a coroutine object")
+        with self._lock:
+            if not allow_duplicate_name and any(
+                record.task_name == normalized and record.status in _ACTIVE_STATUSES
+                for record in self._records.values()
+            ):
+                close_coroutine_if_needed(coroutine)
+                raise ValueError(f"Task name is already active: {normalized}")
 
         loop = asyncio.get_running_loop()
         task_id = uuid4().hex
-        self._state_store.task_started(
+        async_task = loop.create_task(coroutine, name=f"{normalized}:{task_id}")
+        record = _TaskRecord(
             task_id=task_id,
-            task_name=normalized_name,
-            operation_id=operation_id,
-            service_id=service_id,
+            task_name=normalized,
+            asyncio_task=async_task,
             correlation_id=correlation_id,
-            metadata=metadata or {},
+            metadata=dict(metadata or {}),
         )
-        asyncio_task = loop.create_task(
-            coroutine,
-            name=f"{normalized_name}:{task_id}",
-        )
-        managed = _ManagedTask(
-            task_id=task_id,
-            task_name=normalized_name,
-            asyncio_task=asyncio_task,
-            operation_id=operation_id,
-            service_id=service_id,
-            correlation_id=correlation_id,
-        )
-        self._tasks[task_id] = managed
-        asyncio_task.add_done_callback(
-            lambda completed_task: self._on_task_done(task_id, completed_task)
+        with self._lock:
+            self._records[task_id] = record
+            self._order.append(task_id)
+            self._trim_history_locked()
+        async_task.add_done_callback(
+            lambda completed: self._on_task_done(task_id, completed)
         )
         return task_id
 
     async def wait_task(self, task_id: str) -> object:
-        """Await an active task by task identifier."""
+        record = self._require_record(task_id)
+        return await record.asyncio_task
 
-        managed = self._tasks.get(task_id)
-        if managed is None:
-            raise KeyError(f"Task is not active: {task_id}")
-        return await managed.asyncio_task
-
-    def cancel_task(self, task_id: str) -> bool:
-        """Request cancellation for an active task."""
-
-        managed = self._tasks.get(task_id)
-        if managed is None or managed.asyncio_task.done():
-            return False
-        self._state_store.task_cancel_requested(task_id)
-        return managed.asyncio_task.cancel()
-
-    async def cancel_all(self) -> None:
-        """Request cancellation for all active tasks and wait for settlement."""
-
-        active_tasks = [
-            managed.asyncio_task
-            for managed in tuple(self._tasks.values())
-            if not managed.asyncio_task.done()
-        ]
-        for managed in tuple(self._tasks.values()):
-            if not managed.asyncio_task.done():
-                self.cancel_task(managed.task_id)
-        if active_tasks:
-            await asyncio.gather(*active_tasks, return_exceptions=True)
-
-    def active_tasks(self) -> tuple[TaskRuntimeState, ...]:
-        """Return defensive active task runtime state snapshots."""
-
-        return self._state_store.tasks_state()
-
-    def _has_active_task_name(self, task_name: str) -> bool:
-        return any(managed.task_name == task_name for managed in self._tasks.values())
-
-    def _on_task_done(
+    def update_progress(
         self,
         task_id: str,
-        completed_task: asyncio.Task[object],
-    ) -> None:
-        managed = self._tasks.get(task_id)
-        if managed is None:
-            return
+        *,
+        message: str,
+        current: int | None = None,
+        total: int | None = None,
+    ) -> TaskSnapshot:
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
+        if current is not None and type(current) is not int:
+            raise TypeError("current must be an integer or None")
+        if total is not None and type(total) is not int:
+            raise TypeError("total must be an integer or None")
+        with self._lock:
+            record = self._require_record_locked(task_id)
+            record.progress_message = message
+            record.progress_current = current
+            record.progress_total = total
+            return _snapshot(record)
 
-        if completed_task.cancelled():
-            self._state_store.task_cancelled(task_id)
-            del self._tasks[task_id]
-            return
+    def cancel_task(self, task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.status not in _ACTIVE_STATUSES:
+                return False
+            record.status = "cancel_requested"
+            task = record.asyncio_task
+        return task.cancel()
 
-        exception = completed_task.exception()
-        if exception is not None:
-            self._state_store.task_failed(task_id, str(exception))
-            if self._error_router is not None:
-                self._error_router.route_exception(
-                    exception,
-                    message=f"Task failed: {managed.task_name}",
-                    severity=ErrorSeverity.ERROR,
-                    correlation_id=managed.correlation_id,
-                    context={
-                        "task_id": task_id,
-                        "task_name": managed.task_name,
-                        "operation_id": managed.operation_id,
-                        "service_id": managed.service_id,
-                    },
-                )
-            del self._tasks[task_id]
-            return
+    async def cancel_all(self) -> None:
+        with self._lock:
+            active = [
+                record
+                for record in self._records.values()
+                if record.status in _ACTIVE_STATUSES
+            ]
+        for record in active:
+            self.cancel_task(record.task_id)
+        if active:
+            await asyncio.gather(
+                *(record.asyncio_task for record in active),
+                return_exceptions=True,
+            )
 
-        self._state_store.task_completed(task_id)
-        del self._tasks[task_id]
+    def active_tasks(self) -> tuple[TaskSnapshot, ...]:
+        with self._lock:
+            return tuple(
+                _snapshot(self._records[task_id])
+                for task_id in self._order
+                if task_id in self._records
+                and self._records[task_id].status in _ACTIVE_STATUSES
+            )
+
+    def snapshots(self) -> tuple[TaskSnapshot, ...]:
+        with self._lock:
+            return tuple(
+                _snapshot(self._records[task_id])
+                for task_id in self._order
+                if task_id in self._records
+            )
+
+    def get_snapshot(self, task_id: str) -> TaskSnapshot | None:
+        with self._lock:
+            record = self._records.get(task_id)
+            return _snapshot(record) if record is not None else None
+
+    def _require_record(self, task_id: str) -> _TaskRecord:
+        with self._lock:
+            return self._require_record_locked(task_id)
+
+    def _require_record_locked(self, task_id: str) -> _TaskRecord:
+        record = self._records.get(task_id)
+        if record is None:
+            raise KeyError(f"Unknown task: {task_id}")
+        return record
+
+    def _on_task_done(self, task_id: str, completed: asyncio.Task[object]) -> None:
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None:
+                return
+            record.finished_at_utc = datetime.now(UTC)
+            if completed.cancelled():
+                record.status = "cancelled"
+                return
+            exception = completed.exception()
+            if exception is None:
+                record.status = "completed"
+                return
+            record.status = "failed"
+            record.error_message = str(exception)
+            router = self._error_router
+            correlation_id = record.correlation_id
+            task_name = record.task_name
+        if router is not None:
+            router.route_exception(
+                exception,
+                message=f"Task failed: {task_name}",
+                task_id=task_id,
+                correlation_id=correlation_id,
+                context={"task_name": task_name},
+            )
+
+    def _trim_history_locked(self) -> None:
+        while len(self._order) > self._history_limit:
+            oldest = self._order[0]
+            record = self._records.get(oldest)
+            if record is not None and record.status in _ACTIVE_STATUSES:
+                break
+            self._order.pop(0)
+            self._records.pop(oldest, None)
+
+
+_ACTIVE_STATUSES = frozenset({"running", "cancel_requested"})
+
+
+def _snapshot(record: _TaskRecord) -> TaskSnapshot:
+    return TaskSnapshot(
+        task_id=record.task_id,
+        task_name=record.task_name,
+        status=record.status,
+        created_at_utc=record.created_at_utc,
+        started_at_utc=record.started_at_utc,
+        finished_at_utc=record.finished_at_utc,
+        progress_current=record.progress_current,
+        progress_total=record.progress_total,
+        progress_message=record.progress_message,
+        correlation_id=record.correlation_id,
+        error_message=record.error_message,
+        metadata=dict(record.metadata),
+    )

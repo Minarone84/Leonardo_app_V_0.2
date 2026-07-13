@@ -1,8 +1,5 @@
-"""Core exports for Leonardo V2."""
+"""Lean runtime infrastructure for Leonardo Light V2."""
 
-from leonardo.core.contract_registry import ContractRegistry, RegisteredContract
+from leonardo.core.app import CoreContext, LeonardoApp
 
-__all__ = [
-    "ContractRegistry",
-    "RegisteredContract",
-]
+__all__ = ["CoreContext", "LeonardoApp"]
