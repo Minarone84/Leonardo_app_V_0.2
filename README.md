@@ -1,29 +1,30 @@
-# Leonardo V2
+# Leonardo Light V2
 
-Leonardo V2 is a contract-first, object-addressable, metadata-backed financial research and trading platform rebuilt from the strongest parts of the old Leonardo application.
+> **Reset baseline notice**
+>
+> This branch starts from the verified Task 0011 donor baseline. The source still contains Heavy V2 contract, Object Map, trace-provider, and GUI metadata systems scheduled for removal in Task 0047. Their presence is historical implementation evidence, not active architectural authority.
 
-The goal is not to copy the old app class-for-class. The goal is to preserve what was sound, improve what was fragile, and rebuild the whole system around explicit ownership, traceable objects, async Core execution, and AI-agent operability.
+The active architecture and governance authorities are:
 
-Leonardo V2 must be usable by humans and inspectable by agents. Every runtime, service, suite, window, widget, menu, button, chart, study, dataset, notebook, websocket, API call, task, report, style, layout, and user action must be identifiable, traceable, auditable, and governed by one clear owner.
+```text
+LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md
+AGENTS.md
+RICK_PROTOCOL_12_COMMANDMENTS.md
+RICK_CODEX_EXECUTION_PROTOCOL.md
+```
 
-**No shared responsibility is allowed.**
+Leonardo Light V2 is a modular desktop financial research and trading application. It uses one shared asynchronous runtime for long-running work, direct typed Python inside cohesive Areas, canonical authority over critical truth, and complete vertical workflow validation.
+
+The repository is currently in an approved architecture-reset phase. Existing implementation descriptions below document the donor baseline and may reference systems that are explicitly scheduled for deletion. They must not override the governance files above.
 
 ---
 
 ## Documentation honesty
 
-This README is both:
+This README records the current donor implementation and reset status. It is not the architecture authority.
 
-1. a status document for the current Leonardo V2 implementation; and
-2. an architecture guide for the updated Leonardo V2 target.
+A legacy Leonardo capability is not current Light V2 behaviour unless the active code implements it and vertical validation proves it. A GUI shell is not backend execution. A type is not a required formal contract merely because it exists.
 
-Those two things must not be mixed. The current implementation is what the repository actually contains and validates. The guidelines describe the target architecture and the rules that future implementation must follow.
-
-A legacy Leonardo capability is not current V2 behavior unless the V2 code implements it and tests prove it. A GUI shell is not backend execution. A contract is not a finished workflow. A markdown heading is not a feature, despite humanity's brave attempts to make documents do engineering.
-
-`AGENTS.md` remains the implementation-agent authority for Codex/Goblin work inside this repository. `RICK_PROTOCOL_10_COMMANDMENTS.md` documents the Rick-side workflow for task shaping, package audits, workplan design, prompt preparation, implementation-report review, POST/PATCH validation, and workflow ledger tracking.
-
----
 
 ## Status legend
 
