@@ -119,6 +119,36 @@ class OhlcvDownloadPreflightWindow(QDialog):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row_index, column_index, item)
 
+    def set_request_summary(self, rows: Iterable[Sequence[object]]) -> None:
+        populate_table(
+            self._tables["ohlcv_download_preflight.request_summary_table"],
+            _REQUEST_COLUMNS,
+            rows,
+        )
+
+    def set_validation_checklist(self, rows: Iterable[Sequence[object]]) -> None:
+        populate_table(
+            self._tables["ohlcv_download_preflight.validation_checklist_table"],
+            _VALIDATION_COLUMNS,
+            rows,
+        )
+
+    def set_workload_estimate(self, rows: Iterable[Sequence[object]]) -> None:
+        populate_table(
+            self._tables["ohlcv_download_preflight.workload_estimate_table"],
+            _WORKLOAD_COLUMNS,
+            rows,
+        )
+
+    def set_warnings(self, text: str) -> None:
+        self._warnings.setPlainText(str(text))
+
+    def set_status(self, text: str) -> None:
+        self._set_status(str(text))
+
+    def set_start_enabled(self, enabled: bool) -> None:
+        self._buttons["start_download"].setEnabled(bool(enabled))
+
     def clear_preflight(self) -> None:
         """Reset all preflight presentation surfaces to an empty state."""
 

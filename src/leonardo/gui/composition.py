@@ -8,6 +8,7 @@ from typing import Protocol
 from PySide6.QtWidgets import QWidget
 
 from leonardo.gui.action_observer import GuiActionObserver, build_gui_action_observer
+from leonardo.gui.presenters import HistoricalDownloadPresenter
 from leonardo.gui.window_tracking import GuiWindowTracker
 from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow
 from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow
@@ -28,6 +29,8 @@ class GuiCoreContext(Protocol):
     window_registry: object
     action_registry: object
     config: object
+    connection_service: object
+    historical_download_service: object
 
 
 class GuiCompositionRoot:
@@ -47,6 +50,7 @@ class GuiCompositionRoot:
         self._trackers: dict[str, GuiWindowTracker] = {}
         self._connection_suite_window: ConnectionSuiteWindow | None = None
         self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = None
+        self._historical_download_presenter: HistoricalDownloadPresenter | None = None
         self._research_suite_window: ResearchSuiteWindow | None = None
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
         self._analysis_suite_window: AnalysisSuiteWindow | None = None
@@ -159,7 +163,13 @@ class GuiCompositionRoot:
     def _open_historical_download_manager(self, parent: LeonardoMainWindow) -> str:
         if self._historical_download_manager_window is None:
             window = HistoricalDownloadManagerWindow(parent=parent)
+            presenter = HistoricalDownloadPresenter(
+                window,
+                getattr(self._context, "connection_service"),
+                getattr(self._context, "historical_download_service"),
+            )
             self._historical_download_manager_window = window
+            self._historical_download_presenter = presenter
             self._register_window_actions(
                 window,
                 "historical_download_manager.window",

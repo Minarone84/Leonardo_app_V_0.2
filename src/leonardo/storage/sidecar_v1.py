@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from leonardo.data import MarketId
+
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_PERSISTENCE_STATUSES = frozenset({"partial", "committed", "repaired"})
+_VALIDATION_STATUSES = frozenset({"unknown", "ok", "warning", "error"})
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,20 @@ class OHLCVSidecarV1:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
+        if self.schema_version != "1.0":
+            raise ValueError(f"unsupported OHLCV sidecar schema_version: {self.schema_version!r}")
+        if _SHA256_RE.fullmatch(self.file_sha256) is None:
+            raise ValueError("file_sha256 must be a 64-character hexadecimal SHA-256")
+        if self.persistence_status not in _PERSISTENCE_STATUSES:
+            raise ValueError(
+                f"invalid persistence_status: {self.persistence_status!r}; "
+                f"allowed={sorted(_PERSISTENCE_STATUSES)}"
+            )
+        if self.validation_status not in _VALIDATION_STATUSES:
+            raise ValueError(
+                f"invalid validation_status: {self.validation_status!r}; "
+                f"allowed={sorted(_VALIDATION_STATUSES)}"
+            )
         if type(self.row_count) is not int or self.row_count < 0:
             raise ValueError("row_count must be a non-negative integer")
         for name in ("first_timestamp_ms", "last_timestamp_ms"):
@@ -46,13 +66,30 @@ class OHLCVSidecarV1:
             and self.first_timestamp_ms > self.last_timestamp_ms
         ):
             raise ValueError("first_timestamp_ms cannot be greater than last_timestamp_ms")
+        if self.row_count == 0 and (
+            self.first_timestamp_ms is not None or self.last_timestamp_ms is not None
+        ):
+            raise ValueError("empty datasets cannot declare first or last timestamps")
+        if self.row_count > 0 and (
+            self.first_timestamp_ms is None or self.last_timestamp_ms is None
+        ):
+            raise ValueError("non-empty datasets must declare first and last timestamps")
         for name in ("created_at_utc", "updated_at_utc"):
             value = getattr(self, name)
             if not isinstance(value, datetime) or value.tzinfo is None:
                 raise ValueError(f"{name} must be a timezone-aware datetime")
             object.__setattr__(self, name, value.astimezone(UTC))
-        object.__setattr__(self, "warnings", tuple(str(item) for item in self.warnings))
-        object.__setattr__(self, "lineage", dict(self.lineage))
+        if self.updated_at_utc < self.created_at_utc:
+            raise ValueError("updated_at_utc cannot be earlier than created_at_utc")
+        normalized_warnings = tuple(str(item).strip() for item in self.warnings if str(item).strip())
+        normalized_lineage = dict(self.lineage)
+        try:
+            json.dumps(normalized_lineage, allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise ValueError("lineage must contain only JSON-safe finite values") from error
+        object.__setattr__(self, "file_sha256", self.file_sha256.lower())
+        object.__setattr__(self, "warnings", normalized_warnings)
+        object.__setattr__(self, "lineage", normalized_lineage)
 
     def to_dict(self) -> dict[str, object]:
         return {

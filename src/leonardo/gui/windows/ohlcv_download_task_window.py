@@ -99,6 +99,16 @@ class OhlcvDownloadTaskWindow(QDialog):
             raise TypeError("text must be a string")
         self._final_recap.setPlainText(text)
 
+    def set_status(self, text: str) -> None:
+        self._set_status(str(text))
+
+    def set_running(self, running: bool) -> None:
+        self._buttons["stop"].setEnabled(bool(running))
+        self._buttons["ok"].setEnabled(not bool(running))
+
+    def set_overall_progress_visible(self, visible: bool) -> None:
+        self._overall_progress.setVisible(bool(visible))
+
     def clear_task_state(self) -> None:
         """Reset task presentation to an honest empty state."""
 
