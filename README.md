@@ -44,6 +44,12 @@ The reset removes:
 - metadata-driven Settings Inspector and override machinery;
 - production dummy-data fixtures.
 
+## Frozen reset baseline
+
+Tasks 0046, 0047 and 0048 are complete. The Light V2 reset baseline is frozen
+for subsequent vertical workflow development. The baseline includes operational
+logging and structured task/process lifecycle audit evidence.
+
 ## Current product status
 
 The Core runtime and GUI shells are a clean foundation. Financial workflows are
@@ -91,3 +97,7 @@ Full tests, including GUI smoke tests when PySide6 is available:
 ```powershell
 python -m pytest -q
 ```
+
+
+Visual smoke instructions are recorded in
+`docs/gui_docs/LIGHT_V2_BASELINE_VISUAL_SMOKE.md`.

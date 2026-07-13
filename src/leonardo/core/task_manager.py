@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import RLock
 from uuid import uuid4
 
+from leonardo.audit import AuditEventV1
 from leonardo.core.async_runtime import (
     CoroutineObject,
     close_coroutine_if_needed,
     is_coroutine_object,
     normalize_task_name,
 )
+from leonardo.core.audit_log import AuditLog
 from leonardo.core.error_router import ErrorRouter
 
 
@@ -53,12 +56,29 @@ class _TaskRecord:
 class TaskManager:
     """Own active and recent task state. Business logic remains outside Core."""
 
-    def __init__(self, *, error_router: ErrorRouter | None = None, history_limit: int = 500) -> None:
+    def __init__(
+        self,
+        *,
+        error_router: ErrorRouter | None = None,
+        audit_log: AuditLog | None = None,
+        actor_id: str = "local-user",
+        logger: logging.Logger | None = None,
+        history_limit: int = 500,
+    ) -> None:
         if error_router is not None and not isinstance(error_router, ErrorRouter):
             raise TypeError("error_router must be an ErrorRouter")
+        if audit_log is not None and not isinstance(audit_log, AuditLog):
+            raise TypeError("audit_log must be an AuditLog")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise ValueError("actor_id must be a non-empty string")
+        if logger is not None and not isinstance(logger, logging.Logger):
+            raise TypeError("logger must be a logging.Logger")
         if type(history_limit) is not int or history_limit <= 0:
             raise ValueError("history_limit must be a positive integer")
         self._error_router = error_router
+        self._audit_log = audit_log
+        self._actor_id = actor_id.strip()
+        self._logger = logger or logging.getLogger("leonardo")
         self._history_limit = history_limit
         self._records: dict[str, _TaskRecord] = {}
         self._order: list[str] = []
@@ -98,6 +118,18 @@ class TaskManager:
             self._records[task_id] = record
             self._order.append(task_id)
             self._trim_history_locked()
+        self._emit_audit(
+            AuditEventV1(
+                event_type="task.submitted",
+                category="runtime",
+                message=f"Task submitted: {normalized}",
+                actor_id=self._actor_id,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                details={"task_name": normalized},
+            )
+        )
+        self._logger.info("Task submitted: %s [%s]", normalized, task_id)
         async_task.add_done_callback(
             lambda completed: self._on_task_done(task_id, completed)
         )
@@ -135,7 +167,23 @@ class TaskManager:
                 return False
             record.status = "cancel_requested"
             task = record.asyncio_task
-        return task.cancel()
+            task_name = record.task_name
+            correlation_id = record.correlation_id
+        cancelled = task.cancel()
+        if cancelled:
+            self._emit_audit(
+                AuditEventV1(
+                    event_type="task.cancel_requested",
+                    category="runtime",
+                    message=f"Task cancellation requested: {task_name}",
+                    actor_id=self._actor_id,
+                    task_id=task_id,
+                    correlation_id=correlation_id,
+                    details={"task_name": task_name},
+                )
+            )
+            self._logger.info("Task cancellation requested: %s [%s]", task_name, task_id)
+        return cancelled
 
     async def cancel_all(self) -> None:
         with self._lock:
@@ -185,6 +233,7 @@ class TaskManager:
         return record
 
     def _on_task_done(self, task_id: str, completed: asyncio.Task[object]) -> None:
+        exception: BaseException | None = None
         with self._lock:
             record = self._records.get(task_id)
             if record is None:
@@ -192,23 +241,62 @@ class TaskManager:
             record.finished_at_utc = datetime.now(UTC)
             if completed.cancelled():
                 record.status = "cancelled"
-                return
-            exception = completed.exception()
-            if exception is None:
-                record.status = "completed"
-                return
-            record.status = "failed"
-            record.error_message = str(exception)
-            router = self._error_router
+                event_type = "task.cancelled"
+                message = f"Task cancelled: {record.task_name}"
+                severity = "info"
+            else:
+                exception = completed.exception()
+                if exception is None:
+                    record.status = "completed"
+                    event_type = "task.completed"
+                    message = f"Task completed: {record.task_name}"
+                    severity = "info"
+                else:
+                    record.status = "failed"
+                    record.error_message = str(exception)
+                    event_type = "task.failed"
+                    message = f"Task failed: {record.task_name}"
+                    severity = "error"
             correlation_id = record.correlation_id
             task_name = record.task_name
-        if router is not None:
-            router.route_exception(
+
+        self._emit_audit(
+            AuditEventV1(
+                event_type=event_type,
+                category="runtime",
+                severity=severity,
+                message=message,
+                actor_id=self._actor_id,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                details={"task_name": task_name},
+                error_type=type(exception).__name__ if exception is not None else None,
+                error_message=str(exception) if exception is not None else None,
+            )
+        )
+        if exception is None:
+            self._logger.info("%s [%s]", message, task_id)
+            return
+        self._logger.error("%s [%s]: %s", message, task_id, exception)
+        if self._error_router is not None and isinstance(exception, Exception):
+            self._error_router.route_exception(
                 exception,
-                message=f"Task failed: {task_name}",
+                message=message,
                 task_id=task_id,
                 correlation_id=correlation_id,
                 context={"task_name": task_name},
+            )
+
+    def _emit_audit(self, event: AuditEventV1) -> None:
+        if self._audit_log is None:
+            return
+        try:
+            self._audit_log.emit(event)
+        except Exception:
+            self._logger.exception(
+                "Task audit emission failed: %s [%s]",
+                event.event_type,
+                event.task_id,
             )
 
     def _trim_history_locked(self) -> None:

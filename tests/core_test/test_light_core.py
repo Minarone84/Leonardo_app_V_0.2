@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -14,6 +15,7 @@ from leonardo.core.app import LeonardoApp
 from leonardo.core.audit_log import AuditLog, CompositeAuditSink, InMemoryAuditSink, JsonlAuditSink
 from leonardo.core.config import load_default_config
 from leonardo.core.connection_registry import ConnectionRegistry
+from leonardo.core.error_router import ErrorRouter
 from leonardo.core.core_runner import CoreRunner
 from leonardo.core.process_manager import ProcessManager
 from leonardo.core.task_manager import TaskManager
@@ -215,4 +217,126 @@ def test_process_manager_tracks_processes() -> None:
     process_id = manager.launch(("python", "-V"), label="Python")
     assert manager.active_processes()[0].pid == 42
     assert manager.terminate(process_id) is True
-    assert manager.poll(process_id).status == "completed"
+    assert manager.poll(process_id).status == "terminated"
+
+
+def test_operational_logging_and_task_lifecycle_audit(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="leonardo")
+    app = LeonardoApp(load_default_config(tmp_path))
+    completed = Event()
+
+    async def work() -> str:
+        await asyncio.sleep(0.01)
+        return "done"
+
+    app.startup()
+    app.start_core_runtime()
+    submission = app.core_runner.submit_coroutine(
+        work(),
+        task_name="audited-job",
+        result_callback=lambda _result: completed.set(),
+    )
+    assert completed.wait(2.0)
+
+    event_types = [event.event_type for event in app.audit_log.snapshot()]
+    assert "task.submitted" in event_types
+    assert "task.completed" in event_types
+    assert app.task_manager.get_snapshot(submission.task_id).status == "completed"
+
+    app.shutdown()
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Application startup completed" in messages
+    assert "Core runtime startup completed" in messages
+    assert any(message.startswith("Task submitted: audited-job") for message in messages)
+    assert any(message.startswith("Task completed: audited-job") for message in messages)
+    assert "Application shutdown completed" in messages
+
+
+def test_task_cancellation_and_failure_are_audited() -> None:
+    audit_log = AuditLog(InMemoryAuditSink())
+    manager = TaskManager(
+        audit_log=audit_log,
+        error_router=ErrorRouter(audit_log),
+    )
+    runner = CoreRunner(manager)
+    started = Event()
+    cancelled = Event()
+    failed = Event()
+
+    async def cancellable(_reporter):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def broken(_reporter):
+        raise RuntimeError("audited boom")
+
+    runner.start()
+    cancelled_submission = runner.submit_job(
+        cancellable,
+        task_name="audited-cancel",
+        result_callback=lambda _result: cancelled.set(),
+    )
+    assert started.wait(2.0)
+    assert runner.cancel(cancelled_submission.task_id) is True
+    assert cancelled.wait(2.0)
+
+    runner.submit_job(
+        broken,
+        task_name="audited-failure",
+        result_callback=lambda _result: failed.set(),
+    )
+    assert failed.wait(2.0)
+    runner.shutdown()
+
+    event_types = [event.event_type for event in audit_log.snapshot()]
+    assert "task.cancel_requested" in event_types
+    assert "task.cancelled" in event_types
+    assert "task.failed" in event_types
+    assert "error.reported" in event_types
+
+
+def test_process_terminal_failure_is_audited_once() -> None:
+    handle = _FakeHandle()
+    audit_log = AuditLog(InMemoryAuditSink())
+    manager = ProcessManager(
+        audit_log,
+        launcher=lambda command, cwd, env: handle,
+    )
+    process_id = manager.launch(("python", "-V"), label="Broken Python")
+    handle.exit_code = 3
+
+    first = manager.poll(process_id)
+    second = manager.poll(process_id)
+
+    assert first.status == "failed"
+    assert first.error_message == "Process exited with code 3"
+    assert second.finished_at_utc == first.finished_at_utc
+    event_types = [event.event_type for event in audit_log.snapshot()]
+    assert event_types.count("process.failed") == 1
+
+
+class _SlowTerminateHandle(_FakeHandle):
+    def terminate(self):
+        self.terminated = True
+
+
+def test_process_shutdown_escalates_and_audits_terminal_state() -> None:
+    handle = _SlowTerminateHandle()
+    audit_log = AuditLog(InMemoryAuditSink())
+    manager = ProcessManager(
+        audit_log,
+        launcher=lambda command, cwd, env: handle,
+    )
+    process_id = manager.launch(("python", "-V"), label="Slow Python")
+
+    manager.shutdown(timeout=0.05)
+
+    snapshot = manager.get_snapshot(process_id)
+    assert snapshot.status == "terminated"
+    assert snapshot.exit_code == -9
+    event_types = [event.event_type for event in audit_log.snapshot()]
+    assert event_types.count("process.termination_requested") == 2
+    assert event_types.count("process.terminated") == 1

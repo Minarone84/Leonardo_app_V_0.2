@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from threading import RLock
 
@@ -21,6 +22,7 @@ from leonardo.core.window_registry import WindowRegistry
 @dataclass(frozen=True)
 class CoreContext:
     config: AppConfig
+    logger: logging.Logger
     audit_log: AuditLog
     error_router: ErrorRouter
     task_manager: TaskManager
@@ -37,13 +39,20 @@ class LeonardoApp:
 
     def __init__(self, config: AppConfig | None = None) -> None:
         self.config = config or load_default_config()
+        self.logger = _build_operational_logger()
         self.audit_log = _build_audit_log(self.config.audit)
         self.error_router = ErrorRouter(self.audit_log, actor_id=self.config.actor_id)
-        self.task_manager = TaskManager(error_router=self.error_router)
+        self.task_manager = TaskManager(
+            error_router=self.error_router,
+            audit_log=self.audit_log,
+            actor_id=self.config.actor_id,
+            logger=self.logger,
+        )
         self.core_runner = CoreRunner(self.task_manager)
         self.process_manager = ProcessManager(
             self.audit_log,
             error_router=self.error_router,
+            logger=self.logger,
         )
         self.connection_registry = ConnectionRegistry()
         self.window_registry = WindowRegistry()
@@ -65,6 +74,7 @@ class LeonardoApp:
         )
         self._context = CoreContext(
             config=self.config,
+            logger=self.logger,
             audit_log=self.audit_log,
             error_router=self.error_router,
             task_manager=self.task_manager,
@@ -92,6 +102,7 @@ class LeonardoApp:
             if self._status == "stopped":
                 raise RuntimeError("A stopped LeonardoApp cannot be restarted")
             self._status = "starting"
+        self.logger.info("Application startup requested")
         try:
             self.audit_log.emit(
                 AuditEventV1(
@@ -111,21 +122,27 @@ class LeonardoApp:
                     actor_id=self.config.actor_id,
                 )
             )
+            self.logger.info("Application startup completed")
             return self._context
         except Exception as exc:
             with self._lock:
                 self._status = "failed"
+            self.logger.exception("Application startup failed")
             self.error_router.route_exception(exc, message="Application startup failed")
             raise
 
     def start_core_runtime(self) -> CoreContext:
         if self.status != "running":
             raise RuntimeError("Application startup must complete before Core runtime start")
+        self.logger.info("Core runtime startup requested")
         self.core_runner.start()
+        self.logger.info("Core runtime startup completed")
         return self._context
 
     def stop_core_runtime(self, *, timeout: float = 5.0) -> None:
+        self.logger.info("Core runtime shutdown requested")
         self.core_runner.shutdown(timeout=timeout)
+        self.logger.info("Core runtime shutdown completed")
 
     def shutdown(
         self,
@@ -141,9 +158,10 @@ class LeonardoApp:
             preserve_failed = self._status == "failed"
             if not preserve_failed:
                 self._status = "stopping"
+        self.logger.info("Application shutdown requested")
         try:
             self.core_runner.shutdown(timeout=float(timeout))
-            self.process_manager.shutdown()
+            self.process_manager.shutdown(timeout=float(timeout))
             self.connection_registry.shutdown_tracking()
             for window in self.window_registry.open_windows():
                 self.window_registry.close_window(window.window_id)
@@ -158,9 +176,11 @@ class LeonardoApp:
             if not preserve_failed:
                 with self._lock:
                     self._status = "stopped"
+            self.logger.info("Application shutdown completed")
         except Exception as exc:
             with self._lock:
                 self._status = "failed"
+            self.logger.exception("Application shutdown failed")
             self.error_router.route_exception(exc, message="Application shutdown failed")
             raise
         finally:
@@ -176,3 +196,17 @@ def _build_audit_log(config: AuditConfig) -> AuditLog:
     if config.jsonl_path is None:
         raise ValueError("audit.jsonl_path must be configured when JSONL audit is enabled")
     return AuditLog(CompositeAuditSink((JsonlAuditSink(config.jsonl_path), memory)))
+
+
+def _build_operational_logger() -> logging.Logger:
+    """Return the shared standard-library operational logger."""
+
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        )
+    logger = logging.getLogger("leonardo")
+    logger.setLevel(logging.INFO)
+    return logger
