@@ -121,25 +121,34 @@ class OhlcvDownloadPreflightWindow(QDialog):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row_index, column_index, item)
 
-    def set_request_summary(self, rows: Iterable[Sequence[object]]) -> None:
+    def set_request_summary(
+        self,
+        rows: Iterable[Mapping[str, object] | Sequence[object]],
+    ) -> None:
         populate_table(
             self._tables["ohlcv_download_preflight.request_summary_table"],
             _REQUEST_COLUMNS,
-            rows,
+            _normalize_table_rows(rows, _REQUEST_COLUMNS),
         )
 
-    def set_validation_checklist(self, rows: Iterable[Sequence[object]]) -> None:
+    def set_validation_checklist(
+        self,
+        rows: Iterable[Mapping[str, object] | Sequence[object]],
+    ) -> None:
         populate_table(
             self._tables["ohlcv_download_preflight.validation_checklist_table"],
             _VALIDATION_COLUMNS,
-            rows,
+            _normalize_table_rows(rows, _VALIDATION_COLUMNS),
         )
 
-    def set_workload_estimate(self, rows: Iterable[Sequence[object]]) -> None:
+    def set_workload_estimate(
+        self,
+        rows: Iterable[Mapping[str, object] | Sequence[object]],
+    ) -> None:
         populate_table(
             self._tables["ohlcv_download_preflight.workload_estimate_table"],
             _WORKLOAD_COLUMNS,
-            rows,
+            _normalize_table_rows(rows, _WORKLOAD_COLUMNS),
         )
 
     def set_warnings(self, text: str) -> None:
@@ -371,6 +380,31 @@ class OhlcvDownloadPreflightWindow(QDialog):
     def _set_status(self, text: str) -> None:
         if self._status_label is not None:
             self._status_label.setText(text)
+
+
+def _normalize_table_rows(
+    rows: Iterable[Mapping[str, object] | Sequence[object]],
+    column_ids: Sequence[str],
+) -> tuple[dict[str, object], ...]:
+    """Normalize GUI-local tuple rows into the mapping shape used by tables."""
+
+    normalized: list[dict[str, object]] = []
+    for row in rows:
+        if isinstance(row, Mapping):
+            normalized.append(
+                {column_id: row.get(column_id, "") for column_id in column_ids}
+            )
+            continue
+        if isinstance(row, (str, bytes, bytearray)):
+            raise TypeError("table rows must be mappings or non-string sequences")
+        values = tuple(row)
+        normalized.append(
+            {
+                column_id: values[index] if index < len(values) else ""
+                for index, column_id in enumerate(column_ids)
+            }
+        )
+    return tuple(normalized)
 
 
 def _coerce_row(row: OhlcvDownloadPlanRow | Mapping[str, object]) -> OhlcvDownloadPlanRow:

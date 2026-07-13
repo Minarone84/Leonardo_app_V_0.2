@@ -41,5 +41,8 @@ def test_preflight_shell_exposes_only_presentation_lifecycle_signals() -> None:
 
     assert "closed = Signal()" in preflight
     assert "def closeEvent" in preflight
+    assert "_normalize_table_rows(rows, _REQUEST_COLUMNS)" in preflight
+    assert "_normalize_table_rows(rows, _VALIDATION_COLUMNS)" in preflight
+    assert "_normalize_table_rows(rows, _WORKLOAD_COLUMNS)" in preflight
     assert "HistoricalDownloadService" not in preflight
     assert "Bybit" not in preflight

@@ -79,6 +79,36 @@ def test_shell_windows_construct_in_honest_empty_state(qapp: QApplication) -> No
             window.close()
 
 
+def test_preflight_accepts_presenter_tuple_rows(qapp: QApplication) -> None:
+    preflight = OhlcvDownloadPreflightWindow()
+    try:
+        preflight.set_request_summary((("Exchange", "bybit", "selected"),))
+        preflight.set_validation_checklist((("1m", "ready", "No blockers"),))
+        preflight.set_workload_estimate(
+            (("Expected pages", 1, "Provider page limits applied"),)
+        )
+
+        request_table = preflight.table_for_id(
+            "ohlcv_download_preflight.request_summary_table"
+        )
+        validation_table = preflight.table_for_id(
+            "ohlcv_download_preflight.validation_checklist_table"
+        )
+        workload_table = preflight.table_for_id(
+            "ohlcv_download_preflight.workload_estimate_table"
+        )
+
+        assert request_table.item(0, 0).text() == "Exchange"
+        assert request_table.item(0, 1).text() == "bybit"
+        assert request_table.item(0, 2).text() == "selected"
+        assert validation_table.item(0, 0).text() == "1m"
+        assert validation_table.item(0, 1).text() == "ready"
+        assert workload_table.item(0, 0).text() == "Expected pages"
+        assert workload_table.item(0, 1).text() == "1"
+    finally:
+        preflight.close()
+
+
 def test_composition_opens_and_tracks_windows(qapp: QApplication, tmp_path: Path) -> None:
     app = LeonardoApp(_config(tmp_path))
     app.startup()
