@@ -63,3 +63,31 @@ def test_connection_summary_remains_connected_while_another_session_is_active() 
         "connected",
         "disconnected",
     )
+
+
+def test_capability_queries_use_adapter_knowledge_without_opening_network_session() -> None:
+    from leonardo.connection.service import ConnectionApplicationService
+    from leonardo.core.connection_registry import ConnectionRegistry
+
+    created: list[_Provider] = []
+
+    def build_provider() -> _Provider:
+        provider = _Provider()
+        provider.opened = False
+
+        async def mark_opened():
+            provider.opened = True
+
+        provider.open = mark_opened  # type: ignore[method-assign]
+        created.append(provider)
+        return provider
+
+    providers = ProviderRegistry()
+    providers.register("fake", build_provider)
+    service = ConnectionApplicationService(providers, ConnectionRegistry())
+
+    assert service.provider_names() == ("fake",)
+    assert service.supported_markets("fake") == ("linear",)
+    assert service.supported_timeframes("fake", "linear") == ("1m", "1h", "1M")
+    assert created
+    assert all(provider.opened is False for provider in created)

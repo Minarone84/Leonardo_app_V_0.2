@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -41,6 +42,7 @@ class HistoricalDownloadManagerWindow(QWidget):
 
     start_requested = Signal()
     maintenance_requested = Signal()
+    closed = Signal()
 
     def __init__(self, *, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -51,6 +53,7 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._timeframe_layout = QVBoxLayout()
         self._timeframe_layout.setObjectName("historical_download_manager.layout.timeframes")
         self._status_log = QTextEdit(self)
+        self._shell_status_label: QLabel | None = None
 
         self.setObjectName("historical_download_manager_window")
         self.setProperty("object_id", HISTORICAL_DOWNLOAD_MANAGER_WINDOW_ID)
@@ -153,6 +156,32 @@ class HistoricalDownloadManagerWindow(QWidget):
     def set_start_enabled(self, enabled: bool) -> None:
         self._buttons["start"].setEnabled(bool(enabled))
 
+    def set_shell_status(self, text: str) -> None:
+        """Set the presentation-only workflow status shown in the header."""
+
+        if self._shell_status_label is not None:
+            self._shell_status_label.setText(str(text))
+
+    def reset_form(self) -> None:
+        """Clear local user input while retaining externally supplied choices."""
+
+        exchange = self._field_widgets.get("exchange")
+        market = self._field_widgets.get("market_type")
+        if isinstance(exchange, QComboBox):
+            blank_index = exchange.findText("")
+            exchange.setCurrentIndex(blank_index if blank_index >= 0 else -1)
+        if isinstance(market, QComboBox):
+            blank_index = market.findText("")
+            market.setCurrentIndex(blank_index if blank_index >= 0 else -1)
+        for field_id in ("symbol", "start_ms", "end_ms", "limit"):
+            widget = self._field_widgets.get(field_id)
+            if isinstance(widget, QLineEdit):
+                widget.clear()
+        self.set_available_timeframes(())
+        self.set_start_enabled(True)
+        self.set_shell_status("Ready")
+        self.clear_view()
+
     def clear_view(self) -> None:
         """Reset the shell to an honest empty state."""
 
@@ -160,6 +189,11 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._status_log.setPlaceholderText(
             "Download status will appear after the workflow is connected."
         )
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.reset_form()
+        self.closed.emit()
+        super().closeEvent(event)
 
 
     def _build_layout(self) -> None:
@@ -188,9 +222,17 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._add_field(form, "symbol", "Symbol", QLineEdit(self))
         self._add_field(form, "start_ms", "Start ms", QLineEdit(self))
         self._add_field(form, "end_ms", "End ms", QLineEdit(self))
+        symbol = self._field_widgets["symbol"]
+        if isinstance(symbol, QLineEdit):
+            symbol.setPlaceholderText("BTCUSDT / btc-usdt / btc/usdt / BTCUSDT.P ...")
+        start_ms = self._field_widgets["start_ms"]
+        if isinstance(start_ms, QLineEdit):
+            start_ms.setPlaceholderText("Optional UTC timestamp in milliseconds")
+        end_ms = self._field_widgets["end_ms"]
+        if isinstance(end_ms, QLineEdit):
+            end_ms.setPlaceholderText("Optional UTC timestamp in milliseconds")
         limit = QLineEdit(self)
-        limit.setText("0")
-        limit.setPlaceholderText("0 = provider default")
+        limit.setPlaceholderText("Blank or 0 = provider default")
         self._add_field(form, "limit", "Limit", limit)
         selection_panel.setLayout(form)
         layout.addWidget(selection_panel)
@@ -296,12 +338,13 @@ class HistoricalDownloadManagerWindow(QWidget):
             "historical_download_manager.title",
             object_type="label",
         )
-        status = QLabel("Services not connected", self)
+        status = QLabel("Ready", self)
         apply_identity(
             status,
             "historical_download_manager.label.shell_status",
             object_type="status_label",
         )
+        self._shell_status_label = status
         header_layout.addWidget(title)
         header_layout.addStretch(1)
         header_layout.addWidget(status)

@@ -1,0 +1,10 @@
+M src/leonardo/gui/presenters/historical_download_presenter.py
+M src/leonardo/gui/windows/historical_download_manager_window.py
+M src/leonardo/gui/windows/ohlcv_download_preflight_window.py
+M tests/connection_test/test_provider_registry.py
+M tests/gui_test/test_historical_download_wiring_static.py
+A _task_1001_download_gui_repair/AUDIT_REPORT.md
+A _task_1001_download_gui_repair/CHANGED_FILES.txt
+A _task_1001_download_gui_repair/VALIDATION.txt
+A docs/core_docs/TASK_1001_DOWNLOAD_GUI_REPAIR.md
+A docs/core_docs/TASK_1001_MERGE_NOTES.md
