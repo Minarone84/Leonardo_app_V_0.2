@@ -64,6 +64,7 @@ class HistoricalDownloadPresenter(QObject):
         self._task_window = OhlcvDownloadTaskWindow(parent=view)
         self._request: DownloadBatchRequest | None = None
         self._preflight: DownloadPreflightResult | None = None
+        self._active_preflight_task_id: str | None = None
         self._active_task_id: str | None = None
         self._last_cancel_event: DownloadProgressEvent | None = None
         self._pending_progress: DownloadProgressEvent | None = None
@@ -93,21 +94,27 @@ class HistoricalDownloadPresenter(QObject):
         market.currentTextChanged.connect(self._refresh_timeframes)
         self._line("symbol").editingFinished.connect(self._normalize_symbol_field)
         self._view.start_requested.connect(self._prepare_preflight)
+        self._view.closed.connect(self._on_manager_closed)
         self._view.maintenance_requested.connect(
             lambda: self._view.append_status(
-                "OHLCV Maintenance is not implemented in Task 1000; downloaded datasets remain unaccepted."
+                "OHLCV Maintenance is not implemented yet; downloaded datasets remain unaccepted."
             )
         )
         self._preflight_window.start_download_requested.connect(self._start_confirmed_download)
+        self._preflight_window.closed.connect(self._cancel_active_preflight)
         self._task_window.button_for_id("stop").clicked.connect(self._cancel_active_download)
 
     def _initialize_capabilities(self) -> None:
         exchange = self._combo("exchange")
         exchange.blockSignals(True)
         exchange.clear()
+        exchange.addItem("")
         exchange.addItems(list(self._connections.provider_names()))
+        exchange.setCurrentIndex(0)
         exchange.blockSignals(False)
-        self._refresh_markets(exchange.currentText())
+        self._refresh_markets("")
+        self._view.reset_form()
+        self._view.set_shell_status("Ready")
         self._view.append_status("Historical Download Manager ready.")
 
     def _refresh_markets(self, provider_name: str) -> None:
@@ -157,29 +164,84 @@ class HistoricalDownloadPresenter(QObject):
             return
         self._request = request
         self._preflight = None
+        self._active_preflight_task_id = None
         self._view.set_start_enabled(False)
+        self._view.set_shell_status("Preparing preflight")
         self._view.append_status("Preparing non-mutating OHLCV preflight...")
+        self._show_preflight_pending(request)
         try:
-            self._downloads.submit_preflight(
+            submission = self._downloads.submit_preflight(
                 request,
+                progress_callback=self._on_preflight_progress,
                 result_callback=self._on_preflight_result,
                 callback_dispatcher=self._dispatcher.dispatch,
             )
+            self._active_preflight_task_id = submission.task_id
         except Exception as error:
             self._view.set_start_enabled(True)
+            self._view.set_shell_status("Ready")
+            self._preflight_window.set_status("Submission failed")
+            self._preflight_window.set_warnings(str(error))
             self._view.append_status(f"Preflight submission failed: {error}")
 
+    def _show_preflight_pending(self, request: DownloadBatchRequest) -> None:
+        self._preflight_window.clear_preflight()
+        self._preflight_window.set_request_summary(
+            (
+                ("Exchange", request.exchange, "selected"),
+                ("Market Type", request.market_type, "selected"),
+                ("Symbol", request.symbol, "selected"),
+                ("Timeframes", ", ".join(request.timeframes), "selected"),
+                (
+                    "Start ms",
+                    _display(request.start_ms),
+                    "custom" if request.start_ms is not None else "automatic",
+                ),
+                (
+                    "End ms",
+                    _display(request.end_ms),
+                    "custom" if request.end_ms is not None else "automatic",
+                ),
+                (
+                    "Page limit",
+                    _display(request.limit),
+                    "provider default" if request.limit in (None, 0) else "requested",
+                ),
+            )
+        )
+        self._preflight_window.set_start_enabled(False)
+        self._preflight_window.set_status("Preparing provider and local-data checks")
+        if request.start_ms is None and request.end_ms is None:
+            self._preflight_window.set_warnings(
+                "Full-history preflight must discover the exchange's oldest available candle. "
+                "This can take several API probes before the work plan becomes ready."
+            )
+        self._preflight_window.show()
+        self._preflight_window.raise_()
+        self._preflight_window.activateWindow()
+
+    def _on_preflight_progress(self, progress: TaskProgress) -> None:
+        if progress.task_id != self._active_preflight_task_id:
+            return
+        self._preflight_window.set_status(progress.message)
+        self._view.set_shell_status("Preparing preflight")
+
     def _on_preflight_result(self, result: TaskResult) -> None:
+        active_task_id = self._active_preflight_task_id
+        if active_task_id is None or result.task_id != active_task_id:
+            return
+        self._active_preflight_task_id = None
         self._view.set_start_enabled(True)
+        self._view.set_shell_status("Ready")
         if result.status != "completed" or not isinstance(result.value, DownloadPreflightResult):
             message = result.error_message or f"preflight ended with status {result.status}"
+            self._preflight_window.set_status("Preflight failed")
+            self._preflight_window.set_start_enabled(False)
+            self._preflight_window.set_warnings(message)
             self._view.append_status(f"Preflight failed: {message}")
             return
         self._preflight = result.value
         self._render_preflight(result.value)
-        self._preflight_window.show()
-        self._preflight_window.raise_()
-        self._preflight_window.activateWindow()
         self._view.append_status("Preflight ready. Review and confirm before execution.")
 
     def _render_preflight(self, report: DownloadPreflightResult) -> None:
@@ -260,7 +322,7 @@ class HistoricalDownloadPresenter(QObject):
         if self._request is None or self._preflight is None or not self._preflight.can_download:
             self._view.append_status("Download cannot start without a successful preflight.")
             return
-        self._preflight_window.close()
+        self._preflight_window.hide()
         self._last_cancel_event = None
         self._pending_progress = None
         self._task_window.clear_task_state()
@@ -291,6 +353,28 @@ class HistoricalDownloadPresenter(QObject):
         self._active_task_id = submission.task_id
         self._task_window.set_status("Running")
         self._view.append_status(f"Download task submitted: {submission.task_id}")
+
+    def _cancel_active_preflight(self) -> None:
+        task_id = self._active_preflight_task_id
+        self._active_preflight_task_id = None
+        self._request = None
+        self._preflight = None
+        self._view.set_start_enabled(True)
+        self._view.set_shell_status("Ready")
+        if task_id is None:
+            return
+        try:
+            self._downloads.cancel(task_id)
+        except Exception as error:
+            self._view.append_status(f"Preflight cancellation failed: {error}")
+            return
+        self._view.append_status("Preflight cancelled before download submission.")
+
+    def _on_manager_closed(self) -> None:
+        self._cancel_active_preflight()
+        self._preflight_window.hide()
+        self._request = None
+        self._preflight = None
 
     def _cancel_active_download(self) -> None:
         task_id = self._active_task_id

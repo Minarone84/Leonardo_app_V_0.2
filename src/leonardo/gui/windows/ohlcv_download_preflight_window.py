@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QGroupBox,
@@ -76,6 +77,7 @@ class OhlcvDownloadPreflightWindow(QDialog):
     """
 
     start_download_requested = Signal()
+    closed = Signal()
 
     def __init__(self, *, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -162,6 +164,10 @@ class OhlcvDownloadPreflightWindow(QDialog):
         self._warnings.setPlainText("")
         self._warnings.setPlaceholderText("Warnings and blockers will appear here.")
         self._set_status("No request loaded")
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.closed.emit()
+        super().closeEvent(event)
 
 
     def table(self) -> QTableWidget:
