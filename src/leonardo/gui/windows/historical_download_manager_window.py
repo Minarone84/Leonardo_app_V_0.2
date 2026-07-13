@@ -64,14 +64,18 @@ class HistoricalDownloadManagerWindow(QWidget):
         """Replace displayed timeframe checkboxes with externally supplied values."""
 
         normalized = _normalize_string_options(timeframes, "timeframes")
+        previous_selection = set(self.selected_timeframes())
         self._clear_timeframe_widgets()
         for timeframe in normalized:
             checkbox = QCheckBox(timeframe, self)
             checkbox.setObjectName(f"historical_download_manager.timeframe.{timeframe}")
             checkbox.setProperty("object_id", checkbox.objectName())
             checkbox.setProperty("object_type", "checkbox")
+            checkbox.setChecked(timeframe in previous_selection)
             self._timeframe_checkboxes[timeframe] = checkbox
             self._timeframe_layout.addWidget(checkbox)
+        if normalized and not self.selected_timeframes():
+            self._timeframe_checkboxes[normalized[0]].setChecked(True)
         self._timeframe_layout.addStretch(1)
 
     def available_timeframes(self) -> tuple[str, ...]:
@@ -139,6 +143,16 @@ class HistoricalDownloadManagerWindow(QWidget):
 
         return self._status_log
 
+    def append_status(self, message: str) -> None:
+        """Append presenter-supplied status text."""
+
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
+        self._status_log.append(message)
+
+    def set_start_enabled(self, enabled: bool) -> None:
+        self._buttons["start"].setEnabled(bool(enabled))
+
     def clear_view(self) -> None:
         """Reset the shell to an honest empty state."""
 
@@ -175,7 +189,8 @@ class HistoricalDownloadManagerWindow(QWidget):
         self._add_field(form, "start_ms", "Start ms", QLineEdit(self))
         self._add_field(form, "end_ms", "End ms", QLineEdit(self))
         limit = QLineEdit(self)
-        limit.setText("200")
+        limit.setText("0")
+        limit.setPlaceholderText("0 = provider default")
         self._add_field(form, "limit", "Limit", limit)
         selection_panel.setLayout(form)
         layout.addWidget(selection_panel)

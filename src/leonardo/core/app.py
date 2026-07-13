@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from threading import RLock
 
 from leonardo.audit import AuditEventV1
+from leonardo.connection import ConnectionApplicationService, build_default_provider_registry
 from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.audit_log import AuditLog, CompositeAuditSink, InMemoryAuditSink, JsonlAuditSink
 from leonardo.core.config import AppConfig, AuditConfig, load_default_config
@@ -17,6 +18,7 @@ from leonardo.core.process_manager import ProcessManager
 from leonardo.core.runtime_manager import RuntimeManagerBackend
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
+from leonardo.ohlcv import HistoricalDownloadApplicationService, HistoricalDownloadService, OHLCVStore
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,8 @@ class CoreContext:
     window_registry: WindowRegistry
     action_registry: ActionRegistry
     runtime_manager: RuntimeManagerBackend
+    connection_service: ConnectionApplicationService
+    historical_download_service: HistoricalDownloadApplicationService
 
 
 class LeonardoApp:
@@ -56,6 +60,22 @@ class LeonardoApp:
         )
         self.connection_registry = ConnectionRegistry()
         self.window_registry = WindowRegistry()
+        self.provider_registry = build_default_provider_registry()
+        self.connection_service = ConnectionApplicationService(
+            self.provider_registry,
+            self.connection_registry,
+        )
+        self.ohlcv_store = OHLCVStore(self.config.paths.historical_data_dir)
+        self.historical_download_domain = HistoricalDownloadService(
+            self.connection_service,
+            self.ohlcv_store,
+            self.audit_log,
+            actor_id=self.config.actor_id,
+        )
+        self.historical_download_service = HistoricalDownloadApplicationService(
+            self.core_runner,
+            self.historical_download_domain,
+        )
         self.action_registry = ActionRegistry(
             self.audit_log,
             actor_id=self.config.actor_id,
@@ -84,6 +104,8 @@ class LeonardoApp:
             window_registry=self.window_registry,
             action_registry=self.action_registry,
             runtime_manager=self.runtime_manager,
+            connection_service=self.connection_service,
+            historical_download_service=self.historical_download_service,
         )
 
     @property

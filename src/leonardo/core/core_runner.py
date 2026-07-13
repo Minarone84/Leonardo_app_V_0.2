@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
-from concurrent.futures import Future as ConcurrentFuture
+from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Event, Lock, Thread
 from typing import Any
@@ -16,6 +16,7 @@ from leonardo.core.task_manager import TaskManager
 ProgressCallback = Callable[["TaskProgress"], None]
 ResultCallback = Callable[["TaskResult"], None]
 JobCallable = Callable[["ProgressReporter"], Awaitable[object] | object]
+BlockingJobCallable = Callable[["ProgressReporter"], object]
 CallbackDispatcher = Callable[[Callable[[], None]], None]
 
 
@@ -92,10 +93,14 @@ class _TaskIdRef:
 class CoreRunner:
     """Own one background asyncio event loop and supervised task submission."""
 
-    def __init__(self, task_manager: TaskManager) -> None:
+    def __init__(self, task_manager: TaskManager, *, max_worker_threads: int = 4) -> None:
         if not isinstance(task_manager, TaskManager):
             raise TypeError("task_manager must be a TaskManager")
+        if type(max_worker_threads) is not int or max_worker_threads <= 0:
+            raise ValueError("max_worker_threads must be a positive integer")
         self._task_manager = task_manager
+        self._max_worker_threads = max_worker_threads
+        self._worker_pool: ThreadPoolExecutor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: Thread | None = None
         self._started = Event()
@@ -151,6 +156,50 @@ class CoreRunner:
                 allow_duplicate_name=allow_duplicate_name,
                 correlation_id=correlation_id,
                 metadata=metadata,
+                run_in_worker=not inspect.iscoroutinefunction(job),
+            ),
+            loop,
+        )
+        return TaskSubmission(task_id=submitted.result(timeout=5.0), task_name=task_name)
+
+    def submit_blocking_job(
+        self,
+        job: BlockingJobCallable,
+        *,
+        task_name: str,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+        allow_duplicate_name: bool = False,
+        correlation_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> TaskSubmission:
+        """Run a blocking callable in the shared bounded default worker pool.
+
+        Cancelling the Leonardo task cancels the awaiter and reports cancellation
+        honestly; Python cannot forcibly terminate a callable already executing in
+        a worker thread. Blocking jobs that need prompt cancellation must therefore
+        cooperate through their own cancellation checks.
+        """
+        if not callable(job):
+            raise TypeError("job must be callable")
+        if inspect.iscoroutinefunction(job):
+            raise TypeError("blocking job must not be an async function")
+        loop = self._require_loop()
+        if not self._accepting:
+            raise RuntimeError("Core runner is not accepting submissions")
+        dispatcher = callback_dispatcher or _inline_dispatch
+        submitted: ConcurrentFuture[str] = asyncio.run_coroutine_threadsafe(
+            self._schedule_job(
+                job,
+                task_name=task_name,
+                progress_callback=progress_callback,
+                result_callback=result_callback,
+                callback_dispatcher=dispatcher,
+                allow_duplicate_name=allow_duplicate_name,
+                correlation_id=correlation_id,
+                metadata=metadata,
+                run_in_worker=True,
             ),
             loop,
         )
@@ -227,6 +276,7 @@ class CoreRunner:
         allow_duplicate_name: bool,
         correlation_id: str | None,
         metadata: dict[str, object] | None,
+        run_in_worker: bool,
     ) -> str:
         task_id_ref = _TaskIdRef()
         reporter = ProgressReporter(
@@ -237,7 +287,11 @@ class CoreRunner:
         )
 
         async def execute() -> object:
-            value = job(reporter)
+            value = (
+                await asyncio.to_thread(job, reporter)
+                if run_in_worker
+                else job(reporter)
+            )
             return await value if inspect.isawaitable(value) else value
 
         task_id = self._task_manager.create_task(
@@ -291,9 +345,15 @@ class CoreRunner:
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
+        worker_pool = ThreadPoolExecutor(
+            max_workers=self._max_worker_threads,
+            thread_name_prefix="LeonardoWorker",
+        )
+        loop.set_default_executor(worker_pool)
         asyncio.set_event_loop(loop)
         with self._lock:
             self._loop = loop
+            self._worker_pool = worker_pool
         self._started.set()
         try:
             loop.run_forever()
@@ -303,7 +363,11 @@ class CoreRunner:
                 task.cancel()
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
             loop.close()
+            with self._lock:
+                self._worker_pool = None
 
 
 def _inline_dispatch(callback: Callable[[], None]) -> None:
