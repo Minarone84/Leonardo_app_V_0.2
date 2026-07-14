@@ -1,0 +1,1 @@
+[PASS] python -m compileall -f -q src tests tools

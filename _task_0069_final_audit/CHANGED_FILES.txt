@@ -1,0 +1,11 @@
+docs/core_docs/TASK_0069_SINGLE_CHART_VERTICAL_INTEGRATION.md
+src/leonardo/core/app.py
+src/leonardo/gui/composition.py
+src/leonardo/gui/presenters/__init__.py
+src/leonardo/gui/presenters/research_presenter.py
+src/leonardo/gui/windows/research_suite_window.py
+src/leonardo/research/application.py
+tests/gui_test/test_research_single_chart_integration.py
+tests/gui_test/test_research_single_chart_static.py
+tests/research_test/test_research_dataset_application.py
+tools/dev_launch_research_chart.py

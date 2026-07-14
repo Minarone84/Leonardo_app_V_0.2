@@ -1,9 +1,9 @@
 # Leonardo Light V2 Rick Protocol: 12 Commandments
 
-**Document ID:** `LEO-LV2-RICK-PROTOCOL-002`  
-**Version:** `2.3`  
-**Status:** Approved governing protocol  
-**Supersedes:** `LEO-LV2-RICK-PROTOCOL-002` version 2.2 and all earlier versions
+**Document ID:** `LEO-LV2-RICK-PROTOCOL-002`
+**Version:** `2.4`
+**Status:** Approved governing protocol
+**Supersedes:** `LEO-LV2-RICK-PROTOCOL-002` version 2.3 and all earlier versions
 
 ---
 
@@ -21,7 +21,8 @@ It governs:
 - POST/PATCH package validation;
 - workflow tracking;
 - reuse of old Leonardo behaviour;
-- protection of canonical truth without unnecessary architecture.
+- protection of canonical truth without unnecessary architecture;
+- Rick-authored direct patch, Git integration, and smoke-test discipline.
 
 It complements:
 
@@ -673,6 +674,394 @@ CANNOT VALIDATE
 Evidence is missing, the package is incomplete, or required
 runtime/output validation is unavailable.
 ```
+
+---
+
+## Amendment A: Rick-Authored Direct Patch Protocol
+
+This amendment governs every Leonardo patch, repair, recovery, documentation change, test change, or implementation performed directly by Rick rather than by Codex/Goblin.
+
+It does not replace the Codex execution protocol. Codex-authored work continues to follow `AGENTS.md`, `RICK_CODEX_EXECUTION_PROTOCOL.md`, the accepted task prompt, the Codex implementation report, and Rick's independent POST/PATCH audit.
+
+When Rick performs the patch directly, the procedure below is mandatory.
+
+### A.1 One active repository
+
+The only active Leonardo repository is:
+
+```text
+C:\Users\gmina\Documents\Python Project\Github_rep\Leo_V2
+```
+
+Ordinary patch work must not:
+
+```text
+replace or rename the repository root
+copy another .git directory over the repository
+create a parallel active Leonardo repository
+restore obsolete Heavy V2 history
+use an extracted package as the permanent working repository
+```
+
+Temporary recovery or extraction directories may exist only for a declared operation and must be removed after validation.
+
+### A.2 Main is stable and protected
+
+`main` is the stable integration branch. Rick must not perform ordinary implementation directly on `main`.
+
+Before a Rick-authored patch begins:
+
+```text
+git status
+git branch --show-current
+git log -5 --oneline --decorate
+git fetch --prune origin
+git switch main
+git pull --ff-only origin main
+```
+
+The working tree must be clean before a task branch is created.
+
+If `main` cannot be updated by fast-forward, work stops until the divergence is understood. A destructive reset is not an acceptable shortcut.
+
+### A.3 Every Rick patch receives its own branch
+
+Branch naming must identify Rick as execution owner and identify the task:
+
+```text
+rick/task-<TaskID>-<short-description>
+```
+
+Example:
+
+```text
+rick/task-1003-ohlcv-maintenance
+```
+
+Protocol-only amendments may use:
+
+```text
+rick/protocol-<short-description>
+```
+
+The branch must begin from the current verified `main`. Unrelated work must never be continued silently on an old branch.
+
+### A.4 Packages are audited before application
+
+A Rick-authored patch package must be treated as evidence, not as trusted replacement content.
+
+Before application, Rick must verify:
+
+```text
+package SHA-256
+archive integrity
+archive root layout
+input baseline or expected parent commit
+complete file inventory
+added, modified, and deleted file boundary
+forbidden files and paths
+presence or absence of .git
+expected task documentation and validation evidence
+```
+
+A cumulative package must not be copied wholesale when a smaller task delta can be isolated.
+
+Patch application must copy only declared task files into the active repository. It must not replace the repository root or its `.git` directory.
+
+### A.5 Scope is verified before staging
+
+Before staging, Rick must inspect:
+
+```text
+git status --short
+git diff --name-status
+git diff --stat
+git diff --check
+```
+
+The changed-file boundary must match the accepted task scope. Unexpected files stop the commit.
+
+Rick must not default to:
+
+```text
+git add -A
+```
+
+unless the complete working tree has been explicitly inspected and confirmed as belonging to the task.
+
+Normal staging uses explicit paths:
+
+```text
+git add -- <task files>
+```
+
+Generated datasets, caches, bytecode, virtual environments, temporary extraction folders, runtime output, and unrelated audit debris must not be committed.
+
+### A.6 Automated validation happens before smoke testing
+
+A Rick-authored patch must pass the relevant automated validation before user-visible smoke testing.
+
+Minimum validation normally includes:
+
+```text
+python -m compileall -q src tests tools
+focused task tests
+full test suite
+git diff --check
+relevant architecture or boundary checks
+```
+
+The repository source must win over any installed Leonardo package:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src;$PWD"
+```
+
+A zero-test result is not a successful test run.
+
+Warnings must be reported and classified as blocking, non-blocking, or deferred follow-up.
+
+### A.7 Visual and runtime smoke testing is mandatory where applicable
+
+Tests do not replace user-visible validation when a patch changes GUI, runtime, interaction, persistence, or provider behaviour.
+
+The smoke test must run from the active `Leo_V2` repository and the correct Conda environment.
+
+A task-specific smoke command file may be used from the VS Code integrated PowerShell terminal:
+
+```powershell
+conda activate py312_Leo
+Set-Location "C:\Users\gmina\Documents\Python Project\Github_rep"
+cmd /c ".\Task_<TaskID>_Smoke_Test.cmd"
+```
+
+The smoke-test script must:
+
+```text
+identify the active repository and branch
+refuse a dirty or incorrect baseline when required
+set PYTHONPATH to the active repository
+launch only the intended workflow
+preserve terminal output and exit status
+avoid modifying tracked files unless explicitly required
+report the exact manual acceptance checklist
+```
+
+The user performs visual acceptance when human observation is required. Rick records the result as PASS, FAIL, or PASS WITH FOLLOW-UP.
+
+No GUI-affecting patch may be committed merely because automated tests pass.
+
+### A.8 Commit only the accepted patch
+
+After automated and manual validation:
+
+```text
+git add -- <explicit task files>
+git diff --cached --check
+git diff --cached --stat
+git diff --cached --name-status
+```
+
+The commit message must identify the task and observable outcome.
+
+Example:
+
+```text
+Task 1003: add OHLCV maintenance validation
+```
+
+The commit must not contain unrelated cleanup, opportunistic refactors, abandoned experiments, or files from another task.
+
+### A.9 Push the task branch, never force-push main
+
+The validated task branch is pushed with tracking:
+
+```text
+git push -u origin <task-branch>
+```
+
+Rick must not:
+
+```text
+force-push main
+rewrite published task history without explicit approval
+delete remote work merely to simplify a merge
+push an unvalidated recovery folder
+push from an obsolete or damaged repository
+```
+
+If a remote branch already exists, its relationship to the local branch must be inspected before it is updated.
+
+### A.10 Use a pull request for integration
+
+Every normal Rick-authored patch is integrated through a pull request:
+
+```text
+task branch
+-> pull request
+-> review
+-> merge commit
+-> main
+```
+
+The pull request must state:
+
+```text
+Task ID and name
+reason for the change
+files and workflows affected
+canonical authorities affected
+persistence impact
+validation performed
+test results
+manual smoke-test result
+known warnings
+remaining risks
+```
+
+Use a merge commit when preserving task history matters. Do not squash a meaningful multi-commit history merely for cosmetic neatness unless explicitly approved.
+
+Automatic mergeability proves only that Git can combine the branches. It does not prove the patch is correct.
+
+### A.11 Return the local repository to normal after merge
+
+After the pull request is merged:
+
+```text
+git switch main
+git pull --ff-only origin main
+```
+
+The merged `main` must be revalidated when the task warrants it.
+
+Only after local `main` matches the merged remote state may task branches be deleted:
+
+```text
+git branch -d <task-branch>
+git push origin --delete <task-branch>
+git fetch --prune origin
+```
+
+The expected final state is:
+
+```text
+active folder:
+C:\Users\gmina\Documents\Python Project\Github_rep\Leo_V2
+
+active stable branch:
+main
+
+remote:
+origin/main
+
+working tree:
+clean
+```
+
+### A.12 Destructive operations require a recovery gate
+
+Before any operation that may delete, replace, mirror, rename, reset, or overwrite repository contents, Rick must record:
+
+```text
+current repository path
+current branch
+current HEAD
+remote URL
+working-tree status
+validated recovery package or remote branch
+exact destructive command
+exact rollback path
+```
+
+The recovery source must be validated before the destructive command runs.
+
+The following operations require explicit justification and user confirmation:
+
+```text
+git reset --hard
+git clean -fd
+git push --force
+robocopy /MIR
+Remove-Item -Recurse
+repository-root replacement
+.git directory replacement
+```
+
+The repository root must never be deleted, emptied, or replaced during an ordinary patch workflow.
+
+### A.13 Rick owns implementation evidence and independent validation evidence
+
+When Rick performs the patch directly, there is no Codex implementation report. Rick must therefore provide both:
+
+```text
+implementation evidence
+independent validation evidence
+```
+
+The final Rick report must include:
+
+```text
+task identity
+starting commit
+task branch
+package hash and input baseline
+files added, modified, and deleted
+behaviour implemented
+scope result
+canonical-authority result
+persistence result
+automated tests
+manual smoke-test result
+warnings
+commit hash
+remote branch
+pull request
+merge result
+final main commit
+remaining follow-up
+```
+
+A Rick-authored patch is complete only after:
+
+```text
+the patch is committed
+the task branch is pushed
+the pull request is merged
+local main is synchronized
+the working tree is clean
+the task branch is retired
+```
+
+### A.14 Default Rick-authored patch lifecycle
+
+The required lifecycle is:
+
+```text
+Audit package
+-> define task
+-> verify clean main
+-> create Rick task branch
+-> isolate and apply bounded patch
+-> inspect changed-file boundary
+-> run focused validation
+-> run full validation
+-> run required visual or runtime smoke test
+-> stage explicit files
+-> validate staged diff
+-> commit
+-> push task branch
+-> open pull request
+-> merge
+-> return to main
+-> fast-forward local main
+-> validate merged main
+-> delete local and remote task branches
+-> close task ledger
+```
+
+This is the default protocol whenever Rick, rather than Codex/Goblin, performs the implementation.
+
+No Rick-authored patch may bypass this lifecycle merely because the patch appears small.
 
 ---
 

@@ -1,46 +1,41 @@
-"""GUI-only Research Suite shell with honest empty presentation state."""
+"""Single-chart historical Research Suite window."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from functools import partial
+from collections.abc import Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
-    QGridLayout,
     QComboBox,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
-    QSplitter,
-    QTableWidget,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from leonardo.data import MarketId
 from leonardo.gui.action_observer import GuiActionObserver
+from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
+from leonardo.gui.chart.interaction import CandlestickInteractionState
+from leonardo.gui.chart.pane_workspace import ChartPaneWorkspaceWidget
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
-from leonardo.gui.windows.shell_widgets import (
-    apply_identity,
-    configure_table,
-    populate_table,
-)
-
+from leonardo.gui.windows.shell_widgets import apply_identity
+from leonardo.research import AcceptedDatasetSummary, ResidentVolumeProjection
 
 RESEARCH_SUITE_WINDOW_ID = "research_suite.window"
-_RESEARCH_STUDY_COLUMNS = ("slot", "name", "status")
-_RESEARCH_WORKSPACE_COLUMNS = ("pane", "symbol", "timeframe", "status")
-_RESEARCH_OVERVIEW_COLUMNS = ("surface", "state", "details")
-_RESEARCH_MARKET_COLUMNS = ("field", "value", "status")
-_RESEARCH_CONTROL_COLUMNS = ("control", "value", "state")
 
 
 class ResearchSuiteWindow(QWidget):
-    """Research Suite shell awaiting application services."""
+    """Present one accepted historical dataset through the Research chart."""
+
+    refresh_requested = Signal()
+    open_requested = Signal()
+    cancel_requested = Signal()
+    closed = Signal()
 
     def __init__(
         self,
@@ -53,104 +48,223 @@ class ResearchSuiteWindow(QWidget):
             getattr(action_observer, "record_action", None)
         ):
             raise TypeError("action_observer must expose callable record_action")
-        self._action_observer = action_observer
-        self._buttons: dict[str, QPushButton] = {}
-        self._tables: dict[str, QTableWidget] = {}
+        self._controls: dict[str, QPushButton] = {}
+        self._datasets: tuple[AcceptedDatasetSummary, ...] = ()
+        self._dataset_combo: QComboBox | None = None
         self._status_label: QLabel | None = None
+        self._dataset_details: QLabel | None = None
+        self._progress: QProgressBar | None = None
         self._log_area: QTextEdit | None = None
+        self._chart_workspace = ChartPaneWorkspaceWidget(self)
+        self._chart = self._chart_workspace.price_chart
 
         self._apply_window_defaults()
         apply_theme_stylesheet(self, load_default_theme())
-        self._build_shell()
+        self._build_window()
         self.load_empty_state()
 
+    @property
+    def chart_widget(self) -> CandlestickChartWidget:
+        return self._chart
+
+    @property
+    def chart_workspace(self) -> ChartPaneWorkspaceWidget:
+        return self._chart_workspace
+
+    @property
+    def volume_visible(self) -> bool:
+        return self._chart_workspace.volume_visible
 
     def button_for_id(self, button_id: str) -> QPushButton:
-        """Return a stable button by identifier."""
-
         try:
-            return self._buttons[button_id]
+            return self._controls[button_id]
         except KeyError as error:
             raise KeyError(f"Unknown Research Suite button: {button_id}") from error
 
-    def table_for_id(self, table_id: str) -> QTableWidget:
-        """Return a stable table by identifier."""
-
-        try:
-            return self._tables[table_id]
-        except KeyError as error:
-            raise KeyError(f"Unknown Research Suite table: {table_id}") from error
-
     def status_text(self) -> str:
-        """Return the shell status label text."""
-
         return "" if self._status_label is None else self._status_label.text()
 
     def status_log_text(self) -> str:
-        """Return the local status log text."""
-
         return "" if self._log_area is None else self._log_area.toPlainText()
 
-    def load_empty_state(self) -> None:
-        """Reset Research Suite presentation without synthetic research data."""
+    def selected_market_id(self) -> MarketId | None:
+        combo = self._require_dataset_combo()
+        index = combo.currentIndex()
+        if not 0 <= index < len(self._datasets):
+            return None
+        return self._datasets[index].market_id
 
-        for table in self._tables.values():
-            table.setRowCount(0)
+    def set_catalog(self, datasets: Sequence[AcceptedDatasetSummary]) -> None:
+        normalized = tuple(datasets)
+        if any(not isinstance(item, AcceptedDatasetSummary) for item in normalized):
+            raise TypeError("datasets must contain AcceptedDatasetSummary values")
+        previous = self.selected_market_id()
+        self._datasets = normalized
+        combo = self._require_dataset_combo()
+        combo.blockSignals(True)
+        combo.clear()
+        for item in normalized:
+            market = item.market_id
+            combo.addItem(
+                f"{market.exchange} | {market.market_type} | "
+                f"{market.symbol} | {market.timeframe}"
+            )
+        if previous is not None:
+            for index, item in enumerate(normalized):
+                if item.market_id == previous:
+                    combo.setCurrentIndex(index)
+                    break
+        combo.blockSignals(False)
+        if normalized and combo.currentIndex() < 0:
+            combo.setCurrentIndex(0)
+        self._update_dataset_details()
+        self._set_open_enabled(bool(normalized))
+
+    def set_status(self, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
+        if self._status_label is not None:
+            self._status_label.setText(message)
+
+    def append_status(self, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
+        if self._log_area is not None:
+            self._log_area.append(message)
+
+    def set_progress(self, current: int | None, total: int | None) -> None:
+        progress = self._progress
+        if progress is None:
+            return
+        if current is None or total is None or total <= 0:
+            progress.setRange(0, 0)
+            return
+        progress.setRange(0, total)
+        progress.setValue(max(0, min(current, total)))
+
+    def set_busy(self, busy: bool, *, can_cancel: bool = True) -> None:
+        if type(busy) is not bool or type(can_cancel) is not bool:
+            raise TypeError("busy and can_cancel must be booleans")
+        self._require_dataset_combo().setEnabled(not busy)
+        self._controls["research_suite.button.refresh"].setEnabled(not busy)
+        self._set_open_enabled(not busy and bool(self._datasets))
+        self._controls["research_suite.button.cancel"].setEnabled(busy and can_cancel)
+        if not busy and self._progress is not None:
+            self._progress.setRange(0, 1)
+            self._progress.setValue(0)
+
+    def show_interaction_state(
+        self,
+        state: CandlestickInteractionState,
+        *,
+        volume_projection: ResidentVolumeProjection | None = None,
+    ) -> None:
+        self._chart_workspace.apply_chart_state(state, volume_projection)
+        autoscale = self._controls["research_suite.button.toggle_autoscale"]
+        autoscale.setEnabled(True)
+        self._sync_autoscale_button()
+        self._controls["research_suite.button.toggle_volume"].setEnabled(
+            volume_projection is not None
+        )
+
+    def clear_chart(self) -> None:
+        self._chart_workspace.clear()
+        self._chart_workspace.set_volume_visible(False)
+        autoscale = self._controls.get("research_suite.button.toggle_autoscale")
+        if autoscale is not None:
+            autoscale.setText("Disable Autoscale")
+            autoscale.setEnabled(False)
+        toggle = self._controls.get("research_suite.button.toggle_volume")
+        if toggle is not None:
+            toggle.setText("Show Volume")
+            toggle.setEnabled(False)
+
+    def load_empty_state(self) -> None:
+        self._datasets = ()
+        combo = self._require_dataset_combo()
+        combo.clear()
+        self._update_dataset_details()
+        self.clear_chart()
+        self.set_busy(False)
+        self.set_status("Research services are not connected")
         if self._log_area is not None:
             self._log_area.clear()
-            self._log_area.setPlaceholderText("Research workflow messages will appear here.")
-        self._set_status("Research services are not connected")
+            self._log_area.setPlaceholderText(
+                "Research dataset and chart workflow messages will appear here."
+            )
 
-
-    def clear_workspace_view(self) -> None:
-        """Clear the current presentation-only workspace view."""
-
-        self.load_empty_state()
-
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.closed.emit()
+        super().closeEvent(event)
 
     def _apply_window_defaults(self) -> None:
         self.setWindowTitle("Research Suite")
         self.setObjectName("research_suite_window")
         self.setProperty("object_id", RESEARCH_SUITE_WINDOW_ID)
-        self.resize(1280, 820)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(1320, 860)
         font = self.font()
-        font.setPointSize(14)
+        font.setPointSize(12)
         self.setFont(font)
 
-    def _build_shell(self) -> None:
+    def _build_window(self) -> None:
         root = QVBoxLayout(self)
+        apply_identity(root, "research_suite.layout.root", object_type="layout")
+        root.addWidget(self._build_header())
+        root.addWidget(self._build_dataset_controls())
+        chart_panel = QGroupBox("Historical Chart Workspace", self)
         apply_identity(
-            root,
-            "research_suite.layout.root",
+            chart_panel,
+            "research_suite.panel.chart",
+            object_type="panel",
+            appearance_role="chart_panel",
+        )
+        chart_layout = QVBoxLayout(chart_panel)
+        apply_identity(
+            chart_layout,
+            "research_suite.layout.chart",
             object_type="layout",
         )
-        root.addWidget(self._build_header())
-        root.addWidget(self._build_overview_panel())
-        root.addWidget(self._build_toolbar())
-        root.addWidget(self._build_workspace(), stretch=1)
-        root.addWidget(self._build_log_panel())
+        toolbar = QHBoxLayout()
+        apply_identity(
+            toolbar,
+            "research_suite.layout.chart_toolbar",
+            object_type="layout",
+        )
+        toolbar.addStretch(1)
+        autoscale_toggle = self._button(
+            chart_panel,
+            "research_suite.button.toggle_autoscale",
+            "Disable Autoscale",
+            self._toggle_autoscale,
+        )
+        autoscale_toggle.setEnabled(False)
+        toolbar.addWidget(autoscale_toggle)
+        volume_toggle = self._button(
+            chart_panel,
+            "research_suite.button.toggle_volume",
+            "Show Volume",
+            self._toggle_volume,
+        )
+        volume_toggle.setEnabled(False)
+        toolbar.addWidget(volume_toggle)
+        chart_layout.addLayout(toolbar)
+        chart_layout.addWidget(self._chart_workspace, stretch=1)
+        root.addWidget(chart_panel, stretch=1)
+        root.addWidget(self._build_status_panel())
 
     def _build_header(self) -> QWidget:
         header = QGroupBox("Research Suite", self)
-        apply_identity(
-            header,
-            "research_suite.panel.header",
-            object_type="panel",
-        )
+        apply_identity(header, "research_suite.panel.header", object_type="panel")
         layout = QHBoxLayout(header)
-        apply_identity(
-            layout,
-            "research_suite.layout.header",
-            object_type="layout",
-        )
-        title = QLabel("Research Suite", header)
+        title = QLabel("Historical Research", header)
         apply_identity(
             title,
             "research_suite.label.title",
             object_type="label",
-            display_label="Research Suite",
+            display_label="Historical Research",
         )
-        status = QLabel("Services not connected", header)
+        status = QLabel("Research services are not connected", header)
         apply_identity(
             status,
             "research_suite.label.status",
@@ -163,289 +277,164 @@ class ResearchSuiteWindow(QWidget):
         layout.addWidget(status)
         return header
 
-    def _build_overview_panel(self) -> QWidget:
-        panel = QGroupBox("Workspace Overview", self)
+    def _build_dataset_controls(self) -> QWidget:
+        panel = QGroupBox("Accepted OHLCV Dataset", self)
         apply_identity(
             panel,
-            "research_suite.panel.workspace_overview",
+            "research_suite.panel.dataset_selector",
             object_type="panel",
         )
-        layout = QGridLayout(panel)
-        apply_identity(
-            layout,
-            "research_suite.layout.workspace_overview",
-            object_type="layout",
-        )
-        table = configure_table(
-            QTableWidget(panel),
-            object_id="research_suite.table.overview_dummy",
-            columns=_RESEARCH_OVERVIEW_COLUMNS,
-            labels=("Surface", "State", "Details"),
-        )
-        self._tables["research_suite.table.overview_dummy"] = table
-        boundary = QLabel(
-            "Shell boundary: chart rendering, OHLCV loading, study calculation, "
-            "and persistence are not implemented here.",
-            panel,
-        )
-        boundary.setWordWrap(True)
-        apply_identity(
-            boundary,
-            "research_suite.label.boundary_notice",
-            object_type="label",
-            display_label="Shell Boundary",
-        )
-        layout.addWidget(table, 0, 0)
-        layout.addWidget(boundary, 0, 1)
-        return panel
-
-    def _build_toolbar(self) -> QWidget:
-        toolbar = QGroupBox("Toolbar", self)
-        apply_identity(
-            toolbar,
-            "research_suite.toolbar.main",
-            object_type="toolbar",
-        )
-        layout = QHBoxLayout(toolbar)
-        apply_identity(
-            layout,
-            "research_suite.layout.toolbar",
-            object_type="layout",
-        )
-        for button_id, label, action_id, action in (
-            (
-                "research_suite.button.refresh",
-                "Refresh",
-                "research_suite.action.refresh",
-                self.load_empty_state,
-            ),
-            (
-                "research_suite.button.clear_workspace",
-                "Clear Workspace",
-                "research_suite.action.clear_workspace",
-                self.clear_workspace_view,
-            ),
-            (
-                "research_suite.button.add_chart_placeholder",
-                "Add Chart Placeholder",
-                "research_suite.action.add_chart_placeholder",
-                partial(self._local_action, "research_suite.action.add_chart_placeholder"),
-            ),
-        ):
-            button = QPushButton(label, toolbar)
-            apply_identity(
-                button,
-                button_id,
-                object_type="button",
-                display_label=label,
-                action_id=action_id,
-                tooltip="GUI shell action only. No chart renderer or study calculation.",
-            )
-            button.clicked.connect(partial(self._handle_shell_action, action_id, action))
-            self._buttons[button_id] = button
-            layout.addWidget(button)
-        layout.addStretch(1)
-        return toolbar
-
-    def _build_workspace(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        apply_identity(
-            splitter,
-            "research_suite.splitter.workspace",
-            object_type="splitter",
-        )
-        splitter.addWidget(self._build_sidebar())
-        splitter.addWidget(self._build_tabs())
-        return splitter
-
-    def _build_sidebar(self) -> QWidget:
-        sidebar = QGroupBox("Study / Environment Placeholder", self)
-        apply_identity(
-            sidebar,
-            "research_suite.panel.study_sidebar",
-            object_type="panel",
-        )
-        layout = QVBoxLayout(sidebar)
-        apply_identity(
-            layout,
-            "research_suite.layout.study_sidebar",
-            object_type="layout",
-        )
-        label = QLabel("Study Environment", sidebar)
+        layout = QHBoxLayout(panel)
+        label = QLabel("Dataset", panel)
         apply_identity(
             label,
-            "research_suite.label.study_environment",
+            "research_suite.label.dataset",
             object_type="label",
         )
-        combo = QComboBox(sidebar)
+        combo = QComboBox(panel)
         apply_identity(
             combo,
-            "research_suite.combo.study_environment_dummy",
+            "research_suite.combo.accepted_dataset",
             object_type="combo_box",
-            display_label="Study Environment",
-            tooltip="Presentation-only environment selector.",
+            display_label="Accepted Dataset",
+            tooltip="Only canonically accepted OHLCV datasets are listed.",
         )
-        combo.addItems(("No research environment configured", "Empty workspace"))
-        table = configure_table(
-            QTableWidget(sidebar),
-            object_id="research_suite.table.study_sidebar_dummy",
-            columns=_RESEARCH_STUDY_COLUMNS,
-            labels=("Slot", "Name", "Status"),
+        combo.currentIndexChanged.connect(self._update_dataset_details)
+        self._dataset_combo = combo
+        details = QLabel("No accepted datasets", panel)
+        details.setWordWrap(True)
+        apply_identity(
+            details,
+            "research_suite.label.dataset_details",
+            object_type="label",
+            display_label="Dataset Details",
         )
-        self._tables["research_suite.table.study_sidebar_dummy"] = table
-        market_table = configure_table(
-            QTableWidget(sidebar),
-            object_id="research_suite.table.market_context_dummy",
-            columns=_RESEARCH_MARKET_COLUMNS,
-            labels=("Field", "Value", "Status"),
+        self._dataset_details = details
+
+        refresh = self._button(
+            panel,
+            "research_suite.button.refresh",
+            "Refresh Datasets",
+            self._emit_refresh,
         )
-        self._tables["research_suite.table.market_context_dummy"] = market_table
+        open_button = self._button(
+            panel,
+            "research_suite.button.open_chart",
+            "Open Chart",
+            self._emit_open,
+        )
+        cancel = self._button(
+            panel,
+            "research_suite.button.cancel",
+            "Cancel",
+            self._emit_cancel,
+        )
+        cancel.setEnabled(False)
         layout.addWidget(label)
-        layout.addWidget(combo)
-        layout.addWidget(table, stretch=1)
-        layout.addWidget(market_table, stretch=1)
-        return sidebar
-
-    def _build_tabs(self) -> QWidget:
-        tabs = QTabWidget(self)
-        apply_identity(
-            tabs,
-            "research_suite.tabs.workspace",
-            object_type="tab_widget",
-        )
-        tabs.addTab(self._build_chart_placeholder(), "Chart Workspace")
-        tabs.addTab(self._build_workspace_table_panel(), "Workspace Objects")
-        return tabs
-
-    def _build_chart_placeholder(self) -> QWidget:
-        panel = QFrame(self)
-        panel.setFrameShape(QFrame.Shape.StyledPanel)
-        apply_identity(
-            panel,
-            "research_suite.panel.chart_placeholder.primary",
-            object_type="chart_placeholder_panel",
-            tooltip="Placeholder only. No candlestick renderer lives here yet.",
-        )
-        layout = QVBoxLayout(panel)
-        apply_identity(
-            layout,
-            "research_suite.layout.chart_placeholder.primary",
-            object_type="layout",
-        )
-        title = QLabel("Chart placeholder", panel)
-        apply_identity(
-            title,
-            "research_suite.label.chart_placeholder.title",
-            object_type="label",
-        )
-        message = QLabel(
-            "No OHLCV rendering, study calculation, viewport logic, or persistence in this phase.",
-            panel,
-        )
-        apply_identity(
-            message,
-            "research_suite.label.chart_placeholder.message",
-            object_type="label",
-        )
-        layout.addWidget(title)
-        layout.addWidget(message)
-        control_panel = QGroupBox("Chart Controls Placeholder", panel)
-        apply_identity(
-            control_panel,
-            "research_suite.panel.chart_controls",
-            object_type="panel",
-        )
-        control_layout = QVBoxLayout(control_panel)
-        apply_identity(
-            control_layout,
-            "research_suite.layout.chart_controls",
-            object_type="layout",
-        )
-        controls = configure_table(
-            QTableWidget(control_panel),
-            object_id="research_suite.table.chart_controls_dummy",
-            columns=_RESEARCH_CONTROL_COLUMNS,
-            labels=("Control", "Value", "State"),
-        )
-        self._tables["research_suite.table.chart_controls_dummy"] = controls
-        control_layout.addWidget(controls)
-        layout.addWidget(control_panel)
-        layout.addStretch(1)
+        layout.addWidget(combo, stretch=1)
+        layout.addWidget(details, stretch=2)
+        layout.addWidget(refresh)
+        layout.addWidget(open_button)
+        layout.addWidget(cancel)
         return panel
 
-    def _build_workspace_table_panel(self) -> QWidget:
-        panel = QGroupBox("Workspace Objects", self)
+    def _build_status_panel(self) -> QWidget:
+        panel = QGroupBox("Research Activity", self)
         apply_identity(
             panel,
-            "research_suite.panel.workspace_objects",
+            "research_suite.panel.activity",
             object_type="panel",
         )
         layout = QVBoxLayout(panel)
+        progress = QProgressBar(panel)
+        progress.setRange(0, 1)
+        progress.setValue(0)
         apply_identity(
-            layout,
-            "research_suite.layout.workspace_objects",
-            object_type="layout",
-        )
-        table = configure_table(
-            QTableWidget(panel),
-            object_id="research_suite.table.workspace_dummy",
-            columns=_RESEARCH_WORKSPACE_COLUMNS,
-            labels=("Pane", "Symbol", "Timeframe", "Status"),
-        )
-        self._tables["research_suite.table.workspace_dummy"] = table
-        layout.addWidget(table)
-        return panel
-
-    def _build_log_panel(self) -> QWidget:
-        panel = QGroupBox("Status / Log", self)
-        apply_identity(
-            panel,
-            "research_suite.panel.status_log",
-            object_type="panel",
-        )
-        layout = QVBoxLayout(panel)
-        apply_identity(
-            layout,
-            "research_suite.layout.status_log",
-            object_type="layout",
+            progress,
+            "research_suite.progress.operation",
+            object_type="progress_bar",
         )
         log = QTextEdit(panel)
+        log.setReadOnly(True)
+        log.setMaximumHeight(110)
         apply_identity(
             log,
-            "research_suite.text.status_log",
-            object_type="text_area",
+            "research_suite.log.activity",
+            object_type="log",
         )
-        log.setReadOnly(True)
+        self._progress = progress
         self._log_area = log
+        layout.addWidget(progress)
         layout.addWidget(log)
         return panel
 
-    def _local_action(self, action_id: str) -> None:
-        self._set_status(f"{action_id} is unavailable in the reset baseline.")
-        self._append_log(f"{action_id}: no chart logic executed.")
-
-    def _handle_shell_action(
+    def _button(
         self,
-        action_id: str,
-        handler: Callable[[], None],
-    ) -> None:
-        if not self._record_action(action_id):
-            return
-        handler()
-
-    def _record_action(self, action_id: str) -> bool:
-        if self._action_observer is None:
-            return True
-        decision = self._action_observer.record_action(
-            action_id,
-            window_id=RESEARCH_SUITE_WINDOW_ID,
+        parent: QWidget,
+        object_id: str,
+        label: str,
+        callback,
+    ) -> QPushButton:
+        button = QPushButton(label, parent)
+        apply_identity(
+            button,
+            object_id,
+            object_type="button",
+            display_label=label,
+            tooltip="Local Research workflow control.",
         )
-        return decision.allowed
+        button.clicked.connect(callback)
+        self._controls[object_id] = button
+        return button
 
-    def _set_status(self, message: str) -> None:
-        if self._status_label is not None:
-            self._status_label.setText(message)
+    def _toggle_autoscale(self) -> None:
+        enabled = not self._chart.autoscale_enabled
+        self._chart.set_autoscale_enabled(enabled)
+        self._sync_autoscale_button()
 
-    def _append_log(self, message: str) -> None:
-        if self._log_area is not None:
-            self._log_area.append(message)
+    def _sync_autoscale_button(self) -> None:
+        button = self._controls["research_suite.button.toggle_autoscale"]
+        button.setText(
+            "Disable Autoscale"
+            if self._chart.autoscale_enabled
+            else "Enable Autoscale"
+        )
+
+    def _toggle_volume(self) -> None:
+        visible = not self._chart_workspace.volume_visible
+        self._chart_workspace.set_volume_visible(visible)
+        self._controls["research_suite.button.toggle_volume"].setText(
+            "Hide Volume" if visible else "Show Volume"
+        )
+
+    def _emit_refresh(self) -> None:
+        self.refresh_requested.emit()
+
+    def _emit_open(self) -> None:
+        self.open_requested.emit()
+
+    def _emit_cancel(self) -> None:
+        self.cancel_requested.emit()
+
+    def _set_open_enabled(self, enabled: bool) -> None:
+        self._controls["research_suite.button.open_chart"].setEnabled(enabled)
+
+    def _require_dataset_combo(self) -> QComboBox:
+        if self._dataset_combo is None:
+            raise RuntimeError("Research dataset selector is not initialized")
+        return self._dataset_combo
+
+    def _update_dataset_details(self, *_args) -> None:
+        details = self._dataset_details
+        if details is None:
+            return
+        combo = self._require_dataset_combo()
+        index = combo.currentIndex()
+        if not 0 <= index < len(self._datasets):
+            details.setText("No accepted datasets")
+            return
+        item = self._datasets[index]
+        details.setText(
+            f"{item.row_count:,} candles | "
+            f"{item.first_timestamp_ms} → {item.last_timestamp_ms}"
+        )

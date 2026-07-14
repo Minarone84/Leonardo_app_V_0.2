@@ -1,0 +1,21 @@
+Task ID: 0070
+Task name: Pane Workspace and Volume
+Parent workplan: Leonardo Light V2 Research Suite Rebuild
+Execution owner: Rick
+Baseline: Leo_V2_0069_POST_20260713_2351.zip
+
+Observable result:
+- one chart now owns a vertical splitter workspace;
+- the existing price pane remains canonical for price presentation;
+- an optional volume pane consumes the same horizontal viewport and crosshair;
+- raw volume, candle direction, visible-range autoscale, and a full-history-seeded 20-period mean are rendered;
+- Show Volume / Hide Volume is local GUI presentation behavior;
+- resident refill replaces price/volume state coherently.
+
+Excluded:
+- Financial Tool specifications and remaining oscillators;
+- study lifecycle;
+- multi-chart workspace;
+- durable state;
+- Data Manager persistence;
+- OHLCV writes, validation, repair, download, provider, or Core changes.

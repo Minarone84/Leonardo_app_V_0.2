@@ -8,7 +8,7 @@ from typing import Protocol
 from PySide6.QtWidgets import QWidget
 
 from leonardo.gui.action_observer import GuiActionObserver, build_gui_action_observer
-from leonardo.gui.presenters import HistoricalDownloadPresenter
+from leonardo.gui.presenters import HistoricalDownloadPresenter, ResearchSuitePresenter
 from leonardo.gui.window_tracking import GuiWindowTracker
 from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow
 from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow
@@ -31,6 +31,7 @@ class GuiCoreContext(Protocol):
     config: object
     connection_service: object
     historical_download_service: object
+    research_dataset_service: object
 
 
 class GuiCompositionRoot:
@@ -52,6 +53,7 @@ class GuiCompositionRoot:
         self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = None
         self._historical_download_presenter: HistoricalDownloadPresenter | None = None
         self._research_suite_window: ResearchSuiteWindow | None = None
+        self._research_suite_presenter: ResearchSuitePresenter | None = None
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
         self._analysis_suite_window: AnalysisSuiteWindow | None = None
         self._trading_suite_window: TradingSuiteWindow | None = None
@@ -75,6 +77,10 @@ class GuiCompositionRoot:
     @property
     def research_suite_window(self) -> ResearchSuiteWindow | None:
         return self._research_suite_window
+
+    @property
+    def research_suite_presenter(self) -> ResearchSuitePresenter | None:
+        return self._research_suite_presenter
 
     @property
     def data_manager_suite_window(self) -> DataManagerSuiteWindow | None:
@@ -184,13 +190,9 @@ class GuiCompositionRoot:
         return "Historical Download Manager shell opened."
 
     def _open_suite_shell(self, action_id: str, parent: LeonardoMainWindow) -> str:
+        if action_id == "main_window.open_research_suite":
+            return self._open_research_suite(parent)
         mapping = {
-            "main_window.open_research_suite": (
-                "_research_suite_window",
-                ResearchSuiteWindow,
-                "research_suite.window",
-                "Research Suite",
-            ),
             "main_window.open_data_manager_suite": (
                 "_data_manager_suite_window",
                 DataManagerSuiteWindow,
@@ -222,6 +224,32 @@ class GuiCompositionRoot:
             self._install_tracker(window, window_id, title, "suite")
         self._show_window(window)
         return f"{title} shell opened."
+
+    def _open_research_suite(self, parent: LeonardoMainWindow) -> str:
+        if (
+            self._research_suite_window is None
+            or self._research_suite_presenter is None
+            or self._research_suite_presenter.session.is_disposed
+        ):
+            window = ResearchSuiteWindow(
+                action_observer=self._action_observer,
+                parent=parent,
+            )
+            presenter = ResearchSuitePresenter(
+                window,
+                getattr(self._context, "research_dataset_service"),
+            )
+            self._research_suite_window = window
+            self._research_suite_presenter = presenter
+            self._register_window_actions(window, "research_suite.window")
+            self._install_tracker(
+                window,
+                "research_suite.window",
+                "Research Suite",
+                "suite",
+            )
+        self._show_window(self._research_suite_window)
+        return "Research Suite opened."
 
     def _register_window_actions(self, window: object, window_id: str) -> None:
         observer = self._action_observer

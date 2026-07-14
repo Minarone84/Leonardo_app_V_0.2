@@ -12,6 +12,15 @@ from leonardo.gui.chart.candlestick_scene import (
     build_candlestick_scene,
 )
 from leonardo.gui.chart.interaction import CandlestickInteractionState
+from leonardo.gui.chart.volume_scene import (
+    LastVolumeTag,
+    VolumeAxisTick,
+    VolumeBarGlyph,
+    VolumeMeanPoint,
+    VolumeRenderContract,
+    VolumeScene,
+    build_volume_scene,
+)
 from leonardo.gui.chart.price_scale import (
     PriceRange,
     PriceScaleSnapshot,
@@ -20,6 +29,13 @@ from leonardo.gui.chart.price_scale import (
 )
 
 __all__ = [
+    "build_volume_scene",
+    "VolumeScene",
+    "VolumeRenderContract",
+    "VolumeMeanPoint",
+    "VolumeBarGlyph",
+    "VolumeAxisTick",
+    "LastVolumeTag",
     "CandleGlyph",
     "CandlestickInteractionState",
     "CandlestickRenderContract",

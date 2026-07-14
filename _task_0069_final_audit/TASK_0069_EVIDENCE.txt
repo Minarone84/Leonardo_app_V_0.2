@@ -1,0 +1,19 @@
+Task ID: 0069
+Task name: Single-Chart Vertical Integration
+
+Implemented:
+- Core-supervised accepted dataset catalog scan.
+- Core-supervised immutable full dataset loading.
+- Core-supervised resident slice generation and refills.
+- ChartSessionState correlation and stale-result rejection.
+- Accepted dataset selector, status, progress, cancel, and candlestick chart GUI.
+- Horizontal viewport refill integration.
+- Local Research controls remain outside ActionRegistry registration.
+- Window close cancels work, disposes the session, and permits clean recreation.
+
+Excluded:
+- Volume and oscillator panes.
+- Financial Tools and studies.
+- Multi-chart workspace.
+- Research persistence.
+- OHLCV writes, validation mutation, repair, or Download Data changes.

@@ -1,0 +1,7 @@
+Task: 0069 — Single-Chart Vertical Integration
+Input archive: Leo_V2_Light_Latest(2).zip
+Input SHA-256: bdd9e0a0979fa5139a8ce1036108fcd411110531cb5d3ae56db5338b66a0e00d
+Repository branch evidence: light-v2-reset
+Repository HEAD evidence: f15ddded6022be13679e2a120447bef5616b7dd6
+User-confirmed prerequisite: Task 0068 interaction smoke PASS
+Created: 2026-07-13T23:51:27.382273+02:00

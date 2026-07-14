@@ -1,0 +1,15 @@
+Task 0070 implementation validation: PASS WITH FOLLOW-UP
+
+Automated validation:
+- focused tests passed;
+- full repository regression passed;
+- compile validation passed;
+- AST validation passed;
+- architecture scan passed;
+- changed-file boundary matched scope.
+
+Open gate:
+- local PySide6 visual acceptance of pane layout, volume rendering, shared pan/zoom/crosshair, splitter resizing, toggle behavior, and resident refill.
+
+Next task after visual acceptance:
+0071 — Canonical Financial Tool Specifications and Naming

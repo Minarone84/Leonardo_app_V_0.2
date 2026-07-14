@@ -40,7 +40,16 @@ from leonardo.research.resident import (
     ResidentSliceService,
 )
 
+from leonardo.research.volume import (
+    DEFAULT_VOLUME_MEAN_PERIOD,
+    ResidentVolumeProjection,
+    build_resident_volume_projection,
+)
+
 __all__ = [
+    "build_resident_volume_projection",
+    "ResidentVolumeProjection",
+    "DEFAULT_VOLUME_MEAN_PERIOD",
     "DEFAULT_LEFT_PADDING",
     "DEFAULT_REFILL_THRESHOLD",
     "DEFAULT_RIGHT_PADDING",

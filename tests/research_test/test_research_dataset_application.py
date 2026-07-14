@@ -187,3 +187,99 @@ def test_leonardo_app_composes_real_research_dataset_service(tmp_path: Path) -> 
         )
     finally:
         app.shutdown()
+
+
+class _RecordingCatalog:
+    def __init__(self, report) -> None:
+        self.report = report
+        self.thread_name: str | None = None
+
+    def scan(self):
+        self.thread_name = current_thread().name
+        return self.report
+
+
+class _RecordingSlicer:
+    def __init__(self, resident) -> None:
+        self.resident = resident
+        self.thread_name: str | None = None
+        self.center_index: int | None = None
+
+    def slice_around_index(self, dataset, center_index):
+        self.thread_name = current_thread().name
+        self.center_index = center_index
+        return self.resident
+
+
+def test_application_service_runs_catalog_scan_in_core_worker_thread() -> None:
+    from leonardo.research import DatasetCatalogReport
+
+    market = canonicalize_market_id("bybit", "linear", "BTCUSDT", "1m")
+    loader = _RecordingLoader(_dataset(market))
+    catalog = _RecordingCatalog(DatasetCatalogReport(accepted=(), rejected=()))
+    task_manager = TaskManager()
+    runner = CoreRunner(task_manager)
+    service = ResearchDatasetApplicationService(runner, loader, catalog=catalog)
+    result_ready = Event()
+    results: list[TaskResult] = []
+    runner.start()
+    try:
+        service.submit_catalog(
+            result_callback=lambda result: (results.append(result), result_ready.set()),
+        )
+        assert result_ready.wait(3.0)
+        assert results[0].status == "completed"
+        assert results[0].value == catalog.report
+        assert catalog.thread_name is not None
+        assert catalog.thread_name.startswith("LeonardoWorker")
+    finally:
+        runner.shutdown()
+
+
+def test_application_service_runs_resident_slice_in_core_worker_thread() -> None:
+    from leonardo.research import ResidentOHLCVSlice
+
+    market = canonicalize_market_id("bybit", "linear", "BTCUSDT", "1m")
+    dataset = _dataset(market)
+    resident = ResidentOHLCVSlice(
+        market_id=market,
+        dataset_fingerprint=dataset.file_sha256,
+        base_index=0,
+        end_index_exclusive=1,
+        ts_ms=dataset.ts_ms,
+        open=dataset.open,
+        high=dataset.high,
+        low=dataset.low,
+        close=dataset.close,
+        volume=dataset.volume,
+        has_more_left=False,
+        has_more_right=False,
+        first_timestamp_ms=dataset.first_timestamp_ms,
+        last_timestamp_ms=dataset.last_timestamp_ms,
+    )
+    loader = _RecordingLoader(dataset)
+    slicer = _RecordingSlicer(resident)
+    task_manager = TaskManager()
+    runner = CoreRunner(task_manager)
+    service = ResearchDatasetApplicationService(
+        runner,
+        loader,
+        resident_slices=slicer,
+    )
+    result_ready = Event()
+    results: list[TaskResult] = []
+    runner.start()
+    try:
+        service.submit_resident_slice(
+            dataset,
+            0,
+            result_callback=lambda result: (results.append(result), result_ready.set()),
+        )
+        assert result_ready.wait(3.0)
+        assert results[0].status == "completed"
+        assert results[0].value is resident
+        assert slicer.center_index == 0
+        assert slicer.thread_name is not None
+        assert slicer.thread_name.startswith("LeonardoWorker")
+    finally:
+        runner.shutdown()

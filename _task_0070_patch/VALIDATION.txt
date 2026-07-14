@@ -1,0 +1,11 @@
+Validation environment limitation:
+- PySide6 is unavailable in the packaging environment.
+- Non-Qt repository regression passes.
+- The existing Windows/PySide6 failing test is unchanged and is the required
+  local acceptance gate after applying this patch.
+
+Expected local command:
+python -m pytest -q
+
+Expected critical result:
+tests/gui_test/test_pane_workspace.py::test_workspace_owns_optional_volume_pane_and_shared_state passes.
