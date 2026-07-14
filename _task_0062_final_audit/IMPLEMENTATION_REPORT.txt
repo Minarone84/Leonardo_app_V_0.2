@@ -1,0 +1,40 @@
+TASK 0062 — ACCEPTED DATASET CATALOG
+
+AUDIT
+- Inspected Task 1000 OHLCVStore, OHLCVSidecarV1, MarketId/timeframe storage policy,
+  preliminary validation boundary, merge notes, current tests and the old Research
+  dataset loadability behavior.
+- Confirmed that Task 1000 intentionally leaves canonical validation_status as
+  "unknown" and that Research must not promote it.
+- Canonical authorities remain MarketId, OHLCVStore, OHLCVSidecarV1 and the future
+  OHLCV validation/maintenance authority.
+- Risk level: low, read-only capability.
+
+UPDATE
+- Added leonardo.research.AcceptedDatasetCatalog.
+- Added immutable accepted summaries, structured rejections and deterministic reports.
+- Admission requires canonical storage, present CSV/sidecar, matching MarketId,
+  committed/repaired persistence, validation_status="ok", positive row count,
+  stable file stat during verification and current SHA-256 matching the sidecar.
+- Added Task 0062 documentation and ten focused behavior tests.
+- No existing production file was modified.
+- No GUI, provider, download, OHLCV write, validation or repair behavior was changed.
+
+VALIDATION
+- Focused tests: 10 passed.
+- Full suite: 56 passed, 1 PySide6-dependent skip.
+- AST parse: passed.
+- Forbidden architecture scan: passed.
+- Read-only byte/mtime preservation: passed by focused test.
+- Month storage segment and repaired dataset admission: passed.
+- Unknown, partial, corrupt, missing, mismatched and hash-stale evidence refusal: passed.
+
+ORIGINAL-CODE COMPARISON
+- Preserved old behavior that Research lists only accepted, current datasets.
+- Replaced old DatasetId with the active canonical MarketId.
+- Rejected old metadata contract/registry dependencies and GUI-owned traversal.
+- No old package was copied wholesale.
+- No unrelated changes were made.
+
+FINAL IMPLEMENTATION STATUS
+PASS

@@ -1,4 +1,4 @@
-"""Configuration models for the Leonardo V2 Core runtime foundation."""
+"""Application configuration for Leonardo Light V2."""
 
 from __future__ import annotations
 
@@ -8,13 +8,6 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class RuntimePaths:
-    """
-    Filesystem paths used by the Core runtime foundation.
-
-    The model resolves path identity only. Directory creation is owned by later
-    runtime or persistence phases.
-    """
-
     repo_root: Path
     runs_dir: Path
     historical_data_dir: Path
@@ -23,13 +16,6 @@ class RuntimePaths:
 
 @dataclass(frozen=True)
 class AuditConfig:
-    """
-    Audit logging configuration.
-
-    The JSONL path is resolved during configuration loading, but directories are
-    not created until a durable sink writes an event.
-    """
-
     enabled: bool = True
     memory_max_events: int = 1000
     jsonl_enabled: bool = False
@@ -38,38 +24,27 @@ class AuditConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Core application configuration for the initial runtime foundation."""
-
     app_name: str
     environment: str
     paths: RuntimePaths
     audit: AuditConfig
+    actor_id: str = "local-user"
     development_mode: bool = True
 
 
 def load_default_config(repo_root: Path | str | None = None) -> AppConfig:
-    """
-    Build the default Core configuration without creating directories.
-
-    Parameters
-    ----------
-    repo_root:
-        Optional repository root. When omitted, the current working directory is
-        treated as the runtime root.
-    """
+    """Build default configuration without creating directories."""
 
     root = Path.cwd() if repo_root is None else Path(repo_root)
-    resolved_root = root.resolve(strict=False)
+    resolved = root.resolve(strict=False)
     return AppConfig(
-        app_name="Leonardo V2",
+        app_name="Leonardo Light V2",
         environment="development",
         paths=RuntimePaths(
-            repo_root=resolved_root,
-            runs_dir=resolved_root / "runs",
-            historical_data_dir=resolved_root / "historical_data",
-            tmp_dir=resolved_root / "tmp",
+            repo_root=resolved,
+            runs_dir=resolved / "runs",
+            historical_data_dir=resolved / "historical_data",
+            tmp_dir=resolved / "tmp",
         ),
-        audit=AuditConfig(
-            jsonl_path=resolved_root / "runs" / "audit.jsonl",
-        ),
+        audit=AuditConfig(jsonl_path=resolved / "runs" / "audit.jsonl"),
     )

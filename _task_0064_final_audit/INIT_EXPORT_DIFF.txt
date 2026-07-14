@@ -1,0 +1,25 @@
+--- /mnt/data/leo0064_base/Leo_V2_Light/src/leonardo/research/__init__.py	2026-07-13 18:16:12.000000000 +0000
++++ src/leonardo/research/__init__.py	2026-07-13 18:29:37.950721379 +0000
+@@ -14,8 +14,22 @@
+     HistoricalDatasetLoadError,
+     HistoricalDatasetLoader,
+ )
++from leonardo.research.resident import (
++    DEFAULT_BUFFER_LEFT,
++    DEFAULT_BUFFER_RIGHT,
++    DEFAULT_RESIDENT_TARGET,
++    DEFAULT_VISIBLE_MAX,
++    ResidentOHLCVSlice,
++    ResidentSliceService,
++)
+
+ __all__ = [
++    "DEFAULT_BUFFER_LEFT",
++    "DEFAULT_BUFFER_RIGHT",
++    "DEFAULT_RESIDENT_TARGET",
++    "DEFAULT_VISIBLE_MAX",
++    "ResidentOHLCVSlice",
++    "ResidentSliceService",
+     "AcceptedDatasetCatalog",
+     "AcceptedDatasetSummary",
+     "DatasetCatalogReport",

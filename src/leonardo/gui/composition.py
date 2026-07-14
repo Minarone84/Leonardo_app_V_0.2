@@ -1,495 +1,284 @@
-"""GUI composition root for Core-aware Leonardo windows."""
+"""Lean GUI composition over an existing LeonardoApp context."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Protocol
 
-from leonardo.gui.action_observer import (
-    GuiActionObserver,
-    build_gui_action_observer,
-)
-from leonardo.gui.metadata import (
-    EffectiveGuiMetadataProfile,
-    GuiMetadataOverrideStore,
-    GuiMetadataOverrideStoreResult,
-    GuiMetadataResolver,
-    load_metadata_document,
-)
-from leonardo.gui.settings_profiles import (
-    GuiSettingsProfileProvider,
-    MAIN_WINDOW_SETTINGS_PROFILE_ID,
-)
-from leonardo.gui.settings_inspector import GuiSettingsInspectorViewModel
-from leonardo.gui.window_tracking import GuiWindowTracker, identity_from_profile
-from leonardo.gui.windows.analysis_suite_window import (
-    AnalysisSuiteWindow,
-    load_analysis_suite_profile,
-)
-from leonardo.gui.windows.data_manager_suite_window import (
-    DataManagerSuiteWindow,
-    load_data_manager_suite_profile,
-)
-from leonardo.gui.windows.historical_download_manager_window import (
-    HistoricalDownloadManagerWindow,
-)
-from leonardo.gui.windows.main_window import (
-    LeonardoMainWindow,
-    _MAIN_WINDOW_METADATA_PATH,
-    load_main_window_profile,
-)
-from leonardo.gui.windows.research_suite_window import (
-    ResearchSuiteWindow,
-    load_research_suite_profile,
-)
-from leonardo.gui.windows.runtime_manager_window import (
-    RuntimeManagerWindow,
-    _RUNTIME_MANAGER_METADATA_PATH,
-    load_runtime_manager_profile,
-)
-from leonardo.gui.windows.settings_inspector_window import SettingsInspectorWindow
-from leonardo.gui.windows.trading_suite_window import (
-    TradingSuiteWindow,
-    load_trading_suite_profile,
-)
+from PySide6.QtWidgets import QWidget
 
-
-_METADATA_WINDOWS_DIR = Path(__file__).resolve().parent / "metadata" / "windows"
-_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH = (
-    _METADATA_WINDOWS_DIR / "historical_download_manager.window.toml"
-)
-_RESEARCH_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "research_suite.window.toml"
-_DATA_MANAGER_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "data_manager_suite.window.toml"
-_ANALYSIS_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "analysis_suite.window.toml"
-_TRADING_SUITE_METADATA_PATH = _METADATA_WINDOWS_DIR / "trading_suite.window.toml"
+from leonardo.gui.action_observer import GuiActionObserver, build_gui_action_observer
+from leonardo.gui.presenters import HistoricalDownloadPresenter
+from leonardo.gui.window_tracking import GuiWindowTracker
+from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow
+from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow
+from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
+from leonardo.gui.windows.historical_download_manager_window import HistoricalDownloadManagerWindow
+from leonardo.gui.windows.main_window import LeonardoMainWindow
+from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
+from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
+from leonardo.gui.windows.trading_suite_window import TradingSuiteWindow
 
 
 class RuntimeSnapshotBackend(Protocol):
-    """Read-only runtime snapshot provider boundary."""
-
-    def snapshot(self) -> object:
-        """Return the current runtime snapshot."""
+    def snapshot(self) -> object: ...
 
 
 class GuiCoreContext(Protocol):
-    """Core context boundary consumed by GUI composition."""
-
     runtime_manager: RuntimeSnapshotBackend
     window_registry: object
     action_registry: object
-    session_manager: object
-    user_policy: object
-    audit_log: object
+    config: object
+    connection_service: object
+    historical_download_service: object
 
 
 class GuiCompositionRoot:
-    """
-    Compose GUI-owned windows from an existing Core context.
+    """Construct and retain GUI windows without creating Core or Area services."""
 
-    The composition root receives Core services but does not own application
-    lifecycle, create the Qt application object, or construct Core services. It
-    injects read-only runtime snapshot access into Runtime Manager windows and
-    installs GUI-side window tracking when enabled.
-    """
-
-    def __init__(
-        self,
-        context: GuiCoreContext,
-        *,
-        track_windows: bool = True,
-        override_store: GuiMetadataOverrideStore | None = None,
-        settings_profile_provider: GuiSettingsProfileProvider | None = None,
-    ) -> None:
+    def __init__(self, context: GuiCoreContext, *, track_windows: bool = True) -> None:
         snapshot = getattr(getattr(context, "runtime_manager", None), "snapshot", None)
         if not callable(snapshot):
             raise TypeError("context.runtime_manager must expose callable snapshot")
-        if override_store is not None and not isinstance(
-            override_store,
-            GuiMetadataOverrideStore,
-        ):
-            raise TypeError("override_store must be a GuiMetadataOverrideStore or None")
-        if settings_profile_provider is not None and not isinstance(
-            settings_profile_provider,
-            GuiSettingsProfileProvider,
-        ):
-            raise TypeError(
-                "settings_profile_provider must be a GuiSettingsProfileProvider or None"
-            )
         self._context = context
         self._snapshot_provider = snapshot
         self._track_windows = track_windows
-        self._override_store = override_store
-        self._settings_profile_provider = (
-            settings_profile_provider
-            if settings_profile_provider is not None
-            else GuiSettingsProfileProvider()
-        )
-        self._override_load_results: dict[str, GuiMetadataOverrideStoreResult] = {}
         self._window_registry = getattr(context, "window_registry", None)
-        if self._track_windows and self._window_registry is None:
+        if track_windows and self._window_registry is None:
             raise TypeError("context.window_registry is required when tracking windows")
+        self._action_observer: GuiActionObserver | None = build_gui_action_observer(context)
         self._trackers: dict[str, GuiWindowTracker] = {}
-        self._action_observer: GuiActionObserver | None = build_gui_action_observer(
-            context
-        )
-        self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = (
-            None
-        )
+        self._connection_suite_window: ConnectionSuiteWindow | None = None
+        self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = None
+        self._historical_download_presenter: HistoricalDownloadPresenter | None = None
         self._research_suite_window: ResearchSuiteWindow | None = None
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
         self._analysis_suite_window: AnalysisSuiteWindow | None = None
         self._trading_suite_window: TradingSuiteWindow | None = None
+        self._runtime_manager_window: RuntimeManagerWindow | None = None
 
     @property
     def window_trackers(self) -> Mapping[str, GuiWindowTracker]:
-        """Return installed GUI window trackers by Core window identifier."""
-
         return dict(self._trackers)
 
     def tracker_for(self, window_id: str) -> GuiWindowTracker | None:
-        """Return the installed tracker for a Core window identifier."""
-
         return self._trackers.get(window_id)
 
     @property
-    def override_load_results(self) -> Mapping[str, GuiMetadataOverrideStoreResult]:
-        """Return retained override load results by metadata identifier."""
-
-        return dict(self._override_load_results)
+    def connection_suite_window(self) -> ConnectionSuiteWindow | None:
+        return self._connection_suite_window
 
     @property
-    def historical_download_manager_window(
-        self,
-    ) -> HistoricalDownloadManagerWindow | None:
-        """Return the retained Historical Download Manager shell, if created."""
-
+    def historical_download_manager_window(self) -> HistoricalDownloadManagerWindow | None:
         return self._historical_download_manager_window
 
     @property
     def research_suite_window(self) -> ResearchSuiteWindow | None:
-        """Return the retained Research Suite shell, if created."""
-
         return self._research_suite_window
 
     @property
     def data_manager_suite_window(self) -> DataManagerSuiteWindow | None:
-        """Return the retained Data Manager Suite shell, if created."""
-
         return self._data_manager_suite_window
 
     @property
     def analysis_suite_window(self) -> AnalysisSuiteWindow | None:
-        """Return the retained Analysis Suite shell, if created."""
-
         return self._analysis_suite_window
 
     @property
     def trading_suite_window(self) -> TradingSuiteWindow | None:
-        """Return the retained Trading Suite shell, if created."""
-
         return self._trading_suite_window
 
-    def create_main_window(
-        self,
-        profile: EffectiveGuiMetadataProfile | None = None,
-    ) -> LeonardoMainWindow:
-        """
-        Create the metadata-driven Main Window for the existing Core context.
-
-        Runtime Manager construction remains lazy. The snapshot provider is not
-        called during Main Window creation.
-        """
-
-        main_profile = profile if profile is not None else self._load_main_window_profile()
+    def create_main_window(self) -> LeonardoMainWindow:
         main_window: LeonardoMainWindow | None = None
 
-        def settings_inspector_factory() -> SettingsInspectorWindow:
+        def open_download(action_id: str) -> str:
             if main_window is None:
-                raise RuntimeError("Main Window is not available for settings apply")
-            return self._create_settings_inspector_window(main_window)
+                raise RuntimeError("Main Window is not available")
+            return self._open_connection_suite(main_window)
 
-        def download_data_requested(action_id: str) -> str:
-            if action_id != "main_window.download_data":
-                raise ValueError("Download Data callback received unexpected action ID")
+        def open_maintenance(action_id: str) -> str:
             if main_window is None:
-                raise RuntimeError("Main Window is not available for download shell")
+                raise RuntimeError("Main Window is not available")
             return self._open_historical_download_manager(main_window)
 
-        def ohlcv_maintenance_requested(action_id: str) -> str:
-            if action_id != "main_window.ohlcv_maintenance":
-                raise ValueError(
-                    "OHLCV Maintenance callback received unexpected action ID"
-                )
+        def open_suite(action_id: str) -> str:
             if main_window is None:
-                raise RuntimeError("Main Window is not available for download shell")
-            return self._open_historical_download_manager(main_window)
-
-        def suite_shell_requested(action_id: str) -> str:
-            if main_window is None:
-                raise RuntimeError("Main Window is not available for suite shell")
+                raise RuntimeError("Main Window is not available")
             return self._open_suite_shell(action_id, main_window)
 
-        window = LeonardoMainWindow(
-            main_profile,
+        main_window = LeonardoMainWindow(
             runtime_manager_window_factory=self._create_runtime_manager_window,
-            settings_inspector_factory=(
-                settings_inspector_factory if self._override_store is not None else None
-            ),
             action_observer=self._action_observer,
-            on_download_data_requested=download_data_requested,
-            on_ohlcv_maintenance_requested=ohlcv_maintenance_requested,
-            on_suite_shell_requested=suite_shell_requested,
+            on_download_data_requested=open_download,
+            on_ohlcv_maintenance_requested=open_maintenance,
+            on_suite_shell_requested=open_suite,
             on_close_requested=self._close_suite_shells,
+            username=getattr(getattr(self._context, "config", None), "actor_id", "local-user"),
         )
-        main_window = window
-        self._install_tracker(
-            window,
-            main_profile,
-            fallback_window_type="main_window",
-        )
-        return window
+        self._register_window_actions(main_window, "main_window.window")
+        self._install_tracker(main_window, "main_window.window", "Leonardo", "main_window")
+        return main_window
 
-    def _open_historical_download_manager(
-        self,
-        parent: LeonardoMainWindow,
-    ) -> str:
-        if self._historical_download_manager_window is None:
-            self._historical_download_manager_window = HistoricalDownloadManagerWindow(
+    def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
+        if self._runtime_manager_window is None:
+            self._runtime_manager_window = RuntimeManagerWindow(
+                snapshot_provider=self._snapshot_provider,
+                action_observer=self._action_observer,
+            )
+            self._register_window_actions(
+                self._runtime_manager_window,
+                "runtime_manager.window",
+            )
+            self._install_tracker(
+                self._runtime_manager_window,
+                "runtime_manager.window",
+                "Runtime Manager",
+                "tool",
+            )
+        return self._runtime_manager_window
+
+    def _open_connection_suite(self, parent: LeonardoMainWindow) -> str:
+        if self._connection_suite_window is None:
+            window = ConnectionSuiteWindow(
+                action_observer=self._action_observer,
                 parent=parent,
             )
-            if self._track_windows:
-                self._install_tracker(
-                    self._historical_download_manager_window,
-                    self._load_historical_download_manager_profile(),
-                    fallback_window_type="historical_download_manager",
-                )
+            self._connection_suite_window = window
+            self._register_window_actions(window, "connection_suite.home.window")
+            self._install_tracker(
+                window,
+                "connection_suite.home.window",
+                "Connection Suite",
+                "suite",
+            )
+            try:
+                window.button_for_id(
+                    "connection_suite.button.view_historical_download_manager"
+                ).clicked.connect(lambda: self._open_historical_download_manager(parent))
+            except KeyError:
+                pass
+        self._show_window(self._connection_suite_window)
+        return "Connection Suite shell opened."
 
-        self._historical_download_manager_window.show()
-        self._historical_download_manager_window.raise_()
-        self._historical_download_manager_window.activateWindow()
+    def _open_historical_download_manager(self, parent: LeonardoMainWindow) -> str:
+        if self._historical_download_manager_window is None:
+            window = HistoricalDownloadManagerWindow(parent=parent)
+            presenter = HistoricalDownloadPresenter(
+                window,
+                getattr(self._context, "connection_service"),
+                getattr(self._context, "historical_download_service"),
+            )
+            self._historical_download_manager_window = window
+            self._historical_download_presenter = presenter
+            self._register_window_actions(
+                window,
+                "historical_download_manager.window",
+            )
+            self._install_tracker(
+                window,
+                "historical_download_manager.window",
+                "Historical Download Manager",
+                "workflow",
+            )
+        self._show_window(self._historical_download_manager_window)
         return "Historical Download Manager shell opened."
 
     def _open_suite_shell(self, action_id: str, parent: LeonardoMainWindow) -> str:
-        if action_id == "main_window.open_research_suite":
-            if self._research_suite_window is None:
-                profile = self._load_research_suite_profile()
-                self._research_suite_window = ResearchSuiteWindow(
-                    profile,
-                    action_observer=self._action_observer,
-                    parent=parent,
-                )
-                self._install_tracker(
-                    self._research_suite_window,
-                    profile,
-                    fallback_window_type="research_suite",
-                )
-            self._show_window(self._research_suite_window)
-            return "Research Suite shell opened."
-        if action_id == "main_window.open_data_manager_suite":
-            if self._data_manager_suite_window is None:
-                profile = self._load_data_manager_suite_profile()
-                self._data_manager_suite_window = DataManagerSuiteWindow(
-                    profile,
-                    action_observer=self._action_observer,
-                    parent=parent,
-                )
-                self._install_tracker(
-                    self._data_manager_suite_window,
-                    profile,
-                    fallback_window_type="data_manager_suite",
-                )
-            self._show_window(self._data_manager_suite_window)
-            return "Data Manager Suite shell opened."
-        if action_id == "main_window.open_analysis_suite":
-            if self._analysis_suite_window is None:
-                profile = self._load_analysis_suite_profile()
-                self._analysis_suite_window = AnalysisSuiteWindow(
-                    profile,
-                    action_observer=self._action_observer,
-                    parent=parent,
-                )
-                self._install_tracker(
-                    self._analysis_suite_window,
-                    profile,
-                    fallback_window_type="analysis_suite",
-                )
-            self._show_window(self._analysis_suite_window)
-            return "Analysis Suite shell opened."
-        if action_id == "main_window.open_trading_suite":
-            if self._trading_suite_window is None:
-                profile = self._load_trading_suite_profile()
-                self._trading_suite_window = TradingSuiteWindow(
-                    profile,
-                    action_observer=self._action_observer,
-                    parent=parent,
-                )
-                self._install_tracker(
-                    self._trading_suite_window,
-                    profile,
-                    fallback_window_type="trading_suite",
-                )
-            self._show_window(self._trading_suite_window)
-            return "Trading Suite shell opened."
-        raise ValueError(f"Unsupported suite shell action ID: {action_id}")
-
-    def _close_suite_shells(self) -> None:
-        for window_id, attr_name in (
-            ("research_suite.window", "_research_suite_window"),
-            ("data_manager_suite.window", "_data_manager_suite_window"),
-            ("analysis_suite.window", "_analysis_suite_window"),
-            ("trading_suite.window", "_trading_suite_window"),
-        ):
-            window = getattr(self, attr_name)
-            if window is None:
-                continue
-            tracker = self._trackers.get(window_id)
-            if tracker is not None:
-                tracker.mark_close_requested()
-            window.close()
-            if tracker is not None:
-                tracker.mark_closed()
-            setattr(self, attr_name, None)
-
-    def _show_window(self, window: object) -> None:
-        show = getattr(window, "show")
-        raise_ = getattr(window, "raise_")
-        activate = getattr(window, "activateWindow")
-        show()
-        raise_()
-        activate()
-
-    def _create_runtime_manager_window(self) -> RuntimeManagerWindow:
-        profile = self._load_runtime_manager_profile()
-        window = RuntimeManagerWindow(
-            profile,
-            snapshot_provider=self._snapshot_provider,
-            action_observer=self._action_observer,
-        )
-        self._install_tracker(
-            window,
-            profile,
-            fallback_window_type="runtime_manager",
-        )
-        return window
-
-    def _create_settings_inspector_window(
-        self,
-        target_window: LeonardoMainWindow,
-    ) -> SettingsInspectorWindow:
-        if self._override_store is None:
-            raise RuntimeError("override_store is required for settings inspector wiring")
-        profile_ref = self._settings_profile_provider.get_profile(
-            MAIN_WINDOW_SETTINGS_PROFILE_ID,
-        )
-        result = load_metadata_document(profile_ref.metadata_path)
-        if result.document is None or result.report.has_errors:
-            messages = "; ".join(issue.message for issue in result.report.issues)
-            raise ValueError(f"Invalid GUI metadata profile: {messages}")
-        viewmodel = GuiSettingsInspectorViewModel(result.document, self._override_store)
-        return SettingsInspectorWindow(
-            viewmodel,
-            on_apply=lambda metadata_id, effective_profile: (
-                _apply_main_window_settings(
-                    target_window,
-                    metadata_id,
-                    effective_profile,
-                )
+        mapping = {
+            "main_window.open_research_suite": (
+                "_research_suite_window",
+                ResearchSuiteWindow,
+                "research_suite.window",
+                "Research Suite",
             ),
-            action_observer=self._action_observer,
-        )
+            "main_window.open_data_manager_suite": (
+                "_data_manager_suite_window",
+                DataManagerSuiteWindow,
+                "data_manager_suite.window",
+                "Data Manager Suite",
+            ),
+            "main_window.open_analysis_suite": (
+                "_analysis_suite_window",
+                AnalysisSuiteWindow,
+                "analysis_suite.window",
+                "Analysis Suite",
+            ),
+            "main_window.open_trading_suite": (
+                "_trading_suite_window",
+                TradingSuiteWindow,
+                "trading_suite.window",
+                "Trading Suite",
+            ),
+        }
+        try:
+            attr_name, factory, window_id, title = mapping[action_id]
+        except KeyError as error:
+            raise ValueError(f"Unsupported suite shell action ID: {action_id}") from error
+        window = getattr(self, attr_name)
+        if window is None:
+            window = factory(action_observer=self._action_observer, parent=parent)
+            setattr(self, attr_name, window)
+            self._register_window_actions(window, window_id)
+            self._install_tracker(window, window_id, title, "suite")
+        self._show_window(window)
+        return f"{title} shell opened."
+
+    def _register_window_actions(self, window: object, window_id: str) -> None:
+        observer = self._action_observer
+        if observer is None:
+            return
+        action_ids = getattr(window, "action_ids", None)
+        action_labels = getattr(window, "action_labels", None)
+        if callable(action_ids):
+            labels = action_labels() if callable(action_labels) else {}
+            for action_id in action_ids():
+                observer.register_action(
+                    action_id,
+                    label=labels.get(action_id, action_id),
+                    window_id=window_id,
+                )
+        buttons = getattr(window, "_buttons", None)
+        if isinstance(buttons, dict):
+            for button_id, button in buttons.items():
+                property_value = button.property("action_id") if hasattr(button, "property") else None
+                action_id = property_value if isinstance(property_value, str) and property_value else button_id
+                label = button.text() if hasattr(button, "text") else action_id
+                observer.register_action(action_id, label=label, window_id=window_id)
 
     def _install_tracker(
         self,
-        window: (
-            RuntimeManagerWindow
-            | LeonardoMainWindow
-            | HistoricalDownloadManagerWindow
-            | ResearchSuiteWindow
-            | DataManagerSuiteWindow
-            | AnalysisSuiteWindow
-            | TradingSuiteWindow
-            | SettingsInspectorWindow
-        ),
-        profile: EffectiveGuiMetadataProfile,
-        *,
-        fallback_window_type: str,
-    ) -> GuiWindowTracker | None:
+        window: QWidget,
+        window_id: str,
+        title: str,
+        window_type: str,
+    ) -> None:
         if not self._track_windows:
-            return None
-        identity = identity_from_profile(
-            profile,
-            fallback_window_type=fallback_window_type,
+            return
+        tracker = GuiWindowTracker(
+            window,
+            window_id=window_id,
+            title=title,
+            window_type=window_type,
+            registry=self._window_registry,
         )
-        tracker = GuiWindowTracker(self._window_registry, identity)
-        tracker.track(window)
-        self._trackers[identity.window_id] = tracker
-        return tracker
+        self._trackers[window_id] = tracker
 
-    def _load_main_window_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            return load_main_window_profile()
-        return self._load_profile_with_overrides(_MAIN_WINDOW_METADATA_PATH)
+    def _close_suite_shells(self) -> None:
+        for attr_name in (
+            "_connection_suite_window",
+            "_historical_download_manager_window",
+            "_research_suite_window",
+            "_data_manager_suite_window",
+            "_analysis_suite_window",
+            "_trading_suite_window",
+            "_runtime_manager_window",
+        ):
+            window = getattr(self, attr_name)
+            if window is not None:
+                window.close()
 
-    def _load_runtime_manager_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            return load_runtime_manager_profile()
-        return self._load_profile_with_overrides(_RUNTIME_MANAGER_METADATA_PATH)
-
-    def _load_historical_download_manager_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            result = load_metadata_document(_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH)
-            if result.document is None or result.report.has_errors:
-                messages = "; ".join(issue.message for issue in result.report.issues)
-                raise ValueError(f"Invalid GUI metadata profile: {messages}")
-            return GuiMetadataResolver().resolve(result.document)
-        return self._load_profile_with_overrides(_HISTORICAL_DOWNLOAD_MANAGER_METADATA_PATH)
-
-    def _load_research_suite_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            return load_research_suite_profile()
-        return self._load_profile_with_overrides(_RESEARCH_SUITE_METADATA_PATH)
-
-    def _load_data_manager_suite_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            return load_data_manager_suite_profile()
-        return self._load_profile_with_overrides(_DATA_MANAGER_SUITE_METADATA_PATH)
-
-    def _load_analysis_suite_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            return load_analysis_suite_profile()
-        return self._load_profile_with_overrides(_ANALYSIS_SUITE_METADATA_PATH)
-
-    def _load_trading_suite_profile(self) -> EffectiveGuiMetadataProfile:
-        if self._override_store is None:
-            return load_trading_suite_profile()
-        return self._load_profile_with_overrides(_TRADING_SUITE_METADATA_PATH)
-
-    def _load_profile_with_overrides(
-        self,
-        metadata_path: Path,
-    ) -> EffectiveGuiMetadataProfile:
-        result = load_metadata_document(metadata_path)
-        if result.document is None or result.report.has_errors:
-            messages = "; ".join(issue.message for issue in result.report.issues)
-            raise ValueError(f"Invalid GUI metadata profile: {messages}")
-
-        override_result = self._override_store.load(result.document.metadata_id)
-        self._override_load_results[result.document.metadata_id] = override_result
-        return GuiMetadataResolver().resolve(result.document, override_result.document)
-
-
-def create_main_window_for_context(context: GuiCoreContext) -> LeonardoMainWindow:
-    """Create a Core-aware Main Window using the default GUI composition root."""
-
-    return GuiCompositionRoot(context).create_main_window()
-
-
-def _apply_main_window_settings(
-    target_window: LeonardoMainWindow,
-    metadata_id: str,
-    effective_profile: EffectiveGuiMetadataProfile,
-) -> None:
-    if metadata_id != MAIN_WINDOW_SETTINGS_PROFILE_ID:
-        raise ValueError("Settings apply callback only supports main_window.window")
-    target_window.apply_effective_profile(effective_profile)
+    @staticmethod
+    def _show_window(window: QWidget) -> None:
+        window.show()
+        window.raise_()
+        window.activateWindow()

@@ -1,0 +1,7 @@
+ADDED    docs/core_docs/TASK_0067_BASE_CANDLESTICK_RENDERER.md
+ADDED    src/leonardo/gui/chart/__init__.py
+ADDED    src/leonardo/gui/chart/candlestick_scene.py
+ADDED    src/leonardo/gui/chart/candlestick_widget.py
+ADDED    tests/gui_test/test_candlestick_scene.py
+ADDED    tests/gui_test/test_candlestick_widget.py
+ADDED    tools/dev_render_candlestick.py

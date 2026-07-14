@@ -1,0 +1,13 @@
+New Chart Session production module:
+- GUI/PySide6 imports: none
+- Core runtime/task imports: none
+- OHLCV persistence imports: none
+- pandas/numpy imports: none
+- Legacy DatasetId/CoreBridge symbols: none
+- Filesystem access or writes: none
+- Broad Exception handlers: none
+- Formal boundary contracts added: none
+- Full timeline or OHLCV copies owned by session: none
+
+Canonical authority result:
+PASS — ChartSessionState is the sole mutable owner of one chart's selected dataset generation, accepted dataset reference, resident reference, request correlation, and global/resident translation. HistoricalDataset and ResidentOHLCVSlice remain immutable shared read truth.

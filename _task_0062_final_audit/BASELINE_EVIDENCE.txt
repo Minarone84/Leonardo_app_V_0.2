@@ -1,0 +1,8 @@
+Task: 0062 — Accepted Dataset Catalog
+Input archive: Leo_V2_Light_latest.zip
+Repository: /mnt/data/task0062_work/Leo_V2_Light
+Branch: light-v2-reset
+HEAD: 4d34a15a5323099965daf96bd4fbe4eebe01cb69
+Baseline status before implementation: clean (verified before edits)
+Execution owner: Rick
+Created: 2026-07-13 19:58:05 +0200

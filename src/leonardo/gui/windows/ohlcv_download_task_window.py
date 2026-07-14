@@ -2,47 +2,63 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QTableWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
+from leonardo.gui.windows.shell_widgets import (
+    apply_identity,
+    configure_table,
+    populate_table,
+)
 
-OHLCV_DOWNLOAD_TASK_METADATA_ID = "ohlcv_download_task.window"
+
+OHLCV_DOWNLOAD_TASK_WINDOW_ID = "ohlcv_download_task.window"
+_STAGE_COLUMNS = ("stage", "state", "details")
+_OUTPUT_COLUMNS = ("item", "value", "state")
 
 
 class OhlcvDownloadTaskWindow(QDialog):
     """
     Standalone GUI shell for displaying OHLCV download task progress.
 
-    The shell displays externally supplied progress and recap text. It does not
-    own cancellation, backend execution, provider calls, or storage writes.
+    The shell displays externally supplied task context plus externally supplied
+    progress and recap text. It does not own cancellation, backend execution,
+    provider calls, or storage writes.
     """
 
     def __init__(self, *, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._summary_labels: dict[str, QLabel] = {}
         self._buttons: dict[str, QPushButton] = {}
+        self._tables: dict[str, QTableWidget] = {}
+        self._status_label: QLabel | None = None
         self._overall_progress = QProgressBar(self)
         self._current_timeframe_progress = QProgressBar(self)
         self._progress_log = QTextEdit(self)
         self._final_recap = QTextEdit(self)
 
         self.setObjectName("ohlcv_download_task_window")
-        self.setProperty("object_id", OHLCV_DOWNLOAD_TASK_METADATA_ID)
+        self.setProperty("object_id", OHLCV_DOWNLOAD_TASK_WINDOW_ID)
         self.setWindowTitle("OHLCV Download Task")
-        self.resize(760, 560)
+        self.resize(960, 760)
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_layout()
+        self.clear_task_state()
 
     def set_job_summary(
         self,
@@ -83,6 +99,39 @@ class OhlcvDownloadTaskWindow(QDialog):
             raise TypeError("text must be a string")
         self._final_recap.setPlainText(text)
 
+    def set_status(self, text: str) -> None:
+        self._set_status(str(text))
+
+    def set_running(self, running: bool) -> None:
+        self._buttons["stop"].setEnabled(bool(running))
+        self._buttons["ok"].setEnabled(not bool(running))
+
+    def set_overall_progress_visible(self, visible: bool) -> None:
+        self._overall_progress.setVisible(bool(visible))
+
+    def clear_task_state(self) -> None:
+        """Reset task presentation to an honest empty state."""
+
+        self.set_job_summary()
+        self.set_overall_progress(0)
+        self.set_current_timeframe_progress(0)
+        populate_table(
+            self._tables["ohlcv_download_task.stage_table"],
+            _STAGE_COLUMNS,
+            (),
+        )
+        populate_table(
+            self._tables["ohlcv_download_task.output_summary_table"],
+            _OUTPUT_COLUMNS,
+            (),
+        )
+        self._progress_log.clear()
+        self._progress_log.setPlaceholderText("Task progress will appear here.")
+        self.set_final_recap("")
+        self._final_recap.setPlaceholderText("The terminal result will appear here.")
+        self._set_status("No task running")
+
+
     def overall_progress_bar(self) -> QProgressBar:
         """Return the overall progress bar."""
 
@@ -103,6 +152,14 @@ class OhlcvDownloadTaskWindow(QDialog):
 
         return self._final_recap
 
+    def table_for_id(self, table_id: str) -> QTableWidget:
+        """Return a stable table by identifier."""
+
+        try:
+            return self._tables[table_id]
+        except KeyError as error:
+            raise KeyError(f"Unknown OHLCV Download Task table: {table_id}") from error
+
     def button_for_id(self, button_id: str) -> QPushButton:
         """Return a stable button by identifier."""
 
@@ -119,97 +176,272 @@ class OhlcvDownloadTaskWindow(QDialog):
         except KeyError as error:
             raise KeyError(f"Unknown OHLCV Download Task summary: {summary_id}") from error
 
+    def status_text(self) -> str:
+        """Return the current shell status text."""
+
+        return "" if self._status_label is None else self._status_label.text()
+
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setObjectName("ohlcv_download_task.layout.root")
-        header = QLabel("OHLCV Download Task", self)
-        header.setObjectName("ohlcv_download_task.header")
-        header.setProperty("object_id", "ohlcv_download_task.header")
-        header.setProperty("object_type", "label")
-        layout.addWidget(header)
+        apply_identity(
+            layout,
+            "ohlcv_download_task.layout.root",
+            object_type="layout",
+        )
+        layout.addWidget(self._build_header())
+        layout.addWidget(self._build_summary_panel())
+        layout.addWidget(self._build_progress_panel())
+        body = QHBoxLayout()
+        body.setObjectName("ohlcv_download_task.layout.task_body")
+        body.addWidget(
+            self._build_table_panel(
+                "Stage List",
+                panel_id="ohlcv_download_task.panel.stages",
+                table_id="ohlcv_download_task.stage_table",
+                columns=_STAGE_COLUMNS,
+            )
+        )
+        body.addWidget(
+            self._build_table_panel(
+                "Output Summary",
+                panel_id="ohlcv_download_task.panel.output_summary",
+                table_id="ohlcv_download_task.output_summary_table",
+                columns=_OUTPUT_COLUMNS,
+            )
+        )
+        layout.addLayout(body)
+        layout.addWidget(self._build_log_panel())
+        layout.addWidget(self._build_recap_panel())
+        layout.addWidget(self._build_actions())
 
-        summary = QFormLayout()
-        summary.setObjectName("ohlcv_download_task.layout.summary")
+    def _build_header(self) -> QWidget:
+        panel = QGroupBox("Download Task", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_task.panel.header",
+            object_type="panel",
+        )
+        layout = QHBoxLayout(panel)
+        apply_identity(
+            layout,
+            "ohlcv_download_task.layout.header",
+            object_type="layout",
+        )
+        header = QLabel("OHLCV Download Task", panel)
+        apply_identity(
+            header,
+            "ohlcv_download_task.header",
+            object_type="label",
+        )
+        status = QLabel("No task running", panel)
+        apply_identity(
+            status,
+            "ohlcv_download_task.label.status",
+            object_type="status_label",
+        )
+        self._status_label = status
+        layout.addWidget(header)
+        layout.addStretch(1)
+        layout.addWidget(status)
+        return panel
+
+    def _build_summary_panel(self) -> QWidget:
+        panel = QGroupBox("Request Summary", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_task.summary",
+            object_type="summary_panel",
+        )
+        summary = QFormLayout(panel)
+        apply_identity(
+            summary,
+            "ohlcv_download_task.layout.summary",
+            object_type="layout",
+        )
         for summary_id, label in (
             ("exchange", "Exchange"),
             ("market_type", "Market Type"),
             ("symbol", "Symbol"),
             ("timeframes", "Timeframes"),
         ):
-            label_widget = QLabel(label, self)
-            label_widget.setObjectName(f"ohlcv_download_task.label.{summary_id}")
-            label_widget.setProperty("object_id", label_widget.objectName())
-            label_widget.setProperty("object_type", "label")
-            value = QLabel("", self)
-            value.setObjectName(f"ohlcv_download_task.{summary_id}")
-            value.setProperty("object_id", value.objectName())
-            value.setProperty("object_type", "status_label")
+            label_widget = QLabel(label, panel)
+            apply_identity(
+                label_widget,
+                f"ohlcv_download_task.label.{summary_id}",
+                object_type="label",
+            )
+            value = QLabel("", panel)
+            apply_identity(
+                value,
+                f"ohlcv_download_task.{summary_id}",
+                object_type="status_label",
+            )
             self._summary_labels[summary_id] = value
             summary.addRow(label_widget, value)
-        layout.addLayout(summary)
+        return panel
 
-        self._overall_progress.setObjectName("ohlcv_download_task.overall_progress")
-        self._overall_progress.setProperty("object_id", "ohlcv_download_task.overall_progress")
-        self._overall_progress.setProperty("object_type", "progress_bar")
-        self._overall_progress.setRange(0, 100)
-        self._current_timeframe_progress.setObjectName(
-            "ohlcv_download_task.current_timeframe_progress"
+    def _build_progress_panel(self) -> QWidget:
+        panel = QGroupBox("Progress", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_task.panel.progress",
+            object_type="panel",
         )
-        self._current_timeframe_progress.setProperty(
-            "object_id", "ohlcv_download_task.current_timeframe_progress"
+        layout = QVBoxLayout(panel)
+        layout.setObjectName("ohlcv_download_task.layout.progress")
+        self._configure_progress(
+            self._overall_progress,
+            object_id="ohlcv_download_task.overall_progress",
         )
-        self._current_timeframe_progress.setProperty("object_type", "progress_bar")
-        self._current_timeframe_progress.setRange(0, 100)
-        overall_label = QLabel("Overall Progress", self)
-        overall_label.setObjectName("ohlcv_download_task.label.overall_progress")
-        overall_label.setProperty("object_id", "ohlcv_download_task.label.overall_progress")
+        self._configure_progress(
+            self._current_timeframe_progress,
+            object_id="ohlcv_download_task.current_timeframe_progress",
+        )
+        overall_label = QLabel("Overall Progress", panel)
+        apply_identity(
+            overall_label,
+            "ohlcv_download_task.label.overall_progress",
+            object_type="label",
+        )
+        current_label = QLabel("Current Timeframe Progress", panel)
+        apply_identity(
+            current_label,
+            "ohlcv_download_task.label.current_timeframe_progress",
+            object_type="label",
+        )
         layout.addWidget(overall_label)
         layout.addWidget(self._overall_progress)
-        current_label = QLabel("Current Timeframe Progress", self)
-        current_label.setObjectName("ohlcv_download_task.label.current_timeframe_progress")
-        current_label.setProperty("object_id", "ohlcv_download_task.label.current_timeframe_progress")
         layout.addWidget(current_label)
         layout.addWidget(self._current_timeframe_progress)
+        return panel
 
-        self._progress_log.setObjectName("ohlcv_download_task.progress_log")
-        self._progress_log.setProperty("object_id", "ohlcv_download_task.progress_log")
-        self._progress_log.setProperty("object_type", "text_area")
+    def _build_table_panel(
+        self,
+        title: str,
+        *,
+        panel_id: str,
+        table_id: str,
+        columns: Sequence[str],
+    ) -> QWidget:
+        panel = QGroupBox(title, self)
+        apply_identity(
+            panel,
+            panel_id,
+            object_type="panel",
+        )
+        layout = QVBoxLayout(panel)
+        layout.setObjectName(f"{panel_id}.layout")
+        table = QTableWidget(panel)
+        configure_table(
+            table,
+            object_id=table_id,
+            columns=columns,
+        )
+        self._tables[table_id] = table
+        layout.addWidget(table)
+        return panel
+
+    def _build_log_panel(self) -> QWidget:
+        panel = QGroupBox("Progress Log", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_task.panel.progress_log",
+            object_type="panel",
+        )
+        layout = QVBoxLayout(panel)
+        layout.setObjectName("ohlcv_download_task.layout.progress_log")
         self._progress_log.setReadOnly(True)
-        log_label = QLabel("Progress Log", self)
-        log_label.setObjectName("ohlcv_download_task.label.progress_log")
-        log_label.setProperty("object_id", "ohlcv_download_task.label.progress_log")
+        apply_identity(
+            self._progress_log,
+            "ohlcv_download_task.progress_log",
+            object_type="text_area",
+        )
+        log_label = QLabel("Progress Log", panel)
+        apply_identity(
+            log_label,
+            "ohlcv_download_task.label.progress_log",
+            object_type="label",
+        )
         layout.addWidget(log_label)
         layout.addWidget(self._progress_log)
+        return panel
 
-        self._final_recap.setObjectName("ohlcv_download_task.final_recap")
-        self._final_recap.setProperty("object_id", "ohlcv_download_task.final_recap")
-        self._final_recap.setProperty("object_type", "text_area")
+    def _build_recap_panel(self) -> QWidget:
+        panel = QGroupBox("Final Recap", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_task.panel.final_recap",
+            object_type="panel",
+        )
+        layout = QVBoxLayout(panel)
+        layout.setObjectName("ohlcv_download_task.layout.final_recap")
         self._final_recap.setReadOnly(True)
-        recap_label = QLabel("Final Recap", self)
-        recap_label.setObjectName("ohlcv_download_task.label.final_recap")
-        recap_label.setProperty("object_id", "ohlcv_download_task.label.final_recap")
+        apply_identity(
+            self._final_recap,
+            "ohlcv_download_task.final_recap",
+            object_type="text_area",
+        )
+        recap_label = QLabel("Final Recap", panel)
+        apply_identity(
+            recap_label,
+            "ohlcv_download_task.label.final_recap",
+            object_type="label",
+        )
         layout.addWidget(recap_label)
         layout.addWidget(self._final_recap)
+        return panel
 
-        buttons = QHBoxLayout()
-        buttons.setObjectName("ohlcv_download_task.layout.actions")
+    def _build_actions(self) -> QWidget:
+        panel = QGroupBox("Shell Actions", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_task.actions",
+            object_type="action_container",
+        )
+        buttons = QHBoxLayout(panel)
+        apply_identity(
+            buttons,
+            "ohlcv_download_task.layout.actions",
+            object_type="layout",
+        )
         buttons.addStretch(1)
-        stop = self._add_button("stop", "Stop", enabled=False)
+        stop = self._add_button("stop", "Cancel", enabled=False)
         ok = self._add_button("ok", "OK", enabled=True)
         ok.clicked.connect(self.close)
         buttons.addWidget(stop)
         buttons.addWidget(ok)
-        layout.addLayout(buttons)
+        return panel
+
+    def _configure_progress(
+        self,
+        progress: QProgressBar,
+        *,
+        object_id: str,
+    ) -> None:
+        apply_identity(
+            progress,
+            object_id,
+            object_type="progress_bar",
+        )
+        progress.setRange(0, 100)
 
     def _add_button(self, button_id: str, label: str, *, enabled: bool) -> QPushButton:
         button = QPushButton(label, self)
         button.setObjectName(f"ohlcv_download_task.{button_id}")
-        button.setProperty("object_id", button.objectName())
-        button.setProperty("object_type", "button")
-        button.setProperty("action_id", button.objectName())
+        apply_identity(
+            button,
+            button.objectName(),
+            object_type="button",
+            action_id=button.objectName(),
+            display_label=label,
+        )
         button.setEnabled(enabled)
         self._buttons[button_id] = button
         return button
+
+    def _set_status(self, text: str) -> None:
+        if self._status_label is not None:
+            self._status_label.setText(text)
 
 
 def _bounded_progress(value: int) -> int:

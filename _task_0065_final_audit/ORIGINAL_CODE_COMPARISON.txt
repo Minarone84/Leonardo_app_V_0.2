@@ -1,0 +1,32 @@
+Old behavior inspected:
+- Old ChartDataSession dataset/timeline/resident ownership.
+- Dataset-open generation guards in HistoricalChartController.
+- Latest resident request-id guards.
+- Exact and nearest timestamp lookup with earlier-candle tie preference.
+- Global/resident coordinate translation.
+- Controller disposal invalidating late asynchronous callbacks.
+
+Preserved behavior:
+- New dataset opens invalidate older open and resident results.
+- Only the latest resident result may become current session truth.
+- Full canonical timestamps support exact/nearest lookup and timestamp restoration.
+- Global dataset indexes remain distinct from resident-local indexes.
+- Disposal seals the session against late result mutation.
+
+Improved behavior:
+- Canonical MarketId replaces legacy DatasetId.
+- Full HistoricalDataset and ResidentOHLCVSlice values are shared by immutable reference.
+- No per-chart full timeline copy or timestamp-to-index dictionary is created.
+- No pandas DataFrame cache is owned by the session.
+- Immutable owner-local correlation tokens replace loosely related controller fields.
+- Current failures settle only their matching attempt.
+- Resident publication defensively verifies identity, fingerprint, bounds, timestamps, and all OHLCV values against the accepted dataset.
+- Disposal explicitly releases selected market, dataset, resident, and pending-attempt references.
+
+Rejected old architecture:
+- Old CoreBridge coupling.
+- Qt signals and widget references inside the data-state owner.
+- Financial Tool/study projection state in this task.
+- Mutable candle lists and copied timeline maps.
+- Broad silent exception handling during disposal.
+- GUI, viewport, pane, persistence, and task-lifecycle responsibilities.

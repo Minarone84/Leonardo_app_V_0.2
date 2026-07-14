@@ -1,1 +1,1 @@
-"""GUI-layer package for Leonardo V2."""
+"""GUI-layer package for Leonardo Light V2."""

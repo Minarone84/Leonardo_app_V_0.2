@@ -1,0 +1,12 @@
+New Resident Slice production module:
+- GUI imports: none
+- Core runtime imports: none
+- OHLCV persistence imports: none
+- pandas/numpy imports: none
+- Legacy DatasetId/CoreBridge symbols: none
+- Broad Exception handlers: none
+- Filesystem writes: none
+- Public formal contracts added: none
+
+Canonical authority result:
+PASS — HistoricalDataset remains full accepted read truth; ResidentSliceService owns only disposable resident derivation and its local cache.

@@ -1,0 +1,19 @@
+Task 0067 PATCH synchronization validation
+
+Latest user baseline before merge:
+- 48 passed
+- 1 PySide6-dependent skip
+
+Merged baseline:
+- 163 passed
+- 2 PySide6-dependent skips
+
+Additional validation:
+- ZIP source archives passed integrity tests
+- Governance 2.3 files byte-identical to authoritative copies
+- 93 Python files parsed by AST
+- compileall passed
+- Task 1001/1002 modified production files preserved byte-for-byte
+- No historical_data runtime datasets packaged
+- No pytest/cache/bytecode artifacts packaged
+- No Git writes executed

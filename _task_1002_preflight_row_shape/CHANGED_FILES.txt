@@ -1,0 +1,8 @@
+M src/leonardo/gui/windows/ohlcv_download_preflight_window.py
+M tests/gui_test/test_historical_download_wiring_static.py
+M tests/gui_test/test_light_gui.py
+A _task_1002_preflight_row_shape/AUDIT_REPORT.md
+A _task_1002_preflight_row_shape/CHANGED_FILES.txt
+A _task_1002_preflight_row_shape/VALIDATION.txt
+A docs/core_docs/TASK_1002_PREFLIGHT_ROW_SHAPE_REPAIR.md
+A docs/core_docs/TASK_1002_MERGE_NOTES.md

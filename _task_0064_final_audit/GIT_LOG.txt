@@ -1,0 +1,8 @@
+4d34a15 (HEAD -> light-v2-reset) Merge Task 1000: historical download vertical slice
+38f81de (rick/task-1000-historical-download) Task 1000: historical download vertical slice
+f414d47 (tag: leo-v2-light-reset-baseline-001, backup/pre-task-1000-20260713_172856) Validate and freeze Light V2 reset baseline
+6913aa6 Remove Heavy V2 bureaucracy and repair Light runtime
+a1e5f7c Freeze Light V2 reset baseline and install governance
+fb3be75 Add cross-suite shell coherence guard
+0e7f7c9 Enhance Trading Suite GUI shell
+87c7df0 Enhance Data Manager GUI shell

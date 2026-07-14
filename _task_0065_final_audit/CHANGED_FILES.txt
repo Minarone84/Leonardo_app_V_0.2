@@ -1,0 +1,4 @@
+ADDED    docs/core_docs/TASK_0065_CHART_SESSION_STATE.md
+MODIFIED src/leonardo/research/__init__.py
+ADDED    src/leonardo/research/session.py
+ADDED    tests/research_test/test_chart_session_state.py

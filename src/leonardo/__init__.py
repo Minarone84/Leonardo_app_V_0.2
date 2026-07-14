@@ -1,1 +1,1 @@
-"""Leonardo V2 application package."""
+"""Leonardo Light V2 application package."""

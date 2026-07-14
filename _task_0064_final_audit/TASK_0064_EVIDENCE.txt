@@ -1,0 +1,10 @@
+Task ID: 0064
+Task name: Resident Slice Service
+Parent workplan: Leonardo Light V2 Research Suite Rebuild
+Execution owner: Rick
+Implementation baseline: Leo_V2_0063_POST_20260713_2020.zip
+Baseline ZIP SHA-256: 4b75749b06b7f3b1e0cb28d24e95565088dbc606ada0bea268ea7e3569692bf9
+Repository branch: light-v2-reset
+Embedded Git HEAD: 4d34a15a5323099965daf96bd4fbe4eebe01cb69
+Git writes performed: none
+Visual acceptance required: no (no GUI change)

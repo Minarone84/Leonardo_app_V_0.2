@@ -1,0 +1,10 @@
+Task ID: 0063
+Task name: Full Historical Dataset Loader
+Parent workplan: Leonardo Light V2 Research Suite Rebuild
+Execution owner: Rick
+Implementation baseline: Leo_V2_0062_POST_20260713_1958.zip
+Baseline ZIP SHA-256: 490cd984f459b97090e6b2c9d5848a4264b3394b3784352354a77e47e7f2523e
+Repository branch: light-v2-reset
+Embedded Git HEAD: 4d34a15a5323099965daf96bd4fbe4eebe01cb69
+Git writes performed: none
+Visual acceptance required: no (no GUI change)

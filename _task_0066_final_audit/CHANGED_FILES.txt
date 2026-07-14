@@ -1,0 +1,4 @@
+ADDED    docs/core_docs/TASK_0066_HORIZONTAL_VIEWPORT_MATHEMATICS.md
+MODIFIED src/leonardo/research/__init__.py
+ADDED    src/leonardo/research/viewport.py
+ADDED    tests/research_test/test_horizontal_viewport.py

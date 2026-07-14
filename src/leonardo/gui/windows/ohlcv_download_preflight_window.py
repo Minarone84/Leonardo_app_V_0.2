@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
+from leonardo.gui.windows.shell_widgets import (
+    apply_identity,
+    configure_table,
+    populate_table,
+)
 
-OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID = "ohlcv_download_preflight.window"
+
+OHLCV_DOWNLOAD_PREFLIGHT_WINDOW_ID = "ohlcv_download_preflight.window"
 OHLCV_PREFLIGHT_COLUMNS = (
     "Timeframe",
     "Local File",
@@ -31,6 +41,9 @@ OHLCV_PREFLIGHT_COLUMNS = (
     "Page Limit",
     "Status",
 )
+_REQUEST_COLUMNS = ("item", "value", "state")
+_VALIDATION_COLUMNS = ("check", "state", "details")
+_WORKLOAD_COLUMNS = ("metric", "value", "details")
 
 
 @dataclass(frozen=True)
@@ -58,22 +71,29 @@ class OhlcvDownloadPreflightWindow(QDialog):
     """
     Standalone GUI shell for OHLCV download confirmation.
 
-    The dialog renders a table-like recap and local buttons only. It does not
-    call Download Manager, provider, storage, or Core execution services.
+    The dialog renders externally supplied preflight context and externally supplied
+    work-plan rows only. It does not call Download Manager, provider, storage,
+    or Core execution services.
     """
 
     start_download_requested = Signal()
+    closed = Signal()
 
     def __init__(self, *, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._buttons: dict[str, QPushButton] = {}
+        self._tables: dict[str, QTableWidget] = {}
+        self._status_label: QLabel | None = None
+        self._warnings = QTextEdit(self)
         self._table = QTableWidget(self)
 
         self.setObjectName("ohlcv_download_preflight_window")
-        self.setProperty("object_id", OHLCV_DOWNLOAD_PREFLIGHT_METADATA_ID)
+        self.setProperty("object_id", OHLCV_DOWNLOAD_PREFLIGHT_WINDOW_ID)
         self.setWindowTitle("Confirm OHLCV Download")
-        self.resize(980, 520)
+        self.resize(1120, 720)
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_layout()
+        self.clear_preflight()
 
     def set_work_plan(
         self,
@@ -100,12 +120,77 @@ class OhlcvDownloadPreflightWindow(QDialog):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row_index, column_index, item)
-        self._table.resizeColumnsToContents()
+
+    def set_request_summary(
+        self,
+        rows: Iterable[Mapping[str, object] | Sequence[object]],
+    ) -> None:
+        populate_table(
+            self._tables["ohlcv_download_preflight.request_summary_table"],
+            _REQUEST_COLUMNS,
+            _normalize_table_rows(rows, _REQUEST_COLUMNS),
+        )
+
+    def set_validation_checklist(
+        self,
+        rows: Iterable[Mapping[str, object] | Sequence[object]],
+    ) -> None:
+        populate_table(
+            self._tables["ohlcv_download_preflight.validation_checklist_table"],
+            _VALIDATION_COLUMNS,
+            _normalize_table_rows(rows, _VALIDATION_COLUMNS),
+        )
+
+    def set_workload_estimate(
+        self,
+        rows: Iterable[Mapping[str, object] | Sequence[object]],
+    ) -> None:
+        populate_table(
+            self._tables["ohlcv_download_preflight.workload_estimate_table"],
+            _WORKLOAD_COLUMNS,
+            _normalize_table_rows(rows, _WORKLOAD_COLUMNS),
+        )
+
+    def set_warnings(self, text: str) -> None:
+        self._warnings.setPlainText(str(text))
+
+    def set_status(self, text: str) -> None:
+        self._set_status(str(text))
+
+    def set_start_enabled(self, enabled: bool) -> None:
+        self._buttons["start_download"].setEnabled(bool(enabled))
+
+    def clear_preflight(self) -> None:
+        """Reset all preflight presentation surfaces to an empty state."""
+
+        for table_id, columns in (
+            ("ohlcv_download_preflight.request_summary_table", _REQUEST_COLUMNS),
+            ("ohlcv_download_preflight.validation_checklist_table", _VALIDATION_COLUMNS),
+            ("ohlcv_download_preflight.workload_estimate_table", _WORKLOAD_COLUMNS),
+        ):
+            populate_table(self._tables[table_id], columns, ())
+        self._table.setRowCount(0)
+        self._warnings.setPlainText("")
+        self._warnings.setPlaceholderText("Warnings and blockers will appear here.")
+        self._set_status("No request loaded")
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.closed.emit()
+        super().closeEvent(event)
+
 
     def table(self) -> QTableWidget:
         """Return the read-only work-plan table widget."""
 
         return self._table
+
+    def table_for_id(self, table_id: str) -> QTableWidget:
+        """Return a stable table by identifier."""
+
+        try:
+            return self._tables[table_id]
+        except KeyError as error:
+            raise KeyError(f"Unknown Confirm OHLCV Download table: {table_id}") from error
 
     def button_for_id(self, button_id: str) -> QPushButton:
         """Return a stable button by identifier."""
@@ -115,26 +200,161 @@ class OhlcvDownloadPreflightWindow(QDialog):
         except KeyError as error:
             raise KeyError(f"Unknown Confirm OHLCV Download button: {button_id}") from error
 
+    def status_text(self) -> str:
+        """Return the current shell status text."""
+
+        return "" if self._status_label is None else self._status_label.text()
+
+    def warnings_text(self) -> str:
+        """Return the read-only warning panel text."""
+
+        return self._warnings.toPlainText()
+
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setObjectName("ohlcv_download_preflight.layout.root")
-        header = QLabel("Confirm OHLCV Download", self)
-        header.setObjectName("ohlcv_download_preflight.header")
-        header.setProperty("object_id", "ohlcv_download_preflight.header")
-        header.setProperty("object_type", "label")
+        apply_identity(
+            layout,
+            "ohlcv_download_preflight.layout.root",
+            object_type="layout",
+        )
+        layout.addWidget(self._build_header())
+        layout.addWidget(
+            self._build_table_panel(
+                "Request Summary",
+                panel_id="ohlcv_download_preflight.panel.request_summary",
+                table_id="ohlcv_download_preflight.request_summary_table",
+                columns=_REQUEST_COLUMNS,
+            )
+        )
+        layout.addWidget(self._build_work_plan_panel(), stretch=1)
+        lower = QHBoxLayout()
+        lower.setObjectName("ohlcv_download_preflight.layout.checks")
+        lower.addWidget(
+            self._build_table_panel(
+                "Validation Checklist",
+                panel_id="ohlcv_download_preflight.panel.validation_checklist",
+                table_id="ohlcv_download_preflight.validation_checklist_table",
+                columns=_VALIDATION_COLUMNS,
+            )
+        )
+        lower.addWidget(
+            self._build_table_panel(
+                "Workload Estimate",
+                panel_id="ohlcv_download_preflight.panel.workload_estimate",
+                table_id="ohlcv_download_preflight.workload_estimate_table",
+                columns=_WORKLOAD_COLUMNS,
+            )
+        )
+        layout.addLayout(lower)
+        layout.addWidget(self._build_warning_panel())
+        layout.addWidget(self._build_actions())
+
+    def _build_header(self) -> QWidget:
+        panel = QGroupBox("Download Preflight", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_preflight.panel.header",
+            object_type="panel",
+        )
+        layout = QHBoxLayout(panel)
+        apply_identity(
+            layout,
+            "ohlcv_download_preflight.layout.header",
+            object_type="layout",
+        )
+        header = QLabel("Confirm OHLCV Download", panel)
+        apply_identity(
+            header,
+            "ohlcv_download_preflight.header",
+            object_type="label",
+        )
+        status = QLabel("No request loaded", panel)
+        apply_identity(
+            status,
+            "ohlcv_download_preflight.label.status",
+            object_type="status_label",
+        )
+        self._status_label = status
         layout.addWidget(header)
+        layout.addStretch(1)
+        layout.addWidget(status)
+        return panel
 
-        self._table.setObjectName("ohlcv_download_preflight.work_plan_table")
-        self._table.setProperty("object_id", "ohlcv_download_preflight.work_plan_table")
-        self._table.setProperty("object_type", "table")
-        self._table.setColumnCount(len(OHLCV_PREFLIGHT_COLUMNS))
-        self._table.setHorizontalHeaderLabels(OHLCV_PREFLIGHT_COLUMNS)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+    def _build_table_panel(
+        self,
+        title: str,
+        *,
+        panel_id: str,
+        table_id: str,
+        columns: Sequence[str],
+    ) -> QWidget:
+        panel = QGroupBox(title, self)
+        apply_identity(
+            panel,
+            panel_id,
+            object_type="panel",
+        )
+        layout = QVBoxLayout(panel)
+        layout.setObjectName(f"{panel_id}.layout")
+        table = QTableWidget(panel)
+        configure_table(
+            table,
+            object_id=table_id,
+            columns=columns,
+        )
+        self._tables[table_id] = table
+        layout.addWidget(table)
+        return panel
+
+    def _build_work_plan_panel(self) -> QWidget:
+        panel = QGroupBox("Work Plan", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_preflight.panel.work_plan",
+            object_type="panel",
+        )
+        layout = QVBoxLayout(panel)
+        layout.setObjectName("ohlcv_download_preflight.layout.work_plan")
+        configure_table(
+            self._table,
+            object_id="ohlcv_download_preflight.work_plan_table",
+            columns=OHLCV_PREFLIGHT_COLUMNS,
+        )
+        self._tables["ohlcv_download_preflight.work_plan_table"] = self._table
         layout.addWidget(self._table)
+        return panel
 
-        buttons = QHBoxLayout()
-        buttons.setObjectName("ohlcv_download_preflight.layout.actions")
+    def _build_warning_panel(self) -> QWidget:
+        panel = QGroupBox("Warnings", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_preflight.panel.warnings",
+            object_type="panel",
+        )
+        layout = QVBoxLayout(panel)
+        layout.setObjectName("ohlcv_download_preflight.layout.warnings")
+        apply_identity(
+            self._warnings,
+            "ohlcv_download_preflight.text.warnings",
+            object_type="text_area",
+        )
+        self._warnings.setReadOnly(True)
+        layout.addWidget(self._warnings)
+        return panel
+
+    def _build_actions(self) -> QWidget:
+        panel = QGroupBox("Shell Actions", self)
+        apply_identity(
+            panel,
+            "ohlcv_download_preflight.actions",
+            object_type="action_container",
+        )
+        buttons = QHBoxLayout(panel)
+        apply_identity(
+            buttons,
+            "ohlcv_download_preflight.layout.actions",
+            object_type="layout",
+        )
         buttons.addStretch(1)
         cancel = self._add_button("cancel", "Cancel")
         start = self._add_button("start_download", "Start Download")
@@ -142,16 +362,49 @@ class OhlcvDownloadPreflightWindow(QDialog):
         start.clicked.connect(self.start_download_requested.emit)
         buttons.addWidget(cancel)
         buttons.addWidget(start)
-        layout.addLayout(buttons)
+        return panel
 
     def _add_button(self, button_id: str, label: str) -> QPushButton:
         button = QPushButton(label, self)
         button.setObjectName(f"ohlcv_download_preflight.{button_id}")
-        button.setProperty("object_id", button.objectName())
-        button.setProperty("object_type", "button")
-        button.setProperty("action_id", button.objectName())
+        apply_identity(
+            button,
+            button.objectName(),
+            object_type="button",
+            action_id=button.objectName(),
+            display_label=label,
+        )
         self._buttons[button_id] = button
         return button
+
+    def _set_status(self, text: str) -> None:
+        if self._status_label is not None:
+            self._status_label.setText(text)
+
+
+def _normalize_table_rows(
+    rows: Iterable[Mapping[str, object] | Sequence[object]],
+    column_ids: Sequence[str],
+) -> tuple[dict[str, object], ...]:
+    """Normalize GUI-local tuple rows into the mapping shape used by tables."""
+
+    normalized: list[dict[str, object]] = []
+    for row in rows:
+        if isinstance(row, Mapping):
+            normalized.append(
+                {column_id: row.get(column_id, "") for column_id in column_ids}
+            )
+            continue
+        if isinstance(row, (str, bytes, bytearray)):
+            raise TypeError("table rows must be mappings or non-string sequences")
+        values = tuple(row)
+        normalized.append(
+            {
+                column_id: values[index] if index < len(values) else ""
+                for index, column_id in enumerate(column_ids)
+            }
+        )
+    return tuple(normalized)
 
 
 def _coerce_row(row: OhlcvDownloadPlanRow | Mapping[str, object]) -> OhlcvDownloadPlanRow:

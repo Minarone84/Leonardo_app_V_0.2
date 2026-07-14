@@ -1,0 +1,6 @@
+Forbidden production symbols:
+PASS
+Forbidden Research -> GUI dependencies:
+PASS
+Broad exception handlers in Research production source:
+PASS

@@ -1,0 +1,12 @@
+PASS
+
+Task 0066 production implementation contains no runtime imports or calls for:
+- PySide6 / QObject / Qt Signal
+- CoreBridge
+- legacy DatasetId
+- Contract Registry / ToolContract
+- QApplication.processEvents
+- persistence or filesystem access
+- broad exception swallowing
+
+The viewport owns horizontal camera mathematics only.

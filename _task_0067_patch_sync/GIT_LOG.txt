@@ -1,0 +1,10 @@
+f15ddde (HEAD -> light-v2-reset) Merge Task 1002: preflight row-shape repair
+2a4dba5 (rick/task-1002-preflight-row-shape-repair) Task 1002: repair preflight table row normalization
+9fab7b7 (backup/pre-task-1002-20260713_203913) Merge Task 1001: historical download GUI repair
+101fd86 (rick/task-1001-download-gui-repair) Task 1001: repair historical download preflight lifecycle
+4d34a15 (backup/pre-task-1001-20260713_201114) Merge Task 1000: historical download vertical slice
+38f81de (rick/task-1000-historical-download) Task 1000: historical download vertical slice
+f414d47 (tag: leo-v2-light-reset-baseline-001, backup/pre-task-1000-20260713_172856) Validate and freeze Light V2 reset baseline
+6913aa6 Remove Heavy V2 bureaucracy and repair Light runtime
+a1e5f7c Freeze Light V2 reset baseline and install governance
+fb3be75 Add cross-suite shell coherence guard

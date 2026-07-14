@@ -1,0 +1,1 @@
+[PASS] No forbidden generated files or directories found.

@@ -1,0 +1,90 @@
+{
+  "identity": {
+    "theme_id": "leonardo_jarvish_cockpit",
+    "display_name": "Leonardo Jarvish Cockpit",
+    "description": "Dark futuristic cockpit theme with graphite surfaces and restrained cyan, teal, and blue accents.",
+    "mode": "dark"
+  },
+  "colors": {
+    "background": "#070B10",
+    "surface": "#0D141D",
+    "surface_alt": "#111B27",
+    "panel": "#14202C",
+    "panel_alt": "#182838",
+    "border": "#244052",
+    "border_active": "#24C8DB",
+    "text_primary": "#E6F4F7",
+    "text_secondary": "#A9C3CC",
+    "text_muted": "#6D8791",
+    "accent_primary": "#24C8DB",
+    "accent_secondary": "#1E8CFF",
+    "accent_tertiary": "#16E0A7",
+    "success": "#36D399",
+    "warning": "#F4B740",
+    "error": "#FF5C7A",
+    "info": "#4AA8FF"
+  },
+  "typography": {
+    "base_font_family": "Segoe UI",
+    "monospace_font_family": "Cascadia Mono",
+    "base_font_size": 10,
+    "small_font_size": 9,
+    "title_font_size": 16
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24
+  },
+  "radius": {
+    "sm": 3,
+    "md": 5,
+    "lg": 8
+  },
+  "effects": {
+    "glow_enabled": true,
+    "shadow_enabled": true,
+    "border_intensity": "subtle"
+  },
+  "components": {
+    "button": {
+      "background": "panel",
+      "foreground": "text_primary",
+      "border": "border",
+      "hover_border": "border_active"
+    },
+    "panel": {
+      "background": "surface",
+      "border": "border"
+    },
+    "card": {
+      "background": "panel",
+      "border": "border",
+      "accent": "accent_secondary"
+    },
+    "table": {
+      "background": "surface_alt",
+      "grid": "border",
+      "selection": "panel_alt"
+    },
+    "tab": {
+      "background": "panel",
+      "selected": "panel_alt",
+      "accent": "accent_primary"
+    },
+    "status_chip": {
+      "background": "panel_alt",
+      "success": "success",
+      "warning": "warning",
+      "error": "error",
+      "info": "info"
+    },
+    "input": {
+      "background": "panel",
+      "border": "border",
+      "focus_border": "border_active"
+    }
+  }
+}

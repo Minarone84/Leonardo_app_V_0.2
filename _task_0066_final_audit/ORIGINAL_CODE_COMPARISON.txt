@@ -1,0 +1,35 @@
+Old behavior inspected:
+- Old QObject-based ChartViewport camera and fixed chart-space domain.
+- Latest-real-candle initial alignment.
+- Fixed left/right empty chart padding.
+- Boundary-clamped pan-left/pan-right behavior.
+- Cursor-anchored zoom placement without latest-edge snapping.
+- Discrete visible-slot index/x mapping.
+- Crosshair state separated from camera movement.
+- Dataset-interest mapping used by historical resident refill logic.
+
+Preserved behavior:
+- Horizontal camera never mutates dataset truth.
+- Chart space supports negative historical padding and future padding.
+- Initial position aligns the latest real candle to the right data edge.
+- Pan changes only horizontal camera placement and stops at fixed domain bounds.
+- Zoom retains an explicit anchor's relative position and respects 20/2,000 limits.
+- Centering supports canonical global indexes and timestamp resolution delegated to the chart session.
+- Padding-only camera positions map to the nearest real dataset edge for resident requests.
+- Resident refill decisions use a 250-bar edge threshold.
+
+Improved behavior:
+- Pure Python implementation has no PySide6/QObject/Signal dependency.
+- Methods report whether observable state changed; a later GUI adapter owns signal emission.
+- Default restored policy is explicit: 1,000 left padding, 1,000 right padding, 500 visible bars.
+- Dataset-interest and refill decisions use explicit immutable values/enums.
+- Timestamp-to-index authority is not duplicated inside the viewport.
+- Crosshair values outside chart space are cleared instead of retained as invalid state.
+- Impossible resident intervals and non-boolean availability flags fail clearly.
+
+Rejected old architecture:
+- Qt ownership inside viewport mathematics.
+- Legacy anchor-zoom compatibility toggles.
+- Compatibility aliases and duplicate set-total methods.
+- Viewport-driven dataset loading, resident mutation, rendering, or persistence.
+- GUI, Core, Financial Tool, and study responsibilities.

@@ -5,22 +5,30 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QTableWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
+from leonardo.gui.windows.shell_widgets import (
+    apply_identity,
+    configure_table,
+)
 
-HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID = "historical_download_manager.window"
 
+HISTORICAL_DOWNLOAD_MANAGER_WINDOW_ID = "historical_download_manager.window"
 
 class HistoricalDownloadManagerWindow(QWidget):
     """
@@ -34,35 +42,43 @@ class HistoricalDownloadManagerWindow(QWidget):
 
     start_requested = Signal()
     maintenance_requested = Signal()
+    closed = Signal()
 
     def __init__(self, *, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self._field_widgets: dict[str, QWidget] = {}
         self._buttons: dict[str, QPushButton] = {}
+        self._tables: dict[str, QTableWidget] = {}
         self._timeframe_checkboxes: dict[str, QCheckBox] = {}
         self._timeframe_layout = QVBoxLayout()
         self._timeframe_layout.setObjectName("historical_download_manager.layout.timeframes")
         self._status_log = QTextEdit(self)
+        self._shell_status_label: QLabel | None = None
 
         self.setObjectName("historical_download_manager_window")
-        self.setProperty("object_id", HISTORICAL_DOWNLOAD_MANAGER_METADATA_ID)
+        self.setProperty("object_id", HISTORICAL_DOWNLOAD_MANAGER_WINDOW_ID)
         self.setWindowTitle("Historical Download Manager")
-        self.resize(720, 640)
+        self.resize(980, 760)
+        apply_theme_stylesheet(self, load_default_theme())
         self._build_layout()
+        self.clear_view()
 
     def set_available_timeframes(self, timeframes: Iterable[str]) -> None:
         """Replace displayed timeframe checkboxes with externally supplied values."""
 
         normalized = _normalize_string_options(timeframes, "timeframes")
+        previous_selection = set(self.selected_timeframes())
         self._clear_timeframe_widgets()
         for timeframe in normalized:
             checkbox = QCheckBox(timeframe, self)
             checkbox.setObjectName(f"historical_download_manager.timeframe.{timeframe}")
             checkbox.setProperty("object_id", checkbox.objectName())
             checkbox.setProperty("object_type", "checkbox")
-            checkbox.setProperty("parent_object_id", "historical_download_manager.timeframes")
+            checkbox.setChecked(timeframe in previous_selection)
             self._timeframe_checkboxes[timeframe] = checkbox
             self._timeframe_layout.addWidget(checkbox)
+        if normalized and not self.selected_timeframes():
+            self._timeframe_checkboxes[normalized[0]].setChecked(True)
         self._timeframe_layout.addStretch(1)
 
     def available_timeframes(self) -> tuple[str, ...]:
@@ -107,6 +123,16 @@ class HistoricalDownloadManagerWindow(QWidget):
         except KeyError as error:
             raise KeyError(f"Unknown Historical Download Manager button: {button_id}") from error
 
+    def table_for_id(self, table_id: str) -> QTableWidget:
+        """Return a stable table by identifier."""
+
+        try:
+            return self._tables[table_id]
+        except KeyError as error:
+            raise KeyError(f"Unknown Historical Download Manager table: {table_id}") from error
+
+
+
     def timeframe_checkbox_for_value(self, timeframe: str) -> QCheckBox:
         """Return the checkbox for a displayed timeframe value."""
 
@@ -120,41 +146,119 @@ class HistoricalDownloadManagerWindow(QWidget):
 
         return self._status_log
 
+    def append_status(self, message: str) -> None:
+        """Append presenter-supplied status text."""
+
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
+        self._status_log.append(message)
+
+    def set_start_enabled(self, enabled: bool) -> None:
+        self._buttons["start"].setEnabled(bool(enabled))
+
+    def set_shell_status(self, text: str) -> None:
+        """Set the presentation-only workflow status shown in the header."""
+
+        if self._shell_status_label is not None:
+            self._shell_status_label.setText(str(text))
+
+    def reset_form(self) -> None:
+        """Clear local user input while retaining externally supplied choices."""
+
+        exchange = self._field_widgets.get("exchange")
+        market = self._field_widgets.get("market_type")
+        if isinstance(exchange, QComboBox):
+            blank_index = exchange.findText("")
+            exchange.setCurrentIndex(blank_index if blank_index >= 0 else -1)
+        if isinstance(market, QComboBox):
+            blank_index = market.findText("")
+            market.setCurrentIndex(blank_index if blank_index >= 0 else -1)
+        for field_id in ("symbol", "start_ms", "end_ms", "limit"):
+            widget = self._field_widgets.get(field_id)
+            if isinstance(widget, QLineEdit):
+                widget.clear()
+        self.set_available_timeframes(())
+        self.set_start_enabled(True)
+        self.set_shell_status("Ready")
+        self.clear_view()
+
+    def clear_view(self) -> None:
+        """Reset the shell to an honest empty state."""
+
+        self._status_log.clear()
+        self._status_log.setPlaceholderText(
+            "Download status will appear after the workflow is connected."
+        )
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.reset_form()
+        self.closed.emit()
+        super().closeEvent(event)
+
+
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setObjectName("historical_download_manager.layout.root")
-        title = QLabel("Historical Download Manager", self)
-        title.setObjectName("historical_download_manager.title")
-        title.setProperty("object_id", "historical_download_manager.title")
-        title.setProperty("object_type", "label")
-        layout.addWidget(title)
+        apply_identity(
+            layout,
+            "historical_download_manager.layout.root",
+            object_type="layout",
+        )
+        layout.addWidget(self._build_header())
 
+        selection_panel = QGroupBox("Selection", self)
+        apply_identity(
+            selection_panel,
+            "historical_download_manager.selection",
+            object_type="panel",
+        )
         form = QFormLayout()
-        form.setObjectName("historical_download_manager.layout.selection_form")
+        apply_identity(
+            form,
+            "historical_download_manager.layout.selection_form",
+            object_type="layout",
+        )
         self._add_field(form, "exchange", "Exchange", QComboBox(self))
         self._add_field(form, "market_type", "Market Type", QComboBox(self))
         self._add_field(form, "symbol", "Symbol", QLineEdit(self))
         self._add_field(form, "start_ms", "Start ms", QLineEdit(self))
         self._add_field(form, "end_ms", "End ms", QLineEdit(self))
+        symbol = self._field_widgets["symbol"]
+        if isinstance(symbol, QLineEdit):
+            symbol.setPlaceholderText("BTCUSDT / btc-usdt / btc/usdt / BTCUSDT.P ...")
+        start_ms = self._field_widgets["start_ms"]
+        if isinstance(start_ms, QLineEdit):
+            start_ms.setPlaceholderText("Optional UTC timestamp in milliseconds")
+        end_ms = self._field_widgets["end_ms"]
+        if isinstance(end_ms, QLineEdit):
+            end_ms.setPlaceholderText("Optional UTC timestamp in milliseconds")
         limit = QLineEdit(self)
-        limit.setText("200")
+        limit.setPlaceholderText("Blank or 0 = provider default")
         self._add_field(form, "limit", "Limit", limit)
-        layout.addLayout(form)
+        selection_panel.setLayout(form)
+        layout.addWidget(selection_panel)
 
-        timeframes_label = QLabel("Timeframes", self)
-        timeframes_label.setObjectName("historical_download_manager.label.timeframes")
-        timeframes_label.setProperty("object_id", "historical_download_manager.label.timeframes")
-        timeframes_label.setProperty("object_type", "label")
-        layout.addWidget(timeframes_label)
+        timeframe_panel = QGroupBox("Timeframes", self)
+        apply_identity(
+            timeframe_panel,
+            "historical_download_manager.timeframes",
+            object_type="checklist",
+        )
+        timeframe_panel_layout = QVBoxLayout(timeframe_panel)
+        apply_identity(
+            timeframe_panel_layout,
+            "historical_download_manager.layout.timeframe_panel",
+            object_type="layout",
+        )
         timeframe_container = QWidget(self)
-        timeframe_container.setObjectName("historical_download_manager.timeframes")
-        timeframe_container.setProperty("object_id", "historical_download_manager.timeframes")
-        timeframe_container.setProperty("object_type", "checklist")
         timeframe_container.setLayout(self._timeframe_layout)
-        layout.addWidget(timeframe_container)
+        timeframe_panel_layout.addWidget(timeframe_container)
 
         timeframe_buttons = QHBoxLayout()
-        timeframe_buttons.setObjectName("historical_download_manager.layout.timeframe_buttons")
+        apply_identity(
+            timeframe_buttons,
+            "historical_download_manager.layout.timeframe_buttons",
+            object_type="layout",
+        )
         select_all = self._add_button(
             "select_all_timeframes",
             "Select All Timeframes",
@@ -169,26 +273,85 @@ class HistoricalDownloadManagerWindow(QWidget):
         clear.clicked.connect(self.clear_timeframes)
         timeframe_buttons.addWidget(select_all)
         timeframe_buttons.addWidget(clear)
-        layout.addLayout(timeframe_buttons)
+        timeframe_panel_layout.addLayout(timeframe_buttons)
+        layout.addWidget(timeframe_panel)
 
         action_buttons = QHBoxLayout()
-        action_buttons.setObjectName("historical_download_manager.layout.action_buttons")
+        apply_identity(
+            action_buttons,
+            "historical_download_manager.layout.action_buttons",
+            object_type="layout",
+        )
         start = self._add_button("start", "Start", enabled=True)
-        stop = self._add_button("stop", "Stop", enabled=False)
         maintenance = self._add_button("ohlcv_maintenance", "OHLCV Maintenance", enabled=True)
         start.clicked.connect(self.start_requested.emit)
         maintenance.clicked.connect(self.maintenance_requested.emit)
         action_buttons.addWidget(start)
-        action_buttons.addWidget(stop)
         action_buttons.addWidget(maintenance)
-        layout.addLayout(action_buttons)
+        actions_panel = QGroupBox("Actions", self)
+        apply_identity(
+            actions_panel,
+            "historical_download_manager.actions",
+            object_type="action_container",
+        )
+        actions_panel.setLayout(action_buttons)
+        layout.addWidget(actions_panel)
 
-        self._status_log.setObjectName("historical_download_manager.status_log")
-        self._status_log.setProperty("object_id", "historical_download_manager.status_log")
-        self._status_log.setProperty("object_type", "text_area")
+        status_panel = QGroupBox("Status Log", self)
+        apply_identity(
+            status_panel,
+            "historical_download_manager.panel.status_log",
+            object_type="panel",
+        )
+        status_layout = QVBoxLayout(status_panel)
+        apply_identity(
+            status_layout,
+            "historical_download_manager.layout.status_log",
+            object_type="layout",
+        )
+        apply_identity(
+            self._status_log,
+            "historical_download_manager.status_log",
+            object_type="text_area",
+        )
         self._status_log.setReadOnly(True)
         self._status_log.setPlaceholderText("Status and log output")
-        layout.addWidget(self._status_log)
+        status_layout.addWidget(self._status_log)
+        layout.addWidget(status_panel)
+
+    def _build_header(self) -> QWidget:
+        header = QGroupBox("Historical Download Manager", self)
+        apply_identity(
+            header,
+            "historical_download_manager.panel.header",
+            object_type="panel",
+        )
+        header_layout = QHBoxLayout(header)
+        apply_identity(
+            header_layout,
+            "historical_download_manager.layout.header",
+            object_type="layout",
+        )
+        title = QLabel("Historical Download Manager", self)
+        apply_identity(
+            title,
+            "historical_download_manager.title",
+            object_type="label",
+        )
+        status = QLabel("Ready", self)
+        apply_identity(
+            status,
+            "historical_download_manager.label.shell_status",
+            object_type="status_label",
+        )
+        self._shell_status_label = status
+        header_layout.addWidget(title)
+        header_layout.addStretch(1)
+        header_layout.addWidget(status)
+        return header
+
+
+
 
     def _add_field(self, form: QFormLayout, field_id: str, label: str, widget: QWidget) -> None:
         label_widget = QLabel(label, self)
@@ -198,7 +361,6 @@ class HistoricalDownloadManagerWindow(QWidget):
         widget.setObjectName(f"historical_download_manager.{field_id}")
         widget.setProperty("object_id", widget.objectName())
         widget.setProperty("object_type", widget.__class__.__name__)
-        widget.setProperty("parent_object_id", "historical_download_manager.selection")
         self._field_widgets[field_id] = widget
         form.addRow(label_widget, widget)
 

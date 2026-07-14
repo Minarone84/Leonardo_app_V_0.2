@@ -1,323 +1,237 @@
-"""Connection observability registry for Leonardo V2 Core."""
+"""Coarse operational connection tracking for Leonardo Light V2."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from threading import RLock
 
-from leonardo.contracts.connections import (
-    ConnectionDefinition,
-    ConnectionLifecycleStatus,
-    ConnectionRuntimeState,
-    WebSocketChannelDefinition,
-    WebSocketChannelRuntimeState,
-)
-from leonardo.core.state_store import StateStore
+
+@dataclass(frozen=True)
+class ConnectionSnapshot:
+    connection_id: str
+    label: str
+    status: str
+    kind: str
+    protocol: str
+    direction: str
+    last_heartbeat_utc: datetime | None
+    last_error_message: str | None
+    metadata: dict[str, object]
+
+
+@dataclass(frozen=True)
+class ChannelSnapshot:
+    channel_id: str
+    connection_id: str
+    label: str
+    received_count: int
+    sent_count: int
+    error_count: int
+    last_message_at_utc: datetime | None
+
+
+@dataclass
+class _ConnectionRecord:
+    connection_id: str
+    label: str
+    kind: str
+    protocol: str
+    direction: str
+    status: str = "registered"
+    last_heartbeat_utc: datetime | None = None
+    last_error_message: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class _ChannelRecord:
+    channel_id: str
+    connection_id: str
+    label: str
+    received_count: int = 0
+    sent_count: int = 0
+    error_count: int = 0
+    last_message_at_utc: datetime | None = None
 
 
 class ConnectionRegistry:
-    """
-    Register connection definitions and track runtime connection identity state.
+    """Own coarse connection state. Provider semantics remain in Connection Area."""
 
-    The registry stores definitions and delegates current runtime state to
-    `StateStore`. It does not store client handles, callbacks, open streams, or
-    transport objects.
-    """
-
-    def __init__(self, state_store: StateStore) -> None:
-        if not isinstance(state_store, StateStore):
-            raise TypeError("state_store must be a StateStore")
-        self._state_store = state_store
-        self._definitions: dict[str, ConnectionDefinition] = {}
-        self._channel_definitions: dict[str, WebSocketChannelDefinition] = {}
+    def __init__(self) -> None:
+        self._connections: dict[str, _ConnectionRecord] = {}
+        self._channels: dict[str, _ChannelRecord] = {}
+        self._lock = RLock()
 
     def register_connection(
         self,
-        definition: ConnectionDefinition,
-    ) -> ConnectionDefinition:
-        """Register a connection definition by stable connection identifier."""
-
-        if not isinstance(definition, ConnectionDefinition):
-            raise TypeError("definition must be a ConnectionDefinition")
-        if definition.connection_id in self._definitions:
-            raise ValueError(
-                f"Connection already registered: {definition.connection_id}"
-            )
-        self._state_store.connection_registered(definition)
-        self._definitions[definition.connection_id] = definition
-        return definition
-
-    def get_connection_definition(
-        self,
         connection_id: str,
-    ) -> ConnectionDefinition | None:
-        """Return a registered connection definition, if present."""
-
-        return self._definitions.get(connection_id)
-
-    def list_connections(self) -> tuple[ConnectionDefinition, ...]:
-        """Return registered connection definitions in deterministic order."""
-
-        return tuple(
-            self._definitions[connection_id]
-            for connection_id in sorted(self._definitions)
-        )
+        *,
+        label: str,
+        kind: str = "external_service",
+        protocol: str = "unknown",
+        direction: str = "outbound",
+        metadata: dict[str, object] | None = None,
+    ) -> ConnectionSnapshot:
+        _require_text(connection_id, "connection_id")
+        _require_text(label, "label")
+        with self._lock:
+            if connection_id in self._connections:
+                raise ValueError(f"Connection already registered: {connection_id}")
+            record = _ConnectionRecord(
+                connection_id=connection_id,
+                label=label,
+                kind=kind,
+                protocol=protocol,
+                direction=direction,
+                metadata=dict(metadata or {}),
+            )
+            self._connections[connection_id] = record
+            return _connection_snapshot(record)
 
     def register_websocket_channel(
         self,
-        definition: WebSocketChannelDefinition,
-    ) -> WebSocketChannelDefinition:
-        """Register a WebSocket channel under a known connection."""
-
-        if not isinstance(definition, WebSocketChannelDefinition):
-            raise TypeError("definition must be a WebSocketChannelDefinition")
-        if definition.channel_id in self._channel_definitions:
-            raise ValueError(
-                f"WebSocket channel already registered: {definition.channel_id}"
-            )
-        self._require_definition(definition.connection_id)
-        self._state_store.websocket_channel_registered(definition)
-        self._channel_definitions[definition.channel_id] = definition
-        return definition
-
-    def get_websocket_channel_definition(
-        self,
         channel_id: str,
-    ) -> WebSocketChannelDefinition | None:
-        """Return a registered WebSocket channel definition, if present."""
-
-        return self._channel_definitions.get(channel_id)
-
-    def list_websocket_channels(self) -> tuple[WebSocketChannelDefinition, ...]:
-        """Return registered WebSocket channel definitions in deterministic order."""
-
-        return tuple(
-            self._channel_definitions[channel_id]
-            for channel_id in sorted(self._channel_definitions)
-        )
-
-    def mark_connection_connecting(
-        self,
-        connection_id: str,
         *,
-        operation_id: str | None = None,
-        task_id: str | None = None,
-        correlation_id: str | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record that a registered connection is attempting readiness."""
-
-        self._require_definition(connection_id)
-        return self._state_store.connection_connecting(
-            connection_id,
-            operation_id=operation_id,
-            task_id=task_id,
-            correlation_id=correlation_id,
-        )
-
-    def mark_connection_connected(
-        self,
         connection_id: str,
-        *,
-        operation_id: str | None = None,
-        task_id: str | None = None,
-        correlation_id: str | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record that a registered connection is ready."""
+        label: str,
+    ) -> ChannelSnapshot:
+        with self._lock:
+            if connection_id not in self._connections:
+                raise KeyError(f"Unknown connection: {connection_id}")
+            if channel_id in self._channels:
+                raise ValueError(f"Channel already registered: {channel_id}")
+            record = _ChannelRecord(channel_id, connection_id, label)
+            self._channels[channel_id] = record
+            return _channel_snapshot(record)
 
-        self._require_definition(connection_id)
-        return self._state_store.connection_connected(
-            connection_id,
-            operation_id=operation_id,
-            task_id=task_id,
-            correlation_id=correlation_id,
-        )
+    def mark_connecting(self, connection_id: str) -> ConnectionSnapshot:
+        return self._set_status(connection_id, "connecting")
 
-    def mark_connection_degraded(
-        self,
-        connection_id: str,
-        *,
-        last_error_message: str,
-        operation_id: str | None = None,
-        task_id: str | None = None,
-        correlation_id: str | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record that a registered connection is degraded."""
+    def mark_connected(self, connection_id: str) -> ConnectionSnapshot:
+        return self._set_status(connection_id, "connected", clear_error=True)
 
-        self._require_definition(connection_id)
-        return self._state_store.connection_degraded(
-            connection_id,
-            last_error_message=last_error_message,
-            operation_id=operation_id,
-            task_id=task_id,
-            correlation_id=correlation_id,
-        )
+    def mark_degraded(self, connection_id: str, *, error: str) -> ConnectionSnapshot:
+        return self._set_status(connection_id, "degraded", error=error)
 
-    def mark_connection_disconnect_requested(
-        self,
-        connection_id: str,
-        *,
-        operation_id: str | None = None,
-        task_id: str | None = None,
-        correlation_id: str | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record stop intent for a registered connection identity."""
+    def mark_disconnect_requested(self, connection_id: str) -> ConnectionSnapshot:
+        return self._set_status(connection_id, "disconnect_requested")
 
-        self._require_definition(connection_id)
-        return self._state_store.connection_disconnect_requested(
-            connection_id,
-            operation_id=operation_id,
-            task_id=task_id,
-            correlation_id=correlation_id,
-        )
+    def mark_disconnected(self, connection_id: str) -> ConnectionSnapshot:
+        return self._set_status(connection_id, "disconnected")
 
-    def mark_connection_disconnected(
-        self,
-        connection_id: str,
-        *,
-        message: str = "",
-        operation_id: str | None = None,
-        task_id: str | None = None,
-        correlation_id: str | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record that a registered connection identity stopped."""
-
-        self._require_definition(connection_id)
-        return self._state_store.connection_disconnected(
-            connection_id,
-            message=message,
-            operation_id=operation_id,
-            task_id=task_id,
-            correlation_id=correlation_id,
-        )
-
-    def mark_connection_failed(
-        self,
-        connection_id: str,
-        *,
-        last_error_message: str,
-        operation_id: str | None = None,
-        task_id: str | None = None,
-        correlation_id: str | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record that a registered connection identity failed."""
-
-        self._require_definition(connection_id)
-        return self._state_store.connection_failed(
-            connection_id,
-            last_error_message=last_error_message,
-            operation_id=operation_id,
-            task_id=task_id,
-            correlation_id=correlation_id,
-        )
+    def mark_failed(self, connection_id: str, *, error: str) -> ConnectionSnapshot:
+        return self._set_status(connection_id, "failed", error=error)
 
     def record_heartbeat(
         self,
         connection_id: str,
         *,
         timestamp_utc: datetime | None = None,
-    ) -> ConnectionRuntimeState:
-        """Record the latest observed heartbeat timestamp for a connection."""
+    ) -> ConnectionSnapshot:
+        with self._lock:
+            record = self._require_connection_locked(connection_id)
+            record.last_heartbeat_utc = _utc(timestamp_utc)
+            return _connection_snapshot(record)
 
-        self._require_definition(connection_id)
-        return self._state_store.connection_heartbeat(
-            connection_id,
-            timestamp_utc=timestamp_utc,
-        )
+    def record_channel_received(self, channel_id: str, *, count: int = 1) -> ChannelSnapshot:
+        return self._update_channel(channel_id, "received_count", count)
 
-    def record_channel_received(
-        self,
-        channel_id: str,
-        *,
-        count: int = 1,
-        timestamp_utc: datetime | None = None,
-    ) -> WebSocketChannelRuntimeState:
-        """Record received message count for a registered channel."""
+    def record_channel_sent(self, channel_id: str, *, count: int = 1) -> ChannelSnapshot:
+        return self._update_channel(channel_id, "sent_count", count)
 
-        self._require_channel_definition(channel_id)
-        return self._state_store.websocket_channel_received(
-            channel_id,
-            count=count,
-            timestamp_utc=timestamp_utc,
-        )
+    def record_channel_error(self, channel_id: str, *, count: int = 1) -> ChannelSnapshot:
+        return self._update_channel(channel_id, "error_count", count)
 
-    def record_channel_sent(
-        self,
-        channel_id: str,
-        *,
-        count: int = 1,
-        timestamp_utc: datetime | None = None,
-    ) -> WebSocketChannelRuntimeState:
-        """Record sent message count for a registered channel."""
-
-        self._require_channel_definition(channel_id)
-        return self._state_store.websocket_channel_sent(
-            channel_id,
-            count=count,
-            timestamp_utc=timestamp_utc,
-        )
-
-    def record_channel_error(
-        self,
-        channel_id: str,
-        *,
-        count: int = 1,
-        timestamp_utc: datetime | None = None,
-    ) -> WebSocketChannelRuntimeState:
-        """Record error count for a registered channel."""
-
-        self._require_channel_definition(channel_id)
-        return self._state_store.websocket_channel_error(
-            channel_id,
-            count=count,
-            timestamp_utc=timestamp_utc,
-        )
-
-    def connection_states(self) -> tuple[ConnectionRuntimeState, ...]:
-        """Return defensive connection runtime state snapshots."""
-
-        return self._state_store.connection_states()
-
-    def websocket_channel_states(self) -> tuple[WebSocketChannelRuntimeState, ...]:
-        """Return defensive WebSocket channel runtime state snapshots."""
-
-        return self._state_store.websocket_channel_states()
-
-    def shutdown_tracking(
-        self,
-        *,
-        reason: str = "Application shutdown",
-    ) -> tuple[ConnectionRuntimeState, ...]:
-        """
-        Mark active tracked connection identities as disconnected.
-
-        The registry owns only runtime observability state. This method does not
-        close provider clients, network streams, or WebSocket transports.
-        """
-
-        stopped: list[ConnectionRuntimeState] = []
-        for state in self.connection_states():
-            if state.status.is_terminal:
-                continue
-            if state.status is not ConnectionLifecycleStatus.DISCONNECT_REQUESTED:
-                self.mark_connection_disconnect_requested(state.connection_id)
-            stopped.append(
-                self.mark_connection_disconnected(
-                    state.connection_id,
-                    message=reason,
-                )
+    def connection_states(self) -> tuple[ConnectionSnapshot, ...]:
+        with self._lock:
+            return tuple(
+                _connection_snapshot(self._connections[key])
+                for key in sorted(self._connections)
             )
+
+    def websocket_channel_states(self) -> tuple[ChannelSnapshot, ...]:
+        with self._lock:
+            return tuple(
+                _channel_snapshot(self._channels[key])
+                for key in sorted(self._channels)
+            )
+
+    def shutdown_tracking(self) -> tuple[ConnectionSnapshot, ...]:
+        stopped = []
+        for snapshot in self.connection_states():
+            if snapshot.status not in {"disconnected", "failed"}:
+                stopped.append(self.mark_disconnected(snapshot.connection_id))
         return tuple(stopped)
 
-    def _require_definition(self, connection_id: str) -> ConnectionDefinition:
-        definition = self._definitions.get(connection_id)
-        if definition is None:
-            raise KeyError(f"Connection is not registered: {connection_id}")
-        return definition
-
-    def _require_channel_definition(
+    def _set_status(
         self,
-        channel_id: str,
-    ) -> WebSocketChannelDefinition:
-        definition = self._channel_definitions.get(channel_id)
-        if definition is None:
-            raise KeyError(f"WebSocket channel is not registered: {channel_id}")
-        return definition
+        connection_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        clear_error: bool = False,
+    ) -> ConnectionSnapshot:
+        with self._lock:
+            record = self._require_connection_locked(connection_id)
+            record.status = status
+            if clear_error:
+                record.last_error_message = None
+            elif error is not None:
+                record.last_error_message = error
+            return _connection_snapshot(record)
+
+    def _update_channel(self, channel_id: str, field_name: str, count: int) -> ChannelSnapshot:
+        if type(count) is not int or count <= 0:
+            raise ValueError("count must be a positive integer")
+        with self._lock:
+            record = self._channels.get(channel_id)
+            if record is None:
+                raise KeyError(f"Unknown channel: {channel_id}")
+            setattr(record, field_name, getattr(record, field_name) + count)
+            record.last_message_at_utc = datetime.now(UTC)
+            return _channel_snapshot(record)
+
+    def _require_connection_locked(self, connection_id: str) -> _ConnectionRecord:
+        record = self._connections.get(connection_id)
+        if record is None:
+            raise KeyError(f"Unknown connection: {connection_id}")
+        return record
+
+
+def _connection_snapshot(record: _ConnectionRecord) -> ConnectionSnapshot:
+    return ConnectionSnapshot(
+        connection_id=record.connection_id,
+        label=record.label,
+        status=record.status,
+        kind=record.kind,
+        protocol=record.protocol,
+        direction=record.direction,
+        last_heartbeat_utc=record.last_heartbeat_utc,
+        last_error_message=record.last_error_message,
+        metadata=dict(record.metadata),
+    )
+
+
+def _channel_snapshot(record: _ChannelRecord) -> ChannelSnapshot:
+    return ChannelSnapshot(
+        channel_id=record.channel_id,
+        connection_id=record.connection_id,
+        label=record.label,
+        received_count=record.received_count,
+        sent_count=record.sent_count,
+        error_count=record.error_count,
+        last_message_at_utc=record.last_message_at_utc,
+    )
+
+
+def _require_text(value: str, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+
+
+def _utc(value: datetime | None) -> datetime:
+    current = value or datetime.now(UTC)
+    if current.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return current.astimezone(UTC)

@@ -1,0 +1,23 @@
+Old Leonardo behavior inspected:
+- horizontal drag direction and pixel-to-bar conversion
+- cursor-anchored wheel zoom
+- crosshair hover separation from static painting
+- autoscale/manual-y ownership
+- manual vertical panning
+- price-axis zoom and Shift+axis pan
+
+Behavior preserved:
+- drag right pans toward older bars; drag left pans toward newer bars
+- wheel zoom retains the cursor anchor
+- manual y pan uses pixel delta / plot height * current span
+- price-axis zoom uses the old 1 + dy/180 factor clamped to 0.15..8.0
+- autoscale derives from visible prices
+- crosshair is a dynamic paint layer
+
+Old defects rejected:
+- mutable shared view-state dictionaries
+- renderer ownership of dataset or calculation truth
+- CoreBridge and legacy DatasetId dependencies
+- processEvents-based responsiveness
+- synchronous I/O/calculation from GUI events
+- crosshair movement rebuilding the static candle scene
