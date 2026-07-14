@@ -1,4 +1,4 @@
-"""Presenter for canonical OHLCV Maintenance validation and explicit repair."""
+"""Presenter for canonical OHLCV Maintenance workflows."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from leonardo.ohlcv import (
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
     MaintenanceRepairResult,
+    MaintenanceSidecarReconstructionPlan,
+    MaintenanceSidecarReconstructionResult,
     MaintenanceValidationResult,
     OHLCVMaintenanceApplicationService,
 )
@@ -55,6 +57,7 @@ class OhlcvMaintenancePresenter(QObject):
         self._dispatcher = _QtCallbackDispatcher(self)
         self._datasets: tuple[MaintenanceDatasetSummary, ...] = ()
         self._repair_plan: MaintenanceRepairPlan | None = None
+        self._sidecar_reconstruction_candidates: set[str] = set()
         self._active_task_id: str | None = None
         self._active_operation: str | None = None
         self._wire()
@@ -92,6 +95,9 @@ class OhlcvMaintenancePresenter(QObject):
         self._view.validate_requested.connect(self._submit_validation)
         self._view.plan_repair_requested.connect(self._submit_repair_plan)
         self._view.execute_repair_requested.connect(self._execute_repair)
+        self._view.reconstruct_sidecar_requested.connect(
+            self._submit_sidecar_reconstruction_plan
+        )
         self._view.delete_requested.connect(self._submit_deletion_plan)
         self._view.cancel_requested.connect(self._cancel_operation)
         self._view.selection_changed.connect(self._on_selection_changed)
@@ -146,6 +152,7 @@ class OhlcvMaintenancePresenter(QObject):
                 ("Validation", summary.validation_status),
                 ("Rows", summary.row_count),
                 ("Source", summary.source),
+                ("Evidence state", summary.evidence_state),
                 ("Discovery issues", ", ".join(summary.issues) or "None"),
             )
         )
@@ -153,6 +160,15 @@ class OhlcvMaintenancePresenter(QObject):
         self._view.set_validate_enabled(available)
         self._view.set_plan_repair_enabled(available)
         self._view.set_delete_enabled(available and summary.csv_exists)
+        self._view.set_reconstruct_sidecar_enabled(
+            available
+            and summary.csv_exists
+            and (
+                summary.evidence_state
+                in {"sidecar_missing", "sidecar_invalid", "sidecar_stale"}
+                or summary.market_id.as_key() in self._sidecar_reconstruction_candidates
+            )
+        )
         self._view.set_execute_repair_enabled(
             available
             and self._repair_plan is not None
@@ -254,6 +270,73 @@ class OhlcvMaintenancePresenter(QObject):
             return
         self._active_task_id = submission.task_id
 
+    def _submit_sidecar_reconstruction_plan(self) -> None:
+        summary = self._selected_summary("sidecar reconstruction")
+        if summary is None or self._active_task_id is not None:
+            return
+        if not summary.csv_exists:
+            self._view.set_status("Sidecar reconstruction requires candles.csv")
+            self._view.set_reconstruct_sidecar_enabled(False)
+            return
+        self._clear_repair_plan()
+        self._begin_operation(
+            "sidecar_reconstruction_plan",
+            f"Reviewing sidecar evidence — {summary.market_id.as_key()}",
+        )
+        try:
+            submission = self._maintenance.submit_sidecar_reconstruction_plan(
+                summary.market_id,
+                progress_callback=self._on_progress,
+                result_callback=self._on_result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self._submission_failed(error)
+            return
+        self._active_task_id = submission.task_id
+
+    def _confirm_and_submit_sidecar_reconstruction(
+        self,
+        plan: MaintenanceSidecarReconstructionPlan,
+    ) -> None:
+        self._view.set_issue_rows(
+            tuple(_issue_row(item) for item in plan.validation_report.issues)
+        )
+        if not plan.actionable:
+            self._sidecar_reconstruction_candidates.discard(plan.market_id.as_key())
+            text = plan.message
+            if plan.warnings:
+                text += " Warnings: " + " | ".join(plan.warnings)
+            self._view.set_status(text)
+            self._render_selection(self._view.selected_dataset_index(), invalidate_plan=False)
+            return
+        confirmed = self._view.confirm_sidecar_reconstruction(
+            market_key=plan.market_id.as_key(),
+            evidence_state=plan.evidence_state,
+            csv_path=str(plan.validation_report.csv_path),
+            sidecar_path=str(plan.validation_report.sidecar_path),
+            replacing_existing=plan.sidecar_evidence is not None,
+        )
+        if not confirmed:
+            self._view.set_status("Sidecar reconstruction cancelled before execution")
+            self._render_selection(self._view.selected_dataset_index(), invalidate_plan=False)
+            return
+        self._begin_operation(
+            "sidecar_reconstruction",
+            f"Submitting sidecar reconstruction — {plan.market_id.as_key()}",
+        )
+        try:
+            submission = self._maintenance.submit_sidecar_reconstruction(
+                plan,
+                progress_callback=self._on_progress,
+                result_callback=self._on_result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self._submission_failed(error)
+            return
+        self._active_task_id = submission.task_id
+
     def _confirm_and_submit_deletion(self, plan: MaintenanceDeletionPlan) -> None:
         sidecar_path = (
             str(plan.evidence.sidecar.path) if plan.evidence.sidecar is not None else None
@@ -286,7 +369,9 @@ class OhlcvMaintenancePresenter(QObject):
     def _begin_operation(self, operation: str, status: str) -> None:
         self._active_operation = operation
         self._view.set_running(True)
-        self._view.set_cancel_enabled(operation != "deletion")
+        self._view.set_cancel_enabled(
+            operation not in {"deletion", "sidecar_reconstruction"}
+        )
         self._view.set_progress(0, 1)
         self._view.set_status(status)
         if operation != "repair_plan":
@@ -326,8 +411,36 @@ class OhlcvMaintenancePresenter(QObject):
                 self._view.set_status(_deletion_result_text(result))
                 self._refresh_after_result(None)
                 return
+            if isinstance(task_result.value, MaintenanceSidecarReconstructionPlan):
+                self._confirm_and_submit_sidecar_reconstruction(task_result.value)
+                return
+            if isinstance(task_result.value, MaintenanceSidecarReconstructionResult):
+                result = task_result.value
+                self._sidecar_reconstruction_candidates.discard(
+                    result.plan.market_id.as_key()
+                )
+                self._view.set_issue_rows(
+                    tuple(_issue_row(item) for item in result.validation.report.issues)
+                )
+                self._view.set_status(_sidecar_reconstruction_result_text(result))
+                self._refresh_after_result(selected_key)
+                return
             if isinstance(task_result.value, MaintenanceValidationResult):
                 result = task_result.value
+                market_key = result.report.market_id.as_key()
+                if set(result.report.issue_codes) & {
+                    "sidecar_missing",
+                    "sidecar_invalid",
+                    "sidecar_market_mismatch",
+                    "sidecar_hash_stale",
+                    "sidecar_fingerprint_stale",
+                    "sidecar_row_count_mismatch",
+                    "sidecar_first_timestamp_mismatch",
+                    "sidecar_last_timestamp_mismatch",
+                }:
+                    self._sidecar_reconstruction_candidates.add(market_key)
+                else:
+                    self._sidecar_reconstruction_candidates.discard(market_key)
                 self._view.set_issue_rows(tuple(_issue_row(item) for item in result.report.issues))
                 self._view.set_status(_validation_status_text(result))
                 self._refresh_after_result(selected_key)
@@ -394,8 +507,10 @@ class OhlcvMaintenancePresenter(QObject):
         task_id = self._active_task_id
         if task_id is None:
             return
-        if self._active_operation == "deletion":
-            self._view.set_status("Confirmed deletion cannot be cancelled after execution starts")
+        if self._active_operation in {"deletion", "sidecar_reconstruction"}:
+            self._view.set_status(
+                "Confirmed mutation cannot be cancelled after execution starts"
+            )
             return
         if self._maintenance.cancel(task_id):
             self._view.set_status("Cancellation requested")
@@ -417,6 +532,7 @@ class OhlcvMaintenancePresenter(QObject):
     def _set_selection_actions(self, enabled: bool) -> None:
         self._view.set_validate_enabled(enabled)
         self._view.set_plan_repair_enabled(enabled)
+        self._view.set_reconstruct_sidecar_enabled(enabled)
         self._view.set_delete_enabled(enabled)
         self._view.set_execute_repair_enabled(False)
 
@@ -431,6 +547,7 @@ def _dataset_row(summary: MaintenanceDatasetSummary) -> MaintenanceDatasetRow:
         validation=summary.validation_status,
         rows=summary.row_count,
         source=summary.source,
+        evidence_state=summary.evidence_state,
         issues=", ".join(summary.issues),
     )
 
@@ -476,7 +593,11 @@ def _index_for_market_key(
 def _deletion_result_text(result: MaintenanceDeletionResult) -> str:
     market_key = result.plan.market_id.as_key()
     warnings = result.store_result.cleanup_warnings
-    cache_text = "Research cache invalidated" if result.cache_invalidated else "no cached Research copy"
+    cache_text = (
+        "Research cache invalidated"
+        if result.cache_invalidated
+        else "no cached Research copy"
+    )
     if warnings:
         return (
             f"Deleted — {market_key}; {cache_text}; cleanup warning: "
@@ -497,6 +618,31 @@ def _validation_status_text(result: MaintenanceValidationResult) -> str:
     if result.report.status == "warning":
         return f"Warning — {market_key}; Research admission remains blocked"
     return f"Rejected — {market_key}; Research admission remains blocked"
+
+
+def _sidecar_reconstruction_result_text(
+    result: MaintenanceSidecarReconstructionResult,
+) -> str:
+    market_key = result.plan.market_id.as_key()
+    replacement = "replaced" if result.store_result.replaced_existing else "created"
+    cache_text = (
+        "Research cache invalidated"
+        if result.cache_invalidated
+        else "no cached Research copy"
+    )
+    if result.accepted:
+        return (
+            f"Sidecar {replacement} and accepted — {market_key}; {cache_text}"
+        )
+    if result.validation.publication_error:
+        return (
+            f"Sidecar {replacement}; validation publication failed — {market_key}: "
+            f"{result.validation.publication_error}"
+        )
+    return (
+        f"Sidecar {replacement}; validation={result.validation.report.status} — "
+        f"{market_key}; Research remains blocked"
+    )
 
 
 def _repair_result_text(result: MaintenanceRepairResult) -> str:

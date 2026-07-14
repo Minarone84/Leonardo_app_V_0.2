@@ -1,4 +1,4 @@
-"""GUI shell for canonical OHLCV validation, repair, and deletion."""
+"""GUI shell for canonical OHLCV validation, repair, evidence recovery, and deletion."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ _DATASET_COLUMNS = (
     ("validation", "Validation"),
     ("rows", "Rows"),
     ("source", "Source"),
+    ("evidence_state", "Evidence State"),
     ("issues", "Issues"),
 )
 _DETAIL_COLUMNS = (("field", "Evidence"), ("value", "Value"))
@@ -68,6 +69,7 @@ class MaintenanceDatasetRow:
     validation: str
     rows: int
     source: str
+    evidence_state: str
     issues: str
 
 
@@ -103,6 +105,7 @@ class OhlcvMaintenanceWindow(QWidget):
     validate_requested = Signal()
     plan_repair_requested = Signal()
     execute_repair_requested = Signal()
+    reconstruct_sidecar_requested = Signal()
     delete_requested = Signal()
     cancel_requested = Signal()
     selection_changed = Signal(int)
@@ -163,6 +166,7 @@ class OhlcvMaintenanceWindow(QWidget):
                 row.validation,
                 str(row.rows),
                 row.source,
+                row.evidence_state,
                 row.issues,
             )
             for column_index, value in enumerate(values):
@@ -253,6 +257,37 @@ class OhlcvMaintenanceWindow(QWidget):
         )
         return result == QMessageBox.StandardButton.Yes
 
+    def confirm_sidecar_reconstruction(
+        self,
+        *,
+        market_key: str,
+        evidence_state: str,
+        csv_path: str,
+        sidecar_path: str,
+        replacing_existing: bool,
+    ) -> bool:
+        replacement_text = (
+            "replace the existing sidecar"
+            if replacing_existing
+            else "create a new sidecar"
+        )
+        result = QMessageBox.warning(
+            self,
+            "Confirm OHLCV Sidecar Reconstruction",
+            (
+                f"Reconstruct sidecar evidence for {market_key}?\n\n"
+                f"Evidence state: {evidence_state}\n"
+                f"CSV: {csv_path}\n"
+                f"Sidecar: {sidecar_path}\n\n"
+                f"This will {replacement_text} as committed/unknown with source "
+                "maintenance_reconstruction, then run canonical validation. "
+                "Candle values will not be changed. Continue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return result == QMessageBox.StandardButton.Yes
+
     def set_running(self, running: bool) -> None:
         self._tables["datasets"].setEnabled(not running)
         self._buttons["refresh"].setEnabled(not running)
@@ -261,6 +296,7 @@ class OhlcvMaintenanceWindow(QWidget):
             self._buttons["validate"].setEnabled(False)
             self._buttons["plan_repair"].setEnabled(False)
             self._buttons["execute_repair"].setEnabled(False)
+            self._buttons["reconstruct_sidecar"].setEnabled(False)
             self._buttons["delete"].setEnabled(False)
 
     def set_validate_enabled(self, enabled: bool) -> None:
@@ -274,6 +310,9 @@ class OhlcvMaintenanceWindow(QWidget):
 
     def set_delete_enabled(self, enabled: bool) -> None:
         self._buttons["delete"].setEnabled(bool(enabled))
+
+    def set_reconstruct_sidecar_enabled(self, enabled: bool) -> None:
+        self._buttons["reconstruct_sidecar"].setEnabled(bool(enabled))
 
     def set_cancel_enabled(self, enabled: bool) -> None:
         self._buttons["cancel"].setEnabled(bool(enabled))
@@ -298,6 +337,7 @@ class OhlcvMaintenanceWindow(QWidget):
         self.set_validate_enabled(False)
         self.set_plan_repair_enabled(False)
         self.set_execute_repair_enabled(False)
+        self.set_reconstruct_sidecar_enabled(False)
         self.set_delete_enabled(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -318,7 +358,7 @@ class OhlcvMaintenanceWindow(QWidget):
         datasets.itemSelectionChanged.connect(self._emit_selection_changed)
         datasets.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         datasets.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        datasets.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        datasets.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
         self._tables["datasets"] = datasets
         datasets_layout.addWidget(datasets)
 
@@ -351,7 +391,7 @@ class OhlcvMaintenanceWindow(QWidget):
         panel = QGroupBox("OHLCV Maintenance", self)
         apply_identity(panel, "ohlcv_maintenance.panel.header", object_type="panel")
         layout = QHBoxLayout(panel)
-        title = QLabel("Canonical Validation, Repair, and Deletion", panel)
+        title = QLabel("Canonical Validation, Repair, Evidence Recovery, and Deletion", panel)
         apply_identity(title, "ohlcv_maintenance.title", object_type="label")
         status = QLabel("Ready", panel)
         apply_identity(status, "ohlcv_maintenance.label.status", object_type="status_label")
@@ -414,12 +454,18 @@ class OhlcvMaintenanceWindow(QWidget):
         validate = self._add_button("validate", "Validate Selected", enabled=False)
         plan_repair = self._add_button("plan_repair", "Plan Repair", enabled=False)
         execute_repair = self._add_button("execute_repair", "Execute Repair", enabled=False)
+        reconstruct_sidecar = self._add_button(
+            "reconstruct_sidecar",
+            "Rebuild Sidecar",
+            enabled=False,
+        )
         delete = self._add_button("delete", "Delete Selected", enabled=False)
         cancel = self._add_button("cancel", "Cancel", enabled=False)
         refresh.clicked.connect(self.refresh_requested.emit)
         validate.clicked.connect(self.validate_requested.emit)
         plan_repair.clicked.connect(self.plan_repair_requested.emit)
         execute_repair.clicked.connect(self.execute_repair_requested.emit)
+        reconstruct_sidecar.clicked.connect(self.reconstruct_sidecar_requested.emit)
         delete.clicked.connect(self.delete_requested.emit)
         cancel.clicked.connect(self.cancel_requested.emit)
         apply_identity(
@@ -428,7 +474,15 @@ class OhlcvMaintenanceWindow(QWidget):
             object_type="progress_bar",
         )
         self._progress.setTextVisible(True)
-        for widget in (refresh, validate, plan_repair, execute_repair, delete, cancel):
+        for widget in (
+            refresh,
+            validate,
+            plan_repair,
+            execute_repair,
+            reconstruct_sidecar,
+            delete,
+            cancel,
+        ):
             layout.addWidget(widget)
         layout.addWidget(self._progress, 1)
         return panel

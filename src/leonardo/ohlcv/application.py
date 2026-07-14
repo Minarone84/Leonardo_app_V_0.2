@@ -23,6 +23,8 @@ from leonardo.ohlcv.maintenance import (
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
     MaintenanceRepairRangeResult,
+    MaintenanceSidecarReconstructionPlan,
+    MaintenanceSidecarReconstructionResult,
     OHLCVMaintenanceService,
     repair_range_result,
 )
@@ -105,7 +107,7 @@ class HistoricalDownloadApplicationService:
 
 
 class OHLCVMaintenanceApplicationService:
-    """Application boundary for discovery, validation, repair, and deletion."""
+    """Application boundary for validation, repair, evidence recovery, and deletion."""
 
     def __init__(
         self,
@@ -282,6 +284,143 @@ class OHLCVMaintenanceApplicationService:
             metadata={
                 "operation": "ohlcv_validate",
                 "market_id": market.as_key(),
+            },
+        )
+
+    def submit_sidecar_reconstruction_plan(
+        self,
+        market: MarketId,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        correlation_id = uuid4().hex
+
+        def job(reporter: ProgressReporter) -> object:
+            reporter.report(
+                f"Reviewing sidecar evidence for {market.as_key()}",
+                current=0,
+                total=1,
+            )
+            plan = self._maintenance.plan_sidecar_reconstruction(
+                market,
+                correlation_id=correlation_id,
+            )
+            reporter.report(
+                plan.message,
+                current=1,
+                total=1,
+                details={
+                    "market_id": market.as_key(),
+                    "evidence_state": plan.evidence_state,
+                    "actionable": plan.actionable,
+                },
+            )
+            return plan
+
+        return self._core_runner.submit_blocking_job(
+            job,
+            task_name=(
+                f"OHLCV sidecar reconstruction plan "
+                f"{market.exchange} {market.symbol} {market.timeframe}"
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            correlation_id=correlation_id,
+            metadata={
+                "operation": "ohlcv_sidecar_reconstruction_plan",
+                "market_id": market.as_key(),
+            },
+        )
+
+    def submit_sidecar_reconstruction(
+        self,
+        plan: MaintenanceSidecarReconstructionPlan,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(plan, MaintenanceSidecarReconstructionPlan):
+            raise TypeError("plan must be a MaintenanceSidecarReconstructionPlan")
+        if not plan.actionable:
+            raise ValueError("sidecar reconstruction plan is not actionable")
+        correlation_id = uuid4().hex
+
+        async def job(reporter: ProgressReporter) -> object:
+            reporter.report(
+                f"Waiting for exclusive access to {plan.market_id.as_key()}",
+                current=0,
+                total=3,
+            )
+            async with self._operation_locks.acquire(plan.market_id):
+                reporter.report(
+                    f"Reconstructing sidecar evidence for {plan.market_id.as_key()}",
+                    current=1,
+                    total=3,
+                )
+
+                def reconstruct_validate_and_invalidate() -> MaintenanceSidecarReconstructionResult:
+                    store_result = self._maintenance.reconstruct_sidecar(
+                        plan,
+                        correlation_id=correlation_id,
+                    )
+                    validation = self._maintenance.validate(
+                        plan.market_id,
+                        correlation_id=correlation_id,
+                    )
+                    cache_invalidated = False
+                    if self._cache_invalidator is not None:
+                        cache_invalidated = self._cache_invalidator(plan.market_id)
+                    return MaintenanceSidecarReconstructionResult(
+                        plan=plan,
+                        store_result=store_result,
+                        validation=validation,
+                        cache_invalidated=cache_invalidated,
+                    )
+
+                mutation_task = asyncio.create_task(
+                    asyncio.to_thread(reconstruct_validate_and_invalidate)
+                )
+                cancellation_arrived_after_start = False
+                try:
+                    result = await asyncio.shield(mutation_task)
+                except asyncio.CancelledError:
+                    cancellation_arrived_after_start = True
+                    result = await mutation_task
+            reporter.report(
+                (
+                    f"Sidecar reconstruction completed for {plan.market_id.as_key()}; "
+                    f"validation={result.validation.report.status}"
+                ),
+                current=3,
+                total=3,
+                details={
+                    "market_id": plan.market_id.as_key(),
+                    "validation_status": result.validation.report.status,
+                    "accepted": result.accepted,
+                    "cache_invalidated": result.cache_invalidated,
+                    "cancellation_arrived_after_start": cancellation_arrived_after_start,
+                },
+            )
+            return result
+
+        return self._core_runner.submit_job(
+            job,
+            task_name=(
+                f"OHLCV reconstruct sidecar "
+                f"{plan.market_id.exchange} {plan.market_id.symbol} {plan.market_id.timeframe}"
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            correlation_id=correlation_id,
+            metadata={
+                "operation": "ohlcv_sidecar_reconstruct",
+                "market_id": plan.market_id.as_key(),
+                "evidence_state": plan.evidence_state,
             },
         )
 

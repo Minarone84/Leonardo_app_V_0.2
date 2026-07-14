@@ -86,6 +86,15 @@ class DatasetDeletionResult:
     cleanup_warnings: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SidecarReconstructionResult:
+    """Controlled sidecar reconstruction outcome for one canonical CSV."""
+
+    market_id: MarketId
+    sidecar: OHLCVSidecarV1
+    replaced_existing: bool
+
+
 class OHLCVStore:
     """Own the only physical write path for historical OHLCV datasets."""
 
@@ -382,6 +391,99 @@ class OHLCVStore:
                 sidecar_deleted=evidence.sidecar is None or not sidecar_path.exists(),
                 removed_directories=removed_directories,
                 cleanup_warnings=tuple(cleanup_warnings),
+            )
+
+    def reconstruct_sidecar(
+        self,
+        market: MarketId,
+        *,
+        expected_csv_size: int,
+        expected_csv_mtime_ns: int,
+        expected_csv_sha256: str,
+        expected_sidecar_size: int | None,
+        expected_sidecar_mtime_ns: int | None,
+        expected_sidecar_sha256: str | None,
+        reconstruction_reason: str,
+    ) -> SidecarReconstructionResult:
+        """Replace missing or defective sidecar evidence for an unchanged CSV.
+
+        Reconstruction never changes candle bytes and never claims provider
+        provenance. The new sidecar is deliberately ``committed/unknown`` so
+        canonical validation remains the only authority that may accept it.
+        """
+
+        if not isinstance(reconstruction_reason, str) or not reconstruction_reason.strip():
+            raise ValueError("reconstruction_reason must be a non-empty string")
+        csv_path = self.csv_path(market)
+        sidecar_path = self.sidecar_path(market)
+        expected_csv = (
+            expected_csv_size,
+            expected_csv_mtime_ns,
+            expected_csv_sha256,
+        )
+        expected_sidecar = None
+        if expected_sidecar_size is not None:
+            if expected_sidecar_mtime_ns is None or expected_sidecar_sha256 is None:
+                raise ValueError("complete expected sidecar evidence is required")
+            expected_sidecar = (
+                expected_sidecar_size,
+                expected_sidecar_mtime_ns,
+                expected_sidecar_sha256,
+            )
+        elif expected_sidecar_mtime_ns is not None or expected_sidecar_sha256 is not None:
+            raise ValueError("partial expected sidecar evidence is not allowed")
+
+        with self._write_lock:
+            current_csv = _stable_file_state(csv_path)
+            if current_csv != expected_csv:
+                raise ValueError("reconstruction plan is stale because candles.csv changed")
+            current_sidecar = _stable_file_state(sidecar_path) if sidecar_path.is_file() else None
+            if current_sidecar != expected_sidecar:
+                raise ValueError(
+                    "reconstruction plan is stale because candles.meta.json changed"
+                )
+
+            candles = self.read(market)
+            if not candles:
+                raise ValueError("cannot reconstruct a sidecar for an empty OHLCV dataset")
+            after_read = _stable_file_state(csv_path)
+            if after_read != expected_csv:
+                raise RuntimeError("candles.csv changed while sidecar reconstruction was running")
+
+            now = datetime.now(UTC)
+            lineage = {
+                "file_size": expected_csv_size,
+                "file_mtime_ns": expected_csv_mtime_ns,
+                "sidecar_reconstruction": {
+                    "reconstructed_at_utc": now.isoformat(),
+                    "reason": reconstruction_reason.strip(),
+                    "replaced_existing": expected_sidecar is not None,
+                    "replaced_sidecar_sha256": (
+                        expected_sidecar_sha256 if expected_sidecar is not None else None
+                    ),
+                },
+            }
+            sidecar = OHLCVSidecarV1(
+                market_id=market,
+                file_sha256=expected_csv_sha256,
+                row_count=len(candles),
+                first_timestamp_ms=candles[0].ts_ms,
+                last_timestamp_ms=candles[-1].ts_ms,
+                source="maintenance_reconstruction",
+                persistence_status="committed",
+                validation_status="unknown",
+                warnings=(
+                    "Sidecar reconstructed by Maintenance; canonical validation is required.",
+                ),
+                lineage=lineage,
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+            self._write_sidecar_atomic(sidecar_path, sidecar)
+            return SidecarReconstructionResult(
+                market_id=market,
+                sidecar=sidecar,
+                replaced_existing=expected_sidecar is not None,
             )
 
     def publish_validation(

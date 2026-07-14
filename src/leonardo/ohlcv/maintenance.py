@@ -1,4 +1,4 @@
-"""Canonical OHLCV Maintenance discovery, validation, repair, and deletion."""
+"""Canonical OHLCV Maintenance discovery, validation, repair, deletion, and evidence recovery."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from leonardo.ohlcv.store import (
     DatasetDeletionEvidence,
     DatasetDeletionResult,
     OHLCVStore,
+    SidecarReconstructionResult,
 )
 from leonardo.ohlcv.validation import (
     CanonicalOHLCVValidator,
@@ -43,6 +44,36 @@ _REDOWNLOAD_ANCHOR_CODES = frozenset(
     }
 )
 
+_RECONSTRUCTABLE_SIDECAR_CODES = frozenset(
+    {
+        "sidecar_missing",
+        "sidecar_invalid",
+        "sidecar_market_mismatch",
+        "sidecar_hash_stale",
+        "sidecar_fingerprint_stale",
+        "sidecar_row_count_mismatch",
+        "sidecar_first_timestamp_mismatch",
+        "sidecar_last_timestamp_mismatch",
+    }
+)
+_CSV_RECONSTRUCTION_BLOCKERS = frozenset(
+    {
+        "csv_missing",
+        "csv_unreadable",
+        "csv_changed_during_validation",
+        "csv_header_missing",
+        "duplicate_column",
+        "missing_column",
+        "unexpected_column",
+        "column_order_invalid",
+        "row_width_invalid",
+        "csv_parse_failed",
+        "dataset_empty",
+        "timestamp_invalid",
+        "numeric_value_invalid",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MaintenanceDatasetSummary:
@@ -57,6 +88,7 @@ class MaintenanceDatasetSummary:
     validation_status: str
     row_count: int
     source: str
+    evidence_state: str
     issues: tuple[str, ...]
 
 
@@ -115,6 +147,37 @@ class MaintenanceDeletionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class MaintenanceSidecarReconstructionPlan:
+    """Read-only sidecar recovery proposal tied to exact current file evidence."""
+
+    market_id: MarketId
+    validation_report: CanonicalValidationReport
+    evidence_state: str
+    actionable: bool
+    message: str
+    warnings: tuple[str, ...]
+    csv_evidence: FileEvidence | None
+    sidecar_evidence: FileEvidence | None
+    proposed_source: str = "maintenance_reconstruction"
+    proposed_persistence_status: str = "committed"
+    proposed_validation_status: str = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceSidecarReconstructionResult:
+    """Controlled reconstruction plus mandatory canonical post-validation."""
+
+    plan: MaintenanceSidecarReconstructionPlan
+    store_result: SidecarReconstructionResult
+    validation: MaintenanceValidationResult
+    cache_invalidated: bool = False
+
+    @property
+    def accepted(self) -> bool:
+        return self.validation.accepted
+
+
+@dataclass(frozen=True, slots=True)
 class MaintenanceRepairRange:
     """One reviewed provider-redownload range derived from validation evidence."""
 
@@ -167,12 +230,14 @@ class MaintenanceRepairResult:
 
 
 class OHLCVMaintenanceService:
-    """Discover, validate, repair, and explicitly delete canonical OHLCV datasets.
+    """Discover, validate, repair, recover evidence, and delete canonical datasets.
 
     Validation and planning are read-only toward CSV data. Repair mutation is
     executed by the historical downloader and finalized only through
     ``OHLCVStore.mark_repaired`` before canonical post-repair validation.
     Confirmed deletion is executed only through ``OHLCVStore.delete_dataset``.
+    Sidecar recovery is executed only through ``OHLCVStore.reconstruct_sidecar``
+    and always returns to canonical validation before Research admission.
     """
 
     def __init__(
@@ -206,7 +271,20 @@ class OHLCVMaintenanceService:
             if isinstance(market_or_rejection, MaintenanceDiscoveryRejection):
                 rejected.append(market_or_rejection)
                 continue
-            datasets.append(self._summarize(market_or_rejection))
+            summary = self._summarize(market_or_rejection)
+            if not summary.csv_exists and not summary.sidecar_exists:
+                rejected.append(
+                    MaintenanceDiscoveryRejection(
+                        dataset_dir,
+                        "empty_dataset_directory",
+                        (
+                            "canonical dataset directory contains neither candles.csv nor "
+                            "candles.meta.json"
+                        ),
+                    )
+                )
+                continue
+            datasets.append(summary)
 
         datasets.sort(key=lambda item: _market_sort_key(item.market_id))
         rejected.sort(key=lambda item: (str(item.dataset_dir), item.code))
@@ -361,6 +439,147 @@ class OHLCVMaintenanceService:
                 "sidecar_deleted": store_result.sidecar_deleted,
                 "removed_directories": [str(path) for path in store_result.removed_directories],
                 "cleanup_warnings": store_result.cleanup_warnings,
+            },
+        )
+        return result
+
+    def plan_sidecar_reconstruction(
+        self,
+        market: MarketId,
+        *,
+        correlation_id: str | None = None,
+    ) -> MaintenanceSidecarReconstructionPlan:
+        """Classify sidecar evidence and prepare a safe explicit recovery plan."""
+
+        report = self._validator.validate(self._store, market)
+        codes = set(report.issue_codes)
+        evidence_state = _sidecar_evidence_state(self._store, market, report)
+        warnings: list[str] = []
+        sidecar_problem_codes = codes & _RECONSTRUCTABLE_SIDECAR_CODES
+        csv_blockers = codes & _CSV_RECONSTRUCTION_BLOCKERS
+
+        actionable = bool(
+            sidecar_problem_codes
+            and report.csv_evidence is not None
+            and report.row_count > 0
+            and not csv_blockers
+            and (
+                not self._store.sidecar_path(market).exists()
+                or report.sidecar_evidence is not None
+            )
+            and "persistence_not_final" not in codes
+            and "sidecar_unreadable" not in codes
+            and "sidecar_changed_during_validation" not in codes
+            and not (
+                report.first_timestamp_ms is not None
+                and report.last_timestamp_ms is not None
+                and report.first_timestamp_ms > report.last_timestamp_ms
+            )
+        )
+        if csv_blockers:
+            warnings.append(
+                "CSV structure is not safe for evidence reconstruction: "
+                + ", ".join(sorted(csv_blockers))
+            )
+        if "persistence_not_final" in codes:
+            warnings.append(
+                "A partial sidecar cannot be promoted to committed by reconstruction."
+            )
+        if "sidecar_unreadable" in codes:
+            warnings.append(
+                "The existing sidecar could not be fingerprinted safely and remains inspect-only."
+            )
+        if "sidecar_changed_during_validation" in codes:
+            warnings.append("The sidecar changed during inspection; prepare a new plan later.")
+        if (
+            report.first_timestamp_ms is not None
+            and report.last_timestamp_ms is not None
+            and report.first_timestamp_ms > report.last_timestamp_ms
+        ):
+            warnings.append(
+                "The first CSV timestamp is later than the last timestamp; SidecarV1 cannot "
+                "represent this evidence safely."
+            )
+
+        if actionable:
+            message = (
+                f"Sidecar reconstruction is available for {market.as_key()}: "
+                f"{evidence_state}. The replacement will be committed/unknown and "
+                "canonical validation will run immediately afterward."
+            )
+        elif evidence_state == "complete":
+            message = "Current sidecar evidence does not require reconstruction."
+        elif evidence_state == "orphan_sidecar":
+            message = "Sidecar-only orphan is inspect-only because candles.csv is missing."
+        else:
+            message = (
+                "Sidecar reconstruction is blocked because stable, canonical, parseable "
+                "CSV evidence and safely reviewable sidecar state are required."
+            )
+        plan = MaintenanceSidecarReconstructionPlan(
+            market_id=market,
+            validation_report=report,
+            evidence_state=evidence_state,
+            actionable=actionable,
+            message=message,
+            warnings=tuple(dict.fromkeys(warnings)),
+            csv_evidence=report.csv_evidence,
+            sidecar_evidence=report.sidecar_evidence,
+        )
+        self._audit(
+            event_type="ohlcv.sidecar_reconstruction_planned",
+            message=f"OHLCV sidecar reconstruction reviewed for {market.as_key()}",
+            severity="warning" if plan.actionable else "info",
+            correlation_id=correlation_id,
+            details={
+                "market_id": market.as_key(),
+                "evidence_state": evidence_state,
+                "actionable": actionable,
+                "issue_codes": report.issue_codes,
+                "warnings": plan.warnings,
+            },
+        )
+        return plan
+
+    def reconstruct_sidecar(
+        self,
+        plan: MaintenanceSidecarReconstructionPlan,
+        *,
+        correlation_id: str | None = None,
+    ) -> SidecarReconstructionResult:
+        """Persist the exact reviewed replacement sidecar through the Store."""
+
+        if not isinstance(plan, MaintenanceSidecarReconstructionPlan):
+            raise TypeError("plan must be a MaintenanceSidecarReconstructionPlan")
+        if not plan.actionable or plan.csv_evidence is None:
+            raise ValueError("sidecar reconstruction plan is not actionable")
+        csv_evidence = plan.csv_evidence
+        sidecar_evidence = plan.sidecar_evidence
+        result = self._store.reconstruct_sidecar(
+            plan.market_id,
+            expected_csv_size=csv_evidence.size_bytes,
+            expected_csv_mtime_ns=csv_evidence.modified_time_ns,
+            expected_csv_sha256=csv_evidence.sha256,
+            expected_sidecar_size=(sidecar_evidence.size_bytes if sidecar_evidence else None),
+            expected_sidecar_mtime_ns=(
+                sidecar_evidence.modified_time_ns if sidecar_evidence else None
+            ),
+            expected_sidecar_sha256=(sidecar_evidence.sha256 if sidecar_evidence else None),
+            reconstruction_reason=plan.evidence_state,
+        )
+        self._audit(
+            event_type="ohlcv.sidecar_reconstructed",
+            message=f"OHLCV sidecar reconstructed for {plan.market_id.as_key()}",
+            severity="warning",
+            correlation_id=correlation_id,
+            details={
+                "market_id": plan.market_id.as_key(),
+                "evidence_state": plan.evidence_state,
+                "replaced_existing": result.replaced_existing,
+                "csv_sha256": result.sidecar.file_sha256,
+                "source": result.sidecar.source,
+                "persistence_status": result.sidecar.persistence_status,
+                "validation_status": result.sidecar.validation_status,
             },
         )
         return result
@@ -562,18 +781,32 @@ class OHLCVMaintenanceService:
         persistence_status = "missing"
         validation_status = "missing"
         source = inspection.source
+        evidence_state = "complete"
         issues = list(inspection.issues)
+        if not inspection.csv_exists and inspection.metadata_exists:
+            evidence_state = "orphan_sidecar"
+        elif inspection.csv_exists and not inspection.metadata_exists:
+            evidence_state = "sidecar_missing"
         if inspection.metadata_exists:
             try:
                 sidecar = self._store.read_sidecar(market)
             except (OSError, TypeError, ValueError) as error:
                 persistence_status = "invalid"
                 validation_status = "invalid"
+                evidence_state = (
+                    "orphan_sidecar" if not inspection.csv_exists else "sidecar_invalid"
+                )
                 issues.append(f"sidecar_invalid:{type(error).__name__}")
             else:
                 persistence_status = sidecar.persistence_status
                 validation_status = sidecar.validation_status
                 source = sidecar.source
+                if not inspection.csv_exists:
+                    evidence_state = "orphan_sidecar"
+                elif sidecar.persistence_status == "partial":
+                    evidence_state = "partial_persistence"
+                elif inspection.issues:
+                    evidence_state = "sidecar_stale"
         return MaintenanceDatasetSummary(
             market_id=market,
             csv_path=inspection.csv_path,
@@ -584,19 +817,15 @@ class OHLCVMaintenanceService:
             validation_status=validation_status,
             row_count=inspection.row_count,
             source=source,
+            evidence_state=evidence_state,
             issues=tuple(dict.fromkeys(issues)),
         )
 
     @staticmethod
     def _candidate_directories(root: Path) -> tuple[Path, ...]:
-        candidates: list[Path] = []
-        for exchange_dir in _child_directories(root):
-            for market_type_dir in _child_directories(exchange_dir):
-                for symbol_dir in _child_directories(market_type_dir):
-                    for timeframe_dir in _child_directories(symbol_dir):
-                        dataset_dir = timeframe_dir / "ohlcv"
-                        if dataset_dir.is_dir():
-                            candidates.append(dataset_dir)
+        candidates = {path for path in root.rglob("ohlcv") if path.is_dir()}
+        for filename in ("candles.csv", "candles.meta.json"):
+            candidates.update(path.parent for path in root.rglob(filename) if path.is_file())
         return tuple(sorted(candidates, key=str))
 
     def _market_from_dataset_dir(
@@ -852,10 +1081,34 @@ def repair_range_result(
     )
 
 
-def _child_directories(path: Path) -> tuple[Path, ...]:
-    return tuple(
-        sorted((item for item in path.iterdir() if item.is_dir()), key=lambda item: item.name)
-    )
+def _sidecar_evidence_state(
+    store: OHLCVStore,
+    market: MarketId,
+    report: CanonicalValidationReport,
+) -> str:
+    codes = set(report.issue_codes)
+    if "csv_missing" in codes and store.sidecar_path(market).is_file():
+        return "orphan_sidecar"
+    if "sidecar_missing" in codes:
+        return "sidecar_missing"
+    if "persistence_not_final" in codes:
+        return "partial_persistence"
+    if "sidecar_unreadable" in codes:
+        return "sidecar_unreadable"
+    if "sidecar_changed_during_validation" in codes:
+        return "sidecar_unstable"
+    if "sidecar_invalid" in codes:
+        return "sidecar_invalid"
+    if codes & {
+        "sidecar_market_mismatch",
+        "sidecar_hash_stale",
+        "sidecar_fingerprint_stale",
+        "sidecar_row_count_mismatch",
+        "sidecar_first_timestamp_mismatch",
+        "sidecar_last_timestamp_mismatch",
+    }:
+        return "sidecar_stale"
+    return "complete"
 
 
 def _market_sort_key(market: MarketId) -> tuple[str, str, str, str]:

@@ -31,11 +31,14 @@ def test_ohlcv_maintenance_gui_wiring_is_explicit_and_shell_only() -> None:
     assert "validate_requested = Signal()" in window
     assert "plan_repair_requested = Signal()" in window
     assert "execute_repair_requested = Signal()" in window
+    assert "reconstruct_sidecar_requested = Signal()" in window
     assert "delete_requested = Signal()" in window
     assert "cancel_requested = Signal()" in window
     assert "Plan Repair" in window
     assert "Execute Repair" in window
     assert "Confirm OHLCV Repair" in window
+    assert "Rebuild Sidecar" in window
+    assert "Confirm OHLCV Sidecar Reconstruction" in window
     assert "Delete Selected" in window
     assert "Confirm OHLCV Dataset Deletion" in window
 
@@ -46,6 +49,8 @@ def test_ohlcv_maintenance_gui_wiring_is_explicit_and_shell_only() -> None:
     assert "submit_validation" in presenter
     assert "submit_repair_plan" in presenter
     assert "submit_repair" in presenter
+    assert "submit_sidecar_reconstruction_plan" in presenter
+    assert "submit_sidecar_reconstruction" in presenter
     assert "submit_deletion_plan" in presenter
     assert "submit_deletion" in presenter
     assert "callback_dispatcher=self._dispatcher.dispatch" in presenter

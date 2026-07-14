@@ -27,7 +27,11 @@ from leonardo.ohlcv import (
     MaintenanceRepairRange,
     MaintenanceRepairRangeResult,
     MaintenanceRepairResult,
+    MaintenanceSidecarReconstructionPlan,
+    MaintenanceSidecarReconstructionResult,
     MaintenanceValidationResult,
+    FileEvidence,
+    SidecarReconstructionResult,
     StoredFileEvidence,
 )
 from leonardo.storage import OHLCVSidecarV1
@@ -44,6 +48,8 @@ class _FakeMaintenanceService:
         self.tmp_path = tmp_path
         self.validation_status = "unknown"
         self.persistence_status = "committed"
+        self.evidence_state = "complete"
+        self.sidecar_exists = True
         self.deleted = False
         self.callbacks: dict[str, tuple[object, object, object]] = {}
         self.cancelled: list[str] = []
@@ -55,11 +61,12 @@ class _FakeMaintenanceService:
                 csv_path=self.tmp_path / "candles.csv",
                 sidecar_path=self.tmp_path / "candles.meta.json",
                 csv_exists=True,
-                sidecar_exists=True,
+                sidecar_exists=self.sidecar_exists,
                 persistence_status=self.persistence_status,
                 validation_status=self.validation_status,
                 row_count=3,
                 source="test",
+                evidence_state=self.evidence_state,
                 issues=(),
             ),
         )
@@ -91,6 +98,24 @@ class _FakeMaintenanceService:
             kwargs["callback_dispatcher"],
         )
         return TaskSubmission("task-validation", "OHLCV validation")
+
+    def submit_sidecar_reconstruction_plan(self, market, **kwargs) -> TaskSubmission:
+        assert market == self.market
+        self.callbacks["task-sidecar-plan"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-sidecar-plan", "OHLCV sidecar reconstruction plan")
+
+    def submit_sidecar_reconstruction(self, plan, **kwargs) -> TaskSubmission:
+        assert plan.market_id == self.market
+        self.callbacks["task-sidecar-reconstruct"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-sidecar-reconstruct", "OHLCV sidecar reconstruction")
 
     def submit_repair_plan(self, market, **kwargs) -> TaskSubmission:
         assert market == self.market
@@ -169,6 +194,69 @@ class _FakeMaintenanceService:
         dispatcher(
             lambda: result_callback(
                 TaskResult("task-validation", "completed", value=result)
+            )
+        )
+
+    def emit_sidecar_reconstruction_plan(self) -> MaintenanceSidecarReconstructionPlan:
+        _, result_callback, dispatcher = self.callbacks["task-sidecar-plan"]
+        report = CanonicalValidationReport(
+            market_id=self.market,
+            csv_path=self.tmp_path / "candles.csv",
+            sidecar_path=self.tmp_path / "candles.meta.json",
+            status="error",
+            row_count=3,
+            first_timestamp_ms=60_000,
+            last_timestamp_ms=180_000,
+            issues=(),
+            csv_evidence=FileEvidence(
+                path=self.tmp_path / "candles.csv",
+                size_bytes=10,
+                modified_time_ns=20,
+                sha256="a" * 64,
+            ),
+            sidecar_evidence=None,
+            publication_allowed=False,
+            publication_blockers=("sidecar_missing",),
+        )
+        plan = MaintenanceSidecarReconstructionPlan(
+            market_id=self.market,
+            validation_report=report,
+            evidence_state="sidecar_missing",
+            actionable=True,
+            message="Sidecar reconstruction is available.",
+            warnings=(),
+            csv_evidence=report.csv_evidence,
+            sidecar_evidence=None,
+        )
+        dispatcher(
+            lambda: result_callback(
+                TaskResult("task-sidecar-plan", "completed", value=plan)
+            )
+        )
+        return plan
+
+    def emit_sidecar_reconstruction_success(
+        self,
+        plan: MaintenanceSidecarReconstructionPlan,
+    ) -> None:
+        _, result_callback, dispatcher = self.callbacks["task-sidecar-reconstruct"]
+        self.sidecar_exists = True
+        self.evidence_state = "complete"
+        self.validation_status = "ok"
+        validation = _validation_result(self.tmp_path, self.market, persistence="committed")
+        result = MaintenanceSidecarReconstructionResult(
+            plan=plan,
+            store_result=SidecarReconstructionResult(
+                market_id=self.market,
+                sidecar=validation.sidecar,
+                replaced_existing=False,
+            ),
+            validation=validation,
+            cache_invalidated=True,
+        )
+        dispatcher(
+            lambda: result_callback(
+                TaskResult("task-sidecar-reconstruct", "completed", value=result)
             )
         )
 
@@ -353,5 +441,43 @@ def test_presenter_confirms_deletes_and_removes_dataset_row(
         assert window.table_for_id("datasets").rowCount() == 0
         assert window.status_text().startswith("Deleted")
         assert not window.button_for_id("delete").isEnabled()
+    finally:
+        window.close()
+
+
+def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
+    qapp: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _FakeMaintenanceService(tmp_path)
+    service.evidence_state = "sidecar_missing"
+    service.sidecar_exists = False
+    window = OhlcvMaintenanceWindow()
+    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        window,
+        "confirm_sidecar_reconstruction",
+        lambda **_kwargs: True,
+    )
+    try:
+        assert window.button_for_id("reconstruct_sidecar").isEnabled()
+        window.button_for_id("reconstruct_sidecar").click()
+        assert presenter.active_task_id == "task-sidecar-plan"
+
+        plan = service.emit_sidecar_reconstruction_plan()
+        QCoreApplication.processEvents()
+        assert presenter.active_task_id == "task-sidecar-reconstruct"
+        assert not window.button_for_id("cancel").isEnabled()
+
+        service.emit_sidecar_reconstruction_success(plan)
+        QCoreApplication.processEvents()
+
+        datasets = window.table_for_id("datasets")
+        assert presenter.active_task_id is None
+        assert datasets.item(0, 5).text() == "ok"
+        assert datasets.item(0, 8).text() == "complete"
+        assert window.status_text().startswith("Sidecar created and accepted")
+        assert not window.button_for_id("reconstruct_sidecar").isEnabled()
     finally:
         window.close()
