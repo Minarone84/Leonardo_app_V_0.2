@@ -101,6 +101,7 @@ class LeonardoApp:
         self.ohlcv_maintenance_service = OHLCVMaintenanceApplicationService(
             self.core_runner,
             self.ohlcv_maintenance_domain,
+            self.historical_download_domain,
         )
         self.accepted_dataset_catalog = AcceptedDatasetCatalog(
             self.config.paths.historical_data_dir

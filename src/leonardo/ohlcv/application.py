@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 from leonardo.core.core_runner import (
@@ -16,7 +17,10 @@ from leonardo.data import MarketId
 from leonardo.ohlcv.download_service import HistoricalDownloadService
 from leonardo.ohlcv.maintenance import (
     MaintenanceDiscoveryReport,
+    MaintenanceRepairPlan,
+    MaintenanceRepairRangeResult,
     OHLCVMaintenanceService,
+    repair_range_result,
 )
 from leonardo.ohlcv.models import DownloadBatchRequest, DownloadProgressEvent
 
@@ -96,11 +100,17 @@ class HistoricalDownloadApplicationService:
 
 
 class OHLCVMaintenanceApplicationService:
-    """Application boundary for dataset discovery and canonical validation."""
+    """Application boundary for discovery, validation, and explicit repair."""
 
-    def __init__(self, core_runner: CoreRunner, maintenance: OHLCVMaintenanceService) -> None:
+    def __init__(
+        self,
+        core_runner: CoreRunner,
+        maintenance: OHLCVMaintenanceService,
+        downloader: HistoricalDownloadService | None = None,
+    ) -> None:
         self._core_runner = core_runner
         self._maintenance = maintenance
+        self._downloader = downloader
 
     def discover(self) -> MaintenanceDiscoveryReport:
         return self._maintenance.discover()
@@ -149,6 +159,155 @@ class OHLCVMaintenanceApplicationService:
             metadata={
                 "operation": "ohlcv_validate",
                 "market_id": market.as_key(),
+            },
+        )
+
+    def submit_repair_plan(
+        self,
+        market: MarketId,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        correlation_id = uuid4().hex
+
+        def job(reporter: ProgressReporter) -> object:
+            reporter.report(
+                f"Planning OHLCV repair for {market.as_key()}",
+                current=0,
+                total=1,
+            )
+            plan = self._maintenance.plan_repair(market, correlation_id=correlation_id)
+            reporter.report(
+                plan.message,
+                current=1,
+                total=1,
+                details={
+                    "market_id": market.as_key(),
+                    "actionable": plan.actionable,
+                    "range_count": len(plan.ranges),
+                },
+            )
+            return plan
+
+        return self._core_runner.submit_blocking_job(
+            job,
+            task_name=f"OHLCV repair plan {market.exchange} {market.symbol} {market.timeframe}",
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            correlation_id=correlation_id,
+            metadata={
+                "operation": "ohlcv_repair_plan",
+                "market_id": market.as_key(),
+            },
+        )
+
+    def submit_repair(
+        self,
+        plan: MaintenanceRepairPlan,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(plan, MaintenanceRepairPlan):
+            raise TypeError("plan must be a MaintenanceRepairPlan")
+        if self._downloader is None:
+            raise RuntimeError("OHLCV repair requires the historical download service")
+        correlation_id = uuid4().hex
+
+        async def job(reporter: ProgressReporter) -> object:
+            total_steps = len(plan.ranges) + 2
+            reporter.report(
+                f"Executing reviewed OHLCV repair for {plan.market_id.as_key()}",
+                current=0,
+                total=total_steps,
+            )
+            requests = tuple(
+                DownloadBatchRequest(
+                    exchange=plan.market_id.exchange,
+                    market_type=plan.market_id.market_type,
+                    symbol=plan.market_id.symbol,
+                    timeframes=(plan.market_id.timeframe,),
+                    start_ms=repair_range.start_ts_ms,
+                    end_ms=repair_range.end_ts_ms,
+                )
+                for repair_range in plan.ranges
+            )
+
+            def on_download_progress(event: DownloadProgressEvent) -> None:
+                reporter.report(
+                    f"Repair download: {event.message}",
+                    current=event.overall_current,
+                    total=total_steps,
+                    details={"download_event": event},
+                )
+
+            batches = await self._downloader.run_repair_batches(
+                requests,
+                before_first_write=lambda: self._maintenance.assert_repair_plan_current(plan),
+                progress=on_download_progress,
+                correlation_id=correlation_id,
+            )
+            if len(batches) != len(plan.ranges):
+                raise RuntimeError("repair execution did not return every reviewed range")
+            range_results: list[MaintenanceRepairRangeResult] = []
+            for repair_range, batch in zip(plan.ranges, batches, strict=True):
+                if len(batch.results) != 1:
+                    raise RuntimeError("repair range did not return exactly one dataset result")
+                range_results.append(repair_range_result(repair_range, batch.results[0]))
+
+            repaired_sidecar = await asyncio.to_thread(
+                self._maintenance.mark_repair_completed,
+                plan,
+                tuple(range_results),
+                correlation_id=correlation_id,
+            )
+            reporter.report(
+                "Repair persistence finalized; running canonical post-repair validation",
+                current=len(plan.ranges) + 1,
+                total=total_steps,
+            )
+            validation = await asyncio.to_thread(
+                self._maintenance.validate,
+                plan.market_id,
+                correlation_id=correlation_id,
+            )
+            result = self._maintenance.build_repair_result(
+                plan,
+                tuple(range_results),
+                repaired_sidecar,
+                validation,
+                correlation_id=correlation_id,
+            )
+            reporter.report(
+                f"OHLCV repair completed: {result.outcome}",
+                current=total_steps,
+                total=total_steps,
+                details={
+                    "market_id": plan.market_id.as_key(),
+                    "outcome": result.outcome,
+                    "accepted": result.accepted,
+                },
+            )
+            return result
+
+        return self._core_runner.submit_job(
+            job,
+            task_name=(
+                f"OHLCV repair {plan.market_id.exchange} "
+                f"{plan.market_id.symbol} {plan.market_id.timeframe}"
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            correlation_id=correlation_id,
+            metadata={
+                "operation": "ohlcv_repair",
+                "market_id": plan.market_id.as_key(),
+                "range_count": len(plan.ranges),
             },
         )
 

@@ -19,6 +19,10 @@ from leonardo.ohlcv import (
     CanonicalValidationReport,
     MaintenanceDatasetSummary,
     MaintenanceDiscoveryReport,
+    MaintenanceRepairPlan,
+    MaintenanceRepairRange,
+    MaintenanceRepairRangeResult,
+    MaintenanceRepairResult,
     MaintenanceValidationResult,
 )
 from leonardo.storage import OHLCVSidecarV1
@@ -34,9 +38,8 @@ class _FakeMaintenanceService:
         self.market = canonicalize_market_id("bybit", "linear", "BTCUSDT", "1m")
         self.tmp_path = tmp_path
         self.validation_status = "unknown"
-        self.progress_callback = None
-        self.result_callback = None
-        self.dispatcher = None
+        self.persistence_status = "committed"
+        self.callbacks: dict[str, tuple[object, object, object]] = {}
         self.cancelled: list[str] = []
 
     def discover(self) -> MaintenanceDiscoveryReport:
@@ -48,7 +51,7 @@ class _FakeMaintenanceService:
                     sidecar_path=self.tmp_path / "candles.meta.json",
                     csv_exists=True,
                     sidecar_exists=True,
-                    persistence_status="committed",
+                    persistence_status=self.persistence_status,
                     validation_status=self.validation_status,
                     row_count=3,
                     source="test",
@@ -60,57 +63,136 @@ class _FakeMaintenanceService:
 
     def submit_validation(self, market, **kwargs) -> TaskSubmission:
         assert market == self.market
-        self.progress_callback = kwargs["progress_callback"]
-        self.result_callback = kwargs["result_callback"]
-        self.dispatcher = kwargs["callback_dispatcher"]
-        return TaskSubmission("task-1", "OHLCV validation")
+        self.callbacks["task-validation"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-validation", "OHLCV validation")
+
+    def submit_repair_plan(self, market, **kwargs) -> TaskSubmission:
+        assert market == self.market
+        self.callbacks["task-plan"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-plan", "OHLCV repair plan")
+
+    def submit_repair(self, plan, **kwargs) -> TaskSubmission:
+        assert plan.market_id == self.market
+        self.callbacks["task-repair"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-repair", "OHLCV repair")
 
     def cancel(self, task_id: str) -> bool:
         self.cancelled.append(task_id)
         return True
 
-    def emit_progress(self) -> None:
-        assert self.progress_callback is not None
-        assert self.dispatcher is not None
-        event = TaskProgress("task-1", "Validating", current=0, total=1)
-        self.dispatcher(lambda: self.progress_callback(event))
+    def emit_progress(self, task_id: str, message: str) -> None:
+        progress, _, dispatcher = self.callbacks[task_id]
+        event = TaskProgress(task_id, message, current=0, total=1)
+        dispatcher(lambda: progress(event))
 
-    def emit_success(self) -> None:
-        assert self.result_callback is not None
-        assert self.dispatcher is not None
+    def emit_validation_success(self) -> None:
+        _, result_callback, dispatcher = self.callbacks["task-validation"]
         self.validation_status = "ok"
-        sidecar = OHLCVSidecarV1(
-            market_id=self.market,
-            file_sha256="a" * 64,
-            row_count=3,
-            first_timestamp_ms=60_000,
-            last_timestamp_ms=180_000,
-            source="test",
-            persistence_status="committed",
-            validation_status="ok",
+        result = _validation_result(self.tmp_path, self.market, persistence="committed")
+        dispatcher(
+            lambda: result_callback(
+                TaskResult("task-validation", "completed", value=result)
+            )
         )
-        report = CanonicalValidationReport(
+
+    def emit_plan(self) -> MaintenanceRepairPlan:
+        _, result_callback, dispatcher = self.callbacks["task-plan"]
+        report = _report(self.tmp_path, self.market, status="warning")
+        plan = MaintenanceRepairPlan(
             market_id=self.market,
-            csv_path=self.tmp_path / "candles.csv",
-            sidecar_path=self.tmp_path / "candles.meta.json",
-            status="ok",
-            row_count=3,
-            first_timestamp_ms=60_000,
-            last_timestamp_ms=180_000,
-            issues=(),
+            validation_report=report,
+            actionable=True,
+            message="1 provider-redownload range is available.",
+            ranges=(
+                MaintenanceRepairRange(
+                    start_ts_ms=120_000,
+                    end_ts_ms=120_000,
+                    reason="missing interval",
+                    issue_codes=("timeframe_gap",),
+                    coverage_anchor_ts_ms=(120_000,),
+                    estimated_bars=1,
+                ),
+            ),
+            warnings=(),
             csv_evidence=None,
             sidecar_evidence=None,
-            publication_allowed=True,
-            publication_blockers=(),
         )
-        result = MaintenanceValidationResult(
-            report=report,
-            sidecar=sidecar,
-            sidecar_published=True,
-            publication_changed=True,
+        dispatcher(lambda: result_callback(TaskResult("task-plan", "completed", value=plan)))
+        return plan
+
+    def emit_repair_success(self, plan: MaintenanceRepairPlan) -> None:
+        _, result_callback, dispatcher = self.callbacks["task-repair"]
+        self.validation_status = "ok"
+        self.persistence_status = "repaired"
+        validation = _validation_result(self.tmp_path, self.market, persistence="repaired")
+        repair = MaintenanceRepairResult(
+            plan=plan,
+            outcome="repaired_ok",
+            range_results=(
+                MaintenanceRepairRangeResult(
+                    repair_range=plan.ranges[0],
+                    fetched_rows=1,
+                    downloaded_first_ts_ms=120_000,
+                    downloaded_last_ts_ms=120_000,
+                    total_rows_after=3,
+                    file_path=self.tmp_path / "candles.csv",
+                ),
+            ),
+            validation=validation,
+            repaired_sidecar=validation.sidecar,
+            warnings=(),
         )
-        task_result = TaskResult("task-1", "completed", value=result)
-        self.dispatcher(lambda: self.result_callback(task_result))
+        dispatcher(
+            lambda: result_callback(TaskResult("task-repair", "completed", value=repair))
+        )
+
+
+def _report(tmp_path: Path, market, *, status: str) -> CanonicalValidationReport:
+    return CanonicalValidationReport(
+        market_id=market,
+        csv_path=tmp_path / "candles.csv",
+        sidecar_path=tmp_path / "candles.meta.json",
+        status=status,
+        row_count=3,
+        first_timestamp_ms=60_000,
+        last_timestamp_ms=180_000,
+        issues=(),
+        csv_evidence=None,
+        sidecar_evidence=None,
+        publication_allowed=True,
+        publication_blockers=(),
+    )
+
+
+def _validation_result(tmp_path: Path, market, *, persistence: str) -> MaintenanceValidationResult:
+    sidecar = OHLCVSidecarV1(
+        market_id=market,
+        file_sha256="a" * 64,
+        row_count=3,
+        first_timestamp_ms=60_000,
+        last_timestamp_ms=180_000,
+        source="test",
+        persistence_status=persistence,
+        validation_status="ok",
+    )
+    return MaintenanceValidationResult(
+        report=_report(tmp_path, market, status="ok"),
+        sidecar=sidecar,
+        sidecar_published=True,
+        publication_changed=True,
+    )
 
 
 def test_presenter_discovers_validates_and_refreshes(
@@ -126,20 +208,55 @@ def test_presenter_discovers_validates_and_refreshes(
         assert datasets.item(0, 2).text() == "BTCUSDT"
         assert datasets.item(0, 5).text() == "unknown"
         assert window.button_for_id("validate").isEnabled()
-        assert not window.button_for_id("repair").isEnabled()
+        assert window.button_for_id("plan_repair").isEnabled()
+        assert not window.button_for_id("execute_repair").isEnabled()
 
         window.button_for_id("validate").click()
-        assert presenter.active_task_id == "task-1"
+        assert presenter.active_task_id == "task-validation"
         assert window.button_for_id("cancel").isEnabled()
-        service.emit_progress()
+        service.emit_progress("task-validation", "Validating")
         QCoreApplication.processEvents()
         assert window.status_text() == "Validating"
 
-        service.emit_success()
+        service.emit_validation_success()
         QCoreApplication.processEvents()
         assert presenter.active_task_id is None
         assert datasets.item(0, 5).text() == "ok"
         assert window.status_text().startswith("Accepted")
         assert window.button_for_id("validate").isEnabled()
+    finally:
+        window.close()
+
+
+def test_presenter_plans_confirms_executes_and_refreshes_repair(
+    qapp: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _FakeMaintenanceService(tmp_path)
+    window = OhlcvMaintenanceWindow()
+    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    monkeypatch.setattr(window, "confirm_repair", lambda _summary: True)
+    try:
+        window.button_for_id("plan_repair").click()
+        assert presenter.active_task_id == "task-plan"
+        plan = service.emit_plan()
+        QCoreApplication.processEvents()
+
+        assert presenter.repair_plan == plan
+        assert window.table_for_id("repair").rowCount() == 1
+        assert window.button_for_id("execute_repair").isEnabled()
+
+        window.button_for_id("execute_repair").click()
+        assert presenter.active_task_id == "task-repair"
+        service.emit_repair_success(plan)
+        QCoreApplication.processEvents()
+
+        datasets = window.table_for_id("datasets")
+        assert presenter.active_task_id is None
+        assert datasets.item(0, 4).text() == "repaired"
+        assert datasets.item(0, 5).text() == "ok"
+        assert window.status_text().startswith("Repair accepted")
+        assert not window.button_for_id("execute_repair").isEnabled()
     finally:
         window.close()

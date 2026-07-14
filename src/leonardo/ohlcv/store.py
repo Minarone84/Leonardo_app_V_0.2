@@ -213,6 +213,54 @@ class OHLCVStore:
                 lineage=lineage,
             )
 
+    def mark_repaired(
+        self,
+        market: MarketId,
+        *,
+        repair_record: dict[str, object],
+    ) -> OHLCVSidecarV1:
+        """Finalize provider-backed repair provenance for a stable current CSV.
+
+        Repair execution may rewrite CSV data through the historical downloader.
+        This method owns the controlled transition to ``persistence_status="repaired"``
+        and resets final validation truth to ``unknown`` until Maintenance validates
+        the repaired bytes canonically.
+        """
+
+        if not isinstance(repair_record, dict) or not repair_record:
+            raise ValueError("repair_record must be a non-empty dictionary")
+        csv_path = self.csv_path(market)
+        sidecar_path = self.sidecar_path(market)
+        with self._write_lock:
+            before = _stable_file_state(csv_path)
+            candles = self.read(market)
+            after = _stable_file_state(csv_path)
+            if before != after:
+                raise RuntimeError("candles.csv changed while repair provenance was finalized")
+            if not candles:
+                raise ValueError("cannot finalize repair for an empty OHLCV dataset")
+            previous = self.read_sidecar(market)
+            if previous.market_id != market:
+                raise ValueError("sidecar MarketId does not match the repair target")
+            if previous.file_sha256 != before[2]:
+                raise ValueError("sidecar SHA-256 is stale after repair download")
+            lineage = dict(previous.lineage)
+            history_value = lineage.get("repair_history", [])
+            if not isinstance(history_value, list):
+                raise ValueError("existing repair_history lineage must be a list")
+            history = list(history_value)
+            history.append(dict(repair_record))
+            lineage["repair_history"] = history
+            lineage["repair_count"] = len(history)
+            return self._write_sidecar_for_existing_csv(
+                market,
+                candles,
+                source=previous.source,
+                persistence_status="repaired",
+                warnings=(),
+                lineage=lineage,
+            )
+
     def publish_validation(
         self,
         market: MarketId,

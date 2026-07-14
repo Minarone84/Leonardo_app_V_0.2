@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 
 from leonardo.audit import AuditEventV1
 from leonardo.connection import ConnectionApplicationService, HistoricalOHLCVProvider
@@ -265,6 +266,63 @@ class HistoricalDownloadService:
         )
         return batch
 
+    async def run_repair_batches(
+        self,
+        requests: Sequence[DownloadBatchRequest],
+        *,
+        before_first_write: Callable[[], None],
+        progress: ProgressSink | None = None,
+        correlation_id: str | None = None,
+    ) -> tuple[DownloadBatchResult, ...]:
+        """Execute reviewed repair ranges under one dataset lock.
+
+        The stale-plan precondition runs after the shared downloader lock is
+        acquired, and the lock remains held across every reviewed range.
+        """
+
+        normalized = tuple(normalize_batch_request(request) for request in requests)
+        if not normalized:
+            raise ValueError("repair requires at least one range request")
+        first = normalized[0]
+        if len(first.timeframes) != 1:
+            raise ValueError("repair requests must contain exactly one timeframe")
+        market = canonicalize_market_id(
+            first.exchange, first.market_type, first.symbol, first.timeframes[0]
+        )
+        for request in normalized[1:]:
+            if len(request.timeframes) != 1:
+                raise ValueError("repair requests must contain exactly one timeframe")
+            candidate = canonicalize_market_id(
+                request.exchange, request.market_type, request.symbol, request.timeframes[0]
+            )
+            if candidate != market:
+                raise ValueError("all repair requests must target the same MarketId")
+
+        lock = self._dataset_locks.setdefault(market.as_key(), asyncio.Lock())
+        results: list[DownloadBatchResult] = []
+        async with lock:
+            await asyncio.to_thread(before_first_write)
+            async with self._connections.provider_session(market.exchange) as provider:
+                for index, request in enumerate(normalized, start=1):
+                    item = await self._run_one(
+                        provider,
+                        market,
+                        request,
+                        progress=progress,
+                        correlation_id=correlation_id,
+                        overall_current=index - 1,
+                        overall_total=len(normalized),
+                        lock_already_held=True,
+                    )
+                    results.append(
+                        DownloadBatchResult(
+                            requested_timeframes=(market.timeframe,),
+                            completed_timeframes=(market.timeframe,),
+                            results=(item,),
+                        )
+                    )
+        return tuple(results)
+
     async def _run_one(
         self,
         provider: HistoricalOHLCVProvider,
@@ -275,9 +333,11 @@ class HistoricalDownloadService:
         correlation_id: str | None,
         overall_current: int,
         overall_total: int,
+        lock_already_held: bool = False,
     ) -> DownloadItemResult:
         lock = self._dataset_locks.setdefault(market.as_key(), asyncio.Lock())
-        async with lock:
+        lock_context = _already_locked() if lock_already_held else lock
+        async with lock_context:
             existing = await asyncio.to_thread(self._store.read, market)
             inspection = await asyncio.to_thread(self._store.inspect, market)
             plan = await self._build_plan(provider, market, request, inspection)
@@ -731,6 +791,11 @@ class HistoricalDownloadService:
     def _emit_progress(progress: ProgressSink | None, event: DownloadProgressEvent) -> None:
         if progress is not None:
             progress(event)
+
+
+@asynccontextmanager
+async def _already_locked() -> AsyncIterator[None]:
+    yield
 
 
 def normalize_batch_request(request: DownloadBatchRequest) -> DownloadBatchRequest:
