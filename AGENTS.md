@@ -1,9 +1,9 @@
 # Leonardo Light V2 - Agent Instructions
 
-**Document ID:** `LEO-LV2-AGENTS-002`  
-**Version:** `2.3`  
-**Status:** Approved implementation-agent authority  
-**Supersedes:** `LEO-LV2-AGENTS-002` version 2.2 and all earlier versions
+**Document ID:** `LEO-LV2-AGENTS-002`
+**Version:** `2.4`
+**Status:** Approved implementation-agent authority
+**Supersedes:** `LEO-LV2-AGENTS-002` version 2.3 and all earlier versions
 
 ---
 
@@ -17,11 +17,11 @@ The governing document order is:
 
 ```text
 1. Explicit user instruction for the current task
-2. LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md
-3. AGENTS.md
-4. RICK_PROTOCOL_12_COMMANDMENTS.md
-5. RICK_CODEX_EXECUTION_PROTOCOL.md
-6. Accepted task or workplan
+2. Accepted task prompt or workplan prepared by Rick
+3. LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md
+4. AGENTS.md
+5. RICK_PROTOCOL_12_COMMANDMENTS.md
+6. RICK_CODEX_EXECUTION_PROTOCOL.md
 7. Canonical domain specifications and persisted schemas
 8. Current implementation and tests
 ```
@@ -29,6 +29,55 @@ The governing document order is:
 If two authorities conflict, stop and report the exact conflict. Do not invent a compromise.
 
 The word `Codex` in this document means the active implementation agent. When the user refers to `Goblin`, the same rules apply unless the task gives narrower instructions.
+
+### 1.1 Zero-discretion execution law
+
+Codex/Goblin has **zero discretionary authority** inside a Leonardo task.
+
+The accepted task prompt is a closed execution specification. Codex may inspect, implement, test, and report. It may not decide what would be better.
+
+Codex must not, unless the prompt explicitly commands the exact change:
+
+```text
+improve
+refactor
+clean up
+modernise
+optimise
+simplify
+standardise
+reorganise
+rename
+restyle
+redesign
+extend
+generalise
+add compatibility
+fix adjacent defects
+change tests to prefer another behaviour
+replace an accepted implementation with a preferred alternative
+```
+
+Good intentions, common practice, elegance, consistency, and personal judgement are not permissions.
+
+Mechanical syntax choices are allowed only when they are behaviourally and structurally equivalent, follow the existing local pattern, and do not alter:
+
+```text
+scope
+file boundaries
+architecture
+ownership
+public APIs
+persisted data
+naming
+GUI behaviour
+validation meaning
+tests or acceptance criteria
+```
+
+If any required decision is not already explicit, Codex must stop and report the missing decision. It must not infer, approximate, compromise, or choose the option it considers best.
+
+No file outside the explicit allowed boundary may be changed. If the allowed boundary is insufficient, Codex stops and reports it.
 
 ---
 
@@ -659,9 +708,11 @@ Every implementation task follows:
 
 ```text
 Audit
-Update
+Literal Update
 Validation
 ```
+
+The Update phase implements only the transformations explicitly stated in the accepted task. Audit findings do not create permission to fix additional issues.
 
 Do not skip Audit.
 
@@ -712,6 +763,7 @@ No files are changed during Audit unless the user explicitly authorises immediat
 
 During Update:
 
+- implement the accepted instructions literally;
 - implement only the accepted scope;
 - preserve behaviour outside the task;
 - use the smallest justified architecture;
@@ -722,6 +774,8 @@ During Update:
 - do not rename unrelated concepts;
 - do not add dependencies without approval;
 - do not perform unrelated formatting;
+- do not apply unsolicited improvements, even when they appear harmless;
+- do not alter tests or acceptance criteria unless the task explicitly identifies them as the target;
 - keep the patch readable and reversible.
 
 Update output must include:
@@ -820,6 +874,7 @@ The final report must include an `Original-Code Comparison` section.
 Before editing, identify:
 
 ```text
+Exact required transformations
 Included workflows
 Excluded workflows
 Allowed files
@@ -837,7 +892,7 @@ An issue outside the accepted scope belongs in `Additional Findings`.
 
 Do not repair unrelated problems without explicit approval.
 
-If ambiguity could cause destructive or broad changes, stop and report it rather than improvising.
+Any ambiguity that leaves more than one materially different implementation choice is a stop condition. Codex does not improvise, even when the possible change is small or apparently beneficial.
 
 ---
 
@@ -1072,10 +1127,11 @@ Do not:
 - commit generated caches or runtime output;
 - edit secrets or local environment files without scope.
 
-Common generated paths must remain ignored:
+Common generated paths must remain ignored and must be excluded from handoff packages:
 
 ```text
 __pycache__/
+*.pyc
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -1085,13 +1141,24 @@ build/
 *.egg-info/
 runs/
 tmp/
+_task_*/
 ```
+
+Task reports that are intentionally durable belong in the accepted documentation path. Generated audit workspaces, extracted packages, replay directories, and `_task_*` evidence folders do not belong in active source control unless the task explicitly names one as a durable artifact.
 
 A deletion task may remove large obsolete architecture only when explicitly named, dependency-ordered, archived where required, and validated.
 
 ---
 
 ## 27. Git safety
+
+### 27.1 One writer per working tree
+
+Only one agent may modify a working tree at a time.
+
+Other agents may perform read-only audit work. Parallel modification requires a separate declared worktree or repository copy with an explicit merge plan. Two agents must never edit the same checkout concurrently.
+
+### 27.2 Read-only commands
 
 Read-only Git commands are allowed when available:
 
@@ -1106,7 +1173,9 @@ git show
 git ls-files
 ```
 
-Do not run Git write or destructive commands unless the user explicitly authorises the exact command:
+### 27.3 Write authority
+
+Do not run Git write or destructive commands unless the accepted task explicitly authorises the exact operation:
 
 ```text
 git commit
@@ -1123,9 +1192,41 @@ tag deletion
 remote modification
 ```
 
+The default local task finish is:
+
+```text
+validated explicit files
+→ local commit
+→ clean working tree
+→ stop
+```
+
+Push, pull request, merge, branch creation, and branch deletion are not implied by task completion. They occur only when the user or accepted task explicitly requests them.
+
 Do not hide or overwrite the user's uncommitted changes.
 
 Record baseline Git state before implementation when Git evidence is available.
+
+---
+
+## 27.4 Patch and automation script reliability
+
+Any patch, resume, finish, or validation script must be safe to rerun or must detect the exact partial state and provide an explicit resume path.
+
+Scripts must:
+
+```text
+verify the expected baseline
+verify the changed-file boundary
+refuse unrelated dirty state
+preserve each process argument as a separate argument
+never concatenate several file paths into one quoted path
+report the exact failing command and exit code
+avoid repeating expensive or destructive steps after they have already passed
+commit only after all required validation succeeds
+```
+
+For PowerShell, arrays of paths must remain arrays when passed to native commands. Joining several paths into one string is forbidden.
 
 ---
 
@@ -1350,6 +1451,7 @@ Do not improvise around stop conditions by adding fallbacks, compatibility facad
 
 Codex must not:
 
+- improve, refactor, rename, restyle, reorganise, modernise, optimise, or fix adjacent code without an exact instruction;
 - redesign the product without explicit instruction;
 - recreate retired Heavy V2 doctrine;
 - introduce public contracts for disposable internal models;
@@ -1371,6 +1473,8 @@ Codex must not:
 
 A task is done only when:
 
+- the accepted instructions were followed literally;
+- no unsolicited change was made;
 - the accepted scope is implemented;
 - the real requested behaviour works;
 - the diff is bounded and reviewable;

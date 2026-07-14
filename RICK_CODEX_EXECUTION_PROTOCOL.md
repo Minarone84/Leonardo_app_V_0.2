@@ -1,9 +1,9 @@
 # Leonardo Light V2 Rick–Codex Execution Protocol
 
-**Document ID:** `LEO-LV2-RICK-CODEX-EXECUTION-PROTOCOL-002`  
-**Version:** `2.3`  
-**Status:** Approved governing protocol  
-**Supersedes:** `LEO-LV2-RICK-CODEX-EXECUTION-PROTOCOL-002` version 2.2 and all earlier versions
+**Document ID:** `LEO-LV2-RICK-CODEX-EXECUTION-PROTOCOL-002`
+**Version:** `2.4`
+**Status:** Approved governing protocol
+**Supersedes:** `LEO-LV2-RICK-CODEX-EXECUTION-PROTOCOL-002` version 2.3 and all earlier versions
 
 ---
 
@@ -45,15 +45,17 @@ This protocol defines:
 ## 2. Prime operating rule
 
 ```text
-Rick resolves architecture and task decisions.
-Codex executes bounded implementation work.
+Rick resolves every architecture, product, scope, ownership, naming,
+persistence, GUI, testing, and workflow decision.
+Codex executes the accepted instructions literally.
+Codex has zero authority to improve or reinterpret them.
 Rick validates the result independently.
 The user accepts product behaviour and visual outcomes.
 ```
 
 Codex is not restricted to small tasks.
 
-Codex is restricted to tasks with sufficiently low unresolved decision entropy.
+Codex is restricted to tasks with **zero unresolved decision entropy at handoff**.
 
 Task size, file count, and implementation complexity are not the primary risks.
 
@@ -68,7 +70,45 @@ hidden persistence changes
 unbounded failure radius
 speculative abstraction
 subjective visual decisions
+unsolicited improvement
 ```
+
+### 2.1 Zero-freedom law
+
+Codex/Goblin has no design freedom, no improvement freedom, no cleanup freedom, and no authority to reinterpret intent.
+
+The accepted task is a closed instruction set. Codex may:
+
+```text
+inspect the required evidence
+perform the exact stated transformations
+run the exact required validation
+report the exact result
+stop on any unresolved decision
+```
+
+Codex may not, unless the exact action is stated:
+
+```text
+improve
+refactor
+rename
+restyle
+reorganise
+optimise
+modernise
+standardise
+generalise
+add compatibility
+fix adjacent defects
+broaden or reduce scope
+change tests or acceptance criteria
+substitute a preferred implementation
+```
+
+“Helpful,” “obvious,” “cleaner,” “safer,” “more consistent,” and “best practice” do not grant permission.
+
+Mechanical syntax that is strictly equivalent is permitted only when it follows the current local pattern and leaves no material implementation choice. When two materially different valid implementations remain, Codex stops and asks Rick to decide.
 
 ---
 
@@ -107,7 +147,7 @@ Minimum justified complexity
 
 Decision entropy is the amount of unresolved architectural, behavioural, authority, persistence, workflow, or product judgement inside a task.
 
-A task has low decision entropy when:
+A task has zero unresolved decision entropy at Codex handoff when:
 
 - the requested user outcome is accepted;
 - the implementation boundary is understood;
@@ -116,9 +156,9 @@ A task has low decision entropy when:
 - persistence effects are known;
 - acceptance tests are objective.
 
-A task has high decision entropy when Codex must decide what the correct architecture, workflow, authority, or product behaviour should be.
+A task is not admissible when Codex must choose any materially different architecture, workflow, authority, product behaviour, file boundary, naming rule, persistence effect, GUI result, or test meaning.
 
-### 4.2 Low-decision-entropy examples
+### 4.2 Zero-decision-entropy examples
 
 ```text
 Connect this accepted GUI shell action to this application service.
@@ -131,7 +171,7 @@ Delete these trace-only modules after their consumers are removed.
 Add the exact vertical tests listed below.
 ```
 
-### 4.3 High-decision-entropy examples
+### 4.3 Nonzero-decision-entropy examples
 
 ```text
 Design the best architecture.
@@ -145,7 +185,7 @@ Make the GUI better without accepted visual requirements.
 Simplify the entire repository without a keep/delete policy.
 ```
 
-High-decision-entropy work remains with Rick until the relevant decisions are resolved and accepted.
+Nonzero-decision-entropy work remains with Rick until every material decision is resolved and frozen.
 
 ---
 
@@ -183,17 +223,17 @@ Rick must not require a contract, port, registry, metadata system, or adapter me
 
 ### 5.2 Codex/Goblin owns
 
-Codex/Goblin owns bounded execution:
+Codex/Goblin owns literal bounded execution:
 
 ```text
-deterministic implementation
+deterministic implementation of the exact accepted transformation
 mechanical migration
 accepted domain-model implementation
 accepted persisted-schema implementation
 accepted boundary implementation
 internal model construction
 repository-wide consistency updates
-GUI shell construction
+GUI shell construction from exact accepted requirements
 signal and service wiring
 runtime registration
 vertical test construction
@@ -204,9 +244,9 @@ diff reporting
 original-code comparison
 ```
 
-Codex may perform large or technically complex work when the target design is fixed.
+Codex may perform large or technically complex work when the complete target design, file boundary, behaviour, and validation are fixed.
 
-Codex must not silently broaden scope or invent new architectural layers.
+Codex must not silently broaden scope, reduce scope, improve adjacent code, alter tests, or invent new architectural layers.
 
 ### 5.3 The user owns
 
@@ -223,6 +263,12 @@ approval of exceptions
 authorisation for direct Rick patching
 final acceptance
 ```
+
+### 5.4 One-writer working-tree rule
+
+One working tree has one modification owner at a time.
+
+Codex may work while Rick audits only when Rick remains read-only. Parallel modification requires separate declared worktrees or repositories and an explicit merge plan. Shared-checkout parallel editing is forbidden.
 
 ---
 
@@ -358,15 +404,16 @@ runtime-state family
 
 The task does not need an exclusive owner for every workflow step.
 
-### Gate 4: Explicit transformation
+### Gate 4: Exact transformation
 
-The implementation can be described deterministically:
+The implementation is described deterministically and leaves no material choice to Codex:
 
 ```text
 X becomes Y
-A calls B
-C is removed after D no longer imports it
-E is generated from F
+A calls B through method C
+file D is added with the stated responsibility
+file E is modified only in the named functions
+file F is removed after the named consumers are removed
 G preserves old behaviour through H
 ```
 
@@ -413,11 +460,11 @@ Every new public abstraction, registry, adapter, schema, or formal contract has 
 ### Admission result
 
 ```text
-All applicable gates pass:
+All applicable gates pass and no material implementation decision remains:
 Codex task allowed.
 
-Any blocking gate fails:
-Task returns to Rick for architecture or scope shaping.
+Any blocking gate fails or any material choice remains:
+Task returns to Rick for an explicit decision. Codex does not choose.
 ```
 
 ---
@@ -430,10 +477,10 @@ Task returns to Rick for architecture or scope shaping.
 | Large and repetitive | Excellent |
 | Complex but fully specified | Good |
 | Cross-layer with fixed behaviour and authorities | Good in bounded slices |
-| GUI shell from accepted workflow and visual requirements | Good |
-| Direct internal refactor with no durable meaning change | Good |
+| GUI shell from exact accepted layout, states, IDs, and behaviour | Good |
+| Exact prescribed internal refactor with no durable meaning change | Good |
 | Persisted-schema implementation from an accepted schema | Good |
-| Port of proven old behaviour | Good after Rick comparison |
+| Literal port of the exact behaviour selected by Rick | Good |
 | Architecturally ambiguous | Reject |
 | Competing candidate sources of truth | Reject |
 | Requires critical-authority invention | Reject |
@@ -444,7 +491,7 @@ Task returns to Rick for architecture or scope shaping.
 
 The governing rule is:
 
-> Give Codex low-decision-entropy work, regardless of technical complexity or size.
+> Give Codex only zero-decision-entropy work, regardless of technical complexity or size.
 
 ---
 
@@ -661,6 +708,7 @@ Do not introduce generators, registries, ports, schemas, or adapters before a co
 Every Codex prompt must include:
 
 ```text
+Zero-discretion statement
 Task ID
 Task name
 Parent workplan, if any
@@ -675,16 +723,30 @@ Canonical data structures affected
 Persistence impact
 Async/runtime impact
 GUI-shell boundary
-Exact implementation requirements
-Explicit non-goals
+Exact file-by-file implementation requirements
+Explicit forbidden improvements and non-goals
 Required tests
 Required manual validation
 Stop conditions
-Required report format
+Required literal-conformance report format
 Original-code comparison, where relevant
 ```
 
-### 12.1 Prompts state decisions, not invitations
+### 12.1 Mandatory zero-discretion clause
+
+Every Codex prompt must state, in substance:
+
+```text
+You have zero authority to improve, refactor, rename, restyle,
+reorganise, optimise, modernise, standardise, extend, fix adjacent
+issues, alter tests, or change any file outside the explicit scope.
+Implement only the exact instructions below. If any decision is
+missing, stop and report it.
+```
+
+This clause is not optional shorthand. It is the default operating boundary.
+
+### 12.2 Prompts state decisions, not invitations
 
 Preferred:
 
@@ -701,7 +763,7 @@ Rejected:
 Simplify the GUI architecture and add abstractions where useful.
 ```
 
-### 12.2 Prompt length is not a quality metric
+### 12.3 Prompt length is not a quality metric
 
 A prompt is correct when it eliminates unresolved choices and protects the requested outcome.
 
@@ -709,7 +771,7 @@ A long prompt containing open architecture is unsafe.
 
 A concise prompt with complete invariants may be sufficient.
 
-### 12.3 Prompt count
+### 12.4 Prompt count
 
 Default:
 
@@ -747,6 +809,8 @@ old behaviour conflicts with the approved target
 a runtime dependency is unavailable
 visual validation cannot be performed where required
 the task requires silent scope expansion
+more than one materially different implementation remains possible
+an unsolicited improvement appears desirable but is not instructed
 the implementation would add speculative public architecture
 the implementation would preserve or recreate a retired Heavy V2 system
 ```
@@ -787,6 +851,19 @@ Direct Rick patching remains subject to:
 - runtime validation;
 - package validation;
 - workflow ledger updates.
+
+The default integration finish for a Rick-authored local task is:
+
+```text
+apply
+→ validate
+→ stage explicit files
+→ local commit
+→ clean working tree
+→ stop
+```
+
+Push and pull request work occur only when the user or accepted task explicitly requests a remote checkpoint.
 
 ---
 
@@ -834,12 +911,12 @@ Every Codex task must produce:
 Baseline evidence
 Files inspected
 Files changed
-Exact behaviour changed
+Exact instructed behaviour changed
 Canonical models or schemas changed, where applicable
 Tests added or updated
 Commands run
 Results
-Git diff checks
+Git diff checks and literal scope conformance
 Remaining risks
 Out-of-scope findings
 Old-code comparison, where applicable
@@ -947,8 +1024,11 @@ authorises exceptions
 Every task records:
 
 ```text
-Decision entropy:
-LOW / MEDIUM / HIGH
+Decision entropy at handoff:
+ZERO / NONZERO
+
+Implementation discretion:
+NONE
 
 Codex admission:
 ALLOWED / BLOCKED
@@ -977,9 +1057,9 @@ or
 FROZEN FOR TASK
 ```
 
-A HIGH-decision-entropy task cannot be sent directly to Codex.
+A NONZERO-decision-entropy task cannot be sent to Codex.
 
-A MEDIUM task must be decomposed until each implementation slice is sufficiently deterministic.
+Rick must decompose or specify the task until the implementation slice has zero unresolved material decisions.
 
 ---
 
@@ -994,7 +1074,8 @@ asking Codex to invent critical authority or persistence policy
 accepting implementation claims without package review
 closing GUI work without user visual acceptance
 using prompt length as a substitute for accepted design
-silently broadening an implementation task
+silently broadening or improving an implementation task
+changing a file, test, name, layout, API, or behaviour not explicitly authorised
 creating public contracts for disposable internal data
 creating handwritten metadata mirrors of live code
 rebuilding Object Map, GUI metadata, or contract-registry bureaucracy
@@ -1010,6 +1091,8 @@ continuing repeated patch loops without architecture review
 
 ```text
 Task size is not the risk. Unresolved decisions are the risk.
+
+Codex has zero improvement authority. Literal execution is the law.
 
 Shared workflow participation is normal.
 Competing canonical authority is not.
@@ -1049,7 +1132,7 @@ Complements AGENTS.md, RICK_PROTOCOL_12_COMMANDMENTS.md,
 and LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md
 
 Default execution model:
-Rick architecture → Codex bounded execution → Rick validation → user acceptance
+Rick decides every material detail → Codex executes literally → Rick validates → user accepts
 
 Direct Rick patching:
 Exceptional and explicitly authorised
