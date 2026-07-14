@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Iterable
 
 from leonardo.data import MarketId, timeframe_to_storage_segment
@@ -42,11 +43,24 @@ class DatasetInspection:
     issues: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ValidationPublicationResult:
+    """Result of one controlled canonical validation-evidence publication."""
+
+    sidecar: OHLCVSidecarV1
+    changed: bool
+
+
 class OHLCVStore:
     """Own the only physical write path for historical OHLCV datasets."""
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
+        self._write_lock = RLock()
+
+    @property
+    def root(self) -> Path:
+        return self._root
 
     def dataset_dir(self, market: MarketId) -> Path:
         return (
@@ -164,18 +178,19 @@ class OHLCVStore:
         normalized = merge_idempotent((), candles)
         if not normalized:
             raise ValueError("cannot persist an empty OHLCV dataset")
-        directory = self.dataset_dir(market)
-        directory.mkdir(parents=True, exist_ok=True)
-        csv_path = self.csv_path(market)
-        self._write_csv_atomic(csv_path, normalized)
-        return self._write_sidecar_for_existing_csv(
-            market,
-            normalized,
-            source=source,
-            persistence_status=persistence_status,
-            warnings=warnings,
-            lineage=lineage,
-        )
+        with self._write_lock:
+            directory = self.dataset_dir(market)
+            directory.mkdir(parents=True, exist_ok=True)
+            csv_path = self.csv_path(market)
+            self._write_csv_atomic(csv_path, normalized)
+            return self._write_sidecar_for_existing_csv(
+                market,
+                normalized,
+                source=source,
+                persistence_status=persistence_status,
+                warnings=warnings,
+                lineage=lineage,
+            )
 
     def finalize(
         self,
@@ -185,17 +200,123 @@ class OHLCVStore:
         warnings: Iterable[str] = (),
         lineage: dict[str, object] | None = None,
     ) -> OHLCVSidecarV1:
-        candles = self.read(market)
-        if not candles:
-            raise ValueError("cannot finalize an empty or missing OHLCV dataset")
-        return self._write_sidecar_for_existing_csv(
-            market,
-            candles,
-            source=source,
-            persistence_status="committed",
-            warnings=warnings,
-            lineage=lineage,
-        )
+        with self._write_lock:
+            candles = self.read(market)
+            if not candles:
+                raise ValueError("cannot finalize an empty or missing OHLCV dataset")
+            return self._write_sidecar_for_existing_csv(
+                market,
+                candles,
+                source=source,
+                persistence_status="committed",
+                warnings=warnings,
+                lineage=lineage,
+            )
+
+    def publish_validation(
+        self,
+        market: MarketId,
+        *,
+        expected_csv_size: int,
+        expected_csv_mtime_ns: int,
+        expected_csv_sha256: str,
+        expected_sidecar_size: int,
+        expected_sidecar_mtime_ns: int,
+        expected_sidecar_sha256: str,
+        status: str,
+        row_count: int,
+        first_timestamp_ms: int | None,
+        last_timestamp_ms: int | None,
+        warnings: Iterable[str],
+        issue_codes: Iterable[str],
+        error_count: int,
+        warning_count: int,
+        validator: str,
+    ) -> ValidationPublicationResult:
+        """Atomically publish final validation truth for an unchanged dataset.
+
+        The expected CSV and sidecar fingerprints provide optimistic concurrency.
+        Any change after validation aborts publication instead of blessing stale or
+        contradictory evidence. Repeating the same publication is a no-op.
+        """
+
+        if status not in {"ok", "warning", "error"}:
+            raise ValueError("status must be 'ok', 'warning', or 'error'")
+        if type(row_count) is not int or row_count < 0:
+            raise ValueError("row_count must be a non-negative integer")
+        if type(error_count) is not int or error_count < 0:
+            raise ValueError("error_count must be a non-negative integer")
+        if type(warning_count) is not int or warning_count < 0:
+            raise ValueError("warning_count must be a non-negative integer")
+        if not isinstance(validator, str) or not validator.strip():
+            raise ValueError("validator must be a non-empty string")
+
+        normalized_warnings = tuple(str(item).strip() for item in warnings if str(item).strip())
+        normalized_codes = tuple(str(item).strip() for item in issue_codes if str(item).strip())
+        csv_path = self.csv_path(market)
+        sidecar_path = self.sidecar_path(market)
+
+        with self._write_lock:
+            current_csv = _stable_file_state(csv_path)
+            expected_csv = (expected_csv_size, expected_csv_mtime_ns, expected_csv_sha256)
+            if current_csv != expected_csv:
+                raise RuntimeError("candles.csv changed after canonical validation")
+            current_sidecar = _stable_file_state(sidecar_path)
+            expected_sidecar = (
+                expected_sidecar_size,
+                expected_sidecar_mtime_ns,
+                expected_sidecar_sha256,
+            )
+            if current_sidecar != expected_sidecar:
+                raise RuntimeError("candles.meta.json changed after canonical validation")
+
+            previous = self.read_sidecar(market)
+            if previous.market_id != market:
+                raise ValueError("sidecar MarketId does not match the publication target")
+            if previous.persistence_status not in {"committed", "repaired"}:
+                raise ValueError("canonical validation may only publish final persisted datasets")
+            if previous.file_sha256 != expected_csv_sha256:
+                raise ValueError("sidecar SHA-256 is stale; validation publication is forbidden")
+
+            validation_summary = {
+                "validator": validator.strip(),
+                "status": status,
+                "issue_codes": list(normalized_codes),
+                "error_count": error_count,
+                "warning_count": warning_count,
+            }
+            lineage = dict(previous.lineage)
+            prior_summary = lineage.get("canonical_validation")
+            unchanged = (
+                previous.validation_status == status
+                and previous.row_count == row_count
+                and previous.first_timestamp_ms == first_timestamp_ms
+                and previous.last_timestamp_ms == last_timestamp_ms
+                and previous.warnings == normalized_warnings
+                and prior_summary == validation_summary
+            )
+            if unchanged:
+                return ValidationPublicationResult(sidecar=previous, changed=False)
+
+            lineage["file_size"] = expected_csv_size
+            lineage["file_mtime_ns"] = expected_csv_mtime_ns
+            lineage["canonical_validation"] = validation_summary
+            sidecar = OHLCVSidecarV1(
+                market_id=market,
+                file_sha256=expected_csv_sha256,
+                row_count=row_count,
+                first_timestamp_ms=first_timestamp_ms,
+                last_timestamp_ms=last_timestamp_ms,
+                source=previous.source,
+                persistence_status=previous.persistence_status,
+                validation_status=status,
+                warnings=normalized_warnings,
+                lineage=lineage,
+                created_at_utc=previous.created_at_utc,
+                updated_at_utc=datetime.now(UTC),
+            )
+            self._write_sidecar_atomic(sidecar_path, sidecar)
+            return ValidationPublicationResult(sidecar=sidecar, changed=True)
 
     def _write_sidecar_for_existing_csv(
         self,
@@ -309,6 +430,15 @@ class OHLCVStore:
         except Exception as error:
             issues.append(f"csv_scan_failed:{type(error).__name__}")
         return first, last, count, tuple(issues)
+
+
+def _stable_file_state(path: Path) -> tuple[int, int, str]:
+    before = path.stat()
+    sha256 = _sha256(path)
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError(f"{path.name} changed while its fingerprint was captured")
+    return after.st_size, after.st_mtime_ns, sha256
 
 
 def merge_idempotent(existing: Iterable[Candle], incoming: Iterable[Candle]) -> list[Candle]:

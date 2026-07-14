@@ -18,7 +18,14 @@ from leonardo.core.process_manager import ProcessManager
 from leonardo.core.runtime_manager import RuntimeManagerBackend
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
-from leonardo.ohlcv import HistoricalDownloadApplicationService, HistoricalDownloadService, OHLCVStore
+from leonardo.ohlcv import (
+    CanonicalOHLCVValidator,
+    HistoricalDownloadApplicationService,
+    HistoricalDownloadService,
+    OHLCVMaintenanceApplicationService,
+    OHLCVMaintenanceService,
+    OHLCVStore,
+)
 from leonardo.research import (
     AcceptedDatasetCatalog,
     HistoricalDatasetLoader,
@@ -42,6 +49,7 @@ class CoreContext:
     runtime_manager: RuntimeManagerBackend
     connection_service: ConnectionApplicationService
     historical_download_service: HistoricalDownloadApplicationService
+    ohlcv_maintenance_service: OHLCVMaintenanceApplicationService
     research_dataset_service: ResearchDatasetApplicationService
 
 
@@ -82,6 +90,17 @@ class LeonardoApp:
         self.historical_download_service = HistoricalDownloadApplicationService(
             self.core_runner,
             self.historical_download_domain,
+        )
+        self.ohlcv_validator = CanonicalOHLCVValidator()
+        self.ohlcv_maintenance_domain = OHLCVMaintenanceService(
+            self.ohlcv_store,
+            self.ohlcv_validator,
+            audit_log=self.audit_log,
+            actor_id=self.config.actor_id,
+        )
+        self.ohlcv_maintenance_service = OHLCVMaintenanceApplicationService(
+            self.core_runner,
+            self.ohlcv_maintenance_domain,
         )
         self.accepted_dataset_catalog = AcceptedDatasetCatalog(
             self.config.paths.historical_data_dir
@@ -126,6 +145,7 @@ class LeonardoApp:
             runtime_manager=self.runtime_manager,
             connection_service=self.connection_service,
             historical_download_service=self.historical_download_service,
+            ohlcv_maintenance_service=self.ohlcv_maintenance_service,
             research_dataset_service=self.research_dataset_service,
         )
 
