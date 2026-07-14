@@ -1,0 +1,4 @@
+ADDED    docs/core_docs/TASK_0064_RESIDENT_SLICE_SERVICE.md
+MODIFIED src/leonardo/research/__init__.py
+ADDED    src/leonardo/research/resident.py
+ADDED    tests/research_test/test_resident_slice_service.py

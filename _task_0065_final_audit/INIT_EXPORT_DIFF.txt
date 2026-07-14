@@ -1,0 +1,24 @@
+--- /mnt/data/leo0065_base/Leo_V2_Light/src/leonardo/research/__init__.py	2026-07-13 18:29:37.000000000 +0000
++++ src/leonardo/research/__init__.py	2026-07-13 18:43:47.919583813 +0000
+@@ -14,6 +14,11 @@
+     HistoricalDatasetLoadError,
+     HistoricalDatasetLoader,
+ )
++from leonardo.research.session import (
++    ChartSessionDisposedError,
++    ChartSessionState,
++    ChartSessionStateError,
++)
+ from leonardo.research.resident import (
+     DEFAULT_BUFFER_LEFT,
+     DEFAULT_BUFFER_RIGHT,
+@@ -24,6 +29,9 @@
+ )
+
+ __all__ = [
++    "ChartSessionDisposedError",
++    "ChartSessionState",
++    "ChartSessionStateError",
+     "DEFAULT_BUFFER_LEFT",
+     "DEFAULT_BUFFER_RIGHT",
+     "DEFAULT_RESIDENT_TARGET",

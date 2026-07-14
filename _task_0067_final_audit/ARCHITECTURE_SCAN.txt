@@ -1,0 +1,8 @@
+PASS
+
+Task 0067 boundaries confirmed:
+- pure scene planner has no PySide6 dependency
+- Qt widget paints and caches only
+- no Core, storage, persistence, Financial Tool, or filesystem behavior
+- no legacy DatasetId/CoreBridge/ToolContract/processEvents coupling
+- no broad exception swallowing

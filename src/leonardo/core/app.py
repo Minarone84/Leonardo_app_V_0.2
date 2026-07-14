@@ -19,6 +19,11 @@ from leonardo.core.runtime_manager import RuntimeManagerBackend
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
 from leonardo.ohlcv import HistoricalDownloadApplicationService, HistoricalDownloadService, OHLCVStore
+from leonardo.research import (
+    AcceptedDatasetCatalog,
+    HistoricalDatasetLoader,
+    ResearchDatasetApplicationService,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,7 @@ class CoreContext:
     runtime_manager: RuntimeManagerBackend
     connection_service: ConnectionApplicationService
     historical_download_service: HistoricalDownloadApplicationService
+    research_dataset_service: ResearchDatasetApplicationService
 
 
 class LeonardoApp:
@@ -76,6 +82,16 @@ class LeonardoApp:
             self.core_runner,
             self.historical_download_domain,
         )
+        self.accepted_dataset_catalog = AcceptedDatasetCatalog(
+            self.config.paths.historical_data_dir
+        )
+        self.historical_dataset_loader = HistoricalDatasetLoader(
+            self.accepted_dataset_catalog
+        )
+        self.research_dataset_service = ResearchDatasetApplicationService(
+            self.core_runner,
+            self.historical_dataset_loader,
+        )
         self.action_registry = ActionRegistry(
             self.audit_log,
             actor_id=self.config.actor_id,
@@ -106,6 +122,7 @@ class LeonardoApp:
             runtime_manager=self.runtime_manager,
             connection_service=self.connection_service,
             historical_download_service=self.historical_download_service,
+            research_dataset_service=self.research_dataset_service,
         )
 
     @property

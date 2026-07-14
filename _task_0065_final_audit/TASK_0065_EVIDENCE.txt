@@ -1,0 +1,10 @@
+Task ID: 0065
+Task name: Chart Session State
+Parent workplan: Leonardo Light V2 Research Suite Rebuild
+Execution owner: Rick
+Implementation baseline: Leo_V2_0064_POST_20260713_2030.zip
+Baseline ZIP SHA-256: 6edc38462d251b77ae0c6110ab5692f829fb76b7597e410031fc803a5ecbdb44
+Repository branch: light-v2-reset
+Embedded Git HEAD: 4d34a15a5323099965daf96bd4fbe4eebe01cb69
+Git writes performed: none
+Visual acceptance required: no (no GUI change)

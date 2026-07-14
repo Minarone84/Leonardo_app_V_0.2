@@ -1,0 +1,11 @@
+A	docs/core_docs/TASK_0068_PRICE_INTERACTION_AND_SCALE.md
+M	src/leonardo/gui/chart/__init__.py
+M	src/leonardo/gui/chart/candlestick_scene.py
+M	src/leonardo/gui/chart/candlestick_widget.py
+A	src/leonardo/gui/chart/interaction.py
+A	src/leonardo/gui/chart/price_scale.py
+A	tests/gui_test/test_candlestick_interaction.py
+M	tests/gui_test/test_candlestick_scene.py
+M	tests/gui_test/test_candlestick_widget.py
+A	tests/gui_test/test_price_scale.py
+M	tools/dev_render_candlestick.py

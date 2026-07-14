@@ -1,0 +1,21 @@
+Task 0067 focused validation:
+66 passed, 1 skipped
+
+Full repository regression:
+161 passed, 2 skipped
+
+AST validation:
+93 Python files parsed successfully.
+
+Architecture scan:
+PASS
+
+Qt validation:
+The offscreen Qt widget test is included but skipped because PySide6 is unavailable in this environment.
+
+Manual visual validation:
+Required in the user environment using:
+python tools/dev_render_candlestick.py
+
+Implementation verdict:
+PASS WITH FOLLOW-UP — code and package validation pass; user visual acceptance remains open.

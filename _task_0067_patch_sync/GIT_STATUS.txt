@@ -1,0 +1,21 @@
+## light-v2-reset
+ M src/leonardo/core/app.py
+?? _task_0062_final_audit/
+?? _task_0063_final_audit/
+?? _task_0064_final_audit/
+?? _task_0065_final_audit/
+?? _task_0066_final_audit/
+?? _task_0067_final_audit/
+?? _task_0067_patch_sync/
+?? docs/core_docs/TASK_0062_ACCEPTED_DATASET_CATALOG.md
+?? docs/core_docs/TASK_0063_FULL_HISTORICAL_DATASET_LOADER.md
+?? docs/core_docs/TASK_0064_RESIDENT_SLICE_SERVICE.md
+?? docs/core_docs/TASK_0065_CHART_SESSION_STATE.md
+?? docs/core_docs/TASK_0066_HORIZONTAL_VIEWPORT_MATHEMATICS.md
+?? docs/core_docs/TASK_0067_BASE_CANDLESTICK_RENDERER.md
+?? src/leonardo/gui/chart/
+?? src/leonardo/research/
+?? tests/gui_test/test_candlestick_scene.py
+?? tests/gui_test/test_candlestick_widget.py
+?? tests/research_test/
+?? tools/dev_render_candlestick.py

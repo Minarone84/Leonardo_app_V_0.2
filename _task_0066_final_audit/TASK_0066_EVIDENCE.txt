@@ -1,0 +1,10 @@
+Task ID: 0066
+Task name: Horizontal Viewport Mathematics
+Parent workplan: Leonardo Light V2 Research Suite Rebuild
+Execution owner: Rick
+Implementation baseline: Leo_V2_0065_POST_20260713_2044.zip
+Baseline ZIP SHA-256: f9c401550493ae1ee6c05ceb2c415c02ef3d3386c42242e893dd327495205909
+Repository branch: light-v2-reset
+Embedded Git HEAD: 4d34a15a5323099965daf96bd4fbe4eebe01cb69
+Git writes performed: none
+Visual acceptance required: no (no Qt or GUI change)

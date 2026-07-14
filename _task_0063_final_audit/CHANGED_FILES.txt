@@ -1,0 +1,8 @@
+ADDED    docs/core_docs/TASK_0063_FULL_HISTORICAL_DATASET_LOADER.md
+MODIFIED src/leonardo/core/app.py
+MODIFIED src/leonardo/research/__init__.py
+ADDED    src/leonardo/research/application.py
+MODIFIED src/leonardo/research/catalog.py
+ADDED    src/leonardo/research/dataset.py
+ADDED    tests/research_test/test_full_historical_dataset_loader.py
+ADDED    tests/research_test/test_research_dataset_application.py

@@ -1,0 +1,28 @@
+Old behavior inspected:
+- HistoricalDatasetService full OHLCV loading and cache behavior.
+- Dataset acceptance gating before Research load.
+- Complete timestamp timeline as later chart-alignment truth.
+
+Preserved behavior:
+- Complete accepted OHLCV is loaded for later full-dataset calculations.
+- Market identity uses the shared canonical MarketId.
+- Current acceptance evidence is checked before every cache return.
+- Dataset data may be shared read-only between chart sessions.
+
+Improved behavior:
+- Strict exact CSV header.
+- Strictly increasing unique timestamps.
+- Finite OHLCV values and basic candle integrity.
+- Immutable tuple-backed columns.
+- Sidecar row-count/time-range/hash revalidation.
+- CSV and sidecar change detection during loading.
+- Bounded shared cache with per-dataset load serialization.
+- Core bounded-worker execution and cooperative cancellation before publication.
+
+Rejected old architecture:
+- Legacy DatasetId.
+- Old CoreBridge.
+- pandas/DataFrame construction in the base loader.
+- GUI-owned filesystem access.
+- GUI-thread loading.
+- retired contract/metadata registries.

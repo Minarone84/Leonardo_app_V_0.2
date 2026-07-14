@@ -1,0 +1,31 @@
+Old behavior inspected:
+- HistoricalDatasetService SliceRequest/SlicePayload models.
+- Edge-aware resident window calculation around a timestamp.
+- Nearest-timestamp selection with earlier-candle tie preference.
+- Global base_index and has-more-left/right semantics.
+- Old count-bounded LRU slice cache.
+
+Preserved behavior:
+- Resident target equals visible bars plus left and right buffers.
+- Default Research policy is 2,000 visible bars plus 1,500 bars on each side.
+- Dataset edges expand in the available direction to retain target size when possible.
+- Out-of-range chart interest maps to the first or last real dataset window.
+- Timestamp requests select the nearest candle and prefer the earlier candle on a tie.
+- Payloads expose global base_index and edge availability.
+
+Improved behavior:
+- Canonical MarketId replaces legacy DatasetId.
+- Resident payload columns are immutable tuples.
+- Resident projections are separated from request/session/GUI identities.
+- Cache keys include accepted dataset SHA-256 fingerprint.
+- Older fingerprint entries for the same market are discarded automatically.
+- Explicit deterministic cache invalidation and argument validation.
+- Thread-safe cache mutation without filesystem, Core, or GUI coupling.
+
+Rejected old architecture:
+- tab_id/request_id fields inside reusable data payloads.
+- Mutable list-backed slices.
+- old CoreBridge and legacy HistoricalDatasetService ownership.
+- filesystem loading inside the slice service.
+- GUI and renderer responsibilities.
+- retired contract/metadata registries.

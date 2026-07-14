@@ -1,0 +1,34 @@
+Old behavior inspected:
+- custom QWidget/QPainter price surface
+- candle wick/body rendering
+- pixel-bucket high-density candle aggregation
+- custom grid, right price axis, and bottom time axis
+- explicit historical left-padding message
+- HiDPI static QPixmap cache
+
+Preserved behavior:
+- custom Qt rendering rather than a replacement chart library
+- resident-local data rendered in global chart coordinates
+- first-open/max-high/min-low/last-close compressed candles
+- historical and future chart padding
+- timestamp-based time-axis labels
+- static scene caching
+- honest empty state
+
+Improved behavior:
+- pure immutable scene planner separated from Qt execution
+- widget owns only painting and static cache
+- no mutable chart model or hidden viewport authority
+- cache identity uses dataset fingerprint and viewport state
+- visible candles alone determine the default base price range
+- price labels adapt to visible price span
+- deterministic non-Qt tests cover geometry and aggregation
+
+Rejected old architecture:
+- old ChartRenderSurface god mixin stack
+- old CoreBridge and DatasetId coupling
+- renderer-owned durable pane state
+- study/overlay responsibilities in the base renderer
+- GUI filesystem access or calculations
+- QApplication.processEvents workarounds
+- production dummy-data fallback

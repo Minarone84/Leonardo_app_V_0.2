@@ -1,0 +1,10 @@
+Task 0068 architecture scan:
+- no Contract Registry or ToolContract introduced
+- no Object Map or GUI metadata mirror introduced
+- no Core, OHLCV, Download Data, storage, validation, or composition source changed
+- no filesystem, provider, persistence, or Financial Tool calculation added to chart widgets
+- HorizontalViewport remains canonical horizontal camera authority
+- PriceScaleState is the single price-pane vertical presentation authority
+- CandlestickInteractionState is a thin local gesture adapter
+- CandlestickChartWidget translates Qt events and paints only
+- QWidget.update() is used; no repaint() or QApplication.processEvents() workaround

@@ -1,0 +1,8 @@
+## light-v2-reset
+ M src/leonardo/core/app.py
+?? _task_0062_final_audit/
+?? _task_0063_final_audit/
+?? docs/core_docs/TASK_0062_ACCEPTED_DATASET_CATALOG.md
+?? docs/core_docs/TASK_0063_FULL_HISTORICAL_DATASET_LOADER.md
+?? src/leonardo/research/
+?? tests/research_test/

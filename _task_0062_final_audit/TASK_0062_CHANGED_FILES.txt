@@ -1,0 +1,4 @@
+docs/core_docs/TASK_0062_ACCEPTED_DATASET_CATALOG.md
+src/leonardo/research/__init__.py
+src/leonardo/research/catalog.py
+tests/research_test/test_accepted_dataset_catalog.py
