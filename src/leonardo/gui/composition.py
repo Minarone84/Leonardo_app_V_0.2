@@ -8,13 +8,18 @@ from typing import Protocol
 from PySide6.QtWidgets import QWidget
 
 from leonardo.gui.action_observer import GuiActionObserver, build_gui_action_observer
-from leonardo.gui.presenters import HistoricalDownloadPresenter, ResearchSuitePresenter
+from leonardo.gui.presenters import (
+    HistoricalDownloadPresenter,
+    OhlcvMaintenancePresenter,
+    ResearchSuitePresenter,
+)
 from leonardo.gui.window_tracking import GuiWindowTracker
 from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow
 from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
 from leonardo.gui.windows.historical_download_manager_window import HistoricalDownloadManagerWindow
 from leonardo.gui.windows.main_window import LeonardoMainWindow
+from leonardo.gui.windows.ohlcv_maintenance_window import OhlcvMaintenanceWindow
 from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
 from leonardo.gui.windows.trading_suite_window import TradingSuiteWindow
@@ -31,6 +36,7 @@ class GuiCoreContext(Protocol):
     config: object
     connection_service: object
     historical_download_service: object
+    ohlcv_maintenance_service: object
     research_dataset_service: object
 
 
@@ -52,6 +58,8 @@ class GuiCompositionRoot:
         self._connection_suite_window: ConnectionSuiteWindow | None = None
         self._historical_download_manager_window: HistoricalDownloadManagerWindow | None = None
         self._historical_download_presenter: HistoricalDownloadPresenter | None = None
+        self._ohlcv_maintenance_window: OhlcvMaintenanceWindow | None = None
+        self._ohlcv_maintenance_presenter: OhlcvMaintenancePresenter | None = None
         self._research_suite_window: ResearchSuiteWindow | None = None
         self._research_suite_presenter: ResearchSuitePresenter | None = None
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
@@ -73,6 +81,14 @@ class GuiCompositionRoot:
     @property
     def historical_download_manager_window(self) -> HistoricalDownloadManagerWindow | None:
         return self._historical_download_manager_window
+
+    @property
+    def ohlcv_maintenance_window(self) -> OhlcvMaintenanceWindow | None:
+        return self._ohlcv_maintenance_window
+
+    @property
+    def ohlcv_maintenance_presenter(self) -> OhlcvMaintenancePresenter | None:
+        return self._ohlcv_maintenance_presenter
 
     @property
     def research_suite_window(self) -> ResearchSuiteWindow | None:
@@ -105,7 +121,7 @@ class GuiCompositionRoot:
         def open_maintenance(action_id: str) -> str:
             if main_window is None:
                 raise RuntimeError("Main Window is not available")
-            return self._open_historical_download_manager(main_window)
+            return self._open_ohlcv_maintenance(main_window)
 
         def open_suite(action_id: str) -> str:
             if main_window is None:
@@ -176,6 +192,9 @@ class GuiCompositionRoot:
             )
             self._historical_download_manager_window = window
             self._historical_download_presenter = presenter
+            window.maintenance_requested.connect(
+                lambda: self._open_ohlcv_maintenance(parent)
+            )
             self._register_window_actions(
                 window,
                 "historical_download_manager.window",
@@ -188,6 +207,28 @@ class GuiCompositionRoot:
             )
         self._show_window(self._historical_download_manager_window)
         return "Historical Download Manager shell opened."
+
+
+    def _open_ohlcv_maintenance(self, parent: LeonardoMainWindow) -> str:
+        if self._ohlcv_maintenance_window is None:
+            window = OhlcvMaintenanceWindow(parent=parent)
+            presenter = OhlcvMaintenancePresenter(
+                window,
+                getattr(self._context, "ohlcv_maintenance_service"),
+            )
+            self._ohlcv_maintenance_window = window
+            self._ohlcv_maintenance_presenter = presenter
+            self._register_window_actions(window, "ohlcv_maintenance.window")
+            self._install_tracker(
+                window,
+                "ohlcv_maintenance.window",
+                "OHLCV Maintenance",
+                "workflow",
+            )
+        else:
+            self._ohlcv_maintenance_presenter.refresh()
+        self._show_window(self._ohlcv_maintenance_window)
+        return "OHLCV Maintenance opened."
 
     def _open_suite_shell(self, action_id: str, parent: LeonardoMainWindow) -> str:
         if action_id == "main_window.open_research_suite":
@@ -295,6 +336,7 @@ class GuiCompositionRoot:
         for attr_name in (
             "_connection_suite_window",
             "_historical_download_manager_window",
+            "_ohlcv_maintenance_window",
             "_research_suite_window",
             "_data_manager_suite_window",
             "_analysis_suite_window",

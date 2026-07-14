@@ -25,6 +25,7 @@ from leonardo.gui.windows import (
     LeonardoMainWindow,
     OhlcvDownloadPreflightWindow,
     OhlcvDownloadTaskWindow,
+    OhlcvMaintenanceWindow,
     ResearchSuiteWindow,
     RuntimeManagerWindow,
     TradingSuiteWindow,
@@ -50,6 +51,7 @@ def test_shell_windows_construct_in_honest_empty_state(qapp: QApplication) -> No
     manager = HistoricalDownloadManagerWindow()
     preflight = OhlcvDownloadPreflightWindow()
     task = OhlcvDownloadTaskWindow()
+    maintenance = OhlcvMaintenanceWindow()
     windows = (
         connection,
         research,
@@ -59,6 +61,7 @@ def test_shell_windows_construct_in_honest_empty_state(qapp: QApplication) -> No
         manager,
         preflight,
         task,
+        maintenance,
     )
     try:
         for window in windows:
@@ -74,6 +77,7 @@ def test_shell_windows_construct_in_honest_empty_state(qapp: QApplication) -> No
         assert manager.status_log().toPlainText() == ""
         assert preflight.status_text() == "No request loaded"
         assert task.status_text() == "No task running"
+        assert maintenance.status_text() == "Ready"
     finally:
         for window in windows:
             window.close()
@@ -122,6 +126,11 @@ def test_composition_opens_and_tracks_windows(qapp: QApplication, tmp_path: Path
         assert composition.connection_suite_window is not None
         assert composition.connection_suite_window.isVisible()
 
+        main.action_for_id("main_window.ohlcv_maintenance").trigger()
+        QCoreApplication.processEvents()
+        assert composition.ohlcv_maintenance_window is not None
+        assert composition.ohlcv_maintenance_window.isVisible()
+
         main.action_for_id("main_window.open_research_suite").trigger()
         QCoreApplication.processEvents()
         assert composition.research_suite_window is not None
@@ -135,6 +144,7 @@ def test_composition_opens_and_tracks_windows(qapp: QApplication, tmp_path: Path
         open_ids = {item.window_id for item in app.window_registry.open_windows()}
         assert "main_window.window" in open_ids
         assert "connection_suite.home.window" in open_ids
+        assert "ohlcv_maintenance.window" in open_ids
         assert "research_suite.window" in open_ids
         assert "runtime_manager.window" in open_ids
     finally:

@@ -95,11 +95,6 @@ class HistoricalDownloadPresenter(QObject):
         self._line("symbol").editingFinished.connect(self._normalize_symbol_field)
         self._view.start_requested.connect(self._prepare_preflight)
         self._view.closed.connect(self._on_manager_closed)
-        self._view.maintenance_requested.connect(
-            lambda: self._view.append_status(
-                "OHLCV Maintenance is not implemented yet; downloaded datasets remain unaccepted."
-            )
-        )
         self._preflight_window.start_download_requested.connect(self._start_confirmed_download)
         self._preflight_window.closed.connect(self._cancel_active_preflight)
         self._task_window.button_for_id("stop").clicked.connect(self._cancel_active_download)

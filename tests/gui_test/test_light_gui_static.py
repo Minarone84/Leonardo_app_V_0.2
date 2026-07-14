@@ -54,6 +54,7 @@ def test_every_top_level_window_sets_stable_runtime_identity() -> None:
         "historical_download_manager_window.py": "historical_download_manager.window",
         "ohlcv_download_preflight_window.py": "ohlcv_download_preflight.window",
         "ohlcv_download_task_window.py": "ohlcv_download_task.window",
+        "ohlcv_maintenance_window.py": "ohlcv_maintenance.window",
     }
     for filename, object_id in expected.items():
         path = WINDOWS / filename
