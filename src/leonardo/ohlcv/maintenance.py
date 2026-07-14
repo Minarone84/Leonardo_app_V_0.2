@@ -1,4 +1,4 @@
-"""Canonical OHLCV Maintenance discovery, validation, and repair planning."""
+"""Canonical OHLCV Maintenance discovery, validation, repair, and deletion."""
 
 from __future__ import annotations
 
@@ -18,7 +18,11 @@ from leonardo.data import (
     timeframe_to_storage_segment,
 )
 from leonardo.ohlcv.models import DownloadItemResult
-from leonardo.ohlcv.store import OHLCVStore
+from leonardo.ohlcv.store import (
+    DatasetDeletionEvidence,
+    DatasetDeletionResult,
+    OHLCVStore,
+)
 from leonardo.ohlcv.validation import (
     CanonicalOHLCVValidator,
     CanonicalValidationReport,
@@ -89,6 +93,28 @@ class MaintenanceValidationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class MaintenanceDeletionPlan:
+    """Exact reviewed deletion target tied to stable canonical file evidence."""
+
+    market_id: MarketId
+    evidence: DatasetDeletionEvidence
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceDeletionResult:
+    """Structured result for one confirmed controlled dataset deletion."""
+
+    plan: MaintenanceDeletionPlan
+    store_result: DatasetDeletionResult
+    cache_invalidated: bool = False
+
+    @property
+    def completed(self) -> bool:
+        return self.store_result.csv_deleted and self.store_result.sidecar_deleted
+
+
+@dataclass(frozen=True, slots=True)
 class MaintenanceRepairRange:
     """One reviewed provider-redownload range derived from validation evidence."""
 
@@ -141,11 +167,12 @@ class MaintenanceRepairResult:
 
 
 class OHLCVMaintenanceService:
-    """Discover, validate, plan repair, and publish canonical OHLCV evidence.
+    """Discover, validate, repair, and explicitly delete canonical OHLCV datasets.
 
     Validation and planning are read-only toward CSV data. Repair mutation is
     executed by the historical downloader and finalized only through
     ``OHLCVStore.mark_repaired`` before canonical post-repair validation.
+    Confirmed deletion is executed only through ``OHLCVStore.delete_dataset``.
     """
 
     def __init__(
@@ -275,6 +302,68 @@ class OHLCVMaintenanceService:
             sidecar_published=True,
             publication_changed=publication.changed,
         )
+
+    def plan_deletion(
+        self,
+        market: MarketId,
+        *,
+        correlation_id: str | None = None,
+    ) -> MaintenanceDeletionPlan:
+        """Capture the exact canonical files that require explicit confirmation."""
+
+        evidence = self._store.capture_deletion_evidence(market)
+        sidecar_text = str(evidence.sidecar.path) if evidence.sidecar is not None else "absent"
+        plan = MaintenanceDeletionPlan(
+            market_id=market,
+            evidence=evidence,
+            message=(
+                f"Delete {market.as_key()} from canonical OHLCV storage. "
+                f"CSV={evidence.csv.path}; sidecar={sidecar_text}."
+            ),
+        )
+        self._audit(
+            event_type="ohlcv.deletion_planned",
+            message=f"OHLCV dataset deletion prepared for {market.as_key()}",
+            severity="warning",
+            correlation_id=correlation_id,
+            details={
+                "market_id": market.as_key(),
+                "csv_path": str(evidence.csv.path),
+                "csv_sha256": evidence.csv.sha256,
+                "sidecar_path": (str(evidence.sidecar.path) if evidence.sidecar else None),
+                "sidecar_sha256": (evidence.sidecar.sha256 if evidence.sidecar else None),
+            },
+        )
+        return plan
+
+    def delete_dataset(
+        self,
+        plan: MaintenanceDeletionPlan,
+        *,
+        correlation_id: str | None = None,
+    ) -> MaintenanceDeletionResult:
+        """Delete only the exact reviewed canonical files through the Store."""
+
+        if not isinstance(plan, MaintenanceDeletionPlan):
+            raise TypeError("plan must be a MaintenanceDeletionPlan")
+        store_result = self._store.delete_dataset(plan.evidence)
+        result = MaintenanceDeletionResult(plan=plan, store_result=store_result)
+        self._audit(
+            event_type="ohlcv.dataset_deleted",
+            message=f"OHLCV dataset deleted for {plan.market_id.as_key()}",
+            severity="warning",
+            correlation_id=correlation_id,
+            details={
+                "market_id": plan.market_id.as_key(),
+                "csv_path": str(store_result.csv_path),
+                "sidecar_path": str(store_result.sidecar_path),
+                "csv_deleted": store_result.csv_deleted,
+                "sidecar_deleted": store_result.sidecar_deleted,
+                "removed_directories": [str(path) for path in store_result.removed_directories],
+                "cleanup_warnings": store_result.cleanup_warnings,
+            },
+        )
+        return result
 
     def plan_repair(
         self,

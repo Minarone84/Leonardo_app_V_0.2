@@ -22,6 +22,7 @@ from leonardo.ohlcv import (
     CanonicalOHLCVValidator,
     HistoricalDownloadApplicationService,
     HistoricalDownloadService,
+    OHLCVDatasetOperationLocks,
     OHLCVMaintenanceApplicationService,
     OHLCVMaintenanceService,
     OHLCVStore,
@@ -81,11 +82,13 @@ class LeonardoApp:
             self.connection_registry,
         )
         self.ohlcv_store = OHLCVStore(self.config.paths.historical_data_dir)
+        self.ohlcv_operation_locks = OHLCVDatasetOperationLocks()
         self.historical_download_domain = HistoricalDownloadService(
             self.connection_service,
             self.ohlcv_store,
             self.audit_log,
             actor_id=self.config.actor_id,
+            operation_locks=self.ohlcv_operation_locks,
         )
         self.historical_download_service = HistoricalDownloadApplicationService(
             self.core_runner,
@@ -98,11 +101,6 @@ class LeonardoApp:
             audit_log=self.audit_log,
             actor_id=self.config.actor_id,
         )
-        self.ohlcv_maintenance_service = OHLCVMaintenanceApplicationService(
-            self.core_runner,
-            self.ohlcv_maintenance_domain,
-            self.historical_download_domain,
-        )
         self.accepted_dataset_catalog = AcceptedDatasetCatalog(
             self.config.paths.historical_data_dir
         )
@@ -110,6 +108,13 @@ class LeonardoApp:
             self.accepted_dataset_catalog
         )
         self.resident_slice_service = ResidentSliceService()
+        self.ohlcv_maintenance_service = OHLCVMaintenanceApplicationService(
+            self.core_runner,
+            self.ohlcv_maintenance_domain,
+            self.historical_download_domain,
+            operation_locks=self.ohlcv_operation_locks,
+            cache_invalidator=self.historical_dataset_loader.invalidate,
+        )
         self.research_dataset_service = ResearchDatasetApplicationService(
             self.core_runner,
             self.historical_dataset_loader,

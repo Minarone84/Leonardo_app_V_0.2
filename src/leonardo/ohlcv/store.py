@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Iterable
+from uuid import uuid4
 
 from leonardo.data import MarketId, timeframe_to_storage_segment
 from leonardo.storage import OHLCVSidecarV1
@@ -49,6 +50,40 @@ class ValidationPublicationResult:
 
     sidecar: OHLCVSidecarV1
     changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StoredFileEvidence:
+    """Stable fingerprint for one canonical persisted dataset file."""
+
+    path: Path
+    size_bytes: int
+    modified_time_ns: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDeletionEvidence:
+    """Read-only exact file evidence reviewed before destructive deletion."""
+
+    market_id: MarketId
+    dataset_dir: Path
+    csv: StoredFileEvidence
+    sidecar: StoredFileEvidence | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDeletionResult:
+    """Physical deletion outcome from the canonical OHLCV Store."""
+
+    market_id: MarketId
+    dataset_dir: Path
+    csv_path: Path
+    sidecar_path: Path
+    csv_deleted: bool
+    sidecar_deleted: bool
+    removed_directories: tuple[Path, ...]
+    cleanup_warnings: tuple[str, ...]
 
 
 class OHLCVStore:
@@ -259,6 +294,94 @@ class OHLCVStore:
                 persistence_status="repaired",
                 warnings=(),
                 lineage=lineage,
+            )
+
+    def capture_deletion_evidence(self, market: MarketId) -> DatasetDeletionEvidence:
+        """Capture stable canonical file evidence for explicit user review."""
+
+        csv_path = self.csv_path(market)
+        sidecar_path = self.sidecar_path(market)
+        with self._write_lock:
+            if not csv_path.is_file():
+                raise FileNotFoundError(f"OHLCV CSV not found: {csv_path}")
+            csv_state = _stored_file_evidence(csv_path)
+            sidecar_state = _stored_file_evidence(sidecar_path) if sidecar_path.is_file() else None
+            return DatasetDeletionEvidence(
+                market_id=market,
+                dataset_dir=self.dataset_dir(market),
+                csv=csv_state,
+                sidecar=sidecar_state,
+            )
+
+    def delete_dataset(
+        self,
+        evidence: DatasetDeletionEvidence,
+    ) -> DatasetDeletionResult:
+        """Delete the exact reviewed CSV and optional adjacent sidecar.
+
+        Both canonical files are first renamed to hidden staging names while the
+        Store write lock is held. If staging the second file fails, already staged
+        files are restored. The reviewed evidence must still match exactly.
+        """
+
+        if not isinstance(evidence, DatasetDeletionEvidence):
+            raise TypeError("evidence must be DatasetDeletionEvidence")
+        market = evidence.market_id
+        dataset_dir = self.dataset_dir(market)
+        csv_path = self.csv_path(market)
+        sidecar_path = self.sidecar_path(market)
+        if evidence.dataset_dir != dataset_dir:
+            raise ValueError("deletion evidence dataset directory is not canonical")
+        if evidence.csv.path != csv_path:
+            raise ValueError("deletion evidence CSV path is not canonical")
+        if evidence.sidecar is not None and evidence.sidecar.path != sidecar_path:
+            raise ValueError("deletion evidence sidecar path is not canonical")
+
+        with self._write_lock:
+            current_csv = _stored_file_evidence(csv_path) if csv_path.is_file() else None
+            current_sidecar = (
+                _stored_file_evidence(sidecar_path) if sidecar_path.is_file() else None
+            )
+            if current_csv != evidence.csv:
+                raise ValueError("deletion plan is stale because candles.csv changed")
+            if current_sidecar != evidence.sidecar:
+                raise ValueError("deletion plan is stale because candles.meta.json changed")
+
+            staged: list[tuple[Path, Path]] = []
+            token = uuid4().hex
+            try:
+                for original in (csv_path, sidecar_path):
+                    expected = evidence.csv if original == csv_path else evidence.sidecar
+                    if expected is None:
+                        continue
+                    staged_path = original.with_name(f".{original.name}.deleting-{token}")
+                    os.replace(original, staged_path)
+                    staged.append((original, staged_path))
+            except Exception:
+                for original, staged_path in reversed(staged):
+                    if staged_path.exists() and not original.exists():
+                        os.replace(staged_path, original)
+                raise
+
+            cleanup_warnings: list[str] = []
+            for _original, staged_path in staged:
+                try:
+                    staged_path.unlink()
+                except OSError as error:
+                    cleanup_warnings.append(
+                        f"staged deletion cleanup failed for {staged_path}: "
+                        f"{type(error).__name__}: {error}"
+                    )
+            removed_directories = _remove_empty_canonical_directories(dataset_dir, self._root)
+            return DatasetDeletionResult(
+                market_id=market,
+                dataset_dir=dataset_dir,
+                csv_path=csv_path,
+                sidecar_path=sidecar_path,
+                csv_deleted=not csv_path.exists(),
+                sidecar_deleted=evidence.sidecar is None or not sidecar_path.exists(),
+                removed_directories=removed_directories,
+                cleanup_warnings=tuple(cleanup_warnings),
             )
 
     def publish_validation(
@@ -487,6 +610,32 @@ def _stable_file_state(path: Path) -> tuple[int, int, str]:
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise RuntimeError(f"{path.name} changed while its fingerprint was captured")
     return after.st_size, after.st_mtime_ns, sha256
+
+
+def _stored_file_evidence(path: Path) -> StoredFileEvidence:
+    size, modified_time_ns, sha256 = _stable_file_state(path)
+    return StoredFileEvidence(
+        path=path,
+        size_bytes=size,
+        modified_time_ns=modified_time_ns,
+        sha256=sha256,
+    )
+
+
+def _remove_empty_canonical_directories(dataset_dir: Path, root: Path) -> tuple[Path, ...]:
+    removed: list[Path] = []
+    current = dataset_dir
+    canonical_root = root.resolve()
+    while current != root:
+        try:
+            if current.resolve().is_relative_to(canonical_root) is False:
+                break
+            current.rmdir()
+        except OSError:
+            break
+        removed.append(current)
+        current = current.parent
+    return tuple(removed)
 
 
 def merge_idempotent(existing: Iterable[Candle], incoming: Iterable[Candle]) -> list[Candle]:

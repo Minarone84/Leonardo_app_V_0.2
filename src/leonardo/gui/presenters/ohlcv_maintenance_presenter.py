@@ -15,6 +15,8 @@ from leonardo.gui.windows.ohlcv_maintenance_window import (
 )
 from leonardo.ohlcv import (
     MaintenanceDatasetSummary,
+    MaintenanceDeletionPlan,
+    MaintenanceDeletionResult,
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
     MaintenanceRepairResult,
@@ -90,6 +92,7 @@ class OhlcvMaintenancePresenter(QObject):
         self._view.validate_requested.connect(self._submit_validation)
         self._view.plan_repair_requested.connect(self._submit_repair_plan)
         self._view.execute_repair_requested.connect(self._execute_repair)
+        self._view.delete_requested.connect(self._submit_deletion_plan)
         self._view.cancel_requested.connect(self._cancel_operation)
         self._view.selection_changed.connect(self._on_selection_changed)
         self._view.closed.connect(self._cancel_operation)
@@ -149,6 +152,7 @@ class OhlcvMaintenancePresenter(QObject):
         available = self._active_task_id is None
         self._view.set_validate_enabled(available)
         self._view.set_plan_repair_enabled(available)
+        self._view.set_delete_enabled(available and summary.csv_exists)
         self._view.set_execute_repair_enabled(
             available
             and self._repair_plan is not None
@@ -225,9 +229,64 @@ class OhlcvMaintenancePresenter(QObject):
             return
         self._active_task_id = submission.task_id
 
+    def _submit_deletion_plan(self) -> None:
+        summary = self._selected_summary("deletion")
+        if summary is None or self._active_task_id is not None:
+            return
+        if not summary.csv_exists:
+            self._view.set_status("Deletion requires an existing canonical candles.csv")
+            self._view.set_delete_enabled(False)
+            return
+        self._clear_repair_plan()
+        self._begin_operation(
+            "deletion_plan",
+            f"Preparing controlled deletion — {summary.market_id.as_key()}",
+        )
+        try:
+            submission = self._maintenance.submit_deletion_plan(
+                summary.market_id,
+                progress_callback=self._on_progress,
+                result_callback=self._on_result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self._submission_failed(error)
+            return
+        self._active_task_id = submission.task_id
+
+    def _confirm_and_submit_deletion(self, plan: MaintenanceDeletionPlan) -> None:
+        sidecar_path = (
+            str(plan.evidence.sidecar.path) if plan.evidence.sidecar is not None else None
+        )
+        confirmed = self._view.confirm_deletion(
+            market_key=plan.market_id.as_key(),
+            csv_path=str(plan.evidence.csv.path),
+            sidecar_path=sidecar_path,
+        )
+        if not confirmed:
+            self._view.set_status("Dataset deletion cancelled before execution")
+            self._render_selection(self._view.selected_dataset_index(), invalidate_plan=False)
+            return
+        self._begin_operation(
+            "deletion",
+            f"Submitting controlled deletion — {plan.market_id.as_key()}",
+        )
+        try:
+            submission = self._maintenance.submit_deletion(
+                plan,
+                progress_callback=self._on_progress,
+                result_callback=self._on_result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self._submission_failed(error)
+            return
+        self._active_task_id = submission.task_id
+
     def _begin_operation(self, operation: str, status: str) -> None:
         self._active_operation = operation
         self._view.set_running(True)
+        self._view.set_cancel_enabled(operation != "deletion")
         self._view.set_progress(0, 1)
         self._view.set_status(status)
         if operation != "repair_plan":
@@ -256,6 +315,17 @@ class OhlcvMaintenancePresenter(QObject):
         self._view.set_running(False)
         self._view.set_progress(1, 1)
         if task_result.status == "completed":
+            if isinstance(task_result.value, MaintenanceDeletionPlan):
+                self._confirm_and_submit_deletion(task_result.value)
+                return
+            if isinstance(task_result.value, MaintenanceDeletionResult):
+                result = task_result.value
+                self._clear_repair_plan()
+                self._view.set_issue_rows(())
+                self._view.set_repair_summary("")
+                self._view.set_status(_deletion_result_text(result))
+                self._refresh_after_result(None)
+                return
             if isinstance(task_result.value, MaintenanceValidationResult):
                 result = task_result.value
                 self._view.set_issue_rows(tuple(_issue_row(item) for item in result.report.issues))
@@ -324,6 +394,9 @@ class OhlcvMaintenancePresenter(QObject):
         task_id = self._active_task_id
         if task_id is None:
             return
+        if self._active_operation == "deletion":
+            self._view.set_status("Confirmed deletion cannot be cancelled after execution starts")
+            return
         if self._maintenance.cancel(task_id):
             self._view.set_status("Cancellation requested")
 
@@ -344,6 +417,7 @@ class OhlcvMaintenancePresenter(QObject):
     def _set_selection_actions(self, enabled: bool) -> None:
         self._view.set_validate_enabled(enabled)
         self._view.set_plan_repair_enabled(enabled)
+        self._view.set_delete_enabled(enabled)
         self._view.set_execute_repair_enabled(False)
 
 
@@ -397,6 +471,18 @@ def _index_for_market_key(
         if item.market_id.as_key() == market_key:
             return index
     return None
+
+
+def _deletion_result_text(result: MaintenanceDeletionResult) -> str:
+    market_key = result.plan.market_id.as_key()
+    warnings = result.store_result.cleanup_warnings
+    cache_text = "Research cache invalidated" if result.cache_invalidated else "no cached Research copy"
+    if warnings:
+        return (
+            f"Deleted — {market_key}; {cache_text}; cleanup warning: "
+            + " | ".join(warnings)
+        )
+    return f"Deleted — {market_key}; {cache_text}"
 
 
 def _validation_status_text(result: MaintenanceValidationResult) -> str:

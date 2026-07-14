@@ -126,8 +126,10 @@ class HistoricalDatasetLoader:
 
     def invalidate(self, market_id: MarketId) -> bool:
         market = _canonical_market(market_id)
-        with self._lock:
-            return self._cache.pop(market, None) is not None
+        dataset_lock = self._lock_for(market)
+        with dataset_lock:
+            with self._lock:
+                return self._cache.pop(market, None) is not None
 
     def clear_cache(self) -> int:
         with self._lock:

@@ -10,6 +10,7 @@ from leonardo.audit import AuditEventV1
 from leonardo.connection import ConnectionApplicationService, HistoricalOHLCVProvider
 from leonardo.core.audit_log import AuditLog
 from leonardo.data import MarketId, canonicalize_market_id, timeframe_duration_ms
+from leonardo.ohlcv.operation_locks import OHLCVDatasetOperationLocks
 from leonardo.ohlcv.models import (
     DownloadBatchRequest,
     DownloadBatchResult,
@@ -38,17 +39,22 @@ class HistoricalDownloadService:
         audit_log: AuditLog,
         *,
         actor_id: str,
+        operation_locks: OHLCVDatasetOperationLocks | None = None,
     ) -> None:
         self._connections = connection_service
         self._store = store
         self._validator = PreliminaryOHLCVValidator()
         self._audit_log = audit_log
         self._actor_id = actor_id
-        self._dataset_locks: dict[str, asyncio.Lock] = {}
+        self._operation_locks = operation_locks or OHLCVDatasetOperationLocks()
 
     @property
     def store(self) -> OHLCVStore:
         return self._store
+
+    @property
+    def operation_locks(self) -> OHLCVDatasetOperationLocks:
+        return self._operation_locks
 
     async def preflight_batch(self, request: DownloadBatchRequest) -> DownloadPreflightResult:
         normalized = normalize_batch_request(request)
@@ -298,9 +304,8 @@ class HistoricalDownloadService:
             if candidate != market:
                 raise ValueError("all repair requests must target the same MarketId")
 
-        lock = self._dataset_locks.setdefault(market.as_key(), asyncio.Lock())
         results: list[DownloadBatchResult] = []
-        async with lock:
+        async with self._operation_locks.acquire(market):
             await asyncio.to_thread(before_first_write)
             async with self._connections.provider_session(market.exchange) as provider:
                 for index, request in enumerate(normalized, start=1):
@@ -335,8 +340,11 @@ class HistoricalDownloadService:
         overall_total: int,
         lock_already_held: bool = False,
     ) -> DownloadItemResult:
-        lock = self._dataset_locks.setdefault(market.as_key(), asyncio.Lock())
-        lock_context = _already_locked() if lock_already_held else lock
+        lock_context = (
+            _already_locked()
+            if lock_already_held
+            else self._operation_locks.acquire(market)
+        )
         async with lock_context:
             existing = await asyncio.to_thread(self._store.read, market)
             inspection = await asyncio.to_thread(self._store.inspect, market)

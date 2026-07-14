@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import replace
 from uuid import uuid4
 
 from leonardo.core.core_runner import (
@@ -16,6 +18,8 @@ from leonardo.core.core_runner import (
 from leonardo.data import MarketId
 from leonardo.ohlcv.download_service import HistoricalDownloadService
 from leonardo.ohlcv.maintenance import (
+    MaintenanceDeletionPlan,
+    MaintenanceDeletionResult,
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
     MaintenanceRepairRangeResult,
@@ -23,6 +27,7 @@ from leonardo.ohlcv.maintenance import (
     repair_range_result,
 )
 from leonardo.ohlcv.models import DownloadBatchRequest, DownloadProgressEvent
+from leonardo.ohlcv.operation_locks import OHLCVDatasetOperationLocks
 
 
 class HistoricalDownloadApplicationService:
@@ -100,20 +105,138 @@ class HistoricalDownloadApplicationService:
 
 
 class OHLCVMaintenanceApplicationService:
-    """Application boundary for discovery, validation, and explicit repair."""
+    """Application boundary for discovery, validation, repair, and deletion."""
 
     def __init__(
         self,
         core_runner: CoreRunner,
         maintenance: OHLCVMaintenanceService,
         downloader: HistoricalDownloadService | None = None,
+        *,
+        operation_locks: OHLCVDatasetOperationLocks | None = None,
+        cache_invalidator: Callable[[MarketId], bool] | None = None,
     ) -> None:
         self._core_runner = core_runner
         self._maintenance = maintenance
         self._downloader = downloader
+        inherited_locks = downloader.operation_locks if downloader is not None else None
+        self._operation_locks = (
+            operation_locks or inherited_locks or OHLCVDatasetOperationLocks()
+        )
+        self._cache_invalidator = cache_invalidator
 
     def discover(self) -> MaintenanceDiscoveryReport:
         return self._maintenance.discover()
+
+    def submit_deletion_plan(
+        self,
+        market: MarketId,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        correlation_id = uuid4().hex
+
+        def job(reporter: ProgressReporter) -> object:
+            reporter.report(
+                f"Preparing controlled deletion for {market.as_key()}",
+                current=0,
+                total=1,
+            )
+            plan = self._maintenance.plan_deletion(market, correlation_id=correlation_id)
+            reporter.report(
+                "Controlled deletion is ready for explicit confirmation",
+                current=1,
+                total=1,
+                details={
+                    "market_id": market.as_key(),
+                    "csv_path": str(plan.evidence.csv.path),
+                    "sidecar_present": plan.evidence.sidecar is not None,
+                },
+            )
+            return plan
+
+        return self._core_runner.submit_blocking_job(
+            job,
+            task_name=f"OHLCV deletion plan {market.exchange} {market.symbol} {market.timeframe}",
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            correlation_id=correlation_id,
+            metadata={
+                "operation": "ohlcv_deletion_plan",
+                "market_id": market.as_key(),
+            },
+        )
+
+    def submit_deletion(
+        self,
+        plan: MaintenanceDeletionPlan,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(plan, MaintenanceDeletionPlan):
+            raise TypeError("plan must be a MaintenanceDeletionPlan")
+        correlation_id = uuid4().hex
+
+        async def job(reporter: ProgressReporter) -> object:
+            reporter.report(
+                f"Waiting for exclusive access to {plan.market_id.as_key()}",
+                current=0,
+                total=2,
+            )
+            async with self._operation_locks.acquire(plan.market_id):
+                reporter.report(
+                    f"Deleting reviewed OHLCV files for {plan.market_id.as_key()}",
+                    current=1,
+                    total=2,
+                )
+
+                def delete_and_invalidate() -> MaintenanceDeletionResult:
+                    result = self._maintenance.delete_dataset(
+                        plan,
+                        correlation_id=correlation_id,
+                    )
+                    cache_invalidated = False
+                    if self._cache_invalidator is not None:
+                        cache_invalidated = self._cache_invalidator(plan.market_id)
+                    return replace(result, cache_invalidated=cache_invalidated)
+
+                mutation_task = asyncio.create_task(asyncio.to_thread(delete_and_invalidate))
+                cancellation_arrived_after_start = False
+                try:
+                    result = await asyncio.shield(mutation_task)
+                except asyncio.CancelledError:
+                    cancellation_arrived_after_start = True
+                    result = await mutation_task
+            reporter.report(
+                f"OHLCV dataset deleted: {plan.market_id.as_key()}",
+                current=2,
+                total=2,
+                details={
+                    "market_id": plan.market_id.as_key(),
+                    "cache_invalidated": result.cache_invalidated,
+                    "cleanup_warnings": result.store_result.cleanup_warnings,
+                    "cancellation_arrived_after_start": cancellation_arrived_after_start,
+                },
+            )
+            return result
+
+        return self._core_runner.submit_job(
+            job,
+            task_name=f"OHLCV delete {plan.market_id.exchange} {plan.market_id.symbol} {plan.market_id.timeframe}",
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            correlation_id=correlation_id,
+            metadata={
+                "operation": "ohlcv_delete",
+                "market_id": plan.market_id.as_key(),
+            },
+        )
 
     def submit_validation(
         self,

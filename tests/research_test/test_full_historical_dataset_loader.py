@@ -5,7 +5,7 @@ import json
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 
 import pytest
 
@@ -240,6 +240,51 @@ def test_cached_load_honors_cancellation_before_return(tmp_path: Path) -> None:
             progress=progress,
             cancellation_requested=cancelled.is_set,
         )
+
+
+def test_invalidation_waits_for_active_load_and_removes_its_published_cache(
+    tmp_path: Path,
+) -> None:
+    market = canonicalize_market_id("bybit", "linear", "BTCUSDT", "1m")
+    _write_accepted_csv(tmp_path, market)
+    loader = _loader(tmp_path)
+    original_parse = loader._parse
+    parse_started = Event()
+    allow_parse = Event()
+    load_done = Event()
+    invalidate_done = Event()
+    loaded = []
+    invalidated = []
+
+    def blocked_parse(*args, **kwargs):
+        parse_started.set()
+        assert allow_parse.wait(4.0)
+        return original_parse(*args, **kwargs)
+
+    def run_load() -> None:
+        loaded.append(loader.load(market))
+        load_done.set()
+
+    def run_invalidate() -> None:
+        invalidated.append(loader.invalidate(market))
+        invalidate_done.set()
+
+    loader._parse = blocked_parse  # type: ignore[method-assign]
+    load_thread = Thread(target=run_load)
+    invalidate_thread = Thread(target=run_invalidate)
+    load_thread.start()
+    assert parse_started.wait(4.0)
+    invalidate_thread.start()
+    assert invalidate_done.wait(0.1) is False
+    allow_parse.set()
+    load_thread.join(4.0)
+    invalidate_thread.join(4.0)
+
+    assert load_done.is_set()
+    assert invalidate_done.is_set()
+    assert len(loaded) == 1
+    assert invalidated == [True]
+    assert loader.cache_size == 0
 
 
 def test_loader_cache_is_bounded_by_entry_count(tmp_path: Path) -> None:

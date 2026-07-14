@@ -17,13 +17,18 @@ from leonardo.gui.presenters import OhlcvMaintenancePresenter
 from leonardo.gui.windows import OhlcvMaintenanceWindow
 from leonardo.ohlcv import (
     CanonicalValidationReport,
+    DatasetDeletionEvidence,
+    DatasetDeletionResult,
     MaintenanceDatasetSummary,
+    MaintenanceDeletionPlan,
+    MaintenanceDeletionResult,
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
     MaintenanceRepairRange,
     MaintenanceRepairRangeResult,
     MaintenanceRepairResult,
     MaintenanceValidationResult,
+    StoredFileEvidence,
 )
 from leonardo.storage import OHLCVSidecarV1
 
@@ -39,27 +44,44 @@ class _FakeMaintenanceService:
         self.tmp_path = tmp_path
         self.validation_status = "unknown"
         self.persistence_status = "committed"
+        self.deleted = False
         self.callbacks: dict[str, tuple[object, object, object]] = {}
         self.cancelled: list[str] = []
 
     def discover(self) -> MaintenanceDiscoveryReport:
-        return MaintenanceDiscoveryReport(
-            datasets=(
-                MaintenanceDatasetSummary(
-                    market_id=self.market,
-                    csv_path=self.tmp_path / "candles.csv",
-                    sidecar_path=self.tmp_path / "candles.meta.json",
-                    csv_exists=True,
-                    sidecar_exists=True,
-                    persistence_status=self.persistence_status,
-                    validation_status=self.validation_status,
-                    row_count=3,
-                    source="test",
-                    issues=(),
-                ),
+        datasets = () if self.deleted else (
+            MaintenanceDatasetSummary(
+                market_id=self.market,
+                csv_path=self.tmp_path / "candles.csv",
+                sidecar_path=self.tmp_path / "candles.meta.json",
+                csv_exists=True,
+                sidecar_exists=True,
+                persistence_status=self.persistence_status,
+                validation_status=self.validation_status,
+                row_count=3,
+                source="test",
+                issues=(),
             ),
-            rejected=(),
         )
+        return MaintenanceDiscoveryReport(datasets=datasets, rejected=())
+
+    def submit_deletion_plan(self, market, **kwargs) -> TaskSubmission:
+        assert market == self.market
+        self.callbacks["task-delete-plan"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-delete-plan", "OHLCV deletion plan")
+
+    def submit_deletion(self, plan, **kwargs) -> TaskSubmission:
+        assert plan.market_id == self.market
+        self.callbacks["task-delete"] = (
+            kwargs["progress_callback"],
+            kwargs["result_callback"],
+            kwargs["callback_dispatcher"],
+        )
+        return TaskSubmission("task-delete", "OHLCV deletion")
 
     def submit_validation(self, market, **kwargs) -> TaskSubmission:
         assert market == self.market
@@ -91,6 +113,49 @@ class _FakeMaintenanceService:
     def cancel(self, task_id: str) -> bool:
         self.cancelled.append(task_id)
         return True
+
+    def emit_deletion_plan(self) -> MaintenanceDeletionPlan:
+        _, result_callback, dispatcher = self.callbacks["task-delete-plan"]
+        csv_path = self.tmp_path / "candles.csv"
+        sidecar_path = self.tmp_path / "candles.meta.json"
+        plan = MaintenanceDeletionPlan(
+            market_id=self.market,
+            evidence=DatasetDeletionEvidence(
+                market_id=self.market,
+                dataset_dir=self.tmp_path,
+                csv=StoredFileEvidence(csv_path, 10, 20, "a" * 64),
+                sidecar=StoredFileEvidence(sidecar_path, 11, 21, "b" * 64),
+            ),
+            message="Delete the reviewed dataset.",
+        )
+        dispatcher(
+            lambda: result_callback(
+                TaskResult("task-delete-plan", "completed", value=plan)
+            )
+        )
+        return plan
+
+    def emit_deletion_success(self, plan: MaintenanceDeletionPlan) -> None:
+        _, result_callback, dispatcher = self.callbacks["task-delete"]
+        self.deleted = True
+        store_result = DatasetDeletionResult(
+            market_id=self.market,
+            dataset_dir=self.tmp_path,
+            csv_path=self.tmp_path / "candles.csv",
+            sidecar_path=self.tmp_path / "candles.meta.json",
+            csv_deleted=True,
+            sidecar_deleted=True,
+            removed_directories=(self.tmp_path,),
+            cleanup_warnings=(),
+        )
+        result = MaintenanceDeletionResult(
+            plan=plan,
+            store_result=store_result,
+            cache_invalidated=True,
+        )
+        dispatcher(
+            lambda: result_callback(TaskResult("task-delete", "completed", value=result))
+        )
 
     def emit_progress(self, task_id: str, message: str) -> None:
         progress, _, dispatcher = self.callbacks[task_id]
@@ -209,6 +274,7 @@ def test_presenter_discovers_validates_and_refreshes(
         assert datasets.item(0, 5).text() == "unknown"
         assert window.button_for_id("validate").isEnabled()
         assert window.button_for_id("plan_repair").isEnabled()
+        assert window.button_for_id("delete").isEnabled()
         assert not window.button_for_id("execute_repair").isEnabled()
 
         window.button_for_id("validate").click()
@@ -258,5 +324,34 @@ def test_presenter_plans_confirms_executes_and_refreshes_repair(
         assert datasets.item(0, 5).text() == "ok"
         assert window.status_text().startswith("Repair accepted")
         assert not window.button_for_id("execute_repair").isEnabled()
+    finally:
+        window.close()
+
+
+def test_presenter_confirms_deletes_and_removes_dataset_row(
+    qapp: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _FakeMaintenanceService(tmp_path)
+    window = OhlcvMaintenanceWindow()
+    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    monkeypatch.setattr(window, "confirm_deletion", lambda **_kwargs: True)
+    try:
+        assert window.button_for_id("delete").isEnabled()
+        window.button_for_id("delete").click()
+        assert presenter.active_task_id == "task-delete-plan"
+
+        plan = service.emit_deletion_plan()
+        QCoreApplication.processEvents()
+        assert presenter.active_task_id == "task-delete"
+        assert not window.button_for_id("cancel").isEnabled()
+
+        service.emit_deletion_success(plan)
+        QCoreApplication.processEvents()
+        assert presenter.active_task_id is None
+        assert window.table_for_id("datasets").rowCount() == 0
+        assert window.status_text().startswith("Deleted")
+        assert not window.button_for_id("delete").isEnabled()
     finally:
         window.close()

@@ -31,10 +31,13 @@ def test_ohlcv_maintenance_gui_wiring_is_explicit_and_shell_only() -> None:
     assert "validate_requested = Signal()" in window
     assert "plan_repair_requested = Signal()" in window
     assert "execute_repair_requested = Signal()" in window
+    assert "delete_requested = Signal()" in window
     assert "cancel_requested = Signal()" in window
     assert "Plan Repair" in window
     assert "Execute Repair" in window
     assert "Confirm OHLCV Repair" in window
+    assert "Delete Selected" in window
+    assert "Confirm OHLCV Dataset Deletion" in window
 
     assert "OhlcvMaintenancePresenter" in composition
     assert "ohlcv_maintenance_service" in composition
@@ -43,6 +46,8 @@ def test_ohlcv_maintenance_gui_wiring_is_explicit_and_shell_only() -> None:
     assert "submit_validation" in presenter
     assert "submit_repair_plan" in presenter
     assert "submit_repair" in presenter
+    assert "submit_deletion_plan" in presenter
+    assert "submit_deletion" in presenter
     assert "callback_dispatcher=self._dispatcher.dispatch" in presenter
     assert "self._maintenance.discover()" in presenter
     assert "OHLCV Maintenance is not implemented yet" not in download_presenter

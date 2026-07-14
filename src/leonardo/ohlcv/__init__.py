@@ -7,6 +7,8 @@ from leonardo.ohlcv.application import (
 from leonardo.ohlcv.download_service import HistoricalDownloadService, normalize_batch_request
 from leonardo.ohlcv.maintenance import (
     MaintenanceDatasetSummary,
+    MaintenanceDeletionPlan,
+    MaintenanceDeletionResult,
     MaintenanceDiscoveryRejection,
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
@@ -16,6 +18,7 @@ from leonardo.ohlcv.maintenance import (
     MaintenanceValidationResult,
     OHLCVMaintenanceService,
 )
+from leonardo.ohlcv.operation_locks import OHLCVDatasetOperationLocks
 from leonardo.ohlcv.models import (
     DownloadBatchRequest,
     DownloadBatchResult,
@@ -27,8 +30,11 @@ from leonardo.ohlcv.models import (
 )
 from leonardo.ohlcv.store import (
     Candle,
+    DatasetDeletionEvidence,
+    DatasetDeletionResult,
     DatasetInspection,
     OHLCVStore,
+    StoredFileEvidence,
     ValidationPublicationResult,
     merge_idempotent,
 )
@@ -45,6 +51,8 @@ __all__ = [
     "Candle",
     "CanonicalOHLCVValidator",
     "CanonicalValidationReport",
+    "DatasetDeletionEvidence",
+    "DatasetDeletionResult",
     "DatasetInspection",
     "DownloadBatchRequest",
     "DownloadBatchResult",
@@ -57,6 +65,8 @@ __all__ = [
     "HistoricalDownloadApplicationService",
     "HistoricalDownloadService",
     "MaintenanceDatasetSummary",
+    "MaintenanceDeletionPlan",
+    "MaintenanceDeletionResult",
     "MaintenanceDiscoveryRejection",
     "MaintenanceDiscoveryReport",
     "MaintenanceRepairPlan",
@@ -64,12 +74,14 @@ __all__ = [
     "MaintenanceRepairRangeResult",
     "MaintenanceRepairResult",
     "MaintenanceValidationResult",
+    "OHLCVDatasetOperationLocks",
     "OHLCVMaintenanceApplicationService",
     "OHLCVMaintenanceService",
     "OHLCVStore",
     "PreliminaryOHLCVValidator",
     "PreliminaryValidationReport",
     "ValidationIssue",
+    "StoredFileEvidence",
     "ValidationPublicationResult",
     "merge_idempotent",
     "normalize_batch_request",
