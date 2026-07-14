@@ -1,0 +1,4 @@
+docs/core_docs/TASK_0070_PANE_WORKSPACE_AND_VOLUME.md
+src/leonardo/gui/windows/research_suite_window.py
+tests/gui_test/test_research_single_chart_integration.py
+tests/gui_test/test_research_single_chart_static.py

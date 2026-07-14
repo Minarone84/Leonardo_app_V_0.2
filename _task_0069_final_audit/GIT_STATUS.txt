@@ -1,0 +1,33 @@
+ M src/leonardo/core/app.py
+ M src/leonardo/gui/composition.py
+ M src/leonardo/gui/presenters/__init__.py
+ M src/leonardo/gui/windows/research_suite_window.py
+?? _task_0062_final_audit/
+?? _task_0063_final_audit/
+?? _task_0064_final_audit/
+?? _task_0065_final_audit/
+?? _task_0066_final_audit/
+?? _task_0067_final_audit/
+?? _task_0067_patch_sync/
+?? _task_0068_final_audit/
+?? docs/core_docs/TASK_0062_ACCEPTED_DATASET_CATALOG.md
+?? docs/core_docs/TASK_0063_FULL_HISTORICAL_DATASET_LOADER.md
+?? docs/core_docs/TASK_0064_RESIDENT_SLICE_SERVICE.md
+?? docs/core_docs/TASK_0065_CHART_SESSION_STATE.md
+?? docs/core_docs/TASK_0066_HORIZONTAL_VIEWPORT_MATHEMATICS.md
+?? docs/core_docs/TASK_0067_BASE_CANDLESTICK_RENDERER.md
+?? docs/core_docs/TASK_0068_PRICE_INTERACTION_AND_SCALE.md
+?? docs/core_docs/TASK_0069_SINGLE_CHART_VERTICAL_INTEGRATION.md
+?? historical_data/
+?? src/leonardo/gui/chart/
+?? src/leonardo/gui/presenters/research_presenter.py
+?? src/leonardo/research/
+?? tests/gui_test/test_candlestick_interaction.py
+?? tests/gui_test/test_candlestick_scene.py
+?? tests/gui_test/test_candlestick_widget.py
+?? tests/gui_test/test_price_scale.py
+?? tests/gui_test/test_research_single_chart_integration.py
+?? tests/gui_test/test_research_single_chart_static.py
+?? tests/research_test/
+?? tools/dev_launch_research_chart.py
+?? tools/dev_render_candlestick.py

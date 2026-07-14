@@ -1,0 +1,66 @@
+--- /tmp/orig0070/Leo_V2_Light/src/leonardo/gui/chart/pane_workspace.py	2026-07-13 22:07:44.000000000 +0000
++++ /tmp/leo0070/Leo_V2_Light/src/leonardo/gui/chart/pane_workspace.py	2026-07-13 22:53:00.526283680 +0000
+@@ -2,7 +2,8 @@
+
+ from __future__ import annotations
+
+-from PySide6.QtCore import Qt, Signal
++from PySide6.QtCore import QTimer, Qt, Signal
++from PySide6.QtGui import QShowEvent
+ from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
+
+ from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
+@@ -60,8 +61,17 @@
+         return self._volume_visible
+
+     def pane_sizes(self) -> tuple[int, int]:
++        """Return the authoritative visible-pane sizes.
++
++        Before the workspace has visible geometry, Qt may report arbitrary equal
++        placeholder sizes for the splitter. Those values are not user state and
++        must not replace the configured price-dominant proportions.
++        """
++
++        if not self._volume_visible or not self.isVisible():
++            return self._last_visible_sizes
+         sizes = self._splitter.sizes()
+-        if len(sizes) != 2:
++        if len(sizes) != 2 or sizes[0] <= 0 or sizes[1] <= 0:
+             return self._last_visible_sizes
+         return int(sizes[0]), int(sizes[1])
+
+@@ -113,14 +123,14 @@
+             raise TypeError("visible must be a boolean")
+         if visible == self._volume_visible:
+             return False
+-        if not visible:
++        if not visible and self.isVisible():
+             sizes = self._splitter.sizes()
+             if len(sizes) == 2 and sizes[0] > 0 and sizes[1] > 0:
+                 self._last_visible_sizes = (int(sizes[0]), int(sizes[1]))
+         self._volume_visible = visible
+         self._volume.setVisible(visible)
+         if visible:
+-            self._splitter.setSizes(list(self._last_visible_sizes))
++            self._apply_visible_sizes()
+             self._volume.refresh_from_shared_state()
+         else:
+             self._splitter.setSizes([max(1, self.height()), 0])
+@@ -137,8 +147,16 @@
+         self._price.refresh_from_shared_state()
+         self._volume.refresh_from_shared_state()
+
++    def showEvent(self, event: QShowEvent) -> None:
++        super().showEvent(event)
++        if self._volume_visible:
++            QTimer.singleShot(0, self._apply_visible_sizes)
++
++    def _apply_visible_sizes(self) -> None:
++        self._splitter.setSizes(list(self._last_visible_sizes))
++
+     def _remember_sizes(self, _position: int, _index: int) -> None:
+-        if not self._volume_visible:
++        if not self._volume_visible or not self.isVisible():
+             return
+         sizes = self._splitter.sizes()
+         if len(sizes) == 2 and sizes[0] > 0 and sizes[1] > 0:

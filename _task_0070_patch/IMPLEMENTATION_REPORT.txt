@@ -1,0 +1,32 @@
+Task ID: 0070
+Patch: Splitter initialization and pane-size authority
+Input package: Leo_V2_0070_POST_20260714_0008.zip
+Input package SHA-256: 84c65f691f62672f0512a7712da583c749121f6087d1c311eeed59ede1acef4c
+
+Confirmed defect:
+- PySide6 on Windows returned provisional equal splitter sizes (13, 13)
+  before the workspace had visible geometry.
+- The existing test expected the configured price pane to remain larger than
+  the volume pane and failed correctly.
+
+Changed production file:
+- src/leonardo/gui/chart/pane_workspace.py
+
+Added documentation:
+- docs/core_docs/TASK_0070_PATCH_SPLITTER_INITIALIZATION.md
+
+Behavior preserved:
+- optional volume pane;
+- price-dominant default proportions;
+- hide/show proportion preservation;
+- user splitter movement persistence;
+- shared viewport and crosshair;
+- all Task 0069–0070 functionality.
+
+Out of scope and unchanged:
+- Core;
+- OHLCV persistence and validation;
+- Download Data;
+- Financial Tools;
+- persisted Research state;
+- multi-chart workspaces.

@@ -23,6 +23,7 @@ from leonardo.research import (
     AcceptedDatasetCatalog,
     HistoricalDatasetLoader,
     ResearchDatasetApplicationService,
+    ResidentSliceService,
 )
 
 
@@ -88,9 +89,12 @@ class LeonardoApp:
         self.historical_dataset_loader = HistoricalDatasetLoader(
             self.accepted_dataset_catalog
         )
+        self.resident_slice_service = ResidentSliceService()
         self.research_dataset_service = ResearchDatasetApplicationService(
             self.core_runner,
             self.historical_dataset_loader,
+            catalog=self.accepted_dataset_catalog,
+            resident_slices=self.resident_slice_service,
         )
         self.action_registry = ActionRegistry(
             self.audit_log,

@@ -1,4 +1,4 @@
-"""Core-supervised application service for full Research dataset loading."""
+"""Core-supervised application service for Research dataset reads."""
 
 from __future__ import annotations
 
@@ -17,7 +17,13 @@ from leonardo.core.core_runner import (
     TaskSubmission,
 )
 from leonardo.data import MarketId
+from leonardo.research.catalog import DatasetCatalogReport
 from leonardo.research.dataset import HistoricalDataset
+from leonardo.research.resident import ResidentOHLCVSlice
+
+
+class DatasetCatalog(Protocol):
+    def scan(self) -> DatasetCatalogReport: ...
 
 
 class DatasetLoader(Protocol):
@@ -30,16 +36,76 @@ class DatasetLoader(Protocol):
     ) -> HistoricalDataset: ...
 
 
-class ResearchDatasetApplicationService:
-    """Submit full dataset reads to Core without exposing worker details to GUI."""
+class ResidentSlicer(Protocol):
+    def slice_around_index(
+        self,
+        dataset: HistoricalDataset,
+        center_index: int,
+    ) -> ResidentOHLCVSlice: ...
 
-    def __init__(self, core_runner: CoreRunner, loader: DatasetLoader) -> None:
+
+class ResearchDatasetApplicationService:
+    """Submit read-only Research data work to Core worker threads.
+
+    The service coordinates execution only.  OHLCV acceptance remains owned by
+    the catalog/validator boundary, full dataset truth remains owned by the
+    loader, resident projections remain owned by the resident-slice service, and
+    task lifecycle remains owned by ``TaskManager`` through ``CoreRunner``.
+    """
+
+    def __init__(
+        self,
+        core_runner: CoreRunner,
+        loader: DatasetLoader,
+        *,
+        catalog: DatasetCatalog | None = None,
+        resident_slices: ResidentSlicer | None = None,
+    ) -> None:
         if not isinstance(core_runner, CoreRunner):
             raise TypeError("core_runner must be a CoreRunner")
         self._core_runner = core_runner
         self._loader = loader
+        self._catalog = catalog
+        self._resident_slices = resident_slices
         self._cancellations: dict[str, Event] = {}
         self._lock = RLock()
+
+    def submit_catalog(
+        self,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        catalog = self._catalog
+        if catalog is None:
+            raise RuntimeError("Research accepted-dataset catalog is not configured")
+        cancellation = Event()
+
+        def job(reporter: ProgressReporter) -> DatasetCatalogReport:
+            _raise_if_cancelled(cancellation, "catalog scan")
+            reporter.report("Scanning accepted historical datasets", current=0, total=None)
+            report = catalog.scan()
+            _raise_if_cancelled(cancellation, "catalog publication")
+            reporter.report(
+                f"Research catalog ready: {report.accepted_count} accepted datasets",
+                current=report.accepted_count,
+                total=report.accepted_count,
+                details={"rejected_count": report.rejected_count},
+            )
+            return report
+
+        return self._submit(
+            job,
+            task_name="Research accepted dataset catalog",
+            operation="research_dataset_catalog",
+            cancellation=cancellation,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            allow_duplicate_name=False,
+            metadata={},
+        )
 
     def submit_load(
         self,
@@ -52,9 +118,6 @@ class ResearchDatasetApplicationService:
         if not isinstance(market_id, MarketId):
             raise TypeError("market_id must be a MarketId")
         cancellation = Event()
-        finished = Event()
-        task_id_ref: list[str] = []
-        correlation_id = uuid4().hex
 
         def job(reporter: ProgressReporter) -> HistoricalDataset:
             reporter.report(
@@ -77,16 +140,101 @@ class ResearchDatasetApplicationService:
                 progress=on_progress,
                 cancellation_requested=cancellation.is_set,
             )
-            if cancellation.is_set():
-                # The Core awaiter may already be cancelled. Never publish a completed
-                # value from a cooperatively cancelled worker operation.
-                raise RuntimeError("historical dataset load cancelled before publication")
+            _raise_if_cancelled(cancellation, "dataset publication")
             reporter.report(
                 f"Historical dataset ready: {dataset.row_count} candles",
                 current=dataset.row_count,
                 total=dataset.row_count,
             )
             return dataset
+
+        return self._submit(
+            job,
+            task_name=f"Research dataset load {market_id.as_key()}",
+            operation="research_dataset_load",
+            cancellation=cancellation,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            allow_duplicate_name=True,
+            metadata={"market_id": market_id.as_key()},
+        )
+
+    def submit_resident_slice(
+        self,
+        dataset: HistoricalDataset,
+        center_index: int,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(dataset, HistoricalDataset):
+            raise TypeError("dataset must be a HistoricalDataset")
+        if type(center_index) is not int:
+            raise TypeError("center_index must be an integer")
+        slicer = self._resident_slices
+        if slicer is None:
+            raise RuntimeError("Research resident-slice service is not configured")
+        cancellation = Event()
+
+        def job(reporter: ProgressReporter) -> ResidentOHLCVSlice:
+            _raise_if_cancelled(cancellation, "resident-slice calculation")
+            reporter.report(
+                f"Preparing resident candles around index {center_index}",
+                current=0,
+                total=None,
+            )
+            resident = slicer.slice_around_index(dataset, center_index)
+            _raise_if_cancelled(cancellation, "resident-slice publication")
+            reporter.report(
+                f"Resident candles ready: {resident.row_count}",
+                current=resident.row_count,
+                total=resident.row_count,
+            )
+            return resident
+
+        return self._submit(
+            job,
+            task_name=f"Research resident slice {dataset.market_id.as_key()}",
+            operation="research_resident_slice",
+            cancellation=cancellation,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            allow_duplicate_name=True,
+            metadata={
+                "market_id": dataset.market_id.as_key(),
+                "dataset_fingerprint": dataset.file_sha256,
+                "center_index": center_index,
+            },
+        )
+
+    def cancel(self, task_id: str) -> bool:
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ValueError("task_id must be a non-empty string")
+        with self._lock:
+            cancellation = self._cancellations.get(task_id)
+        if cancellation is not None:
+            cancellation.set()
+        return self._core_runner.cancel(task_id)
+
+    def _submit(
+        self,
+        job: Callable[[ProgressReporter], object],
+        *,
+        task_name: str,
+        operation: str,
+        cancellation: Event,
+        progress_callback: ProgressCallback | None,
+        result_callback: ResultCallback | None,
+        callback_dispatcher: CallbackDispatcher | None,
+        allow_duplicate_name: bool,
+        metadata: dict[str, object],
+    ) -> TaskSubmission:
+        finished = Event()
+        task_id_ref: list[str] = []
+        correlation_id = uuid4().hex
 
         def on_result(result: TaskResult) -> None:
             finished.set()
@@ -98,16 +246,13 @@ class ResearchDatasetApplicationService:
 
         submission = self._core_runner.submit_blocking_job(
             job,
-            task_name=f"Research dataset load {market_id.as_key()}",
+            task_name=task_name,
             progress_callback=progress_callback,
             result_callback=on_result,
             callback_dispatcher=callback_dispatcher,
-            allow_duplicate_name=True,
+            allow_duplicate_name=allow_duplicate_name,
             correlation_id=correlation_id,
-            metadata={
-                "operation": "research_dataset_load",
-                "market_id": market_id.as_key(),
-            },
+            metadata={"operation": operation, **metadata},
         )
         task_id_ref.append(submission.task_id)
         with self._lock:
@@ -115,11 +260,7 @@ class ResearchDatasetApplicationService:
                 self._cancellations[submission.task_id] = cancellation
         return submission
 
-    def cancel(self, task_id: str) -> bool:
-        if not isinstance(task_id, str) or not task_id.strip():
-            raise ValueError("task_id must be a non-empty string")
-        with self._lock:
-            cancellation = self._cancellations.get(task_id)
-        if cancellation is not None:
-            cancellation.set()
-        return self._core_runner.cancel(task_id)
+
+def _raise_if_cancelled(cancellation: Event, operation: str) -> None:
+    if cancellation.is_set():
+        raise RuntimeError(f"{operation} cancelled before publication")

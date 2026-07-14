@@ -1,0 +1,7 @@
+Task ID: 0070
+Patch: Integrated autoscale toolbar control
+Reason: The price-scale autoscale authority existed, but the real Research Suite toolbar omitted the user control required by the approved Task 0069/0070 visual workflow.
+Scope: ResearchSuiteWindow toolbar, static/integration tests, Task 0070 documentation.
+Preserved: Chart calculations, viewport, volume pane, splitter fix, Core, OHLCV, persistence, Download Data.
+Validation: 187 passed, 4 skipped in the non-PySide6 audit environment.
+Visual gate: User must verify Disable Autoscale / Enable Autoscale and manual vertical interactions before final milestone packaging.

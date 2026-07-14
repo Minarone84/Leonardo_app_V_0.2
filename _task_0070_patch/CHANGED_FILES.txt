@@ -1,0 +1,3 @@
+src/leonardo/gui/chart/pane_workspace.py
+docs/core_docs/TASK_0070_PATCH_SPLITTER_INITIALIZATION.md
+_task_0070_patch/*

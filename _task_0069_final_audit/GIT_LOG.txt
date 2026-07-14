@@ -1,0 +1,20 @@
+f15ddde (HEAD -> light-v2-reset) Merge Task 1002: preflight row-shape repair
+2a4dba5 (rick/task-1002-preflight-row-shape-repair) Task 1002: repair preflight table row normalization
+9fab7b7 (backup/pre-task-1002-20260713_203913) Merge Task 1001: historical download GUI repair
+101fd86 (rick/task-1001-download-gui-repair) Task 1001: repair historical download preflight lifecycle
+4d34a15 (backup/pre-task-1001-20260713_201114) Merge Task 1000: historical download vertical slice
+38f81de (rick/task-1000-historical-download) Task 1000: historical download vertical slice
+f414d47 (tag: leo-v2-light-reset-baseline-001, backup/pre-task-1000-20260713_172856) Validate and freeze Light V2 reset baseline
+6913aa6 Remove Heavy V2 bureaucracy and repair Light runtime
+a1e5f7c Freeze Light V2 reset baseline and install governance
+fb3be75 Add cross-suite shell coherence guard
+0e7f7c9 Enhance Trading Suite GUI shell
+87c7df0 Enhance Data Manager GUI shell
+8a27939 Enhance Research and Analysis GUI shells
+0e770de Expand OHLCV GUI shell batch B
+08f81a0 Add Connection Suite shell batch A
+2aa31e2 Restyle utility windows and harden settings actions
+5fd477a Add Main Window donut suite navigation
+d9f5085 Redesign Main Window as Jarvish cockpit shell
+77d2f7c Add GUI theme system and Jarvish baseline
+a9e7b9a Add Rick protocol and harden GUI metadata coherence

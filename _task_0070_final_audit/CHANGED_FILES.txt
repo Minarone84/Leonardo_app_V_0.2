@@ -1,0 +1,16 @@
+A	docs/core_docs/TASK_0070_PANE_WORKSPACE_AND_VOLUME.md
+M	src/leonardo/gui/chart/__init__.py
+M	src/leonardo/gui/chart/candlestick_widget.py
+A	src/leonardo/gui/chart/pane_workspace.py
+A	src/leonardo/gui/chart/volume_scene.py
+A	src/leonardo/gui/chart/volume_widget.py
+M	src/leonardo/gui/presenters/research_presenter.py
+M	src/leonardo/gui/windows/research_suite_window.py
+M	src/leonardo/research/__init__.py
+A	src/leonardo/research/volume.py
+A	tests/gui_test/test_pane_workspace.py
+M	tests/gui_test/test_research_single_chart_integration.py
+M	tests/gui_test/test_research_single_chart_static.py
+A	tests/gui_test/test_volume_scene.py
+A	tests/research_test/test_volume_projection.py
+M	tools/dev_launch_research_chart.py

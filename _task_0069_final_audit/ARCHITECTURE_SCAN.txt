@@ -1,0 +1,1 @@
+[PASS] No legacy Research identity, CoreBridge, retired contracts, processEvents workaround, or production dummy-data path.

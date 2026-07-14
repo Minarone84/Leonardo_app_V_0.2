@@ -1,0 +1,3 @@
+Status: REQUIRED
+Command: python tools/dev_launch_research_chart.py
+Validate: accepted dataset selection, full load, chart-ready state, pan, zoom, crosshair, manual-y, resident refills, cancel, close, and clean shutdown.

@@ -154,6 +154,18 @@ class CandlestickChartWidget(QWidget):
             self.priceScaleChanged.emit(self._interaction.price_scale_snapshot())
         return changed
 
+    def refresh_from_shared_state(
+        self, *, refresh_price_scale: bool = True
+    ) -> None:
+        """Refresh from the injected shared interaction authority.
+
+        Pane workspaces call this after another pane changes the shared
+        horizontal viewport or crosshair.  The method does not mutate the
+        viewport itself.
+        """
+
+        self._refresh_from_interaction(refresh_price_scale=refresh_price_scale)
+
     def set_chart_palette(self, palette: CandlestickPalette) -> None:
         if not isinstance(palette, CandlestickPalette):
             raise TypeError("palette must be a CandlestickPalette")
