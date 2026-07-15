@@ -325,6 +325,136 @@ def test_provider_replacement_repairs_invalid_ohlc_anchor(tmp_path: Path) -> Non
     assert store.read(_market())[1] == Candle(120_000, 1.5, 2.5, 1, 2, 12)
 
 
+class _SourceInvalidRepairProvider(_RepairProvider):
+    async def fetch_ohlcv_historical(self, **kwargs):
+        start = kwargs.get("start_ms")
+        end = kwargs.get("end_ms")
+        rows = (
+            ProviderCandle(60_000, 1, 2, 0.5, 1.5, 10),
+            ProviderCandle(120_000, 10, 5, 1, 2, 12),
+            ProviderCandle(180_000, 2, 3, 1.5, 2.5, 14),
+        )
+        return tuple(
+            row
+            for row in rows
+            if (start is None or row.ts_ms >= start) and (end is None or row.ts_ms <= end)
+        )
+
+
+def _source_invalid_downloader(store: OHLCVStore) -> HistoricalDownloadService:
+    registry = ProviderRegistry()
+    registry.register("bybit", _SourceInvalidRepairProvider)
+    connections = ConnectionApplicationService(registry, ConnectionRegistry())
+    return HistoricalDownloadService(
+        connections,
+        store,
+        AuditLog(InMemoryAuditSink()),
+        actor_id="tester",
+    )
+
+
+def test_provider_replacement_that_remains_invalid_reports_source_invalid(
+    tmp_path: Path,
+) -> None:
+    store = OHLCVStore(tmp_path)
+    _write(
+        store,
+        (
+            Candle(60_000, 1, 2, 0.5, 1.5, 10),
+            Candle(120_000, 4, 3, 1, 2, 12),
+            Candle(180_000, 2, 3, 1.5, 2.5, 14),
+        ),
+    )
+    maintenance = _maintenance(store)
+    plan = maintenance.plan_repair(_market())
+    runner = CoreRunner(TaskManager())
+    application = OHLCVMaintenanceApplicationService(
+        runner, maintenance, _source_invalid_downloader(store)
+    )
+    completed = Event()
+    results = []
+
+    runner.start()
+    try:
+        application.submit_repair(
+            plan,
+            result_callback=lambda result: (results.append(result), completed.set()),
+        )
+        assert completed.wait(4.0)
+    finally:
+        runner.shutdown()
+
+    task_result = results[0]
+    assert task_result.status == "completed"
+    assert isinstance(task_result.value, MaintenanceRepairResult)
+    repair = task_result.value
+    assert repair.outcome == "source_invalid"
+    assert repair.source_invalid is True
+    assert repair.source_invalid_anchors == (120_000,)
+    assert repair.accepted is False
+    assert repair.validation.report.status == "error"
+    assert any(
+        issue.timestamp_ms == 120_000 and issue.code == "open_outside_range"
+        for issue in repair.validation.report.issues
+    )
+    assert any(
+        "Source-invalid provider candle detected at ts_ms 120000" in warning
+        and "No local correction was applied" in warning
+        for warning in repair.warnings
+    )
+    sidecar = store.read_sidecar(_market())
+    assert sidecar.persistence_status == "repaired"
+    assert sidecar.validation_status == "error"
+    assert AcceptedDatasetCatalog(tmp_path).list_accepted() == ()
+
+
+def test_unrelated_post_repair_error_remains_validation_failed(tmp_path: Path) -> None:
+    store = OHLCVStore(tmp_path)
+    _write(
+        store,
+        (
+            Candle(60_000, 1, 2, 0.5, 1.5, 10),
+            Candle(180_000, 2, 3, 1.5, 2.5, 14),
+        ),
+    )
+    maintenance = _maintenance(store)
+    plan = maintenance.plan_repair(_market())
+    store.write(
+        _market(),
+        (
+            Candle(60_000, 1, 2, 0.5, 1.5, 10),
+            Candle(120_000, 1.5, 2.5, 1, 2, 12),
+            Candle(180_000, 8, 3, 1.5, 2.5, 14),
+        ),
+        source="bybit",
+        persistence_status="committed",
+    )
+    from leonardo.ohlcv import MaintenanceRepairRangeResult
+
+    range_result = MaintenanceRepairRangeResult(
+        repair_range=plan.ranges[0],
+        fetched_rows=1,
+        downloaded_first_ts_ms=120_000,
+        downloaded_last_ts_ms=120_000,
+        total_rows_after=3,
+        file_path=store.csv_path(_market()),
+    )
+    repaired_sidecar = maintenance.mark_repair_completed(plan, (range_result,))
+    validation = maintenance.validate(_market())
+
+    result = maintenance.build_repair_result(
+        plan,
+        (range_result,),
+        repaired_sidecar,
+        validation,
+    )
+
+    assert result.outcome == "validation_failed"
+    assert result.source_invalid is False
+    assert result.source_invalid_anchors == ()
+    assert any(issue.timestamp_ms == 180_000 for issue in result.validation.report.issues)
+
+
 class _EmptyRepairProvider(_RepairProvider):
     async def fetch_ohlcv_historical(self, **_kwargs):
         return ()

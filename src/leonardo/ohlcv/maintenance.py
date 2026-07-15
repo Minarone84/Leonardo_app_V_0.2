@@ -223,6 +223,8 @@ class MaintenanceRepairResult:
     validation: MaintenanceValidationResult
     repaired_sidecar: OHLCVSidecarV1
     warnings: tuple[str, ...]
+    source_invalid: bool = False
+    source_invalid_anchors: tuple[int, ...] = ()
 
     @property
     def accepted(self) -> bool:
@@ -740,6 +742,24 @@ class OHLCVMaintenanceService:
                     "Downloaded coverage did not include all required repair anchors for "
                     f"{item.repair_range.start_ts_ms}..{item.repair_range.end_ts_ms}."
                 )
+        source_invalid_anchors = _source_invalid_anchors(
+            range_results,
+            validation.report,
+        )
+        if source_invalid_anchors:
+            issues_by_timestamp = _error_issues_by_timestamp(validation.report)
+            for timestamp_ms in source_invalid_anchors:
+                issue_text = "; ".join(
+                    f"{issue.code}: {issue.message}"
+                    for issue in issues_by_timestamp[timestamp_ms]
+                )
+                warnings.append(
+                    f"Source-invalid provider candle detected at ts_ms {timestamp_ms}: "
+                    f"{issue_text}. The reviewed range was redownloaded and covered this "
+                    "validation anchor, but the replacement candle remains invalid. "
+                    "No local correction was applied."
+                )
+
         if validation.accepted:
             outcome = "repaired_ok"
         elif validation.publication_error:
@@ -748,6 +768,8 @@ class OHLCVMaintenanceService:
             outcome = "no_replacement_rows"
         elif coverage_missing:
             outcome = "coverage_missing_anchor"
+        elif source_invalid_anchors:
+            outcome = "source_invalid"
         elif validation.report.status == "warning":
             outcome = "repaired_warning"
         else:
@@ -759,6 +781,8 @@ class OHLCVMaintenanceService:
             validation=validation,
             repaired_sidecar=repaired_sidecar,
             warnings=tuple(dict.fromkeys(warnings)),
+            source_invalid=outcome == "source_invalid",
+            source_invalid_anchors=source_invalid_anchors,
         )
         self._audit(
             event_type="ohlcv.repair_completed",
@@ -771,6 +795,8 @@ class OHLCVMaintenanceService:
                 "range_count": len(range_results),
                 "validation_status": validation.report.status,
                 "accepted": validation.accepted,
+                "source_invalid": result.source_invalid,
+                "source_invalid_anchors": result.source_invalid_anchors,
                 "warnings": result.warnings,
             },
         )
@@ -887,6 +913,45 @@ class OHLCVMaintenanceService:
                 details=details,
             )
         )
+
+
+def _error_issues_by_timestamp(
+    report: CanonicalValidationReport,
+) -> dict[int, tuple[ValidationIssue, ...]]:
+    issues_by_timestamp: dict[int, list[ValidationIssue]] = {}
+    for issue in report.issues:
+        if issue.severity != "error" or issue.timestamp_ms is None:
+            continue
+        issues_by_timestamp.setdefault(issue.timestamp_ms, []).append(issue)
+    return {
+        timestamp_ms: tuple(issues)
+        for timestamp_ms, issues in issues_by_timestamp.items()
+    }
+
+
+def _source_invalid_anchors(
+    range_results: tuple[MaintenanceRepairRangeResult, ...],
+    report: CanonicalValidationReport,
+) -> tuple[int, ...]:
+    """Return reviewed anchors still invalid after covered provider replacement."""
+
+    if report.status != "error":
+        return ()
+    issues_by_timestamp = _error_issues_by_timestamp(report)
+    if not issues_by_timestamp:
+        return ()
+    anchors: set[int] = set()
+    for item in range_results:
+        if item.fetched_rows <= 0:
+            continue
+        first = item.downloaded_first_ts_ms
+        last = item.downloaded_last_ts_ms
+        if first is None or last is None:
+            continue
+        for timestamp_ms in item.repair_range.coverage_anchor_ts_ms:
+            if first <= timestamp_ms <= last and timestamp_ms in issues_by_timestamp:
+                anchors.add(timestamp_ms)
+    return tuple(sorted(anchors))
 
 
 def _repair_ranges_from_report(

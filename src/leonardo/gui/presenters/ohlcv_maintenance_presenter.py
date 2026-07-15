@@ -655,6 +655,12 @@ def _repair_result_text(result: MaintenanceRepairResult) -> str:
         return f"Repair coverage missed required anchors — {market_key}"
     if result.outcome == "publication_failed":
         return f"Repair validation publication failed — {market_key}"
+    if result.outcome == "source_invalid":
+        anchors = ", ".join(str(value) for value in result.source_invalid_anchors)
+        return (
+            f"Provider source remains invalid — {market_key}; anchors={anchors}; "
+            "no local correction applied; Research remains blocked"
+        )
     if result.outcome == "repaired_warning":
         return f"Repair completed with warnings — {market_key}; Research remains blocked"
     return f"Repair completed but validation failed — {market_key}; Research remains blocked"

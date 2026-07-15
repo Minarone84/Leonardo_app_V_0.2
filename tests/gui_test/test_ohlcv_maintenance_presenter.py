@@ -33,6 +33,7 @@ from leonardo.ohlcv import (
     FileEvidence,
     SidecarReconstructionResult,
     StoredFileEvidence,
+    ValidationIssue,
 )
 from leonardo.storage import OHLCVSidecarV1
 
@@ -312,6 +313,73 @@ class _FakeMaintenanceService:
         )
 
 
+    def emit_repair_source_invalid(self, plan: MaintenanceRepairPlan) -> None:
+        _, result_callback, dispatcher = self.callbacks["task-repair"]
+        self.validation_status = "error"
+        self.persistence_status = "repaired"
+        sidecar = OHLCVSidecarV1(
+            market_id=self.market,
+            file_sha256="a" * 64,
+            row_count=3,
+            first_timestamp_ms=60_000,
+            last_timestamp_ms=180_000,
+            source="test",
+            persistence_status="repaired",
+            validation_status="error",
+        )
+        report = CanonicalValidationReport(
+            market_id=self.market,
+            csv_path=self.tmp_path / "candles.csv",
+            sidecar_path=self.tmp_path / "candles.meta.json",
+            status="error",
+            row_count=3,
+            first_timestamp_ms=60_000,
+            last_timestamp_ms=180_000,
+            issues=(
+                ValidationIssue(
+                    "error",
+                    "open_outside_range",
+                    "open is outside [low, high]",
+                    row_number=3,
+                    column="open",
+                    timestamp_ms=120_000,
+                ),
+            ),
+            csv_evidence=None,
+            sidecar_evidence=None,
+            publication_allowed=True,
+            publication_blockers=(),
+        )
+        validation = MaintenanceValidationResult(
+            report=report,
+            sidecar=sidecar,
+            sidecar_published=True,
+            publication_changed=True,
+        )
+        repair = MaintenanceRepairResult(
+            plan=plan,
+            outcome="source_invalid",
+            range_results=(
+                MaintenanceRepairRangeResult(
+                    repair_range=plan.ranges[0],
+                    fetched_rows=1,
+                    downloaded_first_ts_ms=120_000,
+                    downloaded_last_ts_ms=120_000,
+                    total_rows_after=3,
+                    file_path=self.tmp_path / "candles.csv",
+                ),
+            ),
+            validation=validation,
+            repaired_sidecar=sidecar,
+            warnings=("No local correction was applied.",),
+            source_invalid=True,
+            source_invalid_anchors=(120_000,),
+        )
+        dispatcher(
+            lambda: result_callback(TaskResult("task-repair", "completed", value=repair))
+        )
+
+
 def _report(tmp_path: Path, market, *, status: str) -> CanonicalValidationReport:
     return CanonicalValidationReport(
         market_id=market,
@@ -411,6 +479,36 @@ def test_presenter_plans_confirms_executes_and_refreshes_repair(
         assert datasets.item(0, 4).text() == "repaired"
         assert datasets.item(0, 5).text() == "ok"
         assert window.status_text().startswith("Repair accepted")
+        assert not window.button_for_id("execute_repair").isEnabled()
+    finally:
+        window.close()
+
+
+def test_presenter_reports_source_invalid_provider_repair(
+    qapp: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _FakeMaintenanceService(tmp_path)
+    window = OhlcvMaintenanceWindow()
+    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    monkeypatch.setattr(window, "confirm_repair", lambda _summary: True)
+    try:
+        window.button_for_id("plan_repair").click()
+        plan = service.emit_plan()
+        QCoreApplication.processEvents()
+
+        window.button_for_id("execute_repair").click()
+        service.emit_repair_source_invalid(plan)
+        QCoreApplication.processEvents()
+
+        datasets = window.table_for_id("datasets")
+        assert presenter.active_task_id is None
+        assert datasets.item(0, 4).text() == "repaired"
+        assert datasets.item(0, 5).text() == "error"
+        assert window.status_text().startswith("Provider source remains invalid")
+        assert "anchors=120000" in window.status_text()
+        assert "no local correction applied" in window.status_text()
         assert not window.button_for_id("execute_repair").isEnabled()
     finally:
         window.close()
