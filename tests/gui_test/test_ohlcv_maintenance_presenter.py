@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,18 @@ class _FakeMaintenanceService:
                 source="test",
                 evidence_state=self.evidence_state,
                 issues=(),
+                first_timestamp_ms=60_000,
+                last_timestamp_ms=180_000,
+                csv_size_bytes=256,
+                csv_modified_time_ns=123_456_789,
+                file_sha256="a" * 64,
+                sidecar_schema_version="1.0",
+                sidecar_created_at_utc=datetime(2026, 7, 14, 10, 0, tzinfo=UTC),
+                sidecar_updated_at_utc=datetime(2026, 7, 14, 11, 0, tzinfo=UTC),
+                sidecar_warnings=("provider retry observed",),
+                validator_id="canonical_ohlcv_v1",
+                validation_error_count=0,
+                validation_warning_count=1,
             ),
         )
         return MaintenanceDiscoveryReport(datasets=datasets, rejected=())
@@ -433,6 +446,20 @@ def test_presenter_discovers_validates_and_refreshes(
         assert window.button_for_id("delete").isEnabled()
         assert not window.button_for_id("execute_repair").isEnabled()
 
+        evidence = window.table_for_id("evidence")
+        evidence_values = {
+            evidence.item(row, 0).text(): evidence.item(row, 1).text()
+            for row in range(evidence.rowCount())
+        }
+        assert evidence_values["First timestamp UTC"] == "1970-01-01T00:01:00+00:00"
+        assert evidence_values["Last timestamp UTC"] == "1970-01-01T00:03:00+00:00"
+        assert evidence_values["CSV size"] == "256 bytes"
+        assert evidence_values["CSV SHA-256"] == "a" * 64
+        assert evidence_values["Sidecar schema"] == "1.0"
+        assert evidence_values["Canonical validator"] == "canonical_ohlcv_v1"
+        assert evidence_values["Validation counts"] == "errors=0; warnings=1"
+        assert evidence_values["Sidecar warnings"] == "provider retry observed"
+
         window.button_for_id("validate").click()
         assert presenter.active_task_id == "task-validation"
         assert window.button_for_id("cancel").isEnabled()
@@ -574,7 +601,12 @@ def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
         datasets = window.table_for_id("datasets")
         assert presenter.active_task_id is None
         assert datasets.item(0, 5).text() == "ok"
-        assert datasets.item(0, 8).text() == "complete"
+        evidence = window.table_for_id("evidence")
+        evidence_values = {
+            evidence.item(row, 0).text(): evidence.item(row, 1).text()
+            for row in range(evidence.rowCount())
+        }
+        assert evidence_values["Evidence state"] == "complete"
         assert window.status_text().startswith("Sidecar created and accepted")
         assert not window.button_for_id("reconstruct_sidecar").isEnabled()
     finally:

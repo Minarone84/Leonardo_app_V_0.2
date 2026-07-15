@@ -76,3 +76,46 @@ def test_existing_main_action_routes_to_dedicated_maintenance_window() -> None:
     expected = "return self._open_ohlcv_maintenance(main_window)"
     assert expected in composition
     assert "def _open_historical_download_manager" in composition
+
+
+def test_ohlcv_maintenance_layout_restores_documented_geometry_and_readability() -> None:
+    window_path = ROOT / "src/leonardo/gui/windows/ohlcv_maintenance_window.py"
+    presenter_path = ROOT / "src/leonardo/gui/presenters/ohlcv_maintenance_presenter.py"
+    window = window_path.read_text(encoding="utf-8")
+    presenter = presenter_path.read_text(encoding="utf-8")
+
+    assert "def showEvent" in window
+    assert "def _apply_initial_screen_geometry" in window
+    assert "available.width() // 2" in window
+    assert "height = available.height()" in window
+    assert "def _fit_initial_frame_inside_available_geometry" in window
+    assert "def _apply_window_font_bump" in window
+    assert "point_size + 1" in window
+    assert "point_size_f + 1.0" in window
+    assert "def _apply_maintenance_widget_fonts" in window
+    assert "ohlcv_maintenance.splitter.workspace" in window
+    assert "ohlcv_maintenance.splitter.overview" in window
+    assert "ohlcv_maintenance.splitter.results" in window
+    assert 'QGroupBox("Selected Dataset Evidence"' in window
+    assert 'QGroupBox("Canonical Validation Findings"' in window
+    assert 'QGroupBox("Actions and Operation Progress"' in window
+    assert '"Refresh Datasets"' in window
+    assert '"Cancel Active Operation"' in window
+    assert "QGridLayout" in window
+
+    for evidence_label in (
+        '"First timestamp UTC"',
+        '"Last timestamp UTC"',
+        '"CSV SHA-256"',
+        '"Sidecar schema"',
+        '"Sidecar created UTC"',
+        '"Sidecar updated UTC"',
+        '"Canonical validator"',
+        '"Validation counts"',
+        '"Sidecar warnings"',
+    ):
+        assert evidence_label in presenter
+
+    assert "OHLCVStore" not in window
+    assert "read_sidecar" not in window
+    assert "Path(" not in window

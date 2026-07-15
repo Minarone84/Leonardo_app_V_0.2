@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import csv
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,6 +91,18 @@ class MaintenanceDatasetSummary:
     source: str
     evidence_state: str
     issues: tuple[str, ...]
+    first_timestamp_ms: int | None = None
+    last_timestamp_ms: int | None = None
+    csv_size_bytes: int | None = None
+    csv_modified_time_ns: int | None = None
+    file_sha256: str = ""
+    sidecar_schema_version: str = ""
+    sidecar_created_at_utc: datetime | None = None
+    sidecar_updated_at_utc: datetime | None = None
+    sidecar_warnings: tuple[str, ...] = ()
+    validator_id: str = ""
+    validation_error_count: int | None = None
+    validation_warning_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -809,6 +822,26 @@ class OHLCVMaintenanceService:
         source = inspection.source
         evidence_state = "complete"
         issues = list(inspection.issues)
+        first_timestamp_ms = inspection.first_ts_ms
+        last_timestamp_ms = inspection.last_ts_ms
+        csv_size_bytes: int | None = None
+        csv_modified_time_ns: int | None = None
+        file_sha256 = ""
+        sidecar_schema_version = ""
+        sidecar_created_at_utc: datetime | None = None
+        sidecar_updated_at_utc: datetime | None = None
+        sidecar_warnings: tuple[str, ...] = ()
+        validator_id = ""
+        validation_error_count: int | None = None
+        validation_warning_count: int | None = None
+        if inspection.csv_exists:
+            try:
+                csv_stat = inspection.csv_path.stat()
+            except OSError:
+                pass
+            else:
+                csv_size_bytes = csv_stat.st_size
+                csv_modified_time_ns = csv_stat.st_mtime_ns
         if not inspection.csv_exists and inspection.metadata_exists:
             evidence_state = "orphan_sidecar"
         elif inspection.csv_exists and not inspection.metadata_exists:
@@ -827,6 +860,24 @@ class OHLCVMaintenanceService:
                 persistence_status = sidecar.persistence_status
                 validation_status = sidecar.validation_status
                 source = sidecar.source
+                first_timestamp_ms = sidecar.first_timestamp_ms
+                last_timestamp_ms = sidecar.last_timestamp_ms
+                file_sha256 = sidecar.file_sha256
+                sidecar_schema_version = sidecar.schema_version
+                sidecar_created_at_utc = sidecar.created_at_utc
+                sidecar_updated_at_utc = sidecar.updated_at_utc
+                sidecar_warnings = sidecar.warnings
+                validation_summary = sidecar.lineage.get("canonical_validation")
+                if isinstance(validation_summary, Mapping):
+                    raw_validator = validation_summary.get("validator")
+                    if isinstance(raw_validator, str):
+                        validator_id = raw_validator.strip()
+                    raw_errors = validation_summary.get("error_count")
+                    if type(raw_errors) is int:
+                        validation_error_count = raw_errors
+                    raw_warnings = validation_summary.get("warning_count")
+                    if type(raw_warnings) is int:
+                        validation_warning_count = raw_warnings
                 if not inspection.csv_exists:
                     evidence_state = "orphan_sidecar"
                 elif sidecar.persistence_status == "partial":
@@ -845,6 +896,18 @@ class OHLCVMaintenanceService:
             source=source,
             evidence_state=evidence_state,
             issues=tuple(dict.fromkeys(issues)),
+            first_timestamp_ms=first_timestamp_ms,
+            last_timestamp_ms=last_timestamp_ms,
+            csv_size_bytes=csv_size_bytes,
+            csv_modified_time_ns=csv_modified_time_ns,
+            file_sha256=file_sha256,
+            sidecar_schema_version=sidecar_schema_version,
+            sidecar_created_at_utc=sidecar_created_at_utc,
+            sidecar_updated_at_utc=sidecar_updated_at_utc,
+            sidecar_warnings=sidecar_warnings,
+            validator_id=validator_id,
+            validation_error_count=validation_error_count,
+            validation_warning_count=validation_warning_count,
         )
 
     @staticmethod

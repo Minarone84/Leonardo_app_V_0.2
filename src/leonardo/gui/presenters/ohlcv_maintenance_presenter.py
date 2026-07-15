@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from PySide6.QtCore import QObject, Qt, Signal
 
@@ -141,21 +142,7 @@ class OhlcvMaintenancePresenter(QObject):
             self._set_selection_actions(False)
             return
         summary = self._datasets[index]
-        self._view.set_evidence_rows(
-            (
-                ("MarketId", summary.market_id.as_key()),
-                ("CSV path", summary.csv_path),
-                ("Sidecar path", summary.sidecar_path),
-                ("CSV exists", summary.csv_exists),
-                ("Sidecar exists", summary.sidecar_exists),
-                ("Persistence", summary.persistence_status),
-                ("Validation", summary.validation_status),
-                ("Rows", summary.row_count),
-                ("Source", summary.source),
-                ("Evidence state", summary.evidence_state),
-                ("Discovery issues", ", ".join(summary.issues) or "None"),
-            )
-        )
+        self._view.set_evidence_rows(_evidence_rows(summary))
         available = self._active_task_id is None
         self._view.set_validate_enabled(available)
         self._view.set_plan_repair_enabled(available)
@@ -536,6 +523,69 @@ class OhlcvMaintenancePresenter(QObject):
         self._view.set_delete_enabled(enabled)
         self._view.set_execute_repair_enabled(False)
 
+
+def _evidence_rows(summary: MaintenanceDatasetSummary) -> tuple[tuple[str, object], ...]:
+    validation_counts = _validation_counts(summary)
+    return (
+        ("MarketId", summary.market_id.as_key()),
+        ("Evidence state", summary.evidence_state),
+        ("CSV path", summary.csv_path),
+        ("Sidecar path", summary.sidecar_path),
+        ("CSV exists", _yes_no(summary.csv_exists)),
+        ("Sidecar exists", _yes_no(summary.sidecar_exists)),
+        ("Persistence", summary.persistence_status),
+        ("Validation", summary.validation_status),
+        ("Source", summary.source),
+        ("Rows", summary.row_count),
+        ("First timestamp ms", _optional_text(summary.first_timestamp_ms)),
+        ("First timestamp UTC", _timestamp_utc(summary.first_timestamp_ms)),
+        ("Last timestamp ms", _optional_text(summary.last_timestamp_ms)),
+        ("Last timestamp UTC", _timestamp_utc(summary.last_timestamp_ms)),
+        ("CSV size", _byte_count(summary.csv_size_bytes)),
+        ("CSV modified ns", _optional_text(summary.csv_modified_time_ns)),
+        ("CSV SHA-256", summary.file_sha256 or "Unavailable"),
+        ("Sidecar schema", summary.sidecar_schema_version or "Unavailable"),
+        ("Sidecar created UTC", _datetime_utc(summary.sidecar_created_at_utc)),
+        ("Sidecar updated UTC", _datetime_utc(summary.sidecar_updated_at_utc)),
+        ("Canonical validator", summary.validator_id or "Not yet published"),
+        ("Validation counts", validation_counts),
+        ("Sidecar warnings", "; ".join(summary.sidecar_warnings) or "None"),
+        ("Discovery issues", ", ".join(summary.issues) or "None"),
+    )
+
+
+def _validation_counts(summary: MaintenanceDatasetSummary) -> str:
+    errors = summary.validation_error_count
+    warnings = summary.validation_warning_count
+    if errors is None and warnings is None:
+        return "Not yet published"
+    return f"errors={errors or 0}; warnings={warnings or 0}"
+
+
+def _yes_no(value: bool) -> str:
+    return "Yes" if value else "No"
+
+
+def _timestamp_utc(value: int | None) -> str:
+    if value is None:
+        return "Unavailable"
+    try:
+        timestamp = datetime.fromtimestamp(value / 1000, tz=UTC)
+    except (OSError, OverflowError, ValueError):
+        return "Invalid timestamp"
+    return timestamp.isoformat()
+
+
+def _datetime_utc(value: datetime | None) -> str:
+    if value is None:
+        return "Unavailable"
+    return value.astimezone(UTC).isoformat()
+
+
+def _byte_count(value: int | None) -> str:
+    if value is None:
+        return "Unavailable"
+    return f"{value:,} bytes"
 
 def _dataset_row(summary: MaintenanceDatasetSummary) -> MaintenanceDatasetRow:
     return MaintenanceDatasetRow(

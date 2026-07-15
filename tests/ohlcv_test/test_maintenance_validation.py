@@ -143,6 +143,33 @@ def test_unknown_downloaded_dataset_becomes_research_accepted_without_csv_mutati
     assert not tuple(store.dataset_dir(market).glob("*.tmp"))
 
 
+def test_discovery_exposes_detailed_sidecar_evidence_for_gui_reporting(
+    tmp_path: Path,
+) -> None:
+    store = OHLCVStore(tmp_path)
+    market = _market()
+    _write_committed(store, market)
+    maintenance = _maintenance(store)
+    maintenance.validate(market)
+
+    summary = maintenance.discover().datasets[0]
+    sidecar = store.read_sidecar(market)
+    stat = store.csv_path(market).stat()
+
+    assert summary.first_timestamp_ms == 60_000
+    assert summary.last_timestamp_ms == 180_000
+    assert summary.csv_size_bytes == stat.st_size
+    assert summary.csv_modified_time_ns == stat.st_mtime_ns
+    assert summary.file_sha256 == sidecar.file_sha256
+    assert summary.sidecar_schema_version == "1.0"
+    assert summary.sidecar_created_at_utc == sidecar.created_at_utc
+    assert summary.sidecar_updated_at_utc == sidecar.updated_at_utc
+    assert summary.sidecar_warnings == ()
+    assert summary.validator_id == "canonical_ohlcv_v1"
+    assert summary.validation_error_count == 0
+    assert summary.validation_warning_count == 0
+
+
 @pytest.mark.parametrize(
     ("candles", "expected_code"),
     [
