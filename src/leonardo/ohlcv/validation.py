@@ -11,6 +11,7 @@ import calendar
 import csv
 import hashlib
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,11 @@ from leonardo.ohlcv.store import Candle, OHLCVStore
 _CSV_COLUMNS = ("ts_ms", "open", "high", "low", "close", "volume")
 _FINAL_PERSISTENCE_STATUSES = frozenset({"committed", "repaired"})
 _SEVERITY_ORDER = {"error": 0, "warning": 1}
+_DEFAULT_PROGRESS_INTERVAL_ROWS = 8192
+
+
+class ValidationCancelled(RuntimeError):
+    """Raised when a cooperative canonical validation cancellation is requested."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,17 +247,27 @@ class CanonicalOHLCVValidator:
 
     validator_id = "canonical_ohlcv_v1"
 
-    def validate(self, store: OHLCVStore, market: MarketId) -> CanonicalValidationReport:
+    def validate(
+        self,
+        store: OHLCVStore,
+        market: MarketId,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int | None], None] | None = None,
+        progress_interval_rows: int = _DEFAULT_PROGRESS_INTERVAL_ROWS,
+    ) -> CanonicalValidationReport:
         if not isinstance(store, OHLCVStore):
             raise TypeError("store must be an OHLCVStore")
         _require_canonical_market(market)
+        if type(progress_interval_rows) is not int or progress_interval_rows <= 0:
+            raise ValueError("progress_interval_rows must be a positive integer")
+        _raise_if_cancelled(cancel_requested)
 
         csv_path = store.csv_path(market)
         sidecar_path = store.sidecar_path(market)
         issues: list[ValidationIssue] = []
         blockers: set[str] = set()
         csv_start: FileEvidence | None = None
-        csv_end: FileEvidence | None = None
         sidecar_start: FileEvidence | None = None
         sidecar_end: FileEvidence | None = None
         sidecar = None
@@ -266,6 +282,7 @@ class CanonicalOHLCVValidator:
                 blockers=blockers,
                 unstable_code="csv_changed_during_validation",
                 unreadable_code="csv_unreadable",
+                cancel_requested=cancel_requested,
             )
 
         if not sidecar_path.is_file():
@@ -321,28 +338,41 @@ class CanonicalOHLCVValidator:
         first_timestamp_ms: int | None = None
         last_timestamp_ms: int | None = None
         if csv_start is not None:
+            expected_rows = sidecar.row_count if sidecar is not None else None
             row_count, first_timestamp_ms, last_timestamp_ms = self._scan_csv(
                 csv_path,
                 market,
                 issues,
+                cancel_requested=cancel_requested,
+                progress_callback=progress_callback,
+                progress_interval_rows=progress_interval_rows,
+                expected_rows=expected_rows,
             )
-            csv_end = self._capture_evidence(
-                csv_path,
-                issues=issues,
-                blockers=blockers,
-                unstable_code="csv_changed_during_validation",
-                unreadable_code="csv_unreadable",
-            )
-            if csv_end is not None and csv_end != csv_start:
-                _append_unique_issue(
-                    issues,
+            try:
+                csv_after = csv_path.stat()
+            except OSError as error:
+                issues.append(
                     ValidationIssue(
                         "error",
-                        "csv_changed_during_validation",
-                        "candles.csv changed while canonical validation was running",
-                    ),
+                        "csv_unreadable",
+                        f"candles.csv could not be inspected after validation: {error}",
+                    )
                 )
-                blockers.add("csv_changed_during_validation")
+                blockers.add("csv_unreadable")
+            else:
+                if (
+                    csv_after.st_size != csv_start.size_bytes
+                    or csv_after.st_mtime_ns != csv_start.modified_time_ns
+                ):
+                    _append_unique_issue(
+                        issues,
+                        ValidationIssue(
+                            "error",
+                            "csv_changed_during_validation",
+                            "candles.csv changed while canonical validation was running",
+                        ),
+                    )
+                    blockers.add("csv_changed_during_validation")
 
         if sidecar_start is not None:
             sidecar_end = self._capture_evidence(
@@ -363,7 +393,10 @@ class CanonicalOHLCVValidator:
                 )
                 blockers.add("sidecar_changed_during_validation")
 
-        stable_csv_evidence = csv_start if csv_start is not None and csv_start == csv_end else None
+        _raise_if_cancelled(cancel_requested)
+        stable_csv_evidence = (
+            csv_start if "csv_changed_during_validation" not in blockers else None
+        )
         stable_sidecar_evidence = (
             sidecar_start if sidecar_start is not None and sidecar_start == sidecar_end else None
         )
@@ -451,10 +484,11 @@ class CanonicalOHLCVValidator:
         blockers: set[str],
         unstable_code: str,
         unreadable_code: str,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> FileEvidence | None:
         try:
             before = path.stat()
-            sha256 = _sha256(path)
+            sha256 = _sha256(path, cancel_requested=cancel_requested)
             after = path.stat()
         except OSError as error:
             _append_unique_issue(
@@ -490,11 +524,17 @@ class CanonicalOHLCVValidator:
         path: Path,
         market: MarketId,
         issues: list[ValidationIssue],
+        *,
+        cancel_requested: Callable[[], bool] | None,
+        progress_callback: Callable[[int, int | None], None] | None,
+        progress_interval_rows: int,
+        expected_rows: int | None,
     ) -> tuple[int, int | None, int | None]:
         row_count = 0
         first_timestamp: int | None = None
         last_timestamp: int | None = None
         previous_timestamp: int | None = None
+        last_reported_row = 0
         fixed_step = timeframe_duration_ms(market.timeframe)
         month_step = int(market.timeframe[:-1]) if market.timeframe.endswith("M") else None
 
@@ -557,6 +597,11 @@ class CanonicalOHLCVValidator:
                 }
                 for row_number, row in enumerate(reader, start=2):
                     row_count += 1
+                    if row_count % progress_interval_rows == 0:
+                        _raise_if_cancelled(cancel_requested)
+                        if progress_callback is not None:
+                            progress_callback(row_count, expected_rows)
+                            last_reported_row = row_count
                     if len(row) != len(columns):
                         issues.append(
                             ValidationIssue(
@@ -658,6 +703,11 @@ class CanonicalOHLCVValidator:
                             timestamp_ms=timestamp,
                             issues=issues,
                         )
+                _raise_if_cancelled(cancel_requested)
+                if progress_callback is not None and row_count != last_reported_row:
+                    progress_callback(row_count, expected_rows)
+        except ValidationCancelled:
+            raise
         except (OSError, UnicodeError, csv.Error) as error:
             issues.append(
                 ValidationIssue(
@@ -834,9 +884,23 @@ def _status_from_issues(issues) -> str:
     return "ok"
 
 
-def _sha256(path: Path) -> str:
+def _sha256(
+    path: Path,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk_number, chunk in enumerate(
+            iter(lambda: handle.read(1024 * 1024), b""),
+            start=1,
+        ):
             digest.update(chunk)
+            if chunk_number % 4 == 0:
+                _raise_if_cancelled(cancel_requested)
     return digest.hexdigest()
+
+
+def _raise_if_cancelled(cancel_requested: Callable[[], bool] | None) -> None:
+    if cancel_requested is not None and cancel_requested():
+        raise ValidationCancelled("canonical OHLCV validation cancelled")

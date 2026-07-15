@@ -413,30 +413,23 @@ def test_noncanonical_or_unsupported_timeframe_is_rejected_at_boundary(tmp_path:
     with pytest.raises(ValueError, match="invalid timeframe unit"):
         CanonicalOHLCVValidator().validate(store, invalid)
 
-def test_csv_change_during_validation_blocks_publication(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from leonardo.ohlcv import validation as validation_module
-
+def test_csv_change_during_validation_blocks_publication(tmp_path: Path) -> None:
     store = OHLCVStore(tmp_path)
     market = _market()
     _write_committed(store, market)
-    original_sha256 = validation_module._sha256
     changed = False
 
-    def mutate_after_hash(path: Path) -> str:
+    def mutate_before_final_fingerprint(_current: int, _total: int | None) -> None:
         nonlocal changed
-        result = original_sha256(path)
-        if path.name == "candles.csv" and not changed:
+        if not changed:
             changed = True
-            with path.open("a", encoding="utf-8") as handle:
+            with store.csv_path(market).open("a", encoding="utf-8") as handle:
                 handle.write("240000,3,4,2.5,3.5,16\n")
-        return result
 
-    monkeypatch.setattr(validation_module, "_sha256", mutate_after_hash)
-
-    result = _maintenance(store).validate(market)
+    result = _maintenance(store).validate(
+        market,
+        progress_callback=mutate_before_final_fingerprint,
+    )
 
     assert "csv_changed_during_validation" in _codes(result)
     assert result.sidecar_published is False

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import calendar
 import csv
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +29,7 @@ from leonardo.ohlcv.validation import (
     CanonicalOHLCVValidator,
     CanonicalValidationReport,
     FileEvidence,
+    ValidationCancelled,
     ValidationIssue,
 )
 from leonardo.storage import OHLCVSidecarV1
@@ -310,8 +311,17 @@ class OHLCVMaintenanceService:
         market: MarketId,
         *,
         correlation_id: str | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int | None], None] | None = None,
     ) -> MaintenanceValidationResult:
-        report = self._validator.validate(self._store, market)
+        report = self._validator.validate(
+            self._store,
+            market,
+            cancel_requested=cancel_requested,
+            progress_callback=progress_callback,
+        )
+        if cancel_requested is not None and cancel_requested():
+            raise ValidationCancelled("canonical OHLCV validation cancelled before publication")
         if not report.publication_allowed:
             self._audit(
                 event_type="ohlcv.validation_not_published",

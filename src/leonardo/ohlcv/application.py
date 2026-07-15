@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import replace
+from threading import Event, Lock
 from uuid import uuid4
 
 from leonardo.core.core_runner import (
@@ -126,6 +127,8 @@ class OHLCVMaintenanceApplicationService:
             operation_locks or inherited_locks or OHLCVDatasetOperationLocks()
         )
         self._cache_invalidator = cache_invalidator
+        self._validation_cancel_events: dict[str, Event] = {}
+        self._validation_cancel_lock = Lock()
 
     def discover(self) -> MaintenanceDiscoveryReport:
         return self._maintenance.discover()
@@ -249,32 +252,59 @@ class OHLCVMaintenanceApplicationService:
         callback_dispatcher: CallbackDispatcher | None = None,
     ) -> TaskSubmission:
         correlation_id = uuid4().hex
+        cancel_event = Event()
+        completion_event = Event()
+        task_id_ref: dict[str, str | None] = {"value": None}
 
         def job(reporter: ProgressReporter) -> object:
-            reporter.report(
-                f"Validating OHLCV dataset {market.as_key()}",
-                current=0,
-                total=1,
-            )
-            result = self._maintenance.validate(market, correlation_id=correlation_id)
-            publication_state = "published" if result.sidecar_published else "not published"
-            reporter.report(
-                (
-                    f"OHLCV validation {result.report.status} for {market.as_key()}; "
-                    f"evidence {publication_state}"
-                ),
-                current=1,
-                total=1,
-                details={
-                    "market_id": market.as_key(),
-                    "validation_status": result.report.status,
-                    "sidecar_published": result.sidecar_published,
-                    "accepted": result.accepted,
-                },
-            )
-            return result
+            try:
+                reporter.report(
+                    f"Validating OHLCV dataset {market.as_key()}",
+                    current=0,
+                    total=None,
+                )
 
-        return self._core_runner.submit_blocking_job(
+                def on_rows(current: int, total: int | None) -> None:
+                    reporter.report(
+                        f"Validated {current:,} OHLCV rows for {market.as_key()}",
+                        current=current,
+                        total=total,
+                        details={
+                            "market_id": market.as_key(),
+                            "rows_validated": current,
+                        },
+                    )
+
+                result = self._maintenance.validate(
+                    market,
+                    correlation_id=correlation_id,
+                    cancel_requested=cancel_event.is_set,
+                    progress_callback=on_rows,
+                )
+                publication_state = "published" if result.sidecar_published else "not published"
+                reporter.report(
+                    (
+                        f"OHLCV validation {result.report.status} for {market.as_key()}; "
+                        f"evidence {publication_state}"
+                    ),
+                    current=result.report.row_count,
+                    total=result.report.row_count,
+                    details={
+                        "market_id": market.as_key(),
+                        "validation_status": result.report.status,
+                        "sidecar_published": result.sidecar_published,
+                        "accepted": result.accepted,
+                    },
+                )
+                return result
+            finally:
+                completion_event.set()
+                task_id = task_id_ref["value"]
+                if task_id is not None:
+                    with self._validation_cancel_lock:
+                        self._validation_cancel_events.pop(task_id, None)
+
+        submission = self._core_runner.submit_blocking_job(
             job,
             task_name=f"OHLCV validation {market.exchange} {market.symbol} {market.timeframe}",
             progress_callback=progress_callback,
@@ -286,6 +316,11 @@ class OHLCVMaintenanceApplicationService:
                 "market_id": market.as_key(),
             },
         )
+        task_id_ref["value"] = submission.task_id
+        if not completion_event.is_set():
+            with self._validation_cancel_lock:
+                self._validation_cancel_events[submission.task_id] = cancel_event
+        return submission
 
     def submit_sidecar_reconstruction_plan(
         self,
@@ -574,4 +609,8 @@ class OHLCVMaintenanceApplicationService:
         )
 
     def cancel(self, task_id: str) -> bool:
+        with self._validation_cancel_lock:
+            cancel_event = self._validation_cancel_events.get(task_id)
+        if cancel_event is not None:
+            cancel_event.set()
         return self._core_runner.cancel(task_id)

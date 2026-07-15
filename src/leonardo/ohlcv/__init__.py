@@ -47,6 +47,7 @@ from leonardo.ohlcv.validation import (
     FileEvidence,
     PreliminaryOHLCVValidator,
     PreliminaryValidationReport,
+    ValidationCancelled,
     ValidationIssue,
 )
 
@@ -86,6 +87,7 @@ __all__ = [
     "SidecarReconstructionResult",
     "PreliminaryOHLCVValidator",
     "PreliminaryValidationReport",
+    "ValidationCancelled",
     "ValidationIssue",
     "StoredFileEvidence",
     "ValidationPublicationResult",
