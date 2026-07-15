@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime
 from collections.abc import Mapping, Sequence, Set
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
 
-from leonardo.connection.provider import ProviderCandle
-from leonardo.data import normalize_market_type, normalize_symbol, normalize_timeframe, timeframe_duration_ms
+from leonardo.connection.provider import (
+    HistoricalProviderRequestError,
+    ProviderCandle,
+)
+from leonardo.data import (
+    normalize_market_type,
+    normalize_symbol,
+    normalize_timeframe,
+    timeframe_duration_ms,
+)
 
 _BYBIT_REST_MAINNET = "https://api.bybit.com"
 _BYBIT_REST_TESTNET = "https://api-testnet.bybit.com"
@@ -77,8 +85,17 @@ class BybitHistoricalProvider:
         data = await self._public_get_json("/v5/market/time")
         value = data.get("time")
         if value is None:
-            raise RuntimeError("Bybit server time response did not include 'time'")
-        return int(value)
+            raise self._response_error(
+                "Bybit server time response did not include 'time'",
+                operation="server_time",
+            )
+        try:
+            return int(value)
+        except (TypeError, ValueError) as error:
+            raise self._response_error(
+                f"Bybit server time is invalid: {value!r}",
+                operation="server_time",
+            ) from error
 
     async def fetch_ohlcv_historical(
         self,
@@ -106,16 +123,25 @@ class BybitHistoricalProvider:
         data = await self._public_get_json("/v5/market/kline", params=params)
         result = data.get("result")
         if not isinstance(result, Mapping):
-            raise RuntimeError("Bybit kline response did not include a result mapping")
+            raise self._response_error(
+                "Bybit kline response did not include a result mapping",
+                operation="historical_ohlcv",
+            )
         rows = result.get("list", ())
         if not isinstance(rows, list):
-            raise RuntimeError("Bybit kline response list is invalid")
+            raise self._response_error(
+                "Bybit kline response list is invalid",
+                operation="historical_ohlcv",
+            )
         candles: list[ProviderCandle] = []
         for row in rows:
             if not isinstance(row, (list, tuple)) or len(row) < 6:
-                raise RuntimeError(f"Bybit returned an invalid kline row: {row!r}")
-            candles.append(
-                ProviderCandle(
+                raise self._response_error(
+                    f"Bybit returned an invalid kline row: {row!r}",
+                    operation="historical_ohlcv",
+                )
+            try:
+                candle = ProviderCandle(
                     ts_ms=int(row[0]),
                     open=float(row[1]),
                     high=float(row[2]),
@@ -124,9 +150,20 @@ class BybitHistoricalProvider:
                     volume=float(row[5]),
                     is_closed=True,
                 )
-            )
+            except (TypeError, ValueError, OverflowError) as error:
+                raise self._response_error(
+                    f"Bybit returned a non-numeric kline row: {row!r}",
+                    operation="historical_ohlcv",
+                ) from error
+            candles.append(candle)
         candles.sort(key=lambda candle: candle.ts_ms)
-        server_time_ms = int(data.get("time") or 0)
+        try:
+            server_time_ms = int(data.get("time") or 0)
+        except (TypeError, ValueError) as error:
+            raise self._response_error(
+                f"Bybit response time is invalid: {data.get('time')!r}",
+                operation="historical_ohlcv",
+            ) from error
         if server_time_ms and candles:
             newest = candles[-1]
             if _candle_close_ms(newest.ts_ms, canonical_timeframe) > server_time_ms:
@@ -196,35 +233,126 @@ class BybitHistoricalProvider:
     ) -> Mapping[str, Any]:
         await self.open()
         assert self._session is not None
-        last_error: Exception | None = None
+        last_error: HistoricalProviderRequestError | None = None
+        operation = _operation_for_path(path)
         for attempt in range(1, _MAX_ATTEMPTS + 1):
+            retry_delay: float | None = None
             try:
                 async with self._request_lock:
                     await self._pace_locked()
-                    async with self._session.get(f"{self._base_url}{path}", params=params) as response:
-                        payload = await response.json(content_type=None)
-                        if not isinstance(payload, Mapping):
-                            raise RuntimeError("Bybit returned a non-mapping JSON response")
-                        self._update_pacing_from_headers(response.headers)
-                        if self._is_rate_limited(response.status, payload):
-                            delay = self._rate_limit_delay(response.headers, attempt)
-                        elif response.status >= 400:
-                            raise RuntimeError(f"Bybit HTTP {response.status}: {payload!r}")
-                        elif int(payload.get("retCode", -1)) != 0:
-                            raise RuntimeError(
-                                f"Bybit API error {payload.get('retCode')}: {payload.get('retMsg')}"
-                            )
+                    async with self._session.get(
+                        f"{self._base_url}{path}", params=params
+                    ) as response:
+                        status = int(getattr(response, "status", 200) or 200)
+                        headers = getattr(response, "headers", {}) or {}
+                        try:
+                            payload = await response.json(content_type=None)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as error:
+                            if status == 429:
+                                last_error = HistoricalProviderRequestError(
+                                    f"Bybit rate limit response for {operation}: HTTP 429",
+                                    provider=self.name,
+                                    operation=operation,
+                                    retryable=True,
+                                    status=status,
+                                    code=_RATE_LIMIT_CODE,
+                                )
+                                retry_delay = self._rate_limit_delay(headers, attempt)
+                            else:
+                                last_error = HistoricalProviderRequestError(
+                                    f"Bybit JSON response could not be decoded for {operation}: {error}",
+                                    provider=self.name,
+                                    operation=operation,
+                                    retryable=(
+                                        status < 400
+                                        or self._is_retryable_http_status(status)
+                                    ),
+                                    status=status,
+                                )
                         else:
-                            return payload
-                await asyncio.sleep(delay)
+                            if not isinstance(payload, Mapping):
+                                last_error = HistoricalProviderRequestError(
+                                    f"Bybit returned a non-mapping JSON response for {operation}",
+                                    provider=self.name,
+                                    operation=operation,
+                                    retryable=True,
+                                    status=status,
+                                )
+                            else:
+                                self._update_pacing_from_headers(headers)
+                                ret_code = self._ret_code(payload)
+                                if self._is_rate_limited(status, payload):
+                                    last_error = HistoricalProviderRequestError(
+                                        f"Bybit rate limit response for {operation}: "
+                                        f"{payload.get('retMsg') or 'rate limited'}",
+                                        provider=self.name,
+                                        operation=operation,
+                                        retryable=True,
+                                        status=status,
+                                        code=ret_code,
+                                    )
+                                    retry_delay = self._rate_limit_delay(headers, attempt)
+                                elif status >= 400:
+                                    retryable = self._is_retryable_http_status(status)
+                                    failure = HistoricalProviderRequestError(
+                                        f"Bybit HTTP {status} for {operation}: {payload!r}",
+                                        provider=self.name,
+                                        operation=operation,
+                                        retryable=retryable,
+                                        status=status,
+                                        code=ret_code,
+                                    )
+                                    if not retryable:
+                                        raise failure
+                                    last_error = failure
+                                elif ret_code not in (None, 0):
+                                    raise HistoricalProviderRequestError(
+                                        f"Bybit API error {payload.get('retCode')} for {operation}: "
+                                        f"{payload.get('retMsg')}",
+                                        provider=self.name,
+                                        operation=operation,
+                                        retryable=False,
+                                        status=status,
+                                        code=ret_code,
+                                    )
+                                else:
+                                    return payload
+                        if last_error is not None and not last_error.retryable:
+                            raise last_error
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
+            except HistoricalProviderRequestError as error:
+                if not error.retryable:
+                    raise
                 last_error = error
-                if attempt >= _MAX_ATTEMPTS:
-                    break
-                await asyncio.sleep(min(float(attempt), _MAX_RATE_LIMIT_SLEEP_SECONDS))
-        raise RuntimeError(f"Bybit request failed after {_MAX_ATTEMPTS} attempts: {last_error}") from last_error
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as error:
+                last_error = HistoricalProviderRequestError(
+                    f"Bybit transport failure for {operation}: "
+                    f"{type(error).__name__}: {error}",
+                    provider=self.name,
+                    operation=operation,
+                    retryable=True,
+                )
+            if attempt >= _MAX_ATTEMPTS:
+                break
+            await asyncio.sleep(
+                retry_delay
+                if retry_delay is not None
+                else min(float(attempt), _MAX_RATE_LIMIT_SLEEP_SECONDS)
+            )
+        assert last_error is not None
+        raise HistoricalProviderRequestError(
+            f"Bybit request failed after {_MAX_ATTEMPTS} attempts for {operation}: "
+            f"{last_error}",
+            provider=self.name,
+            operation=operation,
+            retryable=True,
+            attempts_exhausted=True,
+            status=last_error.status,
+            code=last_error.code,
+        ) from last_error
 
     async def _pace_locked(self) -> None:
         delay = self._next_request_at - time.monotonic()
@@ -257,11 +385,21 @@ class BybitHistoricalProvider:
 
     @staticmethod
     def _is_rate_limited(status: int, payload: Mapping[str, Any]) -> bool:
+        return status == 429 or BybitHistoricalProvider._ret_code(payload) == _RATE_LIMIT_CODE
+
+    @staticmethod
+    def _is_retryable_http_status(status: int) -> bool:
+        return status in {408, 425} or status >= 500
+
+    @staticmethod
+    def _ret_code(payload: Mapping[str, Any]) -> int | None:
+        raw = payload.get("retCode")
+        if raw is None:
+            return None
         try:
-            ret_code = int(payload.get("retCode", -1))
+            return int(raw)
         except (TypeError, ValueError):
-            ret_code = -1
-        return status == 429 or ret_code == _RATE_LIMIT_CODE
+            return None
 
     @staticmethod
     def _header_int(headers: object, name: str) -> int | None:
@@ -290,6 +428,27 @@ class BybitHistoricalProvider:
         if canonical not in _BYBIT_INTERVALS:
             raise ValueError(f"Bybit does not support timeframe: {timeframe!r}")
         return canonical
+
+    def _response_error(
+        self,
+        message: str,
+        *,
+        operation: str,
+    ) -> HistoricalProviderRequestError:
+        return HistoricalProviderRequestError(
+            message,
+            provider=self.name,
+            operation=operation,
+            retryable=False,
+        )
+
+
+def _operation_for_path(path: str) -> str:
+    if path.endswith("/time"):
+        return "server_time"
+    if path.endswith("/kline"):
+        return "historical_ohlcv"
+    return str(path)
 
 
 def _candle_close_ms(open_ts_ms: int, timeframe: str) -> int:

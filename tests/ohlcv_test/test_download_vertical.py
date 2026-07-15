@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from leonardo.connection import ConnectionApplicationService, ProviderCandle, ProviderRegistry
+from leonardo.connection import (
+    ConnectionApplicationService,
+    HistoricalProviderRequestError,
+    ProviderCandle,
+    ProviderRegistry,
+)
 from leonardo.core.audit_log import AuditLog, InMemoryAuditSink
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.data import canonicalize_market_id, timeframe_to_storage_segment
@@ -254,3 +259,100 @@ def test_cancel_during_finalize_reports_committed_persistence_truth(tmp_path: Pa
         assert cancelled.details["partial_persistence"] is False
 
     asyncio.run(scenario())
+
+
+class _ProviderFailureProbe(_FakeProvider):
+    def __init__(
+        self,
+        failures: list[HistoricalProviderRequestError],
+    ) -> None:
+        super().__init__()
+        self._failures = list(failures)
+        self.page_attempts = 0
+
+    async def fetch_ohlcv_historical(self, *, timeframe, end_ms=None, **kwargs):
+        self.page_attempts += 1
+        if self._failures:
+            raise self._failures.pop(0)
+        return await super().fetch_ohlcv_historical(
+            timeframe=timeframe,
+            end_ms=end_ms,
+            **kwargs,
+        )
+
+
+def test_downloader_does_not_retry_permanent_provider_failure(tmp_path: Path) -> None:
+    provider = _ProviderFailureProbe(
+        [
+            HistoricalProviderRequestError(
+                "invalid symbol",
+                provider="bybit",
+                operation="historical_ohlcv",
+                retryable=False,
+                code=10001,
+            )
+        ]
+    )
+    service, _store = _service(tmp_path, provider)
+    events = []
+
+    with pytest.raises(RuntimeError, match="failed after 1 downloader attempt"):
+        asyncio.run(service.run_batch(_request(), progress=events.append))
+
+    assert provider.page_attempts == 1
+    failed = next(event for event in events if event.kind == "page_failed")
+    assert failed.details["provider_retryable"] is False
+    assert failed.details["provider_code"] == 10001
+    assert not any(event.kind == "page_retrying" for event in events)
+
+
+def test_downloader_retries_transient_provider_failure_not_already_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _ProviderFailureProbe(
+        [
+            HistoricalProviderRequestError(
+                "temporary transport failure",
+                provider="fake",
+                operation="historical_ohlcv",
+                retryable=True,
+            )
+        ]
+    )
+    service, store = _service(tmp_path, provider)
+    service.RETRY_BACKOFF_SECONDS = 0.0
+    events = []
+
+    result = asyncio.run(service.run_batch(_request(), progress=events.append))
+
+    assert result.results[0].total_rows == 3
+    assert provider.page_attempts == 3
+    assert any(event.kind == "page_retrying" for event in events)
+    market = canonicalize_market_id("fake", "linear", "BTCUSDT", "1m")
+    assert store.read_sidecar(market).persistence_status == "committed"
+
+
+def test_downloader_does_not_amplify_provider_exhausted_retries(tmp_path: Path) -> None:
+    provider = _ProviderFailureProbe(
+        [
+            HistoricalProviderRequestError(
+                "provider retries exhausted",
+                provider="bybit",
+                operation="historical_ohlcv",
+                retryable=True,
+                attempts_exhausted=True,
+                status=503,
+            )
+        ]
+    )
+    service, _store = _service(tmp_path, provider)
+    events = []
+
+    with pytest.raises(RuntimeError, match="failed after 1 downloader attempt"):
+        asyncio.run(service.run_batch(_request(), progress=events.append))
+
+    assert provider.page_attempts == 1
+    failed = next(event for event in events if event.kind == "page_failed")
+    assert failed.details["provider_attempts_exhausted"] is True
+    assert not any(event.kind == "page_retrying" for event in events)

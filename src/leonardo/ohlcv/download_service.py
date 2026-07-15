@@ -7,7 +7,11 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 
 from leonardo.audit import AuditEventV1
-from leonardo.connection import ConnectionApplicationService, HistoricalOHLCVProvider
+from leonardo.connection import (
+    ConnectionApplicationService,
+    HistoricalOHLCVProvider,
+    HistoricalProviderRequestError,
+)
 from leonardo.core.audit_log import AuditLog
 from leonardo.data import MarketId, canonicalize_market_id, timeframe_duration_ms
 from leonardo.ohlcv.operation_locks import OHLCVDatasetOperationLocks
@@ -706,7 +710,9 @@ class HistoricalDownloadService:
         overall_total: int,
     ) -> Sequence[object]:
         last_error: BaseException | None = None
+        attempts_made = 0
         for attempt in range(1, self.MAX_REQUEST_ATTEMPTS + 1):
+            attempts_made = attempt
             try:
                 return await asyncio.wait_for(
                     provider.fetch_ohlcv_historical(
@@ -723,7 +729,26 @@ class HistoricalDownloadService:
                 raise
             except Exception as error:
                 last_error = error
-                kind = "page_failed" if attempt >= self.MAX_REQUEST_ATTEMPTS else "page_retrying"
+                retryable = True
+                provider_retry_exhausted = False
+                provider_details: dict[str, object] = {}
+                if isinstance(error, HistoricalProviderRequestError):
+                    retryable = error.retryable
+                    provider_retry_exhausted = error.attempts_exhausted
+                    provider_details = {
+                        "provider": error.provider,
+                        "provider_operation": error.operation,
+                        "provider_retryable": error.retryable,
+                        "provider_attempts_exhausted": error.attempts_exhausted,
+                        "provider_status": error.status,
+                        "provider_code": error.code,
+                    }
+                should_retry = (
+                    attempt < self.MAX_REQUEST_ATTEMPTS
+                    and retryable
+                    and not provider_retry_exhausted
+                )
+                kind = "page_retrying" if should_retry else "page_failed"
                 self._emit_progress(
                     progress,
                     DownloadProgressEvent(
@@ -740,14 +765,17 @@ class HistoricalDownloadService:
                             "attempt": attempt,
                             "error_type": type(error).__name__,
                             "error": str(error),
+                            **provider_details,
                         },
                     ),
                 )
-                if attempt < self.MAX_REQUEST_ATTEMPTS:
-                    await asyncio.sleep(self.RETRY_BACKOFF_SECONDS * attempt)
+                if not should_retry:
+                    break
+                await asyncio.sleep(self.RETRY_BACKOFF_SECONDS * attempt)
         assert last_error is not None
         raise RuntimeError(
-            f"OHLCV page {page_no} failed after {self.MAX_REQUEST_ATTEMPTS} attempts"
+            f"OHLCV page {page_no} failed after {attempts_made} downloader attempt(s): "
+            f"{last_error}"
         ) from last_error
 
     async def _latest_closed_ts(

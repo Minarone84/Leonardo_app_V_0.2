@@ -8,7 +8,12 @@ from threading import Event
 
 import pytest
 
-from leonardo.connection import ConnectionApplicationService, ProviderCandle, ProviderRegistry
+from leonardo.connection import (
+    ConnectionApplicationService,
+    HistoricalProviderRequestError,
+    ProviderCandle,
+    ProviderRegistry,
+)
 from leonardo.core.audit_log import AuditLog, InMemoryAuditSink
 from leonardo.core.connection_registry import ConnectionRegistry
 from leonardo.core.core_runner import CoreRunner
@@ -507,3 +512,63 @@ def test_repair_with_no_provider_rows_remains_research_blocked(tmp_path: Path) -
     assert sidecar.persistence_status == "repaired"
     assert sidecar.validation_status == "warning"
     assert AcceptedDatasetCatalog(tmp_path).list_accepted() == ()
+
+
+class _PermanentFailureRepairProvider(_RepairProvider):
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def fetch_ohlcv_historical(self, **_kwargs):
+        self.attempts += 1
+        raise HistoricalProviderRequestError(
+            "Bybit API error 10001: params error",
+            provider="bybit",
+            operation="historical_ohlcv",
+            retryable=False,
+            code=10001,
+        )
+
+
+def test_permanent_provider_failure_during_repair_does_not_mutate_dataset(
+    tmp_path: Path,
+) -> None:
+    store = OHLCVStore(tmp_path)
+    _write(
+        store,
+        (
+            Candle(60_000, 1, 2, 0.5, 1.5, 10),
+            Candle(180_000, 2, 3, 1.5, 2.5, 14),
+        ),
+    )
+    maintenance = _maintenance(store)
+    plan = maintenance.plan_repair(_market())
+    provider = _PermanentFailureRepairProvider()
+    registry = ProviderRegistry()
+    registry.register("bybit", lambda: provider)
+    downloader = HistoricalDownloadService(
+        ConnectionApplicationService(registry, ConnectionRegistry()),
+        store,
+        AuditLog(InMemoryAuditSink()),
+        actor_id="tester",
+    )
+    runner = CoreRunner(TaskManager())
+    application = OHLCVMaintenanceApplicationService(runner, maintenance, downloader)
+    completed = Event()
+    results = []
+    csv_before = store.csv_path(_market()).read_bytes()
+    sidecar_before = store.sidecar_path(_market()).read_bytes()
+
+    runner.start()
+    try:
+        application.submit_repair(
+            plan,
+            result_callback=lambda result: (results.append(result), completed.set()),
+        )
+        assert completed.wait(4.0)
+    finally:
+        runner.shutdown()
+
+    assert results[0].status == "failed"
+    assert provider.attempts == 1
+    assert store.csv_path(_market()).read_bytes() == csv_before
+    assert store.sidecar_path(_market()).read_bytes() == sidecar_before

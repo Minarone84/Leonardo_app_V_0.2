@@ -18,6 +18,34 @@ class ProviderCandle:
     is_closed: bool = True
 
 
+class HistoricalProviderRequestError(RuntimeError):
+    """Typed provider failure used to make retry decisions explicit.
+
+    Provider adapters own wire-level classification. Callers may retry only when
+    ``retryable`` is true and the provider has not already exhausted its own
+    bounded retry policy.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str,
+        operation: str,
+        retryable: bool,
+        attempts_exhausted: bool = False,
+        status: int | None = None,
+        code: int | str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = str(provider)
+        self.operation = str(operation)
+        self.retryable = bool(retryable)
+        self.attempts_exhausted = bool(attempts_exhausted)
+        self.status = status
+        self.code = code
+
+
 @runtime_checkable
 class HistoricalOHLCVProvider(Protocol):
     @property
