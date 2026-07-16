@@ -1,0 +1,86 @@
+{
+  "artifact_identity_payload": {
+    "analysis_sha256": null,
+    "first_timestamp_ms": 1700000000000,
+    "last_timestamp_ms": 1700000180000,
+    "recipe_id": "67e1847a396e2ea878f408bcbb13925248d556c4ceac4c7e971ac266a91835f4",
+    "row_count": 4,
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "source_ohlcv": {
+      "csv_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "first_timestamp_ms": 1700000000000,
+      "last_timestamp_ms": 1700000180000,
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1m"
+      },
+      "persistence_status": "committed",
+      "row_count": 4,
+      "schema_version": "1.0",
+      "sidecar_schema_version": "1.0",
+      "sidecar_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "validation_status": "ok"
+    },
+    "values_sha256": "2a3d4a028860e79e7ac965834cde3522b25b9a858e2000d680b59869765f19d7"
+  },
+  "canonical_json_rule": {
+    "allow_nan": false,
+    "ensure_ascii": false,
+    "separators": [
+      ",",
+      ":"
+    ],
+    "sort_keys": true,
+    "trailing_newline_for_identity": false
+  },
+  "canonical_values_filename": "Task_1016_Canonical_Values.csv",
+  "expected_artifact_id": "0de76f8222e23e4a67a8b72cbd262d3dd4899fd1fa26ea1b2c74b6a895b007ca",
+  "expected_recipe_id": "67e1847a396e2ea878f408bcbb13925248d556c4ceac4c7e971ac266a91835f4",
+  "expected_values_sha256": "2a3d4a028860e79e7ac965834cde3522b25b9a858e2000d680b59869765f19d7",
+  "fixture_version": "1.0",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSDT",
+    "timeframe": "1m"
+  },
+  "recipe_identity_payload": {
+    "bindings": {},
+    "kind": "indicator",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSDT",
+      "timeframe": "1m"
+    },
+    "output_names": [
+      "sma_3"
+    ],
+    "parameters": {
+      "period": 3
+    },
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "tool_key": "sma"
+  },
+  "source_ohlcv": {
+    "csv_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "first_timestamp_ms": 1700000000000,
+    "last_timestamp_ms": 1700000180000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSDT",
+      "timeframe": "1m"
+    },
+    "persistence_status": "committed",
+    "row_count": 4,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "validation_status": "ok"
+  }
+}

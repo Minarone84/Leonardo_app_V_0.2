@@ -132,3 +132,128 @@ def test_dynamic_binning_has_no_output_columns() -> None:
     assert result.output_names == ()
     assert tuple(result.to_frame().columns) == ("ts_ms",)
     assert set(result.analysis) == {"steps", "variation_diagnostics", "binning_artifact", "labeled_rows"}
+
+
+def _rebuild_result(
+    result: FinancialToolCalculationResult,
+    **changes: object,
+) -> FinancialToolCalculationResult:
+    values = {
+        "tool_key": result.tool_key,
+        "kind": result.kind,
+        "parameters": result.parameters,
+        "bindings": result.bindings,
+        "output_names": result.output_names,
+        "frame": result.to_frame(),
+        "analysis": result.analysis,
+    }
+    values.update(changes)
+    return FinancialToolCalculationResult(**values)  # type: ignore[arg-type]
+
+
+def test_result_constructor_rejects_noncanonical_source_binding() -> None:
+    result = calculate_financial_tool(
+        "derivative", _frame(), {"order": 1}, bindings={"source": "close"}
+    )
+    with pytest.raises(ValueError, match="canonical non-empty"):
+        _rebuild_result(result, bindings={"source": " close "})
+
+
+@pytest.mark.parametrize("tool_key", ("dynamic_binning", "percent_span_angle"))
+def test_result_constructor_rejects_forbidden_runtime_window(tool_key: str) -> None:
+    result = calculate_financial_tool(tool_key, _frame(), {"window": 2})
+    parameters = dict(result.parameters)
+    parameters["window"] = 1
+    with pytest.raises(ValueError, match="window must be >= 2"):
+        _rebuild_result(result, parameters=parameters)
+
+
+@pytest.mark.parametrize("tool_key", ("braids", "braid_instability"))
+def test_result_constructor_rejects_empty_braid_mid(tool_key: str) -> None:
+    result = calculate_financial_tool(
+        tool_key, _frame(), {"fast": "fast", "mid": "mid", "slow": "slow"}
+    )
+    parameters = dict(result.parameters)
+    parameters["mid"] = ""
+    with pytest.raises(ValueError, match="mid must be a non-empty"):
+        _rebuild_result(result, parameters=parameters)
+
+
+def test_result_constructor_rejects_wrong_outputs_and_frame_columns() -> None:
+    result = calculate_financial_tool("sma", _frame(), {"period": 3})
+    with pytest.raises(ValueError, match="output_names"):
+        _rebuild_result(result, output_names=("wrong",))
+    with pytest.raises(ValueError, match="frame columns"):
+        _rebuild_result(result, frame=result.to_frame().rename(columns={"sma_3": "wrong"}))
+
+
+def test_result_constructor_rejects_invalid_frame_identity_and_analysis() -> None:
+    result = calculate_financial_tool("sma", _frame(), {"period": 3})
+    with pytest.raises(ValueError, match="strictly increasing"):
+        _rebuild_result(
+            result,
+            frame=result.to_frame().assign(
+                ts_ms=lambda frame: frame.ts_ms.mask(frame.index == frame.index[1], frame.ts_ms.iloc[0])
+            ),
+        )
+    with pytest.raises(TypeError, match="analysis must be a mapping"):
+        _rebuild_result(result, analysis=[1, 2])
+
+
+@pytest.mark.parametrize(
+    "values",
+    (
+        pd.Series(["1.0"] * 48, dtype="object"),
+        pd.Series([True] * 48, dtype="bool"),
+        pd.Series([1.0] * 48, dtype="float64"),
+    ),
+)
+def test_result_constructor_rejects_noncanonical_numeric_runtime(values: pd.Series) -> None:
+    result = calculate_financial_tool("sma", _frame(), {"period": 3})
+    forged = result.to_frame()
+    forged["sma_3"] = values.to_numpy()
+    with pytest.raises(ValueError, match="runtime dtype must be float32"):
+        _rebuild_result(result, frame=forged)
+
+
+@pytest.mark.parametrize("tool_key", ("hck", "strategy"))
+def test_result_constructor_rejects_invalid_color_state(tool_key: str) -> None:
+    result = calculate_financial_tool(tool_key, _frame())
+    forged = result.to_frame()
+    color_name = next(name for name in result.output_names if "color" in name)
+    forged.loc[forged.index[0], color_name] = "blue"
+    with pytest.raises(ValueError, match="invalid color state"):
+        _rebuild_result(result, frame=forged)
+
+
+def test_result_constructor_rejects_null_categorical_state() -> None:
+    result = calculate_financial_tool("hck", _frame())
+    forged = result.to_frame()
+    forged.loc[forged.index[0], "vwap_color"] = None
+    with pytest.raises(ValueError, match="non-null object strings"):
+        _rebuild_result(result, frame=forged)
+
+
+def test_braids_runtime_state_is_numeric_float32_and_domain_checked() -> None:
+    result = calculate_financial_tool(
+        "braids", _frame(), {"fast": "fast", "mid": "mid", "slow": "slow"}
+    )
+    ambient = result.output_names[0]
+    assert result.to_frame()[ambient].dtype == np.dtype("float32")
+    forged = result.to_frame()
+    forged.loc[forged.index[0], ambient] = np.float32(7.0)
+    with pytest.raises(ValueError, match="states 1 through 6"):
+        _rebuild_result(result, frame=forged)
+
+
+def test_utc_runtime_boolean_outputs_remain_bool() -> None:
+    result = calculate_financial_tool("universal_trend_classifier", _frame(96))
+    runtime_types = FinancialToolCalculationResult.runtime_output_types(
+        tool_key=result.tool_key,
+        parameters=result.parameters,
+        bindings=result.bindings,
+        output_names=result.output_names,
+    )
+    for name, runtime_type in zip(result.output_names, runtime_types, strict=True):
+        if runtime_type == "boolean":
+            assert result.to_frame()[name].dtype == np.dtype("bool")

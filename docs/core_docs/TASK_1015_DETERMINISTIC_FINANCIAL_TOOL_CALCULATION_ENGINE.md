@@ -17,9 +17,11 @@ Task 1015 adds two package-root exports:
 - `calculate_financial_tool` is the single calculation entry point.
 - `FinancialToolCalculationResult` is the frozen, slotted owner-local result model.
 
-The result exposes the canonical tool key and kind, immutable resolved parameters and bindings, exact output names, row and timestamp bounds, defensive analysis data, and a defensive frame copy from `to_frame()`.
+The result exposes the canonical tool key and kind, immutable resolved parameters and bindings, exact output names, row and timestamp bounds, defensive analysis data, and a defensive frame copy from `to_frame()`. `FinancialToolCalculationResult` independently validates its canonical structural configuration against Task 1014, including parameters, bindings, runtime constraints, output names, exact frame columns, index identity, and timestamps. The calculation entry point and persisted-artifact consumers reuse this result-model authority.
 
 The output frame preserves the input index and `ts_ms` exactly. Its columns are `ts_ms` followed by the Task 1014 output names. Numeric outputs are `float32`, Universal Trend Classifier boolean outputs are `bool`, and HCK color states remain `red`, `silver`, or `green`. Dynamic Binning has no plotted output columns and returns its in-memory result through `analysis`.
+
+`FinancialToolCalculationResult` is the runtime output authority. It derives ordered runtime types from canonical Task 1014 signals and validates exact output dtypes and value domains: numeric outputs are `float32`, boolean outputs are non-null `bool`, and HCK and Strategy colors are non-null object strings limited to `red`, `silver`, and `green`. Braids preserves its Task 1014 categorical semantic classification while its accepted Task 1015 ambient-state runtime is numeric `float32`, limited to states 1 through 6 or NaN.
 
 ## Input and Binding Boundary
 

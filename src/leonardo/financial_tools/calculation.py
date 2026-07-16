@@ -144,15 +144,6 @@ def _resolve_bindings(
     return {"source": source}
 
 
-def _runtime_constraints(key: str, parameters: Mapping[str, object]) -> None:
-    if key in {"dynamic_binning", "percent_span_angle"} and int(parameters["window"]) < 2:
-        raise ValueError(f"{key}.window must be >= 2")
-    if key in {"braids", "braid_instability"}:
-        mid = parameters["mid"]
-        if not isinstance(mid, str) or not mid.strip():
-            raise ValueError(f"{key}.mid must be a non-empty source column")
-
-
 def calculate_financial_tool(
     tool_key: str,
     data: pd.DataFrame,
@@ -165,11 +156,19 @@ def calculate_financial_tool(
     validated = _validate_input(data, tuple(item.name for item in spec.data_inputs if item.required))
     resolved_parameters = resolve_parameters(key, parameters)
     resolved_bindings = _resolve_bindings(key, validated, bindings)
-    _runtime_constraints(key, resolved_parameters)
 
     naming_parameters = dict(resolved_parameters)
     naming_parameters.update(resolved_bindings)
     output_names = resolve_output_names(key, naming_parameters)
+    key, _kind, resolved_parameters, resolved_bindings, output_names = (
+        FinancialToolCalculationResult.validate_configuration(
+            tool_key=key,
+            kind=spec.kind,
+            parameters=resolved_parameters,
+            bindings=resolved_bindings,
+            output_names=output_names,
+        )
+    )
     signals = resolve_output_signals(key, naming_parameters)
     if tuple(signal.name for signal in signals) != output_names:
         raise RuntimeError(f"calculation output signal mismatch for {key}")
@@ -181,12 +180,18 @@ def calculate_financial_tool(
 
     frame = pd.DataFrame(index=validated.index)
     frame["ts_ms"] = validated["ts_ms"].copy(deep=True)
-    for name, signal, values in zip(output_names, signals, outputs, strict=True):
+    runtime_types = FinancialToolCalculationResult.runtime_output_types(
+        tool_key=key,
+        parameters=resolved_parameters,
+        bindings=resolved_bindings,
+        output_names=output_names,
+    )
+    for name, runtime_type, values in zip(output_names, runtime_types, outputs, strict=True):
         if not values.index.equals(validated.index) or len(values) != len(validated):
             raise RuntimeError(f"calculation output alignment mismatch for {key}.{name}")
-        if signal.value_type == "boolean":
+        if runtime_type == "boolean":
             frame[name] = values.astype(bool)
-        elif signal.value_type == "categorical" and key not in {"braids"}:
+        elif runtime_type == "categorical":
             frame[name] = values.astype(object)
         else:
             frame[name] = pd.to_numeric(values, errors="raise").astype("float32")
