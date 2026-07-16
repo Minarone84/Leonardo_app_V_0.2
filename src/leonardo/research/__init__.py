@@ -39,6 +39,28 @@ from leonardo.research.resident import (
     ResidentOHLCVSlice,
     ResidentSliceService,
 )
+from leonardo.research.studies import (
+    ChartStudy,
+    ChartStudyRegistry,
+    PreparedStudy,
+    StudyApplyAttempt,
+    StudyArtifactRequest,
+    StudyDependencyError,
+    StudyDependencyRef,
+    StudyError,
+    StudyExecutionRequest,
+    StudyInputSource,
+    StudyNotFoundError,
+    StudyOperationCancelled,
+    StudySaveAttempt,
+    StudySaveBlockedError,
+    StudySaveOutcome,
+    StudySavedLink,
+    StudyValidationError,
+)
+from leonardo.research.study_application import ResearchStudyApplicationService
+from leonardo.research.study_execution import ResearchStudyService
+from leonardo.research.study_projection import ResidentStudyProjection
 
 from leonardo.research.volume import (
     DEFAULT_VOLUME_MEAN_PERIOD,
@@ -79,4 +101,24 @@ __all__ = [
     "HistoricalDatasetLoadError",
     "HistoricalDatasetLoader",
     "ResearchDatasetApplicationService",
+    "ChartStudy",
+    "ChartStudyRegistry",
+    "PreparedStudy",
+    "ResearchStudyApplicationService",
+    "ResearchStudyService",
+    "ResidentStudyProjection",
+    "StudyApplyAttempt",
+    "StudyArtifactRequest",
+    "StudyDependencyError",
+    "StudyDependencyRef",
+    "StudyError",
+    "StudyExecutionRequest",
+    "StudyInputSource",
+    "StudyNotFoundError",
+    "StudyOperationCancelled",
+    "StudySaveAttempt",
+    "StudySaveBlockedError",
+    "StudySaveOutcome",
+    "StudySavedLink",
+    "StudyValidationError",
 ]

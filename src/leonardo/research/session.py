@@ -17,6 +17,15 @@ from uuid import uuid4
 from leonardo.data import MarketId, canonicalize_market_id
 from leonardo.research.dataset import HistoricalDataset
 from leonardo.research.resident import ResidentOHLCVSlice
+from leonardo.research.studies import (
+    ChartStudy,
+    ChartStudyRegistry,
+    PreparedStudy,
+    StudyApplyAttempt,
+    StudySaveAttempt,
+    StudySaveOutcome,
+    StudyValidationError,
+)
 
 
 class ChartSessionDisposedError(RuntimeError):
@@ -86,6 +95,9 @@ class ChartSessionState:
         self._resident: ResidentOHLCVSlice | None = None
         self._open_attempt: DatasetOpenAttempt | None = None
         self._slice_attempt: ResidentSliceAttempt | None = None
+        self._studies = ChartStudyRegistry()
+        self._study_apply_attempts: dict[str, StudyApplyAttempt] = {}
+        self._study_save_attempts: dict[str, StudySaveAttempt] = {}
         self._disposed = False
         self._lock = RLock()
 
@@ -143,6 +155,30 @@ class ChartSessionState:
         with self._lock:
             return 0 if self._resident is None else self._resident.row_count
 
+    @property
+    def study_registry(self) -> ChartStudyRegistry:
+        return self._studies
+
+    @property
+    def studies(self) -> tuple[ChartStudy, ...]:
+        with self._lock:
+            return self._studies.snapshot()
+
+    @property
+    def study_count(self) -> int:
+        with self._lock:
+            return len(self._studies)
+
+    @property
+    def study_apply_pending(self) -> int:
+        with self._lock:
+            return len(self._study_apply_attempts)
+
+    @property
+    def study_save_pending(self) -> int:
+        with self._lock:
+            return len(self._study_save_attempts)
+
     def begin_dataset_open(self, market_id: MarketId) -> DatasetOpenAttempt:
         """Begin a new dataset generation and release all previous data truth."""
 
@@ -160,6 +196,9 @@ class ChartSessionState:
             self._resident = None
             self._open_attempt = attempt
             self._slice_attempt = None
+            self._studies.clear()
+            self._study_apply_attempts.clear()
+            self._study_save_attempts.clear()
             return attempt
 
     def accept_dataset_open(
@@ -234,6 +273,7 @@ class ChartSessionState:
             self._validate_current_slice_locked(attempt, resident, dataset)
             self._resident = resident
             self._slice_attempt = None
+            self._studies.reproject(resident)
             return True
 
     def settle_resident_slice_failure(self, attempt: ResidentSliceAttempt) -> bool:
@@ -303,6 +343,169 @@ class ChartSessionState:
                 raise IndexError("resident_index is outside the resident slice")
             return resident.base_index + resident_index
 
+    def begin_study_apply(self) -> StudyApplyAttempt:
+        """Create one independently correlated Apply attempt for this generation."""
+
+        with self._lock:
+            self._ensure_active_locked()
+            dataset = self._require_dataset_locked()
+            attempt = StudyApplyAttempt(
+                session_id=self._session_id,
+                generation=self._generation,
+                request_id=uuid4().hex,
+                study_id=uuid4().hex,
+                market_id=dataset.market_id,
+                dataset_fingerprint=dataset.file_sha256,
+            )
+            self._study_apply_attempts[attempt.request_id] = attempt
+            return attempt
+
+    def accept_study_apply(
+        self, attempt: StudyApplyAttempt, prepared: PreparedStudy
+    ) -> bool:
+        """Accept one current full Study and project it onto the latest resident."""
+
+        if not isinstance(attempt, StudyApplyAttempt):
+            raise TypeError("attempt must be a StudyApplyAttempt")
+        if not isinstance(prepared, PreparedStudy):
+            raise TypeError("prepared must be a PreparedStudy")
+        with self._lock:
+            self._require_attempt_session_locked(attempt.session_id)
+            pending = self._study_apply_attempts.pop(attempt.request_id, None)
+            if self._disposed or pending != attempt:
+                return False
+            dataset = self._dataset
+            if (
+                dataset is None
+                or attempt.generation != self._generation
+                or attempt.market_id != dataset.market_id
+                or attempt.dataset_fingerprint != dataset.file_sha256
+            ):
+                return False
+            study = prepared.study
+            if (
+                study.study_id != attempt.study_id
+                or study.session_id != attempt.session_id
+                or study.generation != attempt.generation
+                or study.market_id != attempt.market_id
+                or study.dataset_fingerprint != attempt.dataset_fingerprint
+            ):
+                raise StudyValidationError("prepared Study does not match its Apply attempt")
+            if study.result.row_count != dataset.row_count:
+                raise StudyValidationError(
+                    "prepared Study row count does not match the active dataset"
+                )
+            study_timestamps = tuple(
+                int(value) for value in study.result.to_frame()["ts_ms"]
+            )
+            if study_timestamps != dataset.ts_ms:
+                raise StudyValidationError(
+                    "prepared Study timeline does not match the active dataset"
+                )
+            for dependency in study.source_studies:
+                try:
+                    source = self._studies.get(dependency.study_id)
+                except KeyError:
+                    return False
+                if (
+                    source.session_id != self._session_id
+                    or source.generation != self._generation
+                    or source.market_id != dataset.market_id
+                    or source.dataset_fingerprint != dataset.file_sha256
+                    or dependency.output_name not in source.result.output_names
+                ):
+                    return False
+                if source.result.row_count != dataset.row_count:
+                    return False
+                source_timestamps = tuple(
+                    int(value) for value in source.result.to_frame()["ts_ms"]
+                )
+                if source_timestamps != dataset.ts_ms:
+                    return False
+            self._studies.register(study, resident=self._resident)
+            return True
+
+    def settle_study_apply_failure(self, attempt: StudyApplyAttempt) -> bool:
+        if not isinstance(attempt, StudyApplyAttempt):
+            raise TypeError("attempt must be a StudyApplyAttempt")
+        with self._lock:
+            self._require_attempt_session_locked(attempt.session_id)
+            pending = self._study_apply_attempts.pop(attempt.request_id, None)
+            return not self._disposed and pending == attempt
+
+    def begin_study_save(self, study_id: str) -> StudySaveAttempt:
+        """Create the sole pending Save attempt for one current Study."""
+
+        if not isinstance(study_id, str) or not study_id.strip():
+            raise ValueError("study_id must be a non-empty string")
+        with self._lock:
+            self._ensure_active_locked()
+            dataset = self._require_dataset_locked()
+            study = self._studies.get(study_id)
+            if study_id in self._study_save_attempts:
+                raise ChartSessionStateError("a Save is already pending for this Study")
+            attempt = StudySaveAttempt(
+                session_id=self._session_id,
+                generation=self._generation,
+                request_id=uuid4().hex,
+                study_id=study.study_id,
+                market_id=dataset.market_id,
+                dataset_fingerprint=dataset.file_sha256,
+            )
+            self._study_save_attempts[study_id] = attempt
+            return attempt
+
+    def accept_study_save(
+        self, attempt: StudySaveAttempt, outcome: StudySaveOutcome
+    ) -> bool:
+        """Publish a durable link onto the same Study when the callback is current."""
+
+        if not isinstance(attempt, StudySaveAttempt):
+            raise TypeError("attempt must be a StudySaveAttempt")
+        if not isinstance(outcome, StudySaveOutcome):
+            raise TypeError("outcome must be a StudySaveOutcome")
+        with self._lock:
+            self._require_attempt_session_locked(attempt.session_id)
+            pending = self._study_save_attempts.pop(attempt.study_id, None)
+            if self._disposed or pending != attempt:
+                return False
+            dataset = self._dataset
+            if (
+                dataset is None
+                or attempt.generation != self._generation
+                or attempt.market_id != dataset.market_id
+                or attempt.dataset_fingerprint != dataset.file_sha256
+                or outcome.study_id != attempt.study_id
+            ):
+                return False
+            try:
+                study = self._studies.get(attempt.study_id)
+            except KeyError:
+                return False
+            if (
+                study.generation != attempt.generation
+                or study.market_id != attempt.market_id
+                or study.dataset_fingerprint != attempt.dataset_fingerprint
+            ):
+                return False
+            self._studies.replace_saved_link(attempt.study_id, outcome.saved_link)
+            return True
+
+    def settle_study_save_failure(self, attempt: StudySaveAttempt) -> bool:
+        if not isinstance(attempt, StudySaveAttempt):
+            raise TypeError("attempt must be a StudySaveAttempt")
+        with self._lock:
+            self._require_attempt_session_locked(attempt.session_id)
+            pending = self._study_save_attempts.pop(attempt.study_id, None)
+            return not self._disposed and pending == attempt
+
+    def remove_study(self, study_id: str) -> ChartStudy:
+        with self._lock:
+            self._ensure_active_locked()
+            removed = self._studies.remove(study_id)
+            self._study_save_attempts.pop(study_id, None)
+            return removed
+
     def dispose(self) -> bool:
         """Seal the session, invalidate attempts, and release dataset references."""
 
@@ -316,6 +519,9 @@ class ChartSessionState:
             self._resident = None
             self._open_attempt = None
             self._slice_attempt = None
+            self._studies.clear()
+            self._study_apply_attempts.clear()
+            self._study_save_attempts.clear()
             return True
 
     def _validate_current_slice_locked(

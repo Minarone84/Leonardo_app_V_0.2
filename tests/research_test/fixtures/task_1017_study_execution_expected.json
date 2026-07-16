@@ -1,0 +1,270 @@
+{
+  "fixture_version": "1.0",
+  "hck": {
+    "bindings": {},
+    "full_frame": {
+      "fast_vwap": [
+        null,
+        null,
+        100.78193664550781,
+        101.8694839477539,
+        103.26790618896484,
+        103.85498046875,
+        105.26084899902344,
+        106.86886596679688,
+        107.59211730957031,
+        109.08814239501953,
+        110.75521850585938,
+        111.51704406738281
+      ],
+      "slow_vwap": [
+        null,
+        null,
+        null,
+        null,
+        102.20842742919922,
+        102.78141784667969,
+        103.85502624511719,
+        105.1214370727539,
+        105.92182159423828,
+        107.1773452758789,
+        108.58765411376953,
+        109.50018310546875
+      ],
+      "ts_ms": [
+        1700000000000,
+        1700000060000,
+        1700000120000,
+        1700000180000,
+        1700000240000,
+        1700000300000,
+        1700000360000,
+        1700000420000,
+        1700000480000,
+        1700000540000,
+        1700000600000,
+        1700000660000
+      ],
+      "vwap_color": [
+        "silver",
+        "silver",
+        "silver",
+        "silver",
+        "green",
+        "green",
+        "green",
+        "green",
+        "green",
+        "green",
+        "green",
+        "green"
+      ]
+    },
+    "kind": "indicator",
+    "output_names": [
+      "fast_vwap",
+      "slow_vwap",
+      "vwap_color"
+    ],
+    "parameters": {
+      "fast_vwap_l": 3,
+      "slow_vwap_l": 5
+    },
+    "resident_projection": {
+      "base_index": 4,
+      "end_index_exclusive": 10,
+      "render_series": {
+        "fast_vwap": [
+          103.26790618896484,
+          103.85498046875,
+          105.26084899902344,
+          106.86886596679688,
+          107.59211730957031,
+          109.08814239501953
+        ],
+        "slow_vwap": [
+          102.20842742919922,
+          102.78141784667969,
+          103.85502624511719,
+          105.1214370727539,
+          105.92182159423828,
+          107.1773452758789
+        ]
+      },
+      "style_driver_series": {
+        "vwap_color": [
+          "green",
+          "green",
+          "green",
+          "green",
+          "green",
+          "green"
+        ]
+      },
+      "ts_ms": [
+        1700000240000,
+        1700000300000,
+        1700000360000,
+        1700000420000,
+        1700000480000,
+        1700000540000
+      ]
+    },
+    "tool_key": "hck"
+  },
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSDT",
+    "timeframe": "1m"
+  },
+  "required_projection_equivalence": {
+    "duplicate_same_configuration_studies_keep_distinct_ids": true,
+    "live_calculation_and_loaded_artifact": true,
+    "resident_refresh_recalculates_financial_tool": false
+  },
+  "resident": {
+    "base_index": 4,
+    "end_index_exclusive": 10
+  },
+  "sma": {
+    "bindings": {},
+    "full_frame": {
+      "sma_3": [
+        null,
+        null,
+        101.0,
+        102.33333587646484,
+        103.66666412353516,
+        105.0,
+        106.33333587646484,
+        107.66666412353516,
+        109.0,
+        110.33333587646484,
+        111.66666412353516,
+        113.0
+      ],
+      "ts_ms": [
+        1700000000000,
+        1700000060000,
+        1700000120000,
+        1700000180000,
+        1700000240000,
+        1700000300000,
+        1700000360000,
+        1700000420000,
+        1700000480000,
+        1700000540000,
+        1700000600000,
+        1700000660000
+      ]
+    },
+    "kind": "indicator",
+    "output_names": [
+      "sma_3"
+    ],
+    "parameters": {
+      "period": 3
+    },
+    "resident_projection": {
+      "base_index": 4,
+      "end_index_exclusive": 10,
+      "render_series": {
+        "sma_3": [
+          103.66666412353516,
+          105.0,
+          106.33333587646484,
+          107.66666412353516,
+          109.0,
+          110.33333587646484
+        ]
+      },
+      "style_driver_series": {},
+      "ts_ms": [
+        1700000240000,
+        1700000300000,
+        1700000360000,
+        1700000420000,
+        1700000480000,
+        1700000540000
+      ]
+    },
+    "tool_key": "sma"
+  },
+  "source_alias_policy": {
+    "derivative_output_name": "research_source__d1",
+    "unary_injected_column": "__research_source",
+    "unary_source_role": "source"
+  },
+  "transient_derivative": {
+    "bindings": {
+      "source": "__research_source"
+    },
+    "full_frame": {
+      "research_source__d1": [
+        null,
+        null,
+        null,
+        1.3333320617675781,
+        1.3333320617675781,
+        1.3333358764648438,
+        1.3333320617675781,
+        1.3333320617675781,
+        1.3333358764648438,
+        1.3333320617675781,
+        1.3333320617675781,
+        null
+      ],
+      "ts_ms": [
+        1700000000000,
+        1700000060000,
+        1700000120000,
+        1700000180000,
+        1700000240000,
+        1700000300000,
+        1700000360000,
+        1700000420000,
+        1700000480000,
+        1700000540000,
+        1700000600000,
+        1700000660000
+      ]
+    },
+    "kind": "construct",
+    "output_names": [
+      "research_source__d1"
+    ],
+    "parameters": {
+      "order": 1
+    },
+    "resident_projection": {
+      "base_index": 4,
+      "end_index_exclusive": 10,
+      "render_series": {
+        "research_source__d1": [
+          1.3333320617675781,
+          1.3333358764648438,
+          1.3333320617675781,
+          1.3333320617675781,
+          1.3333358764648438,
+          1.3333320617675781
+        ]
+      },
+      "style_driver_series": {},
+      "ts_ms": [
+        1700000240000,
+        1700000300000,
+        1700000360000,
+        1700000420000,
+        1700000480000,
+        1700000540000
+      ]
+    },
+    "source_dependency": {
+      "durable_save_requires_source_artifact": true,
+      "role": "source",
+      "source_study_output": "sma_3"
+    },
+    "tool_key": "derivative"
+  }
+}
