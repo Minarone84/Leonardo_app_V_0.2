@@ -11,6 +11,8 @@ from .models import (
     ToolOutputSpec,
     ToolStyleCapabilities,
 )
+from .calculation import calculate_financial_tool
+from .calculation_models import FinancialToolCalculationResult
 from .naming import (
     CANONICAL_TOOL_ALIASES,
     build_source_token,
@@ -36,6 +38,7 @@ __all__ = (
     "ConstructIOSpec",
     "DataInputSpec",
     "FinancialToolSpec",
+    "FinancialToolCalculationResult",
     "INDICATOR_SPECS",
     "OSCILLATOR_SPECS",
     "OscillatorGuideLevelSpec",
@@ -47,6 +50,7 @@ __all__ = (
     "ToolOutputSpec",
     "ToolStyleCapabilities",
     "build_source_token",
+    "calculate_financial_tool",
     "canonicalize_tool_key",
     "get_financial_tool_spec",
     "list_financial_tool_specs",
@@ -55,4 +59,3 @@ __all__ = (
     "resolve_parameters",
     "validate_catalog",
 )
-
