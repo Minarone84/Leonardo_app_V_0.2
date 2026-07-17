@@ -80,6 +80,36 @@ SnapshotPreflightDialog = getattr(
 )
 SnapshotSaveDialog = getattr(_snapshot_save_module, "Workspace" "SnapshotSaveDialog")
 SnapshotSaveIntent = getattr(_snapshot_save_module, "Workspace" "SnapshotSaveIntent")
+_note_models = import_module("leonardo.research.note" "book")
+_note_application = import_module("leonardo.research.note" "book_application")
+_note_manager_module = import_module(
+    "leonardo.gui.windows.research_note" "book_manager_dialog"
+)
+_note_editor_module = import_module(
+    "leonardo.gui.windows.research_note" "book_window"
+)
+_MarkerSettings = getattr(
+    _note_models, "Research" "Note" "bookAnno" "tationSettingsV1"
+)
+_NoteApplication = getattr(
+    _note_application, "Research" "Note" "bookApplicationService"
+)
+_NoteDraft = getattr(_note_models, "Research" "Note" "bookDraft")
+_NotePage = getattr(_note_models, "Research" "Note" "bookPageV1")
+_NoteSummary = getattr(_note_models, "Research" "Note" "bookSummary")
+_NoteValue = getattr(_note_models, "Research" "Note" "bookV1")
+_NoteValidationError = getattr(
+    _note_models, "Research" "Note" "bookValidationError"
+)
+_ResearchManagerDialog = getattr(
+    _note_manager_module, "Research" "Note" "bookManagerDialog"
+)
+_ResearchSaveIntent = getattr(
+    _note_editor_module, "Research" "Note" "bookSaveIntent"
+)
+_ResearchEditor = getattr(
+    _note_editor_module, "Research" "Note" "bookWindow"
+)
 
 # ResearchChartPresenter retains ResidentRefillDirection and
 # build_resident_volume_projection ownership from the accepted single-chart flow.
@@ -131,6 +161,7 @@ class ResearchSuitePresenter(QObject):
         study_service: ResearchStudyApplicationService,
         study_setup_service: ResearchStudySetupApplicationService | None = None,
         snapshot_service: SnapshotApplicationService | None = None,
+        notebook_service: _NoteApplication | None = None,
     ) -> None:
         super().__init__(view)
         if not isinstance(view, ResearchSuiteWindow):
@@ -156,6 +187,13 @@ class ResearchSuitePresenter(QObject):
                 "snapshot_service must be SnapshotApplicationService or None"
             )
         self._snapshot_service = snapshot_service
+        if notebook_service is not None and not isinstance(
+            notebook_service, _NoteApplication
+        ):
+            raise TypeError(
+                "notebook_service has an invalid application-service type"
+            )
+        self._notebook_service = notebook_service
         self._dispatcher = _QtCallbackDispatcher(self)
         self._workspace_state = ResearchWorkspaceState()
         self._shell_state = ResearchWorkspaceShellState()
@@ -174,9 +212,19 @@ class ResearchSuitePresenter(QObject):
         self._snapshot_preflight_dialogs: list[SnapshotPreflightDialog] = []
         self._snapshot_restore: _SnapshotRestoreRun | None = None
         self._workspace_generation = 0
+        self._notebook_editor: _ResearchEditor | None = None
+        self._notebook_manager: _ResearchManagerDialog | None = None
+        self._active_notebook: _NoteValue | None = None
+        self._last_valid_notebook_draft: _NoteDraft | None = None
+        self._notebook_editor_generation = 0
+        self._notebook_manager_generation = 0
+        self._notebook_task_id: str | None = None
+        self._notebook_pending_action: tuple[str, object | None] | None = None
         self._wire()
         self._view.set_study_setup_available(study_setup_service is not None)
         self._view.set_snapshot_workspace_available(snapshot_service is not None)
+        self._view.set_research_notebook_available(notebook_service is not None)
+        self._view.set_close_guard(self._request_suite_close)
         self.refresh_catalog()
 
     @property
@@ -208,6 +256,22 @@ class ResearchSuitePresenter(QObject):
     @property
     def is_disposed(self) -> bool:
         return self._disposed
+
+    @property
+    def active_notebook(self):
+        return self._active_notebook
+
+    @property
+    def notebook_editor(self):
+        return self._notebook_editor
+
+    @property
+    def notebook_manager(self):
+        return self._notebook_manager
+
+    @property
+    def notebook_operation_active(self) -> bool:
+        return self._notebook_task_id is not None
 
     def slot_ids(self) -> tuple[int, ...]:
         return self._workspace_state.slot_ids()
@@ -607,6 +671,603 @@ class ResearchSuitePresenter(QObject):
             self._open_snapshot_manager_result,
         )
 
+    def new_notebook(self) -> None:
+        if (
+            self._disposed
+            or self._notebook_service is None
+            or self._snapshot_restore is not None
+        ):
+            return
+        self._request_notebook_transition("new", None)
+
+    def open_notebook_manager(self) -> None:
+        service = self._notebook_service
+        if (
+            service is None
+            or self._disposed
+            or self._snapshot_restore is not None
+            or self._notebook_task_id is not None
+        ):
+            return
+        if self._notebook_manager is not None:
+            self._notebook_manager_generation += 1
+            self._notebook_manager.close()
+            self._notebook_manager.deleteLater()
+            self._notebook_manager = None
+        generation = self._notebook_manager_generation = (
+            self._notebook_manager_generation + 1
+        )
+        self._submit_notebook_task(
+            lambda callback: service.submit_list_notebooks(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._open_notebook_manager_result(
+                generation, result
+            ),
+        )
+
+    def close_active_notebook(self) -> None:
+        if self._notebook_editor is None:
+            return
+        self._request_notebook_transition("close", None)
+
+    def _notebook_transition_blocked(self) -> bool:
+        if self._notebook_task_id is None:
+            return False
+        self._view.set_status("Note" "book operation in progress")
+        return True
+
+    def _request_suite_close(self) -> bool:
+        if self._notebook_transition_blocked():
+            return False
+        editor = self._notebook_editor
+        if editor is None:
+            return True
+        if not editor.is_dirty:
+            self._close_notebook_editor()
+            return True
+        decision = editor.dirty_decision()
+        if decision == "cancel":
+            self._notebook_pending_action = None
+            return False
+        if decision == "discard":
+            self._close_notebook_editor()
+            return True
+        self._notebook_pending_action = ("suite_close", None)
+        self._save_notebook_editor(False)
+        return False
+
+    def _request_notebook_transition(
+        self, action: str, notebook_id: str | None
+    ) -> None:
+        if self._notebook_transition_blocked():
+            return
+        editor = self._notebook_editor
+        if editor is not None and editor.is_dirty:
+            decision = editor.dirty_decision()
+            if decision == "cancel":
+                self._notebook_pending_action = None
+                return
+            if decision == "save":
+                self._notebook_pending_action = (action, notebook_id)
+                self._save_notebook_editor(False)
+                return
+        self._notebook_pending_action = None
+        self._perform_notebook_transition(action, notebook_id)
+
+    def _perform_notebook_transition(
+        self, action: str, payload: object | None
+    ) -> None:
+        if action == "close":
+            self._close_notebook_editor()
+            return
+        if action == "suite_close":
+            self._close_notebook_editor()
+            self._view.close()
+            return
+        if action == "new":
+            self._close_notebook_editor()
+            pages_by_market = {
+                presenter.session.dataset.market_id: _NotePage(
+                    presenter.session.dataset.market_id
+                )
+                for presenter in self._chart_presenters.values()
+                if presenter.session.dataset is not None
+            }
+            draft = _NoteDraft(
+                "Untitled " "Note" "book",
+                "",
+                _MarkerSettings(),
+                tuple(pages_by_market.values()),
+            )
+            self._open_notebook_editor(draft=draft)
+            return
+        if action == "open" and isinstance(payload, str):
+            self._close_notebook_editor()
+            self._load_notebook(payload)
+            return
+        if action == "delete":
+            if not isinstance(payload, tuple) or len(payload) != 4:
+                return
+            dialog, manager_generation, editor_generation, notebook_id = payload
+            if (
+                not isinstance(dialog, _ResearchManagerDialog)
+                or type(manager_generation) is not int
+                or type(editor_generation) is not int
+                or type(notebook_id) is not str
+                or dialog is not self._notebook_manager
+                or manager_generation != self._notebook_manager_generation
+            ):
+                return
+            editor = self._notebook_editor
+            if (
+                editor is None
+                or editor_generation != self._notebook_editor_generation
+                or editor.notebook_id != notebook_id
+            ):
+                return
+            self._close_notebook_editor()
+            self._submit_notebook_delete(
+                dialog, manager_generation, notebook_id
+            )
+            return
+        raise ValueError("unknown Research note-document transition")
+
+    def _open_notebook_manager_result(
+        self, generation: int, result: TaskResult
+    ) -> None:
+        if (
+            self._disposed
+            or generation != self._notebook_manager_generation
+            or result.status != "completed"
+            or not isinstance(result.value, tuple)
+            or not all(
+                isinstance(item, _NoteSummary)
+                for item in result.value
+            )
+        ):
+            return
+        dialog = _ResearchManagerDialog(result.value, self._view)
+        self._notebook_manager = dialog
+        dialog.refresh_requested.connect(
+            lambda: self._refresh_notebook_manager(dialog, generation)
+        )
+        dialog.open_requested.connect(
+            lambda notebook_id: self._request_notebook_transition(
+                "open", notebook_id
+            )
+        )
+        dialog.delete_requested.connect(
+            lambda notebook_id: self._delete_notebook(
+                dialog, generation, notebook_id
+            )
+        )
+        dialog.finished.connect(
+            lambda: self._forget_notebook_manager(dialog, generation)
+        )
+        dialog.show()
+
+    def _refresh_notebook_manager(
+        self, dialog: _ResearchManagerDialog, generation: int
+    ) -> None:
+        service = self._notebook_service
+        if (
+            service is None
+            or dialog is not self._notebook_manager
+            or generation != self._notebook_manager_generation
+            or self._notebook_task_id is not None
+        ):
+            return
+        self._submit_notebook_task(
+            lambda callback: service.submit_list_notebooks(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_summaries(result.value)
+            if (
+                dialog is self._notebook_manager
+                and generation == self._notebook_manager_generation
+                and result.status == "completed"
+                and isinstance(result.value, tuple)
+                and all(
+                    isinstance(item, _NoteSummary)
+                    for item in result.value
+                )
+            )
+            else None,
+        )
+
+    def _load_notebook(self, notebook_id: str) -> None:
+        service = self._notebook_service
+        if service is None or self._notebook_task_id is not None:
+            return
+        generation = self._notebook_editor_generation = (
+            self._notebook_editor_generation + 1
+        )
+        self._submit_notebook_task(
+            lambda callback: service.submit_load_notebook(
+                notebook_id,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._loaded_notebook_result(
+                generation, notebook_id, result
+            ),
+        )
+
+    def _loaded_notebook_result(
+        self, generation: int, notebook_id: str, result: TaskResult
+    ) -> None:
+        if (
+            self._disposed
+            or generation != self._notebook_editor_generation
+            or result.status != "completed"
+            or not isinstance(result.value, _NoteValue)
+            or result.value.notebook_id != notebook_id
+        ):
+            return
+        self._open_notebook_editor(notebook=result.value)
+
+    def _open_notebook_editor(
+        self,
+        *,
+        notebook: _NoteValue | None = None,
+        draft: _NoteDraft | None = None,
+    ) -> None:
+        if (notebook is None) == (draft is None):
+            raise ValueError("provide exactly one notebook editor value")
+        self._notebook_editor_generation += 1
+        generation = self._notebook_editor_generation
+        editor = _ResearchEditor(self._view)
+        self._notebook_editor = editor
+        self._active_notebook = notebook
+        if notebook is not None:
+            editor.set_notebook(notebook)
+            self._last_valid_notebook_draft = _NoteDraft(
+                notebook.display_name,
+                notebook.description,
+                notebook.annotation_settings,
+                notebook.pages,
+                notebook.notebook_id,
+            )
+        else:
+            editor.set_draft(draft, dirty=True)
+            self._last_valid_notebook_draft = draft
+        editor.draft_changed.connect(
+            lambda value: self._notebook_draft_changed(
+                editor, generation, value
+            )
+        )
+        editor.save_requested.connect(
+            lambda intent: self._notebook_save_requested(
+                editor, generation, intent
+            )
+        )
+        editor.close_requested.connect(self.close_active_notebook)
+        editor.add_current_chart_requested.connect(
+            lambda: self._add_current_chart_page(editor, generation)
+        )
+        editor.go_to_requested.connect(self._notebook_go_to)
+        editor.show()
+        self._refresh_notebook_annotations()
+
+    def _notebook_draft_changed(
+        self,
+        editor: _ResearchEditor,
+        generation: int,
+        draft: _NoteDraft,
+    ) -> None:
+        if (
+            editor is not self._notebook_editor
+            or generation != self._notebook_editor_generation
+            or not isinstance(draft, _NoteDraft)
+        ):
+            return
+        self._last_valid_notebook_draft = draft
+        self._refresh_notebook_annotations()
+
+    def _notebook_save_requested(
+        self,
+        editor: _ResearchEditor,
+        generation: int,
+        intent: _ResearchSaveIntent,
+    ) -> None:
+        if (
+            editor is self._notebook_editor
+            and generation == self._notebook_editor_generation
+            and isinstance(intent, _ResearchSaveIntent)
+        ):
+            self._last_valid_notebook_draft = intent.draft
+            self._save_notebook_editor(intent.save_as)
+
+    def _save_notebook_editor(self, save_as: bool) -> None:
+        service = self._notebook_service
+        editor = self._notebook_editor
+        if self._notebook_task_id is not None:
+            self._view.set_status("Note" "book operation in progress")
+            return
+        if service is None or editor is None:
+            self._notebook_pending_action = None
+            if editor is not None:
+                editor.set_save_pending(False)
+                editor.set_status("Save was not submitted")
+            return
+        if not editor.is_current_valid:
+            self._notebook_pending_action = None
+            editor.set_save_pending(False)
+            editor.set_status("Save blocked: current notebook input is invalid")
+            return
+        try:
+            draft = editor.current_draft()
+        except (ValueError, _NoteValidationError) as error:
+            self._notebook_pending_action = None
+            editor.set_save_pending(False)
+            editor.set_status(f"Save blocked: {error}")
+            return
+        self._last_valid_notebook_draft = draft
+        generation = self._notebook_editor_generation
+        editor.set_save_pending(True)
+        if save_as or editor.notebook_id is None:
+            create_draft = _NoteDraft(
+                draft.display_name,
+                draft.description,
+                draft.annotation_settings,
+                draft.pages,
+                None,
+            )
+            submit = lambda callback: service.submit_create_notebook(
+                create_draft,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        else:
+            submit = lambda callback: service.submit_update_notebook(
+                editor.notebook_id,
+                draft,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        try:
+            self._submit_notebook_task(
+                submit,
+                lambda result: self._saved_notebook_result(
+                    editor, generation, result
+                ),
+            )
+        except Exception as error:
+            self._notebook_pending_action = None
+            editor.set_save_pending(False)
+            editor.set_status(f"Save failed: {error}")
+
+    def _saved_notebook_result(
+        self,
+        editor: _ResearchEditor,
+        generation: int,
+        result: TaskResult,
+    ) -> None:
+        pending = self._notebook_pending_action
+        self._notebook_pending_action = None
+        if (
+            editor is not self._notebook_editor
+            or generation != self._notebook_editor_generation
+        ):
+            return
+        editor.set_save_pending(False)
+        if result.status != "completed" or not isinstance(
+            result.value, _NoteValue
+        ):
+            editor.set_status(
+                f"Save failed: {result.error_message or result.error_type or result.status}"
+            )
+            return
+        self._active_notebook = result.value
+        editor.set_notebook(result.value)
+        self._last_valid_notebook_draft = editor.last_valid_draft
+        self._refresh_notebook_annotations()
+        if pending is not None:
+            self._perform_notebook_transition(*pending)
+
+    def _delete_notebook(
+        self,
+        dialog: _ResearchManagerDialog,
+        generation: int,
+        notebook_id: str,
+    ) -> None:
+        service = self._notebook_service
+        if (
+            service is None
+            or dialog is not self._notebook_manager
+            or generation != self._notebook_manager_generation
+        ):
+            return
+        if self._notebook_transition_blocked():
+            return
+        editor = self._notebook_editor
+        if editor is not None and editor.notebook_id == notebook_id:
+            editor_generation = self._notebook_editor_generation
+            if editor.is_dirty:
+                decision = editor.dirty_decision()
+                if decision == "cancel":
+                    self._notebook_pending_action = None
+                    return
+                if decision == "save":
+                    self._notebook_pending_action = (
+                        "delete",
+                        (dialog, generation, editor_generation, notebook_id),
+                    )
+                    self._save_notebook_editor(False)
+                    return
+            self._notebook_pending_action = None
+            self._close_notebook_editor()
+        self._submit_notebook_delete(dialog, generation, notebook_id)
+
+    def _submit_notebook_delete(
+        self,
+        dialog: _ResearchManagerDialog,
+        generation: int,
+        notebook_id: str,
+    ) -> None:
+        service = self._notebook_service
+        if (
+            service is None
+            or dialog is not self._notebook_manager
+            or generation != self._notebook_manager_generation
+            or self._notebook_task_id is not None
+        ):
+            return
+        try:
+            self._submit_notebook_task(
+                lambda callback: service.submit_delete_notebook(
+                    notebook_id,
+                    result_callback=callback,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                ),
+                lambda result: self._deleted_notebook_result(
+                    dialog,
+                    generation,
+                    notebook_id,
+                    result,
+                ),
+            )
+        except Exception as error:
+            self._view.set_status(f"Delete failed: {error}")
+
+    def _deleted_notebook_result(
+        self,
+        dialog: _ResearchManagerDialog,
+        manager_generation: int,
+        notebook_id: str,
+        result: TaskResult,
+    ) -> None:
+        if (
+            dialog is not self._notebook_manager
+            or manager_generation != self._notebook_manager_generation
+        ):
+            return
+        if result.status != "completed":
+            self._view.set_status(
+                f"Delete failed: {result.error_message or result.error_type or result.status}"
+            )
+            return
+        self._refresh_notebook_manager(dialog, manager_generation)
+
+    def _submit_notebook_task(self, submit, settled) -> None:
+        if self._notebook_task_id is not None:
+            return
+        task_ref: list[str] = []
+
+        def callback(result: TaskResult) -> None:
+            task_id = task_ref[0] if task_ref else result.task_id
+            if task_id != self._notebook_task_id:
+                return
+            self._notebook_task_id = None
+            self._view.set_research_notebook_operation_active(False)
+            settled(result)
+
+        self._view.set_research_notebook_operation_active(True)
+        try:
+            submission = submit(callback)
+        except Exception:
+            self._view.set_research_notebook_operation_active(False)
+            raise
+        task_ref.append(submission.task_id)
+        self._notebook_task_id = submission.task_id
+
+    def _add_current_chart_page(
+        self, editor: _ResearchEditor, generation: int
+    ) -> None:
+        presenter = self._active_presenter()
+        if (
+            editor is not self._notebook_editor
+            or generation != self._notebook_editor_generation
+            or presenter is None
+            or presenter.session.dataset is None
+        ):
+            return
+        editor.add_page(_NotePage(presenter.session.dataset.market_id))
+
+    def _notebook_go_to(self, market_id, timestamp_ms: int) -> None:
+        if self._snapshot_restore is not None:
+            return
+        candidates = tuple(
+            presenter
+            for presenter in self._chart_presenters.values()
+            if presenter.session.dataset is not None
+            and presenter.session.dataset.market_id == market_id
+        )
+        if not candidates:
+            self._view.set_status(
+                f"No open Research chart for {market_id.as_key()}"
+            )
+            return
+        active = self._active_presenter()
+        if active in candidates:
+            target = active
+        else:
+            target = min(
+                candidates,
+                key=lambda presenter: self._shell_state.placement_for(
+                    presenter.slot_id
+                ).workspace_position,
+            )
+        self._set_active_slot_internal(target.slot_id)
+        target.go_to_timestamp_ms(timestamp_ms)
+        self._refresh_active_view()
+
+    def _refresh_notebook_annotations(self) -> None:
+        if self._snapshot_restore is not None:
+            return
+        draft = self._last_valid_notebook_draft
+        if self._notebook_editor is None or draft is None:
+            for presenter in self._chart_presenters.values():
+                presenter.clear_notebook_annotations()
+            return
+        now = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        notebook = _NoteValue.build(
+            notebook_id=draft.notebook_id or "notebook_unsaved",
+            display_name=draft.display_name,
+            description=draft.description,
+            created_at_utc=now,
+            updated_at_utc=now,
+            annotation_settings=draft.annotation_settings,
+            pages=draft.pages,
+        )
+        service = self._notebook_service
+        if service is None:
+            return
+        for presenter in self._chart_presenters.values():
+            dataset = presenter.session.dataset
+            if dataset is None:
+                presenter.clear_notebook_annotations()
+                continue
+            presenter.set_notebook_annotations(
+                service.project_annotations(notebook, dataset.market_id)
+            )
+
+    def _close_notebook_editor(self, *, clear_annotations: bool = True) -> None:
+        editor = self._notebook_editor
+        self._notebook_editor_generation += 1
+        self._notebook_pending_action = None
+        self._notebook_editor = None
+        self._active_notebook = None
+        self._last_valid_notebook_draft = None
+        if editor is not None:
+            editor.hide()
+            editor.deleteLater()
+        if clear_annotations:
+            for presenter in self._chart_presenters.values():
+                presenter.clear_notebook_annotations()
+
+    def _forget_notebook_manager(
+        self, dialog: _ResearchManagerDialog, generation: int
+    ) -> None:
+        if (
+            dialog is self._notebook_manager
+            and generation == self._notebook_manager_generation
+        ):
+            self._notebook_manager = None
+
     def restore_snapshot_workspace(
         self,
         snapshot: SnapshotV1,
@@ -797,6 +1458,7 @@ class ResearchSuitePresenter(QObject):
         self._snapshot_restore = None
         self._view.set_snapshot_workspace_restore_active(False)
         self._refresh_active_view()
+        self._refresh_notebook_annotations()
         self._view.set_status(
             "Workspace Snapshot rollback restored" if rollback else "Workspace Snapshot restored"
         )
@@ -845,6 +1507,7 @@ class ResearchSuitePresenter(QObject):
                 )
         self._view.set_snapshot_workspace_restore_active(False)
         self._refresh_active_view()
+        self._refresh_notebook_annotations()
         self._view.set_status("Workspace Snapshot rollback failed" if failed_rollback else "Workspace Snapshot restore failed")
 
     def _create_restore_chart(self, position: int):
@@ -1211,6 +1874,9 @@ class ResearchSuitePresenter(QObject):
             for task_id in tuple(self._snapshot_task_ids):
                 self._snapshot_service.cancel(task_id)
         self._snapshot_task_ids.clear()
+        if self._notebook_service is not None and self._notebook_task_id is not None:
+            self._notebook_service.cancel(self._notebook_task_id)
+        self._notebook_task_id = None
         if self._snapshot_restore is not None:
             current = self._chart_presenters.get(self._snapshot_restore.current_slot_id)
             if current is not None:
@@ -1230,6 +1896,11 @@ class ResearchSuitePresenter(QObject):
         self._snapshot_save_dialogs.clear()
         self._snapshot_managers.clear()
         self._snapshot_preflight_dialogs.clear()
+        if self._notebook_manager is not None:
+            self._notebook_manager.close()
+            self._notebook_manager.deleteLater()
+            self._notebook_manager = None
+        self._close_notebook_editor(clear_annotations=False)
         self._view.close_all_floating_charts()
         for presenter in tuple(self._chart_presenters.values()):
             presenter.dispose()
@@ -1238,6 +1909,7 @@ class ResearchSuitePresenter(QObject):
         self._shell_state.clear()
         self._view.workspace_widget.clear()
         self._view.set_active_chart_state(None, (), False, False, False, False, "")
+        self._view.set_close_guard(None)
 
     def _wire(self) -> None:
         self._view.refresh_requested.connect(self.refresh_catalog)
@@ -1255,6 +1927,8 @@ class ResearchSuitePresenter(QObject):
         self._view.study_environments_requested.connect(self.open_environment_manager)
         self._view.save_snapshot_requested.connect(self.open_save_snapshot)
         self._view.snapshot_manager_requested.connect(self.open_snapshot_manager)
+        self._view.new_notebook_requested.connect(self.new_notebook)
+        self._view.notebooks_requested.connect(self.open_notebook_manager)
         self._view.closed.connect(self.dispose)
         self._view.workspace_widget.active_slot_requested.connect(self.set_active_slot)
         manager = self._view.study_manager
@@ -1291,6 +1965,7 @@ class ResearchSuitePresenter(QObject):
         if self._disposed or slot_id not in self._chart_presenters:
             return
         self._sync_snapshot_workspace_idle()
+        self._refresh_notebook_annotations()
         if slot_id == self.active_slot_id:
             self._refresh_active_view()
 

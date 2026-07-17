@@ -41,6 +41,7 @@ class GuiCoreContext(Protocol):
     research_study_service: object
     research_study_setup_service: object
     research_workspace_snapshot_service: object
+    research_notebook_service: object
 
 
 class GuiCompositionRoot:
@@ -286,6 +287,7 @@ class GuiCompositionRoot:
                 getattr(self._context, "research_study_service"),
                 getattr(self._context, "research_study_setup_service"),
                 getattr(self._context, "research_workspace_snapshot_service"),
+                getattr(self._context, "research_notebook_service"),
             )
             self._research_suite_window = window
             self._research_suite_presenter = presenter

@@ -1,0 +1,101 @@
+{
+  "annotation_projection": {
+    "BTCUSDT": [
+      {
+        "anchor_price": 65000.0,
+        "annotation_id": "notebook_research_001:trade_btc_001",
+        "kind": "trade_long",
+        "label": "L",
+        "offset_px": 54,
+        "timestamp_ms": 1784293200000
+      },
+      {
+        "anchor_price": 66000.0,
+        "annotation_id": "notebook_research_001:poi_btc_001",
+        "kind": "poi",
+        "label": "+",
+        "offset_px": -30,
+        "timestamp_ms": 1784296800000
+      }
+    ],
+    "ETHUSDT": [
+      {
+        "anchor_price": 3600.0,
+        "annotation_id": "notebook_research_001:trade_eth_001",
+        "kind": "trade_short",
+        "label": "S",
+        "offset_px": -54,
+        "timestamp_ms": 1784286900000
+      },
+      {
+        "anchor_price": null,
+        "annotation_id": "notebook_research_001:poi_eth_001",
+        "kind": "poi",
+        "label": "+",
+        "offset_px": -30,
+        "timestamp_ms": 1784287800000
+      }
+    ]
+  },
+  "canonical_page_order": [
+    "bybit|linear|BTCUSDT|1h",
+    "bybit|linear|ETHUSDT|15m"
+  ],
+  "fixture_version": "1.0",
+  "notebook_content_hash": "d65bf9209e1ed6f70d60469e16f085dd1ae0cf48de5003abbb40438213ae6e6b",
+  "render_rules": {
+    "annotation_markers_affect_autoscale": false,
+    "attached_and_detached_behavior_identical": true,
+    "hidden_study_registration": false,
+    "missing_explicit_price_anchor": {
+      "poi": "candle_high",
+      "trade_long": "candle_low",
+      "trade_short": "candle_high"
+    },
+    "notes_render_as_markers": false,
+    "points_of_interest_render_as_markers": true,
+    "potential_trades_render_as_markers": true,
+    "runtime_timestamp_mapping": "chart_session_nearest_global_index",
+    "same_candle_markers_stack_deterministically": true
+  },
+  "runtime_rules": {
+    "dirty_close_save_discard_cancel": true,
+    "goto_fallback_lowest_workspace_position": true,
+    "goto_opens_new_chart": false,
+    "goto_uses_active_exact_market_first": true,
+    "one_active_notebook_per_suite": true,
+    "pages_without_open_chart_remain_editable": true,
+    "plain_text_only": true,
+    "snapshot_load_changes_active_notebook": false,
+    "snapshot_notebook_reference": false
+  },
+  "store_rules": {
+    "atomic_replace": true,
+    "casefold_unique_display_names": true,
+    "invalid_files_exactly_deletable": true,
+    "invalid_files_listed_with_rejection": true,
+    "no_symlink_or_junction_escape": true,
+    "root_created_on_write_only": true,
+    "update_preserves_id_and_created_at": true
+  },
+  "summary": {
+    "note_count": 3,
+    "page_count": 2,
+    "point_of_interest_count": 2,
+    "potential_trade_count": 2
+  },
+  "workplan_exclusions": {
+    "analysis": false,
+    "backtest": false,
+    "data_manager": false,
+    "freehand_drawing": false,
+    "order_execution": false,
+    "pnl_engine": false,
+    "position_sizing": false,
+    "realtime": false,
+    "rectangles": false,
+    "rich_text_html": false,
+    "trend_lines": false,
+    "workspace_snapshot_assignment": false
+  }
+}

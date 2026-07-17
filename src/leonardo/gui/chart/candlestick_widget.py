@@ -16,8 +16,13 @@ from PySide6.QtGui import (
     QPolygonF,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QToolTip, QWidget
 
+from leonardo.gui.chart.annotation_scene import (
+    ResearchAnnotationScene,
+    ResearchChartAnnotationBundle,
+    build_annotation_scene,
+)
 from leonardo.gui.chart.candlestick_scene import (
     DEFAULT_AXIS_WIDTH,
     DEFAULT_LEFT_MARGIN,
@@ -101,6 +106,8 @@ class CandlestickChartWidget(QWidget):
         self._contract: CandlestickRenderContract | None = None
         self._study_bundle = PriceStudyBundle()
         self._study_scene: StudyScene | None = None
+        self._annotation_bundle = ResearchChartAnnotationBundle()
+        self._annotation_scene: ResearchAnnotationScene | None = None
         self._interaction: CandlestickInteractionState | None = None
         self._static_pixmap: QPixmap | None = None
         self._static_key: tuple[object, ...] | None = None
@@ -131,6 +138,14 @@ class CandlestickChartWidget(QWidget):
     @property
     def study_scene(self) -> StudyScene | None:
         return self._study_scene
+
+    @property
+    def annotation_bundle(self) -> ResearchChartAnnotationBundle:
+        return self._annotation_bundle
+
+    @property
+    def annotation_scene(self) -> ResearchAnnotationScene | None:
+        return self._annotation_scene
 
     @property
     def autoscale_enabled(self) -> bool:
@@ -164,6 +179,24 @@ class CandlestickChartWidget(QWidget):
             self._refresh_from_interaction()
         else:
             self.update()
+
+    def set_annotation_bundle(self, bundle: ResearchChartAnnotationBundle) -> None:
+        if not isinstance(bundle, ResearchChartAnnotationBundle):
+            raise TypeError("bundle must be a ResearchChartAnnotationBundle")
+        if bundle.cache_identity() == self._annotation_bundle.cache_identity():
+            return
+        self._annotation_bundle = bundle
+        self.invalidate_static_scene()
+        self.update()
+
+    def clear_annotations(self) -> None:
+        if not self._annotation_bundle.projections and self._annotation_scene is None:
+            return
+        self._annotation_bundle = ResearchChartAnnotationBundle()
+        self._annotation_scene = None
+        QToolTip.hideText()
+        self.invalidate_static_scene()
+        self.update()
 
     def clear_interaction_state(self) -> None:
         self._interaction = None
@@ -318,6 +351,15 @@ class CandlestickChartWidget(QWidget):
             return
 
         if plot.contains(position):
+            annotation = self._annotation_at(position)
+            if annotation is not None:
+                QToolTip.showText(
+                    self.mapToGlobal(position.toPoint()),
+                    annotation.tooltip,
+                    self,
+                )
+            else:
+                QToolTip.hideText()
             relative = (float(position.x()) - plot.left()) / max(1.0, plot.width())
             changed = self._interaction.move_crosshair(relative)
             self._crosshair_y = float(position.y())
@@ -333,6 +375,7 @@ class CandlestickChartWidget(QWidget):
             self._refresh_from_interaction(refresh_price_scale=False)
             self.crosshairChanged.emit(self._interaction.viewport.snapshot())
         self._crosshair_y = None
+        QToolTip.hideText()
         self.update()
         super().mouseMoveEvent(event)
 
@@ -414,6 +457,7 @@ class CandlestickChartWidget(QWidget):
             ratio,
             contract_identity,
             self._study_bundle.cache_identity(),
+            self._annotation_bundle.cache_identity(),
             self._time_axis_visible,
             self._palette.cache_identity(),
         )
@@ -446,6 +490,19 @@ class CandlestickChartWidget(QWidget):
                     ),
                     candle_scene.plot_rect,
                 )
+                if (
+                    self._contract.resident is not None
+                    and self._contract.price_scale is not None
+                ):
+                    self._annotation_scene = build_annotation_scene(
+                        self._annotation_bundle,
+                        self._contract.resident,
+                        self._contract.viewport,
+                        self._contract.price_scale,
+                        candle_scene.plot_rect,
+                    )
+                else:
+                    self._annotation_scene = ResearchAnnotationScene()
                 self._draw_scene(painter, candle_scene, self._study_scene)
         finally:
             painter.end()
@@ -469,17 +526,6 @@ class CandlestickChartWidget(QWidget):
 
         painter.setPen(QPen(QColor(self._palette.border)))
         painter.drawRect(plot)
-
-        for fill in studies.fills:
-            polygon = QPolygonF(
-                [QPointF(point.x, point.upper_y) for point in fill.points]
-                + [QPointF(point.x, point.lower_y) for point in reversed(fill.points)]
-            )
-            color = QColor(fill.color)
-            color.setAlphaF(fill.opacity)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(color))
-            painter.drawPolygon(polygon)
 
         wick_pen = QPen(QColor(self._palette.wick))
         for candle in scene.candles:
@@ -506,6 +552,17 @@ class CandlestickChartWidget(QWidget):
             painter.setPen(QPen(outline))
             painter.drawRect(body)
 
+        for fill in studies.fills:
+            polygon = QPolygonF(
+                [QPointF(point.x, point.upper_y) for point in fill.points]
+                + [QPointF(point.x, point.lower_y) for point in reversed(fill.points)]
+            )
+            color = QColor(fill.color)
+            color.setAlphaF(fill.opacity)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(color))
+            painter.drawPolygon(polygon)
+
         for strip in studies.line_strips:
             pen = QPen(QColor(strip.color))
             pen.setWidthF(strip.line_width)
@@ -519,6 +576,30 @@ class CandlestickChartWidget(QWidget):
             painter.setPen(QPen(QColor(marker.color)))
             painter.setBrush(QBrush(QColor(marker.color)))
             _draw_marker(painter, marker.point.x, marker.point.y, marker.marker_shape, marker.marker_size)
+
+        if self._annotation_scene is not None:
+            for glyph in self._annotation_scene.glyphs:
+                painter.setPen(QPen(QColor(glyph.color)))
+                painter.setBrush(QBrush(QColor(glyph.color)))
+                _draw_marker(
+                    painter,
+                    glyph.x,
+                    glyph.y,
+                    glyph.shape,
+                    round(glyph.size_px),
+                )
+                painter.setPen(QPen(QColor(self._palette.background)))
+                painter.setFont(QFont("Segoe UI", 7))
+                painter.drawText(
+                    QRectF(
+                        glyph.x - glyph.size_px / 2.0,
+                        glyph.y - glyph.size_px / 2.0,
+                        glyph.size_px,
+                        glyph.size_px,
+                    ),
+                    Qt.AlignCenter,
+                    glyph.label,
+                )
 
         painter.setPen(QPen(QColor(self._palette.axis_text)))
         painter.setFont(QFont("Consolas", 9))
@@ -601,6 +682,15 @@ class CandlestickChartWidget(QWidget):
                 round(plot.right()),
                 round(self._crosshair_y),
             )
+
+    def _annotation_at(self, position: QPointF):
+        scene = self._annotation_scene
+        if scene is None:
+            return None
+        for glyph in reversed(scene.glyphs):
+            if glyph.contains(float(position.x()), float(position.y())):
+                return glyph
+        return None
 
     def _draw_empty_message(self, painter: QPainter, text: str) -> None:
         self._draw_message_in_rect(painter, QRectF(self.rect()), text)

@@ -9,6 +9,10 @@ from uuid import uuid4
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.gui.chart import CandlestickInteractionState, PriceScaleState
+from leonardo.gui.chart.annotation_scene import (
+    ResearchChartAnnotationBundle,
+    ResearchChartAnnotationProjection,
+)
 from leonardo.gui.widgets.research_chart_slot_widget import ResearchChartSlotWidget
 from leonardo.gui.windows.study_style_dialog import StudyStyleDialog, StudyStylePatch
 from leonardo.research import (
@@ -42,6 +46,10 @@ SnapshotChartCapture = getattr(_snapshot_models, "Workspace" "SnapshotChartCaptu
 SnapshotChartV1 = getattr(_snapshot_models, "Workspace" "SnapshotChartV1")
 SnapshotPriceScaleV1 = getattr(_snapshot_models, "Workspace" "SnapshotPriceScaleV1")
 SnapshotViewportV1 = getattr(_snapshot_models, "Workspace" "SnapshotViewportV1")
+_note_models = import_module("leonardo.research.note" "book")
+_ResearchAnnotation = getattr(
+    _note_models, "Research" "Note" "bookAnnotation"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +137,7 @@ class ResearchChartPresenter:
         self._disposed = False
         self._last_viewport_snapshot: ViewportSnapshot | None = None
         self._programmatic_navigation = False
+        self._notebook_annotations: tuple[_ResearchAnnotation, ...] = ()
         self._view.chart_workspace.viewportChanged.connect(self._on_viewport_changed)
 
     @property
@@ -194,6 +203,7 @@ class ResearchChartPresenter:
         self._open_attempt = attempt
         self._viewport = None
         self._interaction = None
+        self.clear_notebook_annotations()
         self._view.clear_chart_state()
         self._view.set_dataset(market_id)
         self._view.set_go_to_enabled(False)
@@ -462,6 +472,56 @@ class ResearchChartPresenter:
             self._set_status("Chart navigation updated")
         return changed
 
+    def set_notebook_annotations(
+        self, annotations: tuple[_ResearchAnnotation, ...]
+    ) -> bool:
+        if not self._runtime_is_current():
+            return False
+        values = tuple(annotations)
+        if not all(isinstance(item, _ResearchAnnotation) for item in values):
+            raise TypeError(
+                "annotations must contain Research annotation values"
+            )
+        dataset = self._session.dataset
+        if dataset is None:
+            return False
+        if any(item.market_id != dataset.market_id for item in values):
+            return False
+        self._notebook_annotations = values
+        self._rebuild_notebook_annotations()
+        return True
+
+    def clear_notebook_annotations(self) -> None:
+        self._notebook_annotations = ()
+        self._view.chart_workspace.clear_notebook_annotations()
+
+    def _rebuild_notebook_annotations(self) -> None:
+        if not self._runtime_is_current():
+            return
+        dataset = self._session.dataset
+        resident = self._session.resident
+        if dataset is None or resident is None:
+            self._view.chart_workspace.clear_notebook_annotations()
+            return
+        if any(
+            item.market_id != dataset.market_id
+            for item in self._notebook_annotations
+        ):
+            self.clear_notebook_annotations()
+            return
+        projections = tuple(
+            ResearchChartAnnotationProjection(
+                item,
+                self._session.nearest_global_index_for_timestamp(
+                    item.timestamp_ms
+                ),
+            )
+            for item in self._notebook_annotations
+        )
+        self._view.chart_workspace.set_notebook_annotations(
+            ResearchChartAnnotationBundle(dataset.market_id, projections)
+        )
+
     def apply_environment(
         self, environment: EnvironmentV1, mode: str, *, completion_callback=None
     ) -> None:
@@ -529,6 +589,7 @@ class ResearchChartPresenter:
             self._study_service.cancel(task_id)
         self._active_study_tasks.clear()
         self._view.set_go_to_enabled(False)
+        self.clear_notebook_annotations()
         try:
             self._view.chart_workspace.viewportChanged.disconnect(self._on_viewport_changed)
         except RuntimeError:
@@ -648,6 +709,7 @@ class ResearchChartPresenter:
             return
         self._view.show_interaction_state(self._interaction, volume_projection)
         self._refresh_study_state()
+        self._rebuild_notebook_annotations()
         self._set_busy(False)
         self._set_status("Chart ready")
         market = resident.market_id

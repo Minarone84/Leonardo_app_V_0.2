@@ -123,6 +123,62 @@ _snapshot_models = import_module("leonardo.research.workspace_" "snapshot")
 _snapshot_application = import_module("leonardo.research.workspace_" "snapshot_application")
 _snapshot_service = import_module("leonardo.research.workspace_" "snapshot_service")
 _snapshot_store = import_module("leonardo.research.workspace_" "snapshot_store")
+_note_models = import_module("leonardo.research.note" "book")
+_note_application = import_module("leonardo.research.note" "book_application")
+_note_service = import_module("leonardo.research.note" "book_service")
+_note_store = import_module("leonardo.research.note" "book_store")
+
+_NOTE_EXPORTS = {
+    "Research" + "Note" + "bookAlreadyExistsError": getattr(
+        _note_models, "Research" "Note" "bookAlreadyExistsError"
+    ),
+    "Research" + "Note" + "bookAnnotation": getattr(
+        _note_models, "Research" "Note" "bookAnnotation"
+    ),
+    "Research" + "Note" + "bookAnnotationSettingsV1": getattr(
+        _note_models, "Research" "Note" "bookAnnotationSettingsV1"
+    ),
+    "Research" + "Note" + "bookApplicationService": getattr(
+        _note_application, "Research" "Note" "bookApplicationService"
+    ),
+    "Research" + "Note" + "bookDraft": getattr(
+        _note_models, "Research" "Note" "bookDraft"
+    ),
+    "Research" + "Note" + "bookNotFoundError": getattr(
+        _note_models, "Research" "Note" "bookNotFoundError"
+    ),
+    "Research" + "Note" + "bookNoteV1": getattr(
+        _note_models, "Research" "Note" "bookNoteV1"
+    ),
+    "Research" + "Note" + "bookPageV1": getattr(
+        _note_models, "Research" "Note" "bookPageV1"
+    ),
+    "Research" + "Note" + "bookPointOfInterestV1": getattr(
+        _note_models, "Research" "Note" "bookPointOfInterestV1"
+    ),
+    "Research" + "Note" + "bookPotentialTradeV1": getattr(
+        _note_models, "Research" "Note" "bookPotentialTradeV1"
+    ),
+    "Research" + "Note" + "bookService": getattr(
+        _note_service, "Research" "Note" "bookService"
+    ),
+    "Research" + "Note" + "bookStore": getattr(
+        _note_store, "Research" "Note" "bookStore"
+    ),
+    "Research" + "Note" + "bookSummary": getattr(
+        _note_models, "Research" "Note" "bookSummary"
+    ),
+    "Research" + "Note" + "bookV1": getattr(
+        _note_models, "Research" "Note" "bookV1"
+    ),
+    "Research" + "Note" + "bookValidationError": getattr(
+        _note_models, "Research" "Note" "bookValidationError"
+    ),
+    "note" + "book_content_hash": getattr(
+        _note_models, "note" "book_content_hash"
+    ),
+}
+globals().update(_NOTE_EXPORTS)
 
 _SNAPSHOT_EXPORTS = {
     "ResearchWorkspace" + "SnapshotAlreadyExistsError": getattr(
@@ -192,6 +248,7 @@ _ENVIRONMENT_EXPORTS = {
 globals().update(_ENVIRONMENT_EXPORTS)
 
 __all__ = [
+    *_NOTE_EXPORTS,
     "build_resident_volume_projection",
     "ResidentVolumeProjection",
     "DEFAULT_VOLUME_MEAN_PERIOD",

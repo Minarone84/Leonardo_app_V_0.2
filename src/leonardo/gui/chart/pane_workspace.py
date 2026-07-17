@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
 from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
+from leonardo.gui.chart.annotation_scene import ResearchChartAnnotationBundle
 from leonardo.gui.chart.interaction import CandlestickInteractionState
 from leonardo.gui.chart.oscillator_widget import OscillatorStudyWidget
 from leonardo.gui.chart.study_scene import PriceStudyBundle
@@ -236,6 +237,14 @@ class ChartPaneWorkspaceWidget(QWidget):
         self._apply_pane_sizes()
         self._update_time_axis_owner()
 
+    def set_notebook_annotations(
+        self, bundle: ResearchChartAnnotationBundle
+    ) -> None:
+        self._price.set_annotation_bundle(bundle)
+
+    def clear_notebook_annotations(self) -> None:
+        self._price.clear_annotations()
+
     def study_pane_ids(self) -> tuple[str, ...]:
         pane_ids = ["price"]
         if self._volume_visible:
@@ -267,6 +276,7 @@ class ChartPaneWorkspaceWidget(QWidget):
         self._volume.set_projection(None)
         self._volume.clear_interaction_state()
         self.clear_studies()
+        self.clear_notebook_annotations()
 
     def refresh_from_shared_state(self) -> None:
         self._price.refresh_from_shared_state()

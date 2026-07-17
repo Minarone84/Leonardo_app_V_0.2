@@ -14,6 +14,7 @@ class RuntimePaths:
     tmp_dir: Path
     study_environments_dir: Path
     workspace_snapshots_dir: Path
+    research_notebooks_dir: Path
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def load_default_config(repo_root: Path | str | None = None) -> AppConfig:
             tmp_dir=resolved / "tmp",
             study_environments_dir=resolved / "study_environments",
             workspace_snapshots_dir=resolved / "workspace_snapshots",
+            research_notebooks_dir=resolved / "research_notebooks",
         ),
         audit=AuditConfig(jsonl_path=resolved / "runs" / "audit.jsonl"),
     )

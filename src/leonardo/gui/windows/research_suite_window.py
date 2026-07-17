@@ -63,6 +63,8 @@ class ResearchSuiteWindow(QWidget):
     study_environments_requested = Signal()
     save_snapshot_requested = Signal()
     snapshot_manager_requested = Signal()
+    new_notebook_requested = Signal()
+    notebooks_requested = Signal()
     closed = Signal()
 
     def __init__(
@@ -100,12 +102,15 @@ class ResearchSuiteWindow(QWidget):
         self._snapshot_restore_active = False
         self._snapshot_has_charts = False
         self._snapshot_all_charts_idle = False
+        self._notebook_service_available = False
+        self._notebook_operation_active = False
         self._active_slot_id: int | None = None
         self._catalog_busy = False
         self._workspace_full = False
         self._floating_window_tracker = floating_window_tracker
         self._floating_windows: dict[int, ResearchChartWindow] = {}
         self._go_to_dialogs: set[ResearchGoToDialog] = set()
+        self._close_guard: Callable[[], bool] | None = None
 
         self._apply_window_defaults()
         apply_theme_stylesheet(self, load_default_theme())
@@ -179,6 +184,7 @@ class ResearchSuiteWindow(QWidget):
             combo.setCurrentIndex(0)
         self._update_dataset_details()
         self._sync_catalog_controls()
+        self._sync_notebook_controls()
 
     def add_chart_slot(self, slot_id: int) -> ResearchChartSlotWidget:
         widget = self._workspace.add_slot(slot_id)
@@ -348,6 +354,23 @@ class ResearchSuiteWindow(QWidget):
         self._snapshot_service_available = available
         self._sync_snapshot_controls()
 
+    def set_research_notebook_available(self, available: bool) -> None:
+        if type(available) is not bool:
+            raise TypeError("available must be a boolean")
+        self._notebook_service_available = available
+        self._sync_notebook_controls()
+
+    def set_research_notebook_operation_active(self, active: bool) -> None:
+        if type(active) is not bool:
+            raise TypeError("active must be a boolean")
+        self._notebook_operation_active = active
+        self._sync_notebook_controls()
+
+    def set_close_guard(self, guard: Callable[[], bool] | None) -> None:
+        if guard is not None and not callable(guard):
+            raise TypeError("close guard must be callable or None")
+        self._close_guard = guard
+
     def set_snapshot_workspace_restore_active(self, active: bool) -> None:
         if type(active) is not bool:
             raise TypeError("active must be a boolean")
@@ -358,6 +381,7 @@ class ResearchSuiteWindow(QWidget):
         self._sync_study_environment_controls()
         self._sync_snapshot_controls()
         self._sync_restore_mutation_controls()
+        self._sync_notebook_controls()
 
     def set_snapshot_workspace_idle(self, has_charts: bool, all_idle: bool) -> None:
         if type(has_charts) is not bool or type(all_idle) is not bool:
@@ -483,8 +507,12 @@ class ResearchSuiteWindow(QWidget):
                 "Research dataset and chart workflow messages will appear here."
             )
         self._sync_catalog_controls()
+        self._sync_notebook_controls()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._close_guard is not None and not self._close_guard():
+            event.ignore()
+            return
         self.close_all_floating_charts()
         self.closed.emit()
         super().closeEvent(event)
@@ -627,6 +655,20 @@ class ResearchSuiteWindow(QWidget):
             self.snapshot_manager_requested.emit,
         )
         toolbar.addWidget(snapshots)
+        new_notebook = self._button(
+            chart_panel,
+            "research_suite.button.new_notebook",
+            "New " "Note" "book",
+            self.new_notebook_requested.emit,
+        )
+        toolbar.addWidget(new_notebook)
+        notebooks = self._button(
+            chart_panel,
+            "research_suite.button.notebooks",
+            "Note" "books",
+            self.notebooks_requested.emit,
+        )
+        toolbar.addWidget(notebooks)
         chart_layout.addLayout(toolbar)
         content = QHBoxLayout()
         content.setContentsMargins(0, 0, 0, 0)
@@ -772,6 +814,17 @@ class ResearchSuiteWindow(QWidget):
         self._controls["research_suite.button.workspace_snapshots"].setEnabled(
             self._snapshot_service_available and not self._snapshot_restore_active
         )
+
+    def _sync_notebook_controls(self) -> None:
+        if "research_suite.button.new_notebook" not in self._controls:
+            return
+        enabled = (
+            self._notebook_service_available
+            and not self._notebook_operation_active
+            and not self._snapshot_restore_active
+        )
+        self._controls["research_suite.button.new_notebook"].setEnabled(enabled)
+        self._controls["research_suite.button.notebooks"].setEnabled(enabled)
 
     def _sync_restore_mutation_controls(self) -> None:
         if "research_suite.button.close_active_chart" not in self._controls:

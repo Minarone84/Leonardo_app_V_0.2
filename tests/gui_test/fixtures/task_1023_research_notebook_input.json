@@ -1,0 +1,198 @@
+{
+  "dirty_close_cases": [
+    {
+      "decision": "save",
+      "expected": "save_then_close"
+    },
+    {
+      "decision": "discard",
+      "expected": "close_without_save"
+    },
+    {
+      "decision": "cancel",
+      "expected": "remain_open"
+    }
+  ],
+  "fixture_version": "1.0",
+  "goto_cases": [
+    {
+      "expected_slot": 4,
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1h"
+      },
+      "reason": "active exact-MarketId chart wins",
+      "timestamp_ms": 1784296800000
+    },
+    {
+      "expected_slot": 2,
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "ETHUSDT",
+        "timeframe": "15m"
+      },
+      "reason": "only exact-MarketId chart",
+      "timestamp_ms": 1784287800000
+    },
+    {
+      "expected": "blocked_no_open_exact_market",
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "SOLUSDT",
+        "timeframe": "1h"
+      },
+      "timestamp_ms": 1784296800000
+    }
+  ],
+  "notebook": {
+    "annotation_settings": {
+      "long_offset_px": 54,
+      "poi_offset_px": -30,
+      "short_offset_px": -54,
+      "show_points_of_interest": true,
+      "show_potential_trades": true
+    },
+    "content_hash": "d65bf9209e1ed6f70d60469e16f085dd1ae0cf48de5003abbb40438213ae6e6b",
+    "created_at_utc": "2026-07-17T12:00:00+00:00",
+    "description": "Plain-text research notes and chart annotations.",
+    "display_name": "Breakout Journal",
+    "notebook_id": "notebook_research_001",
+    "object_type": "research_notebook",
+    "pages": [
+      {
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        "notes": [
+          {
+            "row_id": "note_btc_001",
+            "text": "Wait for confirmation above the prior range.",
+            "timestamp_ms": null
+          },
+          {
+            "row_id": "note_btc_002",
+            "text": "Volume expansion appeared on the breakout candle.",
+            "timestamp_ms": 1784293200000
+          }
+        ],
+        "points_of_interest": [
+          {
+            "description": "Level may become support after the breakout.",
+            "price": 66000.0,
+            "row_id": "poi_btc_001",
+            "timestamp_ms": 1784296800000,
+            "title": "Prior resistance"
+          }
+        ],
+        "potential_trades": [
+          {
+            "direction": "long",
+            "entry_price": 65000.0,
+            "note": "Enter only after the retest holds.",
+            "outcome": "pending",
+            "row_id": "trade_btc_001",
+            "status": "planned",
+            "stop_price": 64000.0,
+            "target_price": 67000.0,
+            "timestamp_ms": 1784293200000
+          }
+        ]
+      },
+      {
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "ETHUSDT",
+          "timeframe": "15m"
+        },
+        "notes": [
+          {
+            "row_id": "note_eth_001",
+            "text": "Momentum weakened into the upper range.",
+            "timestamp_ms": 1784286000000
+          }
+        ],
+        "points_of_interest": [
+          {
+            "description": "Anchor to the nearest candle high.",
+            "price": null,
+            "row_id": "poi_eth_001",
+            "timestamp_ms": 1784287800000,
+            "title": "Liquidity sweep"
+          }
+        ],
+        "potential_trades": [
+          {
+            "direction": "short",
+            "entry_price": 3600.0,
+            "note": "Rejected the range high and closed at target.",
+            "outcome": "win",
+            "row_id": "trade_eth_001",
+            "status": "closed",
+            "stop_price": 3650.0,
+            "target_price": 3500.0,
+            "timestamp_ms": 1784286900000
+          }
+        ]
+      }
+    ],
+    "schema_version": "1.0",
+    "updated_at_utc": "2026-07-17T12:00:00+00:00"
+  },
+  "open_workspace": {
+    "active_slot": 4,
+    "charts": [
+      {
+        "center_timestamp_ms": 1784287000000,
+        "detached": true,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "ETHUSDT",
+          "timeframe": "15m"
+        },
+        "slot_id": 2,
+        "workspace_position": 1
+      },
+      {
+        "center_timestamp_ms": 1784294000000,
+        "detached": false,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        "slot_id": 4,
+        "workspace_position": 3
+      },
+      {
+        "center_timestamp_ms": 1784295000000,
+        "detached": false,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        "slot_id": 6,
+        "workspace_position": 5
+      }
+    ]
+  },
+  "snapshot_restore_case": {
+    "annotation_publication_deferred": true,
+    "editor_may_remain_open": true,
+    "goto_blocked": true,
+    "persistence_may_continue": true,
+    "publish_after_restore": true,
+    "snapshot_schema_modified": false
+  }
+}

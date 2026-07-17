@@ -32,6 +32,9 @@ from leonardo.research import (
     AcceptedDatasetCatalog,
     HistoricalDatasetLoader,
     ResearchDatasetApplicationService,
+    ResearchNotebookApplicationService,
+    ResearchNotebookService,
+    ResearchNotebookStore,
     ResearchStudyApplicationService,
     ResearchStudyService,
     ResearchStudySetupApplicationService,
@@ -64,6 +67,7 @@ class CoreContext:
     research_study_service: ResearchStudyApplicationService
     research_study_setup_service: ResearchStudySetupApplicationService
     research_workspace_snapshot_service: ResearchWorkspaceSnapshotApplicationService
+    research_notebook_service: ResearchNotebookApplicationService
 
 
 class LeonardoApp:
@@ -167,6 +171,16 @@ class LeonardoApp:
                 self.research_workspace_snapshot_domain,
             )
         )
+        self.research_notebook_store = ResearchNotebookStore(
+            self.config.paths.research_notebooks_dir
+        )
+        self.research_notebook_domain = ResearchNotebookService(
+            self.research_notebook_store
+        )
+        self.research_notebook_service = ResearchNotebookApplicationService(
+            self.core_runner,
+            self.research_notebook_domain,
+        )
         self.action_registry = ActionRegistry(
             self.audit_log,
             actor_id=self.config.actor_id,
@@ -202,6 +216,7 @@ class LeonardoApp:
             research_study_service=self.research_study_service,
             research_study_setup_service=self.research_study_setup_service,
             research_workspace_snapshot_service=self.research_workspace_snapshot_service,
+            research_notebook_service=self.research_notebook_service,
         )
 
     @property
