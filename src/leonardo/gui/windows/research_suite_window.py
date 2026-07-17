@@ -23,8 +23,16 @@ from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
 from leonardo.gui.chart.interaction import CandlestickInteractionState
 from leonardo.gui.chart.pane_workspace import ChartPaneWorkspaceWidget
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
+from leonardo.gui.widgets import StudyManagerWidget
+from leonardo.gui.windows.study_style_dialog import StudyStyleDialog
 from leonardo.gui.windows.shell_widgets import apply_identity
-from leonardo.research import AcceptedDatasetSummary, ResidentVolumeProjection
+from leonardo.research import (
+    AcceptedDatasetSummary,
+    ResidentStudyProjection,
+    ResidentVolumeProjection,
+    StudyManagerEntry,
+    StudyPresentation,
+)
 
 RESEARCH_SUITE_WINDOW_ID = "research_suite.window"
 
@@ -57,6 +65,8 @@ class ResearchSuiteWindow(QWidget):
         self._log_area: QTextEdit | None = None
         self._chart_workspace = ChartPaneWorkspaceWidget(self)
         self._chart = self._chart_workspace.price_chart
+        self._study_manager = StudyManagerWidget(self)
+        self._style_dialogs: list[StudyStyleDialog] = []
 
         self._apply_window_defaults()
         apply_theme_stylesheet(self, load_default_theme())
@@ -70,6 +80,10 @@ class ResearchSuiteWindow(QWidget):
     @property
     def chart_workspace(self) -> ChartPaneWorkspaceWidget:
         return self._chart_workspace
+
+    @property
+    def study_manager(self) -> StudyManagerWidget:
+        return self._study_manager
 
     @property
     def volume_visible(self) -> bool:
@@ -167,8 +181,31 @@ class ResearchSuiteWindow(QWidget):
             volume_projection is not None
         )
 
+    def set_study_state(
+        self,
+        projections: Sequence[ResidentStudyProjection],
+        presentations: Sequence[StudyPresentation],
+        entries: Sequence[StudyManagerEntry],
+    ) -> None:
+        self._chart_workspace.apply_study_state(projections, presentations)
+        self._study_manager.set_entries(entries)
+
+    def open_study_style_dialog(
+        self, presentation: StudyPresentation
+    ) -> StudyStyleDialog:
+        dialog = StudyStyleDialog(presentation, self)
+        self._style_dialogs.append(dialog)
+        dialog.finished.connect(lambda: self._forget_style_dialog(dialog))
+        dialog.show()
+        return dialog
+
+    def _forget_style_dialog(self, dialog: StudyStyleDialog) -> None:
+        if dialog in self._style_dialogs:
+            self._style_dialogs.remove(dialog)
+
     def clear_chart(self) -> None:
         self._chart_workspace.clear()
+        self._study_manager.set_entries(())
         self._chart_workspace.set_volume_visible(False)
         autoscale = self._controls.get("research_suite.button.toggle_autoscale")
         if autoscale is not None:
@@ -249,7 +286,10 @@ class ResearchSuiteWindow(QWidget):
         volume_toggle.setEnabled(False)
         toolbar.addWidget(volume_toggle)
         chart_layout.addLayout(toolbar)
-        chart_layout.addWidget(self._chart_workspace, stretch=1)
+        chart_content = QHBoxLayout()
+        chart_content.addWidget(self._chart_workspace, stretch=4)
+        chart_content.addWidget(self._study_manager, stretch=1)
+        chart_layout.addLayout(chart_content, stretch=1)
         root.addWidget(chart_panel, stretch=1)
         root.addWidget(self._build_status_panel())
 

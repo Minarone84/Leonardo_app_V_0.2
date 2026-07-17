@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QPolygonF,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QWidget
@@ -28,6 +29,13 @@ from leonardo.gui.chart.candlestick_scene import (
     build_candlestick_scene,
 )
 from leonardo.gui.chart.interaction import CandlestickInteractionState
+from leonardo.gui.chart.price_scale import PriceRange, PriceScaleSnapshot
+from leonardo.gui.chart.study_scene import (
+    PriceStudyBundle,
+    StudyScene,
+    build_study_scene,
+    visible_price_study_values,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +99,8 @@ class CandlestickChartWidget(QWidget):
         self.setMouseTracking(True)
         self._palette = palette or CandlestickPalette()
         self._contract: CandlestickRenderContract | None = None
+        self._study_bundle = PriceStudyBundle()
+        self._study_scene: StudyScene | None = None
         self._interaction: CandlestickInteractionState | None = None
         self._static_pixmap: QPixmap | None = None
         self._static_key: tuple[object, ...] | None = None
@@ -100,6 +110,7 @@ class CandlestickChartWidget(QWidget):
         self._axis_dragging = False
         self._axis_drag_mode = "zoom"
         self._last_drag_position: QPointF | None = None
+        self._time_axis_visible = True
 
     @property
     def render_contract(self) -> CandlestickRenderContract | None:
@@ -112,6 +123,14 @@ class CandlestickChartWidget(QWidget):
     @property
     def interaction_state(self) -> CandlestickInteractionState | None:
         return self._interaction
+
+    @property
+    def study_bundle(self) -> PriceStudyBundle:
+        return self._study_bundle
+
+    @property
+    def study_scene(self) -> StudyScene | None:
+        return self._study_scene
 
     @property
     def autoscale_enabled(self) -> bool:
@@ -132,11 +151,40 @@ class CandlestickChartWidget(QWidget):
             raise TypeError("state must be a CandlestickInteractionState")
         self._interaction = state
         self._crosshair_y = None
-        self.set_render_contract(state.render_contract())
+        self._refresh_from_interaction()
+
+    def set_study_bundle(self, bundle: PriceStudyBundle) -> None:
+        if not isinstance(bundle, PriceStudyBundle):
+            raise TypeError("bundle must be a PriceStudyBundle")
+        if bundle.cache_identity() == self._study_bundle.cache_identity():
+            return
+        self._study_bundle = bundle
+        self.invalidate_static_scene()
+        if self._interaction is not None:
+            self._refresh_from_interaction()
+        else:
+            self.update()
 
     def clear_interaction_state(self) -> None:
         self._interaction = None
         self._crosshair_y = None
+
+    def clear_studies(self) -> None:
+        self._study_bundle = PriceStudyBundle()
+        self._study_scene = None
+        self.invalidate_static_scene()
+        if self._interaction is not None:
+            self._refresh_from_interaction()
+        else:
+            self.update()
+
+    def set_time_axis_visible(self, visible: bool) -> None:
+        if type(visible) is not bool:
+            raise TypeError("visible must be a boolean")
+        if visible != self._time_axis_visible:
+            self._time_axis_visible = visible
+            self.invalidate_static_scene()
+            self.update()
 
     def clear_render_contract(self) -> None:
         if self._contract is None:
@@ -151,7 +199,11 @@ class CandlestickChartWidget(QWidget):
         changed = self._interaction.set_autoscale_enabled(enabled)
         if changed:
             self._refresh_from_interaction()
-            self.priceScaleChanged.emit(self._interaction.price_scale_snapshot())
+            self.priceScaleChanged.emit(
+                self._interaction.price_scale_snapshot(
+                    extra_visible_prices=self._visible_overlay_values()
+                )
+            )
         return changed
 
     def refresh_from_shared_state(
@@ -234,7 +286,11 @@ class CandlestickChartWidget(QWidget):
             self._last_drag_position = position
             if changed:
                 self._refresh_from_interaction()
-                self.priceScaleChanged.emit(self._interaction.price_scale_snapshot())
+                self.priceScaleChanged.emit(
+                    self._interaction.price_scale_snapshot(
+                        extra_visible_prices=self._visible_overlay_values()
+                    )
+                )
             event.accept()
             return
 
@@ -253,7 +309,11 @@ class CandlestickChartWidget(QWidget):
             if horizontal_changed:
                 self.viewportChanged.emit(self._interaction.viewport.snapshot())
             if vertical_changed:
-                self.priceScaleChanged.emit(self._interaction.price_scale_snapshot())
+                self.priceScaleChanged.emit(
+                    self._interaction.price_scale_snapshot(
+                        extra_visible_prices=self._visible_overlay_values()
+                    )
+                )
             event.accept()
             return
 
@@ -320,9 +380,18 @@ class CandlestickChartWidget(QWidget):
         if self._interaction is not None:
             self.set_render_contract(
                 self._interaction.render_contract(
-                    refresh_price_scale=refresh_price_scale
+                    refresh_price_scale=refresh_price_scale,
+                    extra_visible_prices=self._visible_overlay_values(),
                 )
             )
+
+    def _visible_overlay_values(self) -> tuple[float, ...]:
+        if self._interaction is None:
+            return ()
+        return visible_price_study_values(
+            self._study_bundle,
+            self._interaction.viewport.snapshot(),
+        )
 
     def _plot_rect(self) -> QRectF:
         return QRectF(
@@ -344,6 +413,8 @@ class CandlestickChartWidget(QWidget):
             self.height(),
             ratio,
             contract_identity,
+            self._study_bundle.cache_identity(),
+            self._time_axis_visible,
             self._palette.cache_identity(),
         )
         if self._static_pixmap is not None and self._static_key == key:
@@ -361,14 +432,21 @@ class CandlestickChartWidget(QWidget):
             if self._contract is None:
                 self._draw_empty_message(painter, "No accepted OHLCV data")
             else:
-                self._draw_scene(
-                    painter,
-                    build_candlestick_scene(
-                        self._contract,
-                        width=max(1, self.width()),
-                        height=max(1, self.height()),
-                    ),
+                candle_scene = build_candlestick_scene(
+                    self._contract,
+                    width=max(1, self.width()),
+                    height=max(1, self.height()),
                 )
+                self._study_scene = build_study_scene(
+                    self._study_bundle,
+                    self._contract.viewport,
+                    self._contract.price_scale
+                    or PriceScaleSnapshot(
+                        True, PriceRange(candle_scene.price_low, candle_scene.price_high)
+                    ),
+                    candle_scene.plot_rect,
+                )
+                self._draw_scene(painter, candle_scene, self._study_scene)
         finally:
             painter.end()
 
@@ -377,7 +455,9 @@ class CandlestickChartWidget(QWidget):
         self._static_rebuild_count += 1
         return pixmap
 
-    def _draw_scene(self, painter: QPainter, scene: CandlestickScene) -> None:
+    def _draw_scene(
+        self, painter: QPainter, scene: CandlestickScene, studies: StudyScene
+    ) -> None:
         plot = _qt_rect(scene.plot_rect)
         painter.fillRect(plot, QColor(self._palette.background))
 
@@ -389,6 +469,17 @@ class CandlestickChartWidget(QWidget):
 
         painter.setPen(QPen(QColor(self._palette.border)))
         painter.drawRect(plot)
+
+        for fill in studies.fills:
+            polygon = QPolygonF(
+                [QPointF(point.x, point.upper_y) for point in fill.points]
+                + [QPointF(point.x, point.lower_y) for point in reversed(fill.points)]
+            )
+            color = QColor(fill.color)
+            color.setAlphaF(fill.opacity)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(color))
+            painter.drawPolygon(polygon)
 
         wick_pen = QPen(QColor(self._palette.wick))
         for candle in scene.candles:
@@ -415,6 +506,20 @@ class CandlestickChartWidget(QWidget):
             painter.setPen(QPen(outline))
             painter.drawRect(body)
 
+        for strip in studies.line_strips:
+            pen = QPen(QColor(strip.color))
+            pen.setWidthF(strip.line_width)
+            pen.setStyle(_qt_line_style(strip.line_pattern))
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            for first, second in zip(strip.points, strip.points[1:]):
+                painter.drawLine(QPointF(first.x, first.y), QPointF(second.x, second.y))
+
+        for marker in studies.markers:
+            painter.setPen(QPen(QColor(marker.color)))
+            painter.setBrush(QBrush(QColor(marker.color)))
+            _draw_marker(painter, marker.point.x, marker.point.y, marker.marker_shape, marker.marker_size)
+
         painter.setPen(QPen(QColor(self._palette.axis_text)))
         painter.setFont(QFont("Consolas", 9))
         for tick in scene.price_ticks:
@@ -430,15 +535,16 @@ class CandlestickChartWidget(QWidget):
                 tick.label,
             )
 
-        painter.setFont(QFont("Consolas", 8))
-        for tick in scene.time_ticks:
-            label_rect = QRectF(
-                tick.x - 45,
-                scene.time_axis_rect.y,
-                90,
-                scene.time_axis_rect.height,
-            )
-            painter.drawText(label_rect, Qt.AlignHCenter | Qt.AlignTop, tick.label)
+        if self._time_axis_visible:
+            painter.setFont(QFont("Consolas", 8))
+            for tick in scene.time_ticks:
+                label_rect = QRectF(
+                    tick.x - 45,
+                    scene.time_axis_rect.y,
+                    90,
+                    scene.time_axis_rect.height,
+                )
+                painter.drawText(label_rect, Qt.AlignHCenter | Qt.AlignTop, tick.label)
 
         if scene.last_price_tag is not None:
             tag = scene.last_price_tag
@@ -511,3 +617,33 @@ class CandlestickChartWidget(QWidget):
 
 def _qt_rect(rect: SceneRect) -> QRectF:
     return QRectF(rect.x, rect.y, rect.width, rect.height)
+
+
+def _qt_line_style(pattern: str):
+    return {
+        "solid": Qt.SolidLine,
+        "dashed": Qt.DashLine,
+        "dotted": Qt.DotLine,
+    }[pattern]
+
+
+def _draw_marker(
+    painter: QPainter, x: float, y: float, shape: str, size: int
+) -> None:
+    half = size / 2.0
+    if shape == "circle":
+        painter.drawEllipse(QPointF(x, y), half, half)
+    elif shape == "square":
+        painter.drawRect(QRectF(x - half, y - half, size, size))
+    elif shape == "triangle_up":
+        painter.drawPolygon(
+            QPolygonF(
+                [QPointF(x, y - half), QPointF(x - half, y + half), QPointF(x + half, y + half)]
+            )
+        )
+    elif shape == "triangle_down":
+        painter.drawPolygon(
+            QPolygonF(
+                [QPointF(x, y + half), QPointF(x - half, y - half), QPointF(x + half, y - half)]
+            )
+        )

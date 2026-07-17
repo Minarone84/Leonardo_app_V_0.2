@@ -38,6 +38,7 @@ class GuiCoreContext(Protocol):
     historical_download_service: object
     ohlcv_maintenance_service: object
     research_dataset_service: object
+    research_study_service: object
 
 
 class GuiCompositionRoot:
@@ -279,6 +280,7 @@ class GuiCompositionRoot:
             presenter = ResearchSuitePresenter(
                 window,
                 getattr(self._context, "research_dataset_service"),
+                getattr(self._context, "research_study_service"),
             )
             self._research_suite_window = window
             self._research_suite_presenter = presenter

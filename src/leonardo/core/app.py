@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from threading import RLock
 
 from leonardo.audit import AuditEventV1
+from leonardo.artifacts import ArtifactService
 from leonardo.connection import ConnectionApplicationService, build_default_provider_registry
 from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.audit_log import AuditLog, CompositeAuditSink, InMemoryAuditSink, JsonlAuditSink
@@ -31,6 +32,8 @@ from leonardo.research import (
     AcceptedDatasetCatalog,
     HistoricalDatasetLoader,
     ResearchDatasetApplicationService,
+    ResearchStudyApplicationService,
+    ResearchStudyService,
     ResidentSliceService,
 )
 
@@ -52,6 +55,7 @@ class CoreContext:
     historical_download_service: HistoricalDownloadApplicationService
     ohlcv_maintenance_service: OHLCVMaintenanceApplicationService
     research_dataset_service: ResearchDatasetApplicationService
+    research_study_service: ResearchStudyApplicationService
 
 
 class LeonardoApp:
@@ -121,6 +125,14 @@ class LeonardoApp:
             catalog=self.accepted_dataset_catalog,
             resident_slices=self.resident_slice_service,
         )
+        self.artifact_service = ArtifactService(
+            self.config.paths.historical_data_dir
+        )
+        self.research_study_domain = ResearchStudyService(self.artifact_service)
+        self.research_study_service = ResearchStudyApplicationService(
+            self.core_runner,
+            self.research_study_domain,
+        )
         self.action_registry = ActionRegistry(
             self.audit_log,
             actor_id=self.config.actor_id,
@@ -153,6 +165,7 @@ class LeonardoApp:
             historical_download_service=self.historical_download_service,
             ohlcv_maintenance_service=self.ohlcv_maintenance_service,
             research_dataset_service=self.research_dataset_service,
+            research_study_service=self.research_study_service,
         )
 
     @property

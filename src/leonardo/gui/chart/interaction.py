@@ -8,6 +8,7 @@ no I/O, calculation, persistence, or task management.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 
 from leonardo.gui.chart.candlestick_scene import CandlestickRenderContract
 from leonardo.gui.chart.price_scale import PriceScaleSnapshot, PriceScaleState
@@ -54,11 +55,18 @@ class CandlestickInteractionState:
         return True
 
     def render_contract(
-        self, *, refresh_price_scale: bool = True
+        self,
+        *,
+        refresh_price_scale: bool = True,
+        extra_visible_prices: Iterable[float] = (),
     ) -> CandlestickRenderContract:
         viewport = self._viewport.snapshot()
         scale = (
-            self._price_scale.resolve(viewport, self._resident)
+            self._price_scale.resolve(
+                viewport,
+                self._resident,
+                extra_visible_prices=extra_visible_prices,
+            )
             if refresh_price_scale
             else self._price_scale.snapshot()
         )
@@ -110,8 +118,14 @@ class CandlestickInteractionState:
     def zoom_price_pixels(self, delta_y: float) -> bool:
         return self._price_scale.zoom_by_pixels(delta_y)
 
-    def price_scale_snapshot(self) -> PriceScaleSnapshot:
-        return self._price_scale.resolve(self._viewport.snapshot(), self._resident)
+    def price_scale_snapshot(
+        self, *, extra_visible_prices: Iterable[float] = ()
+    ) -> PriceScaleSnapshot:
+        return self._price_scale.resolve(
+            self._viewport.snapshot(),
+            self._resident,
+            extra_visible_prices=extra_visible_prices,
+        )
 
 
 def _finite(value: float, name: str) -> float:

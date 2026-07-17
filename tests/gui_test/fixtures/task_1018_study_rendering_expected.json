@@ -1,0 +1,221 @@
+{
+  "after_actions": {
+    "study-hck": {
+      "presentation_visible": false,
+      "price_rendered": false
+    },
+    "study-sma-a": {
+      "color": "#F59E0B",
+      "line_pattern": "solid",
+      "line_width": 1.0,
+      "visible": true
+    },
+    "study-sma-b": {
+      "color": "#FFFFFF",
+      "line_pattern": "dashed",
+      "line_width": 2.0,
+      "visible": true
+    }
+  },
+  "default_presentations": {
+    "study-bb": {
+      "fills": {
+        "bb_band": {
+          "color": "#60A5FA",
+          "lower_output_name": "bb_lower_band",
+          "opacity": 0.12,
+          "upper_output_name": "bb_upper_band",
+          "visible": true
+        }
+      },
+      "pane_id": "price",
+      "signal_styles": {
+        "bb_lower_band": {
+          "color": "#60A5FA",
+          "line_pattern": "dashed",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        },
+        "bb_middle": {
+          "color": "#F59E0B",
+          "line_pattern": "solid",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        },
+        "bb_upper_band": {
+          "color": "#60A5FA",
+          "line_pattern": "dashed",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        }
+      },
+      "visible": true
+    },
+    "study-dynamic": {
+      "pane_id": null,
+      "signal_styles": {},
+      "visible": true
+    },
+    "study-hck": {
+      "pane_id": "price",
+      "signal_styles": {
+        "fast_vwap": {
+          "color": "#22C55E",
+          "conditional_colors": {
+            "green": "#22C55E",
+            "red": "#EF4444",
+            "silver": "#94A3B8"
+          },
+          "conditional_driver_name": "vwap_color",
+          "line_pattern": "solid",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        },
+        "slow_vwap": {
+          "color": "#60A5FA",
+          "line_pattern": "solid",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        }
+      },
+      "visible": true
+    },
+    "study-rsi": {
+      "axis": {
+        "bounds": [
+          0.0,
+          100.0
+        ],
+        "guides": [
+          {
+            "kind": "oversold",
+            "value": 30.0
+          },
+          {
+            "kind": "center",
+            "value": 50.0
+          },
+          {
+            "kind": "overbought",
+            "value": 70.0
+          }
+        ],
+        "range_mode": "fixed_bounds"
+      },
+      "pane_id": "oscillator:study-rsi",
+      "signal_styles": {
+        "rsi_3": {
+          "color": "#A855F7",
+          "line_pattern": "solid",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        }
+      },
+      "visible": true
+    },
+    "study-sma-a": {
+      "pane_id": "price",
+      "signal_styles": {
+        "sma_3": {
+          "color": "#F59E0B",
+          "line_pattern": "solid",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        }
+      },
+      "visible": true
+    },
+    "study-sma-b": {
+      "pane_id": "price",
+      "signal_styles": {
+        "sma_3": {
+          "color": "#F59E0B",
+          "line_pattern": "solid",
+          "line_width": 1.0,
+          "render_mode": "line",
+          "visible": true
+        }
+      },
+      "visible": true
+    }
+  },
+  "fixture_version": "1.0",
+  "invariants": {
+    "duplicate_studies_share_presentation_state": false,
+    "live_and_artifact_projection_share_renderer": true,
+    "renderer_receives_full_calculation_result": false,
+    "resident_refresh_recalculates": false,
+    "style_edit_changes_study_id": false,
+    "style_edit_recalculates": false,
+    "style_edit_writes_artifact": false,
+    "workspace_owns_panes": true
+  },
+  "manager_entries": [
+    {
+      "display_name": "SMA 3",
+      "pane_label": "Price",
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-sma-a",
+      "visible": true
+    },
+    {
+      "display_name": "SMA 3 Copy",
+      "pane_label": "Price",
+      "saved": true,
+      "source_kind": "artifact",
+      "study_id": "study-sma-b",
+      "visible": true
+    },
+    {
+      "display_name": "BB 3 / 1.5",
+      "pane_label": "Price",
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-bb",
+      "visible": true
+    },
+    {
+      "display_name": "Hancock 3 / 5",
+      "pane_label": "Price",
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-hck",
+      "visible": false
+    },
+    {
+      "display_name": "RSI 3",
+      "pane_label": "Oscillator",
+      "saved": true,
+      "source_kind": "artifact",
+      "study_id": "study-rsi",
+      "visible": true
+    },
+    {
+      "display_name": "Dynamic Binning",
+      "pane_label": "Non-visual",
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-dynamic",
+      "visible": true
+    }
+  ],
+  "pane_policy": {
+    "non_visual_studies": [
+      "study-dynamic"
+    ],
+    "oscillator_panes": [
+      "oscillator:study-rsi"
+    ],
+    "oscillator_policy": "one-pane-per-study",
+    "price_pane_id": "price",
+    "volume_pane_id": "volume"
+  }
+}

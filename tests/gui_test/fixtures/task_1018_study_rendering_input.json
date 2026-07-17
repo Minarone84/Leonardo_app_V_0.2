@@ -1,0 +1,312 @@
+{
+  "dataset_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "fixture_version": "1.0",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSDT",
+    "timeframe": "1m"
+  },
+  "presentation_actions": [
+    {
+      "action": "replace_signal_style",
+      "output_name": "sma_3",
+      "patch": {
+        "color": "#FFFFFF",
+        "line_pattern": "dashed",
+        "line_width": 2.0
+      },
+      "study_id": "study-sma-b"
+    },
+    {
+      "action": "set_visibility",
+      "study_id": "study-hck",
+      "visible": false
+    }
+  ],
+  "studies": [
+    {
+      "bindings": {},
+      "display_name": "SMA 3",
+      "kind": "indicator",
+      "output_names": [
+        "sma_3"
+      ],
+      "pane_role": "price",
+      "parameters": {
+        "period": 3
+      },
+      "projection": {
+        "base_index": 4,
+        "end_index_exclusive": 10,
+        "render_series": {
+          "sma_3": [
+            103.66666412353516,
+            105.0,
+            106.33333587646484,
+            107.66666412353516,
+            109.0,
+            110.33333587646484
+          ]
+        },
+        "style_driver_series": {},
+        "ts_ms": [
+          1700000240000,
+          1700000300000,
+          1700000360000,
+          1700000420000,
+          1700000480000,
+          1700000540000
+        ]
+      },
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-sma-a",
+      "tool_key": "sma"
+    },
+    {
+      "bindings": {},
+      "display_name": "SMA 3 Copy",
+      "kind": "indicator",
+      "output_names": [
+        "sma_3"
+      ],
+      "pane_role": "price",
+      "parameters": {
+        "period": 3
+      },
+      "projection": {
+        "base_index": 4,
+        "end_index_exclusive": 10,
+        "render_series": {
+          "sma_3": [
+            103.66666412353516,
+            105.0,
+            106.33333587646484,
+            107.66666412353516,
+            109.0,
+            110.33333587646484
+          ]
+        },
+        "style_driver_series": {},
+        "ts_ms": [
+          1700000240000,
+          1700000300000,
+          1700000360000,
+          1700000420000,
+          1700000480000,
+          1700000540000
+        ]
+      },
+      "saved": true,
+      "source_kind": "artifact",
+      "study_id": "study-sma-b",
+      "tool_key": "sma"
+    },
+    {
+      "bindings": {},
+      "display_name": "BB 3 / 1.5",
+      "kind": "indicator",
+      "output_names": [
+        "bb_middle",
+        "bb_upper_band",
+        "bb_lower_band"
+      ],
+      "pane_role": "price",
+      "parameters": {
+        "period": 3,
+        "std": 1.5
+      },
+      "projection": {
+        "base_index": 4,
+        "end_index_exclusive": 10,
+        "render_series": {
+          "bb_lower_band": [
+            100.58445739746094,
+            103.77525329589844,
+            104.4625015258789,
+            104.58445739746094,
+            107.77525329589844,
+            108.4625015258789
+          ],
+          "bb_middle": [
+            103.66666412353516,
+            105.0,
+            106.33333587646484,
+            107.66666412353516,
+            109.0,
+            110.33333587646484
+          ],
+          "bb_upper_band": [
+            106.74887084960938,
+            106.22474670410156,
+            108.20416259765625,
+            110.74887084960938,
+            110.22474670410156,
+            112.20416259765625
+          ]
+        },
+        "style_driver_series": {},
+        "ts_ms": [
+          1700000240000,
+          1700000300000,
+          1700000360000,
+          1700000420000,
+          1700000480000,
+          1700000540000
+        ]
+      },
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-bb",
+      "tool_key": "bb"
+    },
+    {
+      "bindings": {},
+      "display_name": "Hancock 3 / 5",
+      "kind": "indicator",
+      "output_names": [
+        "fast_vwap",
+        "slow_vwap",
+        "vwap_color"
+      ],
+      "pane_role": "price",
+      "parameters": {
+        "fast_vwap_l": 3,
+        "slow_vwap_l": 5
+      },
+      "projection": {
+        "base_index": 4,
+        "end_index_exclusive": 10,
+        "render_series": {
+          "fast_vwap": [
+            103.26790618896484,
+            103.85498046875,
+            105.26084899902344,
+            106.86886596679688,
+            107.59211730957031,
+            109.08814239501953
+          ],
+          "slow_vwap": [
+            102.20842742919922,
+            102.78141784667969,
+            103.85502624511719,
+            105.1214370727539,
+            105.92182159423828,
+            107.1773452758789
+          ]
+        },
+        "style_driver_series": {
+          "vwap_color": [
+            "green",
+            "green",
+            "green",
+            "green",
+            "green",
+            "green"
+          ]
+        },
+        "ts_ms": [
+          1700000240000,
+          1700000300000,
+          1700000360000,
+          1700000420000,
+          1700000480000,
+          1700000540000
+        ]
+      },
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-hck",
+      "tool_key": "hck"
+    },
+    {
+      "bindings": {},
+      "display_name": "RSI 3",
+      "kind": "oscillator",
+      "output_names": [
+        "rsi_3"
+      ],
+      "pane_role": "oscillator",
+      "parameters": {
+        "period": 3
+      },
+      "projection": {
+        "base_index": 4,
+        "end_index_exclusive": 10,
+        "render_series": {
+          "rsi_3": [
+            88.88888549804688,
+            71.11111450195312,
+            84.79531860351562,
+            89.68254089355469,
+            72.26219177246094,
+            85.19940185546875
+          ]
+        },
+        "style_driver_series": {},
+        "ts_ms": [
+          1700000240000,
+          1700000300000,
+          1700000360000,
+          1700000420000,
+          1700000480000,
+          1700000540000
+        ]
+      },
+      "saved": true,
+      "source_kind": "artifact",
+      "study_id": "study-rsi",
+      "tool_key": "rsi"
+    },
+    {
+      "bindings": {},
+      "display_name": "Dynamic Binning",
+      "kind": "construct",
+      "output_names": [],
+      "pane_role": null,
+      "parameters": {
+        "boundary_eps": 1e-12,
+        "floor_quantile": 0.05,
+        "global_min_step": 1e-12,
+        "multiplier": 1.0,
+        "n_bins": 5,
+        "quantile_method": "nearest",
+        "source_columns": "close",
+        "window": 3
+      },
+      "projection": {
+        "base_index": 4,
+        "end_index_exclusive": 10,
+        "render_series": {},
+        "style_driver_series": {},
+        "ts_ms": [
+          1700000240000,
+          1700000300000,
+          1700000360000,
+          1700000420000,
+          1700000480000,
+          1700000540000
+        ]
+      },
+      "saved": false,
+      "source_kind": "calculation",
+      "study_id": "study-dynamic",
+      "tool_key": "dynamic_binning"
+    }
+  ],
+  "viewport": {
+    "dataset_count": 12,
+    "end_index_exclusive": 10,
+    "oscillator_widget": {
+      "height": 180,
+      "width": 640
+    },
+    "price_widget": {
+      "height": 360,
+      "width": 640
+    },
+    "start_index": 4,
+    "visible_count": 6
+  }
+}

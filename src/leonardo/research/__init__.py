@@ -61,6 +61,15 @@ from leonardo.research.studies import (
 from leonardo.research.study_application import ResearchStudyApplicationService
 from leonardo.research.study_execution import ResearchStudyService
 from leonardo.research.study_projection import ResidentStudyProjection
+from leonardo.research.study_presentation import (
+    StudyFillStyle,
+    StudyLineStyle,
+    StudyManagerEntry,
+    StudyPresentation,
+    StudyPresentationRegistry,
+    StudyPresentationValidationError,
+    build_default_study_presentation,
+)
 
 from leonardo.research.volume import (
     DEFAULT_VOLUME_MEAN_PERIOD,
@@ -121,4 +130,11 @@ __all__ = [
     "StudySaveOutcome",
     "StudySavedLink",
     "StudyValidationError",
+    "StudyFillStyle",
+    "StudyLineStyle",
+    "StudyManagerEntry",
+    "StudyPresentation",
+    "StudyPresentationRegistry",
+    "StudyPresentationValidationError",
+    "build_default_study_presentation",
 ]

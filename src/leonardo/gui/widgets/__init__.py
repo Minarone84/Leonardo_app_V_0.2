@@ -15,3 +15,6 @@ __all__ = [
     "SuiteNavigationSegment",
     "calculate_suite_navigation_donut_geometry",
 ]
+from leonardo.gui.widgets.study_manager_widget import StudyManagerWidget
+
+__all__ = ["StudyManagerWidget"]

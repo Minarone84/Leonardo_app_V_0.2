@@ -26,6 +26,13 @@ from leonardo.research.studies import (
     StudySaveOutcome,
     StudyValidationError,
 )
+from leonardo.research.study_presentation import (
+    StudyFillStyle,
+    StudyLineStyle,
+    StudyManagerEntry,
+    StudyPresentation,
+    StudyPresentationRegistry,
+)
 
 
 class ChartSessionDisposedError(RuntimeError):
@@ -96,6 +103,7 @@ class ChartSessionState:
         self._open_attempt: DatasetOpenAttempt | None = None
         self._slice_attempt: ResidentSliceAttempt | None = None
         self._studies = ChartStudyRegistry()
+        self._presentations = StudyPresentationRegistry()
         self._study_apply_attempts: dict[str, StudyApplyAttempt] = {}
         self._study_save_attempts: dict[str, StudySaveAttempt] = {}
         self._disposed = False
@@ -169,6 +177,14 @@ class ChartSessionState:
         with self._lock:
             return len(self._studies)
 
+    def study_presentations(self) -> tuple[StudyPresentation, ...]:
+        with self._lock:
+            return self._presentations.snapshot()
+
+    def study_manager_entries(self) -> tuple[StudyManagerEntry, ...]:
+        with self._lock:
+            return self._presentations.manager_entries(self._studies.snapshot())
+
     @property
     def study_apply_pending(self) -> int:
         with self._lock:
@@ -197,6 +213,7 @@ class ChartSessionState:
             self._open_attempt = attempt
             self._slice_attempt = None
             self._studies.clear()
+            self._presentations.clear()
             self._study_apply_attempts.clear()
             self._study_save_attempts.clear()
             return attempt
@@ -422,7 +439,12 @@ class ChartSessionState:
                 )
                 if source_timestamps != dataset.ts_ms:
                     return False
-            self._studies.register(study, resident=self._resident)
+            self._presentations.register(study)
+            try:
+                self._studies.register(study, resident=self._resident)
+            except Exception:
+                self._presentations.remove(study.study_id)
+                raise
             return True
 
     def settle_study_apply_failure(self, attempt: StudyApplyAttempt) -> bool:
@@ -503,8 +525,41 @@ class ChartSessionState:
         with self._lock:
             self._ensure_active_locked()
             removed = self._studies.remove(study_id)
+            self._presentations.remove(study_id)
             self._study_save_attempts.pop(study_id, None)
             return removed
+
+    def set_study_visibility(
+        self, study_id: str, visible: bool
+    ) -> StudyPresentation:
+        with self._lock:
+            self._ensure_active_locked()
+            return self._presentations.set_visibility(
+                self._studies.get(study_id), visible
+            )
+
+    def replace_study_line_style(
+        self, study_id: str, output_name: str, style: StudyLineStyle
+    ) -> StudyPresentation:
+        with self._lock:
+            self._ensure_active_locked()
+            return self._presentations.replace_line_style(
+                self._studies.get(study_id), output_name, style
+            )
+
+    def replace_study_fill_style(
+        self, study_id: str, fill_id: str, style: StudyFillStyle
+    ) -> StudyPresentation:
+        with self._lock:
+            self._ensure_active_locked()
+            return self._presentations.replace_fill_style(
+                self._studies.get(study_id), fill_id, style
+            )
+
+    def reset_study_presentation(self, study_id: str) -> StudyPresentation:
+        with self._lock:
+            self._ensure_active_locked()
+            return self._presentations.reset(self._studies.get(study_id))
 
     def dispose(self) -> bool:
         """Seal the session, invalidate attempts, and release dataset references."""
@@ -520,6 +575,7 @@ class ChartSessionState:
             self._open_attempt = None
             self._slice_attempt = None
             self._studies.clear()
+            self._presentations.clear()
             self._study_apply_attempts.clear()
             self._study_save_attempts.clear()
             return True

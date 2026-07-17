@@ -12,6 +12,25 @@ from leonardo.gui.chart.candlestick_scene import (
     build_candlestick_scene,
 )
 from leonardo.gui.chart.interaction import CandlestickInteractionState
+from leonardo.gui.chart.oscillator_scene import (
+    OscillatorGuide,
+    OscillatorLineStrip,
+    OscillatorPoint,
+    OscillatorScene,
+    OscillatorTimeTick,
+    build_oscillator_scene,
+)
+from leonardo.gui.chart.study_scene import (
+    PriceStudyBundle,
+    StudyFillPoint,
+    StudyFillStrip,
+    StudyLineStrip,
+    StudyMarkerGlyph,
+    StudyScene,
+    StudyScenePoint,
+    build_study_scene,
+    visible_price_study_values,
+)
 from leonardo.gui.chart.volume_scene import (
     LastVolumeTag,
     VolumeAxisTick,
@@ -36,6 +55,18 @@ __all__ = [
     "VolumeBarGlyph",
     "VolumeAxisTick",
     "LastVolumeTag",
+    "OscillatorGuide",
+    "OscillatorLineStrip",
+    "OscillatorPoint",
+    "OscillatorScene",
+    "OscillatorTimeTick",
+    "PriceStudyBundle",
+    "StudyFillPoint",
+    "StudyFillStrip",
+    "StudyLineStrip",
+    "StudyMarkerGlyph",
+    "StudyScene",
+    "StudyScenePoint",
     "CandleGlyph",
     "CandlestickInteractionState",
     "CandlestickRenderContract",
@@ -49,5 +80,8 @@ __all__ = [
     "SceneRect",
     "TimeAxisTick",
     "build_candlestick_scene",
+    "build_oscillator_scene",
+    "build_study_scene",
     "visible_price_range",
+    "visible_price_study_values",
 ]
