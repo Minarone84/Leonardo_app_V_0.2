@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib import import_module
 from uuid import uuid4
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
@@ -36,6 +37,19 @@ from leonardo.research.study_environment import (
     EnvironmentEntryV1,
     EnvironmentV1,
 )
+_snapshot_models = import_module("leonardo.research.workspace_" "snapshot")
+SnapshotChartCapture = getattr(_snapshot_models, "Workspace" "SnapshotChartCapture")
+SnapshotChartV1 = getattr(_snapshot_models, "Workspace" "SnapshotChartV1")
+SnapshotPriceScaleV1 = getattr(_snapshot_models, "Workspace" "SnapshotPriceScaleV1")
+SnapshotViewportV1 = getattr(_snapshot_models, "Workspace" "SnapshotViewportV1")
+
+
+@dataclass(frozen=True, slots=True)
+class ChartOperationOutcome:
+    status: str
+    slot_id: int
+    session_id: str
+    message: str = ""
 
 
 @dataclass(slots=True)
@@ -50,6 +64,7 @@ class _EnvironmentRun:
     current_task_id: str | None = None
     entry_to_study: dict[str, str] | None = None
     added_study_ids: list[str] | None = None
+    completion_callback: Callable[[ChartOperationOutcome], None] | None = None
 
     def __post_init__(self) -> None:
         self.entry_to_study = {}
@@ -109,6 +124,8 @@ class ResearchChartPresenter:
         self._active_study_tasks: dict[str, tuple[str, object]] = {}
         self._environment_report: EnvironmentCompatibilityReport | None = None
         self._environment_run: _EnvironmentRun | None = None
+        self._dataset_completion: Callable[[ChartOperationOutcome], None] | None = None
+        self._last_environment_entry_map: dict[str, str] = {}
         self._disposed = False
         self._last_viewport_snapshot: ViewportSnapshot | None = None
         self._programmatic_navigation = False
@@ -167,9 +184,12 @@ class ResearchChartPresenter:
         self._environment_report = report
         self._changed()
 
-    def open_dataset(self, market_id):
+    def open_dataset(self, market_id, *, completion_callback=None):
         self._require_current()
+        if completion_callback is not None and not callable(completion_callback):
+            raise TypeError("completion_callback must be callable or None")
         self._cancel_dataset_tasks()
+        self._dataset_completion = completion_callback
         attempt = self._session.begin_dataset_open(market_id)
         self._open_attempt = attempt
         self._viewport = None
@@ -193,6 +213,7 @@ class ResearchChartPresenter:
             self._set_busy(False)
             self._set_status("Dataset submission failed")
             self._log(f"Chart {self._slot_id} dataset submission failed: {error}")
+            self._complete_dataset("failure", str(error))
             raise
         self._active_load_task_id = submission.task_id
         self._changed()
@@ -441,8 +462,12 @@ class ResearchChartPresenter:
             self._set_status("Chart navigation updated")
         return changed
 
-    def apply_environment(self, environment: EnvironmentV1, mode: str) -> None:
+    def apply_environment(
+        self, environment: EnvironmentV1, mode: str, *, completion_callback=None
+    ) -> None:
         self._require_current()
+        if completion_callback is not None and not callable(completion_callback):
+            raise TypeError("completion_callback must be callable or None")
         if not isinstance(environment, EnvironmentV1):
             raise TypeError("environment must use the version 1 schema")
         if mode not in {"append", "replace"}:
@@ -467,6 +492,7 @@ class ResearchChartPresenter:
             session_id=self._session.session_id,
             generation=self._session.generation,
             existing_study_ids=tuple(study.study_id for study in self._session.studies),
+            completion_callback=completion_callback,
         )
         self._set_busy(True)
         self._set_status("Applying Study Environment")
@@ -477,7 +503,9 @@ class ResearchChartPresenter:
         if run is None:
             return False
         if run.current_task_id is None:
-            self._rollback_environment("Environment Apply cancelled")
+            self._rollback_environment(
+                "Environment Apply cancelled", status="cancellation"
+            )
             return True
         cancelled = self._study_service.cancel(run.current_task_id)
         self._set_status("Environment cancellation requested")
@@ -491,8 +519,11 @@ class ResearchChartPresenter:
             if run.current_task_id is not None:
                 self._study_service.cancel(run.current_task_id)
                 self._active_study_tasks.pop(run.current_task_id, None)
-            self._rollback_environment("Environment Apply cancelled by chart close")
+            self._rollback_environment(
+                "Environment Apply cancelled by chart close", status="disposal"
+            )
         self._disposed = True
+        self._complete_dataset("disposal", "chart disposed")
         self._cancel_dataset_tasks()
         for task_id in tuple(self._active_study_tasks):
             self._study_service.cancel(task_id)
@@ -524,9 +555,11 @@ class ResearchChartPresenter:
             self._view.set_go_to_enabled(False)
             self._set_busy(False)
             self._handle_terminal_failure("Dataset load", result)
+            self._complete_dataset(result.status, result.error_message or result.error_type or "")
             return
         dataset = result.value
         if not self._session.accept_dataset_open(attempt, dataset):
+            self._complete_dataset("stale", "dataset generation is no longer current")
             return
         self._viewport = HorizontalViewport(dataset.row_count)
         self._interaction = CandlestickInteractionState(
@@ -595,6 +628,7 @@ class ResearchChartPresenter:
             self._request_resident(interest.center_index)
             return
         if not self._session.accept_resident_slice(attempt, resident):
+            self._complete_dataset("stale", "resident generation is no longer current")
             return
         if self._interaction is None:
             return
@@ -621,6 +655,7 @@ class ResearchChartPresenter:
             f"Chart {self._slot_id} ready: {market.symbol} {market.timeframe}; "
             f"resident {resident.base_index}-{resident.end_index_exclusive - 1}."
         )
+        self._complete_dataset("success")
 
     def _on_study_progress(self, progress: TaskProgress) -> None:
         if not self._accept_task_callback(progress.task_id, progress.task_id):
@@ -671,7 +706,9 @@ class ResearchChartPresenter:
         run = self._environment_run
         dataset = self._session.dataset
         if run is None or dataset is None or not self._environment_run_is_current(run):
-            self._rollback_environment("Environment Apply target is stale")
+            self._rollback_environment(
+                "Environment Apply target is stale", status="stale"
+            )
             return
         if run.entry_index >= len(run.environment.entries):
             self._complete_environment_run()
@@ -734,7 +771,8 @@ class ResearchChartPresenter:
             self._session.settle_study_apply_failure(attempt)
             message = result.error_message or result.error_type or result.status
             self._rollback_environment(
-                f"Environment entry {entry.entry_id} failed: {message}"
+                f"Environment entry {entry.entry_id} failed: {message}",
+                status="cancellation" if result.status == "cancelled" else "failure",
             )
             return
         accepted = False
@@ -845,14 +883,16 @@ class ResearchChartPresenter:
                 )
                 return
         name = run.environment.display_name
+        self._last_environment_entry_map = dict(run.entry_to_study or {})
         self._environment_run = None
         self._environment_report = None
         self._refresh_study_state()
         self._refresh_busy_state()
         self._set_status("Study Environment applied")
         self._log(f"Chart {self._slot_id} Study Environment applied: {name}.")
+        self._dispatch_completion(run.completion_callback, "success")
 
-    def _rollback_environment(self, message: str) -> None:
+    def _rollback_environment(self, message: str, *, status: str = "failure") -> None:
         run = self._environment_run
         if run is None:
             return
@@ -870,6 +910,95 @@ class ResearchChartPresenter:
             self._refresh_busy_state()
             self._set_status("Study Environment failed")
             self._log(f"Chart {self._slot_id} {message}")
+        self._dispatch_completion(run.completion_callback, status, message)
+
+    def capture_snapshot_view_state(
+        self,
+        *,
+        chart_ref: str,
+        workspace_position: int,
+        detached: bool,
+    ) -> SnapshotChartCapture:
+        self._require_current()
+        dataset = self._session.dataset
+        viewport = self._viewport
+        interaction = self._interaction
+        if dataset is None or viewport is None or interaction is None or self.is_busy:
+            raise RuntimeError("chart must be idle with an accepted dataset and viewport")
+        center_timestamp = self._session.timestamp_for_global_index(viewport.center_index)
+        if center_timestamp is None:
+            raise RuntimeError("viewport center timestamp is unavailable")
+        scale = interaction.price_scale
+        manual = scale.manual_range
+        price = SnapshotPriceScaleV1(
+            scale.autoscale_enabled,
+            None if scale.autoscale_enabled else manual.low if manual is not None else scale.last_auto_range.low,
+            None if scale.autoscale_enabled else manual.high if manual is not None else scale.last_auto_range.high,
+        )
+        return SnapshotChartCapture(
+            chart_ref=chart_ref,
+            workspace_position=workspace_position,
+            detached=detached,
+            market_id=dataset.market_id,
+            dataset=dataset,
+            studies=self._session.studies,
+            presentations=self._session.study_presentations(),
+            viewport=SnapshotViewportV1(center_timestamp, viewport.visible_count),
+            price_scale=price,
+            volume_visible=self._view.chart_workspace.volume_visible,
+            pane_sizes=self._view.chart_workspace.snapshot_pane_sizes(),
+        )
+
+    def restore_snapshot_view_state(self, chart: SnapshotChartV1) -> None:
+        self._require_current()
+        if not isinstance(chart, SnapshotChartV1):
+            raise TypeError("chart must be SnapshotChartV1")
+        if self._viewport is None or self._interaction is None or self._session.dataset is None:
+            raise RuntimeError("chart dataset and viewport are required")
+        center = self._session.nearest_global_index_for_timestamp(
+            chart.viewport.center_timestamp_ms
+        )
+        self._programmatic_navigation = True
+        try:
+            self._viewport.set_visible_anchored(chart.viewport.visible_count, center, 0.5)
+            self._viewport.center_on_index(center)
+            if chart.price_scale.autoscale_enabled:
+                self._interaction.price_scale.reset_manual_range()
+            else:
+                self._interaction.price_scale.set_manual_range(
+                    chart.price_scale.manual_low, chart.price_scale.manual_high
+                )
+            self.set_volume_visible(chart.volume_visible)
+            entry_to_study = self._last_environment_entry_map
+            runtime_sizes: dict[str, int] = {}
+            for item in chart.pane_sizes:
+                pane_ref = item.pane_ref
+                if pane_ref.startswith("study:"):
+                    entry_id = pane_ref.removeprefix("study:")
+                    try:
+                        pane_ref = f"oscillator:{entry_to_study[entry_id]}"
+                    except KeyError as exc:
+                        raise ValueError("Study pane entry was not restored") from exc
+                runtime_sizes[pane_ref] = item.size
+            self._view.chart_workspace.restore_pane_sizes(runtime_sizes)
+            self._last_viewport_snapshot = self._viewport.snapshot()
+            self._view.chart_workspace.refresh_from_shared_state()
+            self._maybe_request_resident()
+        finally:
+            self._programmatic_navigation = False
+
+    def _complete_dataset(self, status: str, message: str = "") -> None:
+        callback = self._dataset_completion
+        self._dataset_completion = None
+        self._dispatch_completion(callback, status, message)
+
+    def _dispatch_completion(self, callback, status: str, message: str = "") -> None:
+        if callback is None:
+            return
+        outcome = ChartOperationOutcome(
+            status, self._slot_id, self._session.session_id, message
+        )
+        self._dispatch(lambda: callback(outcome))
 
     def _environment_run_is_current(self, run: _EnvironmentRun) -> bool:
         return (
@@ -957,12 +1086,15 @@ class ResearchChartPresenter:
         self._log(f"Chart {self._slot_id} {label} failed: {message}")
 
     def _cancel_dataset_tasks(self) -> None:
+        had_active = self._active_load_task_id is not None or self._active_slice_task_id is not None
         self._cancel_task(self._active_load_task_id)
         self._cancel_task(self._active_slice_task_id)
         self._active_load_task_id = None
         self._active_slice_task_id = None
         self._open_attempt = None
         self._slice_attempt = None
+        if had_active:
+            self._complete_dataset("cancellation", "dataset operation superseded")
 
     def _cancel_task(self, task_id: str | None) -> None:
         if task_id is not None:

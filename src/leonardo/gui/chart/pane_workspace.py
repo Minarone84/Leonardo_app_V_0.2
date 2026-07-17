@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QShowEvent
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
@@ -81,6 +81,39 @@ class ChartPaneWorkspaceWidget(QWidget):
         if len(sizes) != 2 or sizes[0] <= 0 or sizes[1] <= 0:
             return self._last_visible_sizes
         return int(sizes[0]), int(sizes[1])
+
+    def snapshot_pane_sizes(self) -> Mapping[str, int]:
+        """Return remembered sizes for every current runtime pane."""
+
+        self._remember_sizes(0, 0)
+        return {
+            pane_id: self._pane_size_by_id[pane_id]
+            for pane_id in self._pane_ids_in_splitter_order()
+            if pane_id in self._pane_size_by_id
+        }
+
+    def restore_pane_sizes(self, sizes: Mapping[str, int]) -> None:
+        """Restore validated pane sizes without emitting workflow intent."""
+
+        if not isinstance(sizes, Mapping):
+            raise TypeError("sizes must be a mapping")
+        known = set(self._pane_ids_in_splitter_order())
+        unknown = set(sizes) - known
+        if unknown:
+            raise ValueError(f"unknown pane refs: {', '.join(sorted(unknown))}")
+        resolved: dict[str, int] = {}
+        for pane_id, size in sizes.items():
+            if type(pane_id) is not str or type(size) is not int or size <= 0:
+                raise ValueError("pane sizes require string refs and positive integers")
+            resolved[pane_id] = size
+        self._pane_size_by_id.update(resolved)
+        if "price" in resolved and "volume" in resolved:
+            self._last_visible_sizes = (resolved["price"], resolved["volume"])
+        blocked = self._splitter.blockSignals(True)
+        try:
+            self._apply_pane_sizes()
+        finally:
+            self._splitter.blockSignals(blocked)
 
     def apply_chart_state(
         self,

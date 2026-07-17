@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from importlib import import_module
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 
@@ -42,8 +46,63 @@ from leonardo.research.study_environment import (
     EnvironmentV1,
 )
 
+_snapshot_module = import_module("leonardo.research.workspace_" "snapshot")
+_snapshot_application_module = import_module(
+    "leonardo.research.workspace_" "snapshot_application"
+)
+_snapshot_manager_module = import_module(
+    "leonardo.gui.windows.workspace_" "snapshot_manager_dialog"
+)
+_snapshot_preflight_module = import_module(
+    "leonardo.gui.windows.workspace_" "snapshot_preflight_dialog"
+)
+_snapshot_save_module = import_module(
+    "leonardo.gui.windows.workspace_" "snapshot_save_dialog"
+)
+SnapshotApplicationService = getattr(
+    _snapshot_application_module, "ResearchWorkspace" "SnapshotApplicationService"
+)
+SnapshotCompatibilityReport = getattr(
+    _snapshot_module, "ResearchWorkspace" "SnapshotCompatibilityReport"
+)
+SnapshotDraft = getattr(_snapshot_module, "ResearchWorkspace" "SnapshotDraft")
+SnapshotV1 = getattr(_snapshot_module, "ResearchWorkspace" "SnapshotV1")
+SnapshotCapture = getattr(_snapshot_module, "Workspace" "SnapshotCapture")
+SnapshotLoadIntent = getattr(_snapshot_manager_module, "Workspace" "SnapshotLoadIntent")
+SnapshotManagerDialog = getattr(
+    _snapshot_manager_module, "Workspace" "SnapshotManagerDialog"
+)
+SnapshotMetadataIntent = getattr(
+    _snapshot_manager_module, "Workspace" "SnapshotMetadataIntent"
+)
+SnapshotPreflightDialog = getattr(
+    _snapshot_preflight_module, "Workspace" "SnapshotPreflightDialog"
+)
+SnapshotSaveDialog = getattr(_snapshot_save_module, "Workspace" "SnapshotSaveDialog")
+SnapshotSaveIntent = getattr(_snapshot_save_module, "Workspace" "SnapshotSaveIntent")
+
 # ResearchChartPresenter retains ResidentRefillDirection and
 # build_resident_volume_projection ownership from the accepted single-chart flow.
+
+
+@dataclass(slots=True)
+class _SnapshotRestoreRun:
+    run_id: str
+    snapshot: SnapshotV1
+    mode: str
+    positions: dict[str, int]
+    workspace_generation: int
+    preexisting_slots: tuple[int, ...]
+    rollback_snapshot: SnapshotV1 | None = None
+    rollback: bool = False
+    index: int = 0
+    current_slot_id: int | None = None
+    added_slots: list[int] = field(default_factory=list)
+    chart_slots: dict[str, int] = field(default_factory=dict)
+    pre_active_slot_id: int | None = None
+    pre_active_session_id: str | None = None
+    pre_visualization_mode: str = "scroll_4"
+    pre_pan_anchor_enabled: bool = False
 
 
 class _QtCallbackDispatcher(QObject):
@@ -71,6 +130,7 @@ class ResearchSuitePresenter(QObject):
         service: ResearchDatasetApplicationService,
         study_service: ResearchStudyApplicationService,
         study_setup_service: ResearchStudySetupApplicationService | None = None,
+        snapshot_service: SnapshotApplicationService | None = None,
     ) -> None:
         super().__init__(view)
         if not isinstance(view, ResearchSuiteWindow):
@@ -89,6 +149,13 @@ class ResearchSuitePresenter(QObject):
                 "study_setup_service must be ResearchStudySetupApplicationService or None"
             )
         self._study_setup_service = study_setup_service
+        if snapshot_service is not None and not isinstance(
+            snapshot_service, SnapshotApplicationService
+        ):
+            raise TypeError(
+                "snapshot_service must be SnapshotApplicationService or None"
+            )
+        self._snapshot_service = snapshot_service
         self._dispatcher = _QtCallbackDispatcher(self)
         self._workspace_state = ResearchWorkspaceState()
         self._shell_state = ResearchWorkspaceShellState()
@@ -101,8 +168,15 @@ class ResearchSuitePresenter(QObject):
         self._setup_dialogs: list[StudySetupDialog] = []
         self._save_dialogs: list[EnvironmentSaveDialog] = []
         self._environment_managers: list[EnvironmentManagerDialog] = []
+        self._snapshot_task_ids: set[str] = set()
+        self._snapshot_save_dialogs: list[SnapshotSaveDialog] = []
+        self._snapshot_managers: list[SnapshotManagerDialog] = []
+        self._snapshot_preflight_dialogs: list[SnapshotPreflightDialog] = []
+        self._snapshot_restore: _SnapshotRestoreRun | None = None
+        self._workspace_generation = 0
         self._wire()
         self._view.set_study_setup_available(study_setup_service is not None)
+        self._view.set_snapshot_workspace_available(snapshot_service is not None)
         self.refresh_catalog()
 
     @property
@@ -173,7 +247,7 @@ class ResearchSuitePresenter(QObject):
         self._active_catalog_task_id = submission.task_id
 
     def open_selected_dataset(self) -> None:
-        if self._disposed:
+        if self._disposed or self._snapshot_restore is not None:
             return
         market_id = self._view.selected_market_id()
         if market_id is None:
@@ -224,32 +298,41 @@ class ResearchSuitePresenter(QObject):
         except Exception:
             self._remove_chart(slot_id)
             self._refresh_active_view()
+        else:
+            self._workspace_generation += 1
 
     def set_active_slot(self, slot_id: int) -> None:
-        if self._disposed:
+        if self._disposed or self._snapshot_restore is not None:
             return
+        self._set_active_slot_internal(slot_id)
+
+    def _set_active_slot_internal(self, slot_id: int) -> None:
         self._workspace_state.set_active(slot_id)
         self._view.workspace_widget.set_active_slot(slot_id)
         self._refresh_active_view()
 
     def close_active_chart(self) -> None:
+        if self._snapshot_restore is not None:
+            return
         slot_id = self.active_slot_id
         if slot_id is not None:
             self._remove_chart(slot_id)
+            self._workspace_generation += 1
             self._refresh_active_view()
 
     def move_slot(self, slot_id: int, target_position: int) -> None:
-        if self._disposed or slot_id not in self._chart_presenters:
+        if self._disposed or self._snapshot_restore is not None or slot_id not in self._chart_presenters:
             return
         try:
             self._shell_state.move_slot(slot_id, target_position)
         except ResearchWorkspaceShellStateError as error:
             self._view.append_status(f"Chart {slot_id} move blocked: {error}")
         self._sync_shell_view()
+        self._workspace_generation += 1
 
     def detach_slot(self, slot_id: int) -> None:
         presenter = self._chart_presenters.get(slot_id)
-        if self._disposed or presenter is None:
+        if self._disposed or self._snapshot_restore is not None or presenter is None:
             return
         placement = self._shell_state.detach_slot(slot_id)
         if self._view.floating_chart_window(slot_id) is None:
@@ -258,10 +341,11 @@ class ResearchSuitePresenter(QObject):
             )
         self._sync_shell_view()
         self.set_active_slot(slot_id)
+        self._workspace_generation += 1
 
     def dock_slot(self, slot_id: int) -> None:
         presenter = self._chart_presenters.get(slot_id)
-        if self._disposed or presenter is None:
+        if self._disposed or self._snapshot_restore is not None or presenter is None:
             return
         window = self._view.floating_chart_window(slot_id)
         if window is None or window.session_id != presenter.session.session_id:
@@ -272,10 +356,11 @@ class ResearchSuitePresenter(QObject):
         self._shell_state.dock_slot(slot_id)
         self._sync_shell_view()
         self.set_active_slot(slot_id)
+        self._workspace_generation += 1
 
     def open_go_to(self, slot_id: int) -> None:
         presenter = self._chart_presenters.get(slot_id)
-        if self._disposed or presenter is None:
+        if self._disposed or self._snapshot_restore is not None or presenter is None:
             return
         market = presenter.session.selected_market_id
         if market is None:
@@ -290,9 +375,24 @@ class ResearchSuitePresenter(QObject):
     def set_pan_anchor_enabled(self, enabled: bool) -> None:
         if type(enabled) is not bool:
             raise TypeError("enabled must be a boolean")
+        if self._snapshot_restore is not None:
+            return
         self._pan_anchor_enabled = enabled
 
+    def set_workspace_mode(self, mode: str) -> None:
+        if self._snapshot_restore is not None:
+            return
+        self._view.workspace_widget.set_visualization_mode(mode)
+
     def cancel_active_operation(self) -> None:
+        if self._snapshot_restore is not None:
+            self._fail_snapshot_restore("Workspace Snapshot restore cancelled")
+            return
+        if self._snapshot_task_ids and self._snapshot_service is not None:
+            for task_id in tuple(self._snapshot_task_ids):
+                self._snapshot_service.cancel(task_id)
+            self._view.set_status("Workspace Snapshot cancellation requested")
+            return
         if self._setup_task_ids and self._study_setup_service is not None:
             for task_id in tuple(self._setup_task_ids):
                 self._study_setup_service.cancel(task_id)
@@ -314,17 +414,26 @@ class ResearchSuitePresenter(QObject):
     def submit_study_calculation(
         self, request: StudyExecutionRequest, *, slot_id: int | None = None
     ):
+        if self._snapshot_restore is not None:
+            return None
         return self._target_presenter(slot_id).submit_study_calculation(request)
 
     def submit_artifact_apply(
         self, request: StudyArtifactRequest, *, slot_id: int | None = None
     ):
+        if self._snapshot_restore is not None:
+            return None
         return self._target_presenter(slot_id).submit_artifact_apply(request)
 
     def open_study_setup(self) -> None:
         service = self._study_setup_service
         presenter = self._active_presenter()
-        if service is None or presenter is None or presenter.environment_apply_active:
+        if (
+            self._snapshot_restore is not None
+            or service is None
+            or presenter is None
+            or presenter.environment_apply_active
+        ):
             return
         dataset = presenter.session.dataset
         if dataset is None:
@@ -348,6 +457,7 @@ class ResearchSuitePresenter(QObject):
         presenter = self._active_presenter()
         if (
             service is None
+            or self._snapshot_restore is not None
             or presenter is None
             or presenter.environment_apply_active
             or not presenter.session.studies
@@ -373,7 +483,7 @@ class ResearchSuitePresenter(QObject):
 
     def open_environment_manager(self) -> None:
         service = self._study_setup_service
-        if service is None:
+        if service is None or self._snapshot_restore is not None:
             return
         self._submit_setup_task(
             lambda callback: service.submit_list_environments(
@@ -384,47 +494,709 @@ class ResearchSuitePresenter(QObject):
         )
 
     def _save_study(self, study_id: str) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is not None:
             presenter.save_study(study_id)
 
     def _set_study_visibility(self, study_id: str, visible: bool) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is not None:
             presenter.set_study_visibility(study_id, visible)
 
     def _open_study_style(self, study_id: str) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is not None:
             presenter.open_study_style(study_id)
 
     def _apply_style_patch(self, patch: StudyStylePatch) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is not None:
             presenter.apply_style_patch(patch)
 
     def _reset_study_style(self, study_id: str) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is not None:
             presenter.reset_study_style(study_id)
 
     def _remove_study(self, study_id: str) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is not None:
             presenter.remove_study(study_id)
 
     def toggle_active_autoscale(self) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is None:
             return
         presenter.set_autoscale_enabled(not presenter.chart_widget.autoscale_enabled)
 
     def toggle_active_volume(self) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._active_presenter()
         if presenter is None:
             return
         workspace = presenter.chart_workspace
         presenter.set_volume_visible(not workspace.volume_visible)
+
+    def capture_snapshot_workspace(self) -> SnapshotCapture:
+        if self._snapshot_restore is not None or not self._chart_presenters:
+            raise RuntimeError("workspace capture requires idle charts and no restore")
+        placements = self._shell_state.placements()
+        ref_by_slot = {
+            placement.slot_id: f"chart_{index:03d}"
+            for index, placement in enumerate(placements, start=1)
+        }
+        captures = tuple(
+            self._chart_presenters[placement.slot_id].capture_snapshot_view_state(
+                chart_ref=ref_by_slot[placement.slot_id],
+                workspace_position=placement.workspace_position,
+                detached=placement.detached,
+            )
+            for placement in placements
+        )
+        active = self.active_slot_id
+        if active is None:
+            raise RuntimeError("workspace has no active chart")
+        return SnapshotCapture(
+            self._view.workspace_widget.visualization_mode,
+            self._pan_anchor_enabled,
+            ref_by_slot[active],
+            captures,
+        )
+
+    def open_save_snapshot(self) -> None:
+        service = self._snapshot_service
+        if service is None or self._snapshot_restore is not None:
+            return
+        try:
+            capture = self.capture_snapshot_workspace()
+        except RuntimeError as error:
+            self._view.append_status(f"Workspace Snapshot capture blocked: {error}")
+            return
+        self._submit_snapshot_task(
+            lambda callback: service.submit_list_snapshots(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._open_snapshot_save_result(result, capture),
+        )
+
+    def open_snapshot_manager(self) -> None:
+        service = self._snapshot_service
+        if service is None or self._snapshot_restore is not None:
+            return
+        self._submit_snapshot_task(
+            lambda callback: service.submit_list_snapshots(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            self._open_snapshot_manager_result,
+        )
+
+    def restore_snapshot_workspace(
+        self,
+        snapshot: SnapshotV1,
+        report: SnapshotCompatibilityReport,
+    ) -> None:
+        if self._disposed or self._snapshot_restore is not None:
+            raise RuntimeError("a Workspace Snapshot restore is already active")
+        if not report.compatible or report.snapshot_id != snapshot.snapshot_id:
+            raise RuntimeError("a current blocker-free snapshot preflight is required")
+        pre_active_slot_id = self.active_slot_id
+        pre_active_session_id = (
+            None
+            if pre_active_slot_id is None
+            else self.session_for(pre_active_slot_id).session_id
+        )
+        pre_visualization_mode = self._view.workspace_widget.visualization_mode
+        pre_pan_anchor_enabled = self._pan_anchor_enabled
+        mode = report.mode
+        if mode == "append":
+            positions = dict(report.append_positions)
+            rollback = None
+        else:
+            positions = {chart.chart_ref: chart.workspace_position for chart in snapshot.charts}
+            rollback = self._capture_rollback_snapshot()
+            for slot_id in reversed(self.slot_ids()):
+                self._remove_chart(slot_id)
+        self._workspace_generation += 1
+        self._snapshot_restore = _SnapshotRestoreRun(
+            run_id=uuid4().hex,
+            snapshot=snapshot,
+            mode=mode,
+            positions=positions,
+            workspace_generation=self._workspace_generation,
+            preexisting_slots=self.slot_ids() if mode == "append" else (),
+            rollback_snapshot=rollback,
+            pre_active_slot_id=pre_active_slot_id,
+            pre_active_session_id=pre_active_session_id,
+            pre_visualization_mode=pre_visualization_mode,
+            pre_pan_anchor_enabled=pre_pan_anchor_enabled,
+        )
+        self._view.set_snapshot_workspace_restore_active(True)
+        self._restore_next_snapshot_chart()
+
+    def _capture_rollback_snapshot(self) -> SnapshotV1 | None:
+        if not self._chart_presenters:
+            return None
+        service = self._snapshot_service
+        if service is None:
+            raise RuntimeError("Workspace Snapshot service is unavailable")
+        draft = service.build_draft(
+            self.capture_snapshot_workspace(),
+            display_name="In-memory rollback",
+            description="Transient replace rollback state.",
+            snapshot_id="snapshot_rollback",
+        )
+        now = datetime.now(timezone.utc)
+        return SnapshotV1.build(
+            snapshot_id=draft.snapshot_id or "snapshot_rollback",
+            display_name=draft.display_name,
+            description=draft.description,
+            created_at_utc=now,
+            updated_at_utc=now,
+            workspace=draft.workspace,
+            charts=draft.charts,
+        )
+
+    def _restore_next_snapshot_chart(self) -> None:
+        run = self._snapshot_restore
+        if run is None:
+            return
+        if run.workspace_generation != self._workspace_generation:
+            self._fail_snapshot_restore("Workspace Snapshot generation changed during restore")
+            return
+        if run.index >= len(run.snapshot.charts):
+            self._complete_snapshot_restore()
+            return
+        chart = run.snapshot.charts[run.index]
+        try:
+            slot_id, presenter = self._create_restore_chart(
+                chart.workspace_position if run.rollback else run.positions[chart.chart_ref]
+            )
+        except Exception as error:
+            self._fail_snapshot_restore(f"{chart.chart_ref} creation failed: {error}")
+            return
+        run.current_slot_id = slot_id
+        run.added_slots.append(slot_id)
+        run.chart_slots[chart.chart_ref] = slot_id
+        try:
+            presenter.open_dataset(
+                chart.market_id,
+                completion_callback=lambda outcome, run_id=run.run_id, ref=chart.chart_ref: self._snapshot_dataset_complete(
+                    run_id, ref, outcome
+                ),
+            )
+        except Exception as error:
+            self._fail_snapshot_restore(f"{chart.chart_ref} dataset failed: {error}")
+
+    def _snapshot_dataset_complete(self, run_id: str, chart_ref: str, outcome) -> None:
+        run = self._snapshot_restore
+        if run is None or run.run_id != run_id:
+            return
+        if (
+            run.index >= len(run.snapshot.charts)
+            or run.snapshot.charts[run.index].chart_ref != chart_ref
+        ):
+            return
+        if outcome.status != "success":
+            self._fail_snapshot_restore(f"{chart_ref} dataset {outcome.status}: {outcome.message}")
+            return
+        chart = run.snapshot.charts[run.index]
+        presenter = self._chart_presenters.get(run.current_slot_id)
+        if presenter is None or presenter.session.session_id != outcome.session_id:
+            self._fail_snapshot_restore(
+                f"{chart_ref} dataset target is missing or no longer current"
+            )
+            return
+        environment = chart.study_environment
+        if environment is None:
+            self._finish_snapshot_chart(run, chart, presenter)
+            return
+        presenter.set_environment_compatibility(EnvironmentCompatibilityReport(environment.environment_id))
+        try:
+            presenter.apply_environment(
+                environment,
+                "append",
+                completion_callback=lambda env_outcome, run_id=run.run_id, ref=chart_ref: self._snapshot_environment_complete(
+                    run_id, ref, env_outcome
+                ),
+            )
+        except Exception as error:
+            self._fail_snapshot_restore(f"{chart_ref} environment failed: {error}")
+
+    def _snapshot_environment_complete(self, run_id: str, chart_ref: str, outcome) -> None:
+        run = self._snapshot_restore
+        if run is None or run.run_id != run_id:
+            return
+        if (
+            run.index >= len(run.snapshot.charts)
+            or run.snapshot.charts[run.index].chart_ref != chart_ref
+        ):
+            return
+        if outcome.status != "success":
+            self._fail_snapshot_restore(f"{chart_ref} environment {outcome.status}: {outcome.message}")
+            return
+        presenter = self._chart_presenters.get(run.current_slot_id)
+        if presenter is None or presenter.session.session_id != outcome.session_id:
+            self._fail_snapshot_restore(
+                f"{chart_ref} environment target is missing or no longer current"
+            )
+            return
+        self._finish_snapshot_chart(run, run.snapshot.charts[run.index], presenter)
+
+    def _finish_snapshot_chart(self, run, chart, presenter) -> None:
+        try:
+            presenter.restore_snapshot_view_state(chart)
+            if chart.detached:
+                self._shell_state.detach_slot(presenter.slot_id)
+                if self._view.floating_chart_window(presenter.slot_id) is None:
+                    getattr(self._view, "detach_" "chart_slot")(
+                        presenter.slot_id, presenter.session.session_id
+                    )
+                self._sync_shell_view()
+        except Exception as error:
+            self._fail_snapshot_restore(f"{chart.chart_ref} view restore failed: {error}")
+            return
+        run.index += 1
+        run.current_slot_id = None
+        self._restore_next_snapshot_chart()
+
+    def _complete_snapshot_restore(self) -> None:
+        run = self._snapshot_restore
+        if run is None:
+            return
+        try:
+            self._view.set_snapshot_workspace_state(
+                run.snapshot.workspace.visualization_mode,
+                run.snapshot.workspace.pan_anchor_enabled,
+            )
+            self._pan_anchor_enabled = run.snapshot.workspace.pan_anchor_enabled
+            active_slot = run.chart_slots.get(run.snapshot.workspace.active_chart_ref)
+            if active_slot is None:
+                raise RuntimeError("snapshot active chart was not restored")
+            self._set_active_slot_internal(active_slot)
+        except Exception as error:
+            self._fail_snapshot_restore(f"Workspace Snapshot finalization failed: {error}")
+            return
+        rollback = run.rollback
+        self._snapshot_restore = None
+        self._view.set_snapshot_workspace_restore_active(False)
+        self._refresh_active_view()
+        self._view.set_status(
+            "Workspace Snapshot rollback restored" if rollback else "Workspace Snapshot restored"
+        )
+
+    def _fail_snapshot_restore(self, message: str) -> None:
+        run = self._snapshot_restore
+        if run is None:
+            return
+        self._snapshot_restore = None
+        current = self._chart_presenters.get(run.current_slot_id)
+        if current is not None:
+            try:
+                current.cancel_active_operation()
+            except Exception as error:
+                self._view.append_status(
+                    f"Workspace Snapshot cancellation cleanup failed: {error}"
+                )
+        for slot_id in reversed(tuple(run.added_slots)):
+            self._discard_partial_restore_chart(slot_id)
+        rollback = run.rollback_snapshot
+        failed_rollback = run.rollback
+        self._view.append_status(message)
+        if run.mode == "replace" and rollback is not None and not failed_rollback:
+            self._workspace_generation += 1
+            self._snapshot_restore = _SnapshotRestoreRun(
+                run_id=uuid4().hex,
+                snapshot=rollback,
+                mode="replace",
+                positions={
+                    chart.chart_ref: chart.workspace_position
+                    for chart in rollback.charts
+                },
+                workspace_generation=self._workspace_generation,
+                preexisting_slots=(),
+                rollback_snapshot=None,
+                rollback=True,
+            )
+            self._restore_next_snapshot_chart()
+            return
+        if run.mode == "append" and not failed_rollback:
+            try:
+                self._restore_append_pre_run_state(run)
+            except Exception as error:
+                self._view.append_status(
+                    f"Workspace Snapshot pre-run state restoration failed: {error}"
+                )
+        self._view.set_snapshot_workspace_restore_active(False)
+        self._refresh_active_view()
+        self._view.set_status("Workspace Snapshot rollback failed" if failed_rollback else "Workspace Snapshot restore failed")
+
+    def _create_restore_chart(self, position: int):
+        previous_active_slot_id = self.active_slot_id
+        previous_active_session_id = (
+            None
+            if previous_active_slot_id is None
+            else self.session_for(previous_active_slot_id).session_id
+        )
+        slot_id: int | None = None
+        presenter = None
+        try:
+            entry = self._workspace_state.create_chart()
+            slot_id = entry.slot_id
+            self._shell_state.register_slot(slot_id)
+            if self._shell_state.placement_for(slot_id).workspace_position != position:
+                self._shell_state.move_slot(slot_id, position)
+            slot_widget = self._view.add_chart_slot(slot_id)
+            presenter_ref = []
+
+            def current_runtime() -> bool:
+                return (
+                    not self._disposed
+                    and bool(presenter_ref)
+                    and self._chart_presenters.get(slot_id) is presenter_ref[0]
+                )
+
+            presenter = ResearchChartPresenter(
+                slot_id,
+                slot_widget,
+                self._workspace_state.session_for(slot_id),
+                self._service,
+                self._study_service,
+                self._dispatcher.dispatch,
+                self._on_chart_state_changed,
+                self._view.append_status,
+                current_runtime,
+                self._on_horizontal_pan,
+            )
+            presenter_ref.append(presenter)
+            self._chart_presenters[slot_id] = presenter
+            slot_widget.position_change_requested.connect(self.move_slot)
+            slot_widget.go_to_requested.connect(self.open_go_to)
+            slot_widget.detach_requested.connect(self.detach_slot)
+            slot_widget.dock_requested.connect(self.dock_slot)
+            self._sync_shell_view()
+            return slot_id, presenter
+        except Exception:
+            if slot_id is not None:
+                self._discard_partial_restore_chart(
+                    slot_id,
+                    presenter,
+                    previous_active_slot_id,
+                    previous_active_session_id,
+                )
+            raise
+
+    def _discard_partial_restore_chart(
+        self,
+        slot_id: int,
+        presenter=None,
+        previous_active_slot_id: int | None = None,
+        previous_active_session_id: str | None = None,
+    ) -> None:
+        published = self._chart_presenters.pop(slot_id, None)
+        disposed = set()
+        for candidate in (published, presenter):
+            if candidate is None or id(candidate) in disposed:
+                continue
+            disposed.add(id(candidate))
+            try:
+                candidate.dispose()
+            except Exception:
+                pass
+        try:
+            self._view.close_floating_chart(slot_id)
+        except Exception:
+            pass
+        try:
+            if slot_id in self._view.workspace_widget.slot_ids():
+                self._view.remove_chart_slot(slot_id)
+        except Exception:
+            pass
+        try:
+            if any(item.slot_id == slot_id for item in self._shell_state.placements()):
+                self._shell_state.remove_slot(slot_id)
+        except Exception:
+            pass
+        try:
+            if slot_id in self._workspace_state.slot_ids():
+                self._workspace_state.remove_chart(slot_id)
+        except Exception:
+            pass
+        try:
+            self._sync_shell_view()
+        except Exception:
+            pass
+        if previous_active_slot_id is not None:
+            self._restore_active_identity(
+                previous_active_slot_id, previous_active_session_id
+            )
+
+    def _restore_append_pre_run_state(self, run: _SnapshotRestoreRun) -> None:
+        self._view.set_snapshot_workspace_state(
+            run.pre_visualization_mode,
+            run.pre_pan_anchor_enabled,
+        )
+        self._pan_anchor_enabled = run.pre_pan_anchor_enabled
+        if run.pre_active_slot_id is not None:
+            self._restore_active_identity(
+                run.pre_active_slot_id,
+                run.pre_active_session_id,
+            )
+
+    def _restore_active_identity(
+        self, slot_id: int, expected_session_id: str | None
+    ) -> None:
+        if slot_id not in self._workspace_state.slot_ids():
+            return
+        if self.session_for(slot_id).session_id != expected_session_id:
+            return
+        self._set_active_slot_internal(slot_id)
+
+    def _open_snapshot_save_result(self, result: TaskResult, capture) -> None:
+        if result.status != "completed" or not isinstance(result.value, tuple):
+            return
+        dialog = SnapshotSaveDialog(capture, result.value, self._view)
+        self._snapshot_save_dialogs.append(dialog)
+        dialog.save_requested.connect(
+            lambda intent, dialog=dialog, capture=capture: self._save_snapshot_intent(
+                dialog, capture, intent
+            )
+        )
+        dialog.finished.connect(
+            lambda: self._forget_dialog(self._snapshot_save_dialogs, dialog)
+        )
+        dialog.show()
+
+    def _save_snapshot_intent(self, dialog, capture, intent) -> None:
+        service = self._snapshot_service
+        if service is None or not isinstance(intent, SnapshotSaveIntent):
+            return
+        try:
+            draft = service.build_draft(
+                capture,
+                display_name=intent.display_name,
+                description=intent.description,
+                snapshot_id=intent.snapshot_id,
+            )
+        except Exception as error:
+            self._view.append_status(f"Workspace Snapshot build failed: {error}")
+            return
+        if intent.mode == "create":
+            submit = lambda callback: service.submit_create_snapshot(
+                draft,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        else:
+            submit = lambda callback: service.submit_update_snapshot(
+                intent.snapshot_id,
+                draft,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            )
+        self._submit_snapshot_task(
+            submit,
+            lambda result: self._view.append_status(
+                "Workspace Snapshot saved."
+                if result.status == "completed"
+                else f"Workspace Snapshot save failed: {result.error_message or result.status}"
+            ),
+        )
+
+    def _open_snapshot_manager_result(self, result: TaskResult) -> None:
+        if result.status != "completed" or not isinstance(result.value, tuple):
+            return
+        dialog = SnapshotManagerDialog(result.value, self._view)
+        self._snapshot_managers.append(dialog)
+        dialog.refresh_requested.connect(lambda: self._refresh_snapshot_manager(dialog))
+        dialog.selection_requested.connect(
+            lambda snapshot_id: self._load_snapshot_manager_selection(dialog, snapshot_id)
+        )
+        dialog.compatibility_requested.connect(
+            lambda intent: self._check_snapshot_manager_compatibility(dialog, intent)
+        )
+        dialog.load_requested.connect(
+            lambda intent: self._open_snapshot_preflight(dialog, intent)
+        )
+        dialog.metadata_requested.connect(
+            lambda intent: self._save_snapshot_manager_metadata(dialog, intent)
+        )
+        dialog.delete_requested.connect(
+            lambda snapshot_id: self._delete_snapshot_manager_selection(dialog, snapshot_id)
+        )
+        dialog.finished.connect(lambda: self._forget_dialog(self._snapshot_managers, dialog))
+        dialog.show()
+
+    def _refresh_snapshot_manager(self, dialog) -> None:
+        service = self._snapshot_service
+        if service is None or dialog not in self._snapshot_managers:
+            return
+        self._submit_snapshot_task(
+            lambda callback: service.submit_list_snapshots(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_summaries(result.value)
+            if dialog in self._snapshot_managers
+            and result.status == "completed"
+            and isinstance(result.value, tuple)
+            else None,
+        )
+
+    def _load_snapshot_manager_selection(self, dialog, snapshot_id: str) -> None:
+        service = self._snapshot_service
+        generation = self._workspace_generation
+        if service is None:
+            return
+        self._submit_snapshot_task(
+            lambda callback: service.submit_load_snapshot(
+                snapshot_id,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._snapshot_manager_loaded(dialog, generation, result),
+        )
+
+    def _snapshot_manager_loaded(self, dialog, generation: int, result: TaskResult) -> None:
+        if (
+            dialog not in self._snapshot_managers
+            or generation != self._workspace_generation
+            or result.status != "completed"
+            or not isinstance(result.value, SnapshotV1)
+        ):
+            return
+        dialog.set_snapshot(result.value)
+        self._check_snapshot_manager_compatibility(
+            dialog,
+            SnapshotLoadIntent(result.value.snapshot_id, "append"),
+        )
+
+    def _check_snapshot_manager_compatibility(self, dialog, intent) -> None:
+        service = self._snapshot_service
+        snapshot = dialog.snapshot
+        generation = self._workspace_generation
+        if (
+            service is None
+            or snapshot is None
+            or snapshot.snapshot_id != intent.snapshot_id
+            or self._snapshot_restore is not None
+        ):
+            return
+        current = {
+            "occupied_positions": self._shell_state.reserved_positions(),
+            "idle": all(not item.is_busy for item in self._chart_presenters.values()),
+        }
+        self._submit_snapshot_task(
+            lambda callback: service.submit_preflight(
+                snapshot,
+                intent.mode,
+                current,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_compatibility(result.value)
+            if dialog in self._snapshot_managers
+            and generation == self._workspace_generation
+            and result.status == "completed"
+            and isinstance(result.value, SnapshotCompatibilityReport)
+            else None,
+        )
+
+    def _open_snapshot_preflight(self, dialog, intent) -> None:
+        snapshot = dialog.snapshot
+        report = dialog.compatibility_report
+        if (
+            snapshot is None
+            or report is None
+            or report.mode != intent.mode
+            or not report.compatible
+        ):
+            return
+        preflight = SnapshotPreflightDialog(report, self._view)
+        self._snapshot_preflight_dialogs.append(preflight)
+        generation = self._workspace_generation
+        preflight.load_requested.connect(
+            lambda _report: self.restore_snapshot_workspace(snapshot, report)
+            if generation == self._workspace_generation
+            else None
+        )
+        preflight.finished.connect(
+            lambda: self._forget_dialog(self._snapshot_preflight_dialogs, preflight)
+        )
+        preflight.show()
+
+    def _save_snapshot_manager_metadata(self, dialog, intent) -> None:
+        service = self._snapshot_service
+        snapshot = dialog.snapshot
+        if (
+            service is None
+            or snapshot is None
+            or not isinstance(intent, SnapshotMetadataIntent)
+            or intent.snapshot_id != snapshot.snapshot_id
+        ):
+            return
+        draft = SnapshotDraft(
+            intent.display_name,
+            intent.description,
+            snapshot.workspace,
+            snapshot.charts,
+            snapshot.snapshot_id,
+        )
+        self._submit_snapshot_task(
+            lambda callback: service.submit_update_snapshot(
+                snapshot.snapshot_id,
+                draft,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_snapshot(result.value)
+            if dialog in self._snapshot_managers
+            and result.status == "completed"
+            and isinstance(result.value, SnapshotV1)
+            else None,
+        )
+
+    def _delete_snapshot_manager_selection(self, dialog, snapshot_id: str) -> None:
+        service = self._snapshot_service
+        if service is None:
+            return
+        self._submit_snapshot_task(
+            lambda callback: service.submit_delete_snapshot(
+                snapshot_id,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda _result: self._refresh_snapshot_manager(dialog),
+        )
+
+    def _submit_snapshot_task(self, submit, settled) -> None:
+        task_ref = []
+
+        def result_callback(result):
+            task_id = task_ref[0] if task_ref else result.task_id
+            self._snapshot_task_ids.discard(task_id)
+            if not self._disposed:
+                settled(result)
+
+        submission = submit(result_callback)
+        task_ref.append(submission.task_id)
+        self._snapshot_task_ids.add(submission.task_id)
 
     def dispose(self) -> None:
         if self._disposed:
@@ -435,11 +1207,29 @@ class ResearchSuitePresenter(QObject):
             for task_id in tuple(self._setup_task_ids):
                 self._study_setup_service.cancel(task_id)
         self._setup_task_ids.clear()
+        if self._snapshot_service is not None:
+            for task_id in tuple(self._snapshot_task_ids):
+                self._snapshot_service.cancel(task_id)
+        self._snapshot_task_ids.clear()
+        if self._snapshot_restore is not None:
+            current = self._chart_presenters.get(self._snapshot_restore.current_slot_id)
+            if current is not None:
+                current.cancel_active_operation()
+            self._snapshot_restore = None
         for dialog in (*self._setup_dialogs, *self._save_dialogs, *self._environment_managers):
             dialog.close()
         self._setup_dialogs.clear()
         self._save_dialogs.clear()
         self._environment_managers.clear()
+        for dialog in (
+            *self._snapshot_save_dialogs,
+            *self._snapshot_managers,
+            *self._snapshot_preflight_dialogs,
+        ):
+            dialog.close()
+        self._snapshot_save_dialogs.clear()
+        self._snapshot_managers.clear()
+        self._snapshot_preflight_dialogs.clear()
         self._view.close_all_floating_charts()
         for presenter in tuple(self._chart_presenters.values()):
             presenter.dispose()
@@ -463,6 +1253,8 @@ class ResearchSuitePresenter(QObject):
         self._view.add_study_requested.connect(self.open_study_setup)
         self._view.save_environment_requested.connect(self.open_save_environment)
         self._view.study_environments_requested.connect(self.open_environment_manager)
+        self._view.save_snapshot_requested.connect(self.open_save_snapshot)
+        self._view.snapshot_manager_requested.connect(self.open_snapshot_manager)
         self._view.closed.connect(self.dispose)
         self._view.workspace_widget.active_slot_requested.connect(self.set_active_slot)
         manager = self._view.study_manager
@@ -498,10 +1290,20 @@ class ResearchSuitePresenter(QObject):
     def _on_chart_state_changed(self, slot_id: int) -> None:
         if self._disposed or slot_id not in self._chart_presenters:
             return
+        self._sync_snapshot_workspace_idle()
         if slot_id == self.active_slot_id:
             self._refresh_active_view()
 
+    def _sync_snapshot_workspace_idle(self) -> None:
+        has_charts = bool(self._chart_presenters)
+        self._view.set_snapshot_workspace_idle(
+            has_charts,
+            has_charts
+            and all(not presenter.is_busy for presenter in self._chart_presenters.values()),
+        )
+
     def _refresh_active_view(self) -> None:
+        self._sync_snapshot_workspace_idle()
         presenter = self._active_presenter()
         if presenter is None:
             self._view.workspace_widget.set_active_slot(None)
@@ -547,6 +1349,8 @@ class ResearchSuitePresenter(QObject):
         self._view.apply_attached_slot_order(self._shell_state.attached_slot_ids())
 
     def _on_floating_close(self, slot_id: int, session_id: str) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._chart_presenters.get(slot_id)
         if presenter is None or presenter.session.session_id != session_id:
             return
@@ -556,6 +1360,8 @@ class ResearchSuitePresenter(QObject):
     def _on_go_to_accepted(
         self, slot_id: int, session_id: str, timestamp_ms: int
     ) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._chart_presenters.get(slot_id)
         if presenter is None or presenter.session.session_id != session_id:
             return
@@ -565,7 +1371,8 @@ class ResearchSuitePresenter(QObject):
 
     def _on_horizontal_pan(self, source_slot_id: int) -> None:
         if (
-            not self._pan_anchor_enabled
+            self._snapshot_restore is not None
+            or not self._pan_anchor_enabled
             or self._pan_anchor_in_progress
             or source_slot_id not in self._chart_presenters
         ):
@@ -635,7 +1442,8 @@ class ResearchSuitePresenter(QObject):
 
         presenter = self._chart_presenters.get(slot_id)
         if (
-            result.status != "completed"
+            self._snapshot_restore is not None
+            or result.status != "completed"
             or not isinstance(result.value, StudySetupCatalog)
             or presenter is None
             or presenter.session.session_id != session_id
@@ -656,6 +1464,8 @@ class ResearchSuitePresenter(QObject):
         dialog.show()
 
     def _accept_setup_request(self, slot_id: int, session_id: str, request) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._chart_presenters.get(slot_id)
         if presenter is None or presenter.session.session_id != session_id:
             return
@@ -677,7 +1487,8 @@ class ResearchSuitePresenter(QObject):
     ) -> None:
         presenter = self._chart_presenters.get(slot_id)
         if (
-            result.status != "completed"
+            self._snapshot_restore is not None
+            or result.status != "completed"
             or presenter is None
             or presenter.session.session_id != session_id
             or not isinstance(result.value, tuple)
@@ -709,7 +1520,8 @@ class ResearchSuitePresenter(QObject):
         service = self._study_setup_service
         presenter = self._chart_presenters.get(intent.slot_id)
         if (
-            service is None
+            self._snapshot_restore is not None
+            or service is None
             or presenter is None
             or presenter.session.session_id != intent.session_id
             or presenter.session.dataset is None
@@ -750,7 +1562,8 @@ class ResearchSuitePresenter(QObject):
 
     def _open_environment_manager_result(self, result: TaskResult) -> None:
         if (
-            result.status != "completed"
+            self._snapshot_restore is not None
+            or result.status != "completed"
             or not isinstance(result.value, tuple)
             or not all(isinstance(item, EnvironmentSummary) for item in result.value)
         ):
@@ -895,7 +1708,7 @@ class ResearchSuitePresenter(QObject):
         intent: EnvironmentMetadataIntent,
     ) -> None:
         service = self._study_setup_service
-        if service is None:
+        if service is None or self._snapshot_restore is not None:
             return
         self._submit_setup_task(
             lambda callback: service.submit_update_environment(
@@ -918,6 +1731,8 @@ class ResearchSuitePresenter(QObject):
         dialog: EnvironmentManagerDialog,
         intent: EnvironmentApplyIntent,
     ) -> None:
+        if self._snapshot_restore is not None:
+            return
         presenter = self._chart_presenters.get(intent.slot_id)
         environment = dialog.environment
         if (
@@ -938,7 +1753,7 @@ class ResearchSuitePresenter(QObject):
         self, dialog: EnvironmentManagerDialog, environment_id: str
     ) -> None:
         service = self._study_setup_service
-        if service is None:
+        if service is None or self._snapshot_restore is not None:
             return
         self._submit_setup_task(
             lambda callback: service.submit_delete_environment(

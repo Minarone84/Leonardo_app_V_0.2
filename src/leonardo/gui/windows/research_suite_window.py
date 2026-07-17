@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import QSignalBlocker, Signal, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -61,6 +61,8 @@ class ResearchSuiteWindow(QWidget):
     add_study_requested = Signal()
     save_environment_requested = Signal()
     study_environments_requested = Signal()
+    save_snapshot_requested = Signal()
+    snapshot_manager_requested = Signal()
     closed = Signal()
 
     def __init__(
@@ -92,6 +94,12 @@ class ResearchSuiteWindow(QWidget):
         self._active_dataset_ready = False
         self._active_study_count = 0
         self._active_environment_apply = False
+        self._active_busy = False
+        self._active_volume_available = False
+        self._snapshot_service_available = False
+        self._snapshot_restore_active = False
+        self._snapshot_has_charts = False
+        self._snapshot_all_charts_idle = False
         self._active_slot_id: int | None = None
         self._catalog_busy = False
         self._workspace_full = False
@@ -173,7 +181,10 @@ class ResearchSuiteWindow(QWidget):
         self._sync_catalog_controls()
 
     def add_chart_slot(self, slot_id: int) -> ResearchChartSlotWidget:
-        return self._workspace.add_slot(slot_id)
+        widget = self._workspace.add_slot(slot_id)
+        if self._snapshot_restore_active:
+            widget.setEnabled(False)
+        return widget
 
     def remove_chart_slot(self, slot_id: int) -> ResearchChartSlotWidget:
         return self._workspace.remove_slot(slot_id)
@@ -294,18 +305,28 @@ class ResearchSuiteWindow(QWidget):
         self._active_dataset_ready = dataset_ready
         self._active_study_count = len(tuple(entries))
         self._active_environment_apply = environment_apply_active
+        self._active_busy = busy
+        self._active_volume_available = volume_available
         self._study_manager.set_entries(entries)
         self._controls["research_suite.button.close_active_chart"].setEnabled(
-            slot_id is not None
+            slot_id is not None and not self._snapshot_restore_active
         )
         autoscale = self._controls["research_suite.button.toggle_autoscale"]
-        autoscale.setEnabled(slot_id is not None)
+        autoscale.setEnabled(
+            slot_id is not None and not self._snapshot_restore_active
+        )
         autoscale.setText("Disable Autoscale" if autoscale_enabled else "Enable Autoscale")
         volume = self._controls["research_suite.button.toggle_volume"]
-        volume.setEnabled(slot_id is not None and volume_available)
+        volume.setEnabled(
+            slot_id is not None
+            and volume_available
+            and not self._snapshot_restore_active
+        )
         volume.setText("Hide Volume" if volume_visible else "Show Volume")
         self._controls["research_suite.button.cancel"].setEnabled(
-            self._catalog_busy or (slot_id is not None and busy)
+            self._snapshot_restore_active
+            or self._catalog_busy
+            or (slot_id is not None and busy)
         )
         self.set_active_chart_market(
             None if slot_id is None else self._workspace.slot_widget(slot_id).market_id
@@ -313,12 +334,53 @@ class ResearchSuiteWindow(QWidget):
         if status:
             self.set_status(status)
         self._sync_study_environment_controls()
+        self._sync_snapshot_controls()
 
     def set_study_setup_available(self, available: bool) -> None:
         if type(available) is not bool:
             raise TypeError("available must be a boolean")
         self._setup_service_available = available
         self._sync_study_environment_controls()
+
+    def set_snapshot_workspace_available(self, available: bool) -> None:
+        if type(available) is not bool:
+            raise TypeError("available must be a boolean")
+        self._snapshot_service_available = available
+        self._sync_snapshot_controls()
+
+    def set_snapshot_workspace_restore_active(self, active: bool) -> None:
+        if type(active) is not bool:
+            raise TypeError("active must be a boolean")
+        self._snapshot_restore_active = active
+        for slot_id in self._workspace.slot_ids():
+            self._workspace.slot_widget(slot_id).setEnabled(not active)
+        self._sync_catalog_controls()
+        self._sync_study_environment_controls()
+        self._sync_snapshot_controls()
+        self._sync_restore_mutation_controls()
+
+    def set_snapshot_workspace_idle(self, has_charts: bool, all_idle: bool) -> None:
+        if type(has_charts) is not bool or type(all_idle) is not bool:
+            raise TypeError("snapshot workspace state must contain booleans")
+        self._snapshot_has_charts = has_charts
+        self._snapshot_all_charts_idle = all_idle
+        self._sync_snapshot_controls()
+
+    def set_snapshot_workspace_state(
+        self, visualization_mode: str, pan_anchor_enabled: bool
+    ) -> None:
+        self._workspace.set_visualization_mode(visualization_mode)
+        mode = self.findChild(QComboBox, "research_suite.combo.workspace_mode")
+        if mode is not None:
+            index = mode.findData(visualization_mode)
+            if index >= 0:
+                blocker = QSignalBlocker(mode)
+                mode.setCurrentIndex(index)
+                del blocker
+        button = self._controls["research_suite.button.pan_anchor"]
+        blocker = QSignalBlocker(button)
+        button.setChecked(pan_anchor_enabled)
+        del blocker
 
     def set_workspace_full(self, full: bool) -> None:
         if type(full) is not bool:
@@ -333,7 +395,7 @@ class ResearchSuiteWindow(QWidget):
         self._require_dataset_combo().setEnabled(not busy)
         self._controls["research_suite.button.refresh"].setEnabled(not busy)
         self._controls["research_suite.button.cancel"].setEnabled(
-            busy or self._active_chart_busy()
+            self._snapshot_restore_active or busy or self._active_chart_busy()
         )
         if not busy and self._progress is not None:
             self._progress.setRange(0, 1)
@@ -489,7 +551,9 @@ class ResearchSuiteWindow(QWidget):
         mode.addItem("Scroll 4", "scroll_4")
         mode.addItem("Fit 8", "fit_8")
         mode.currentIndexChanged.connect(
-            lambda: self._workspace.set_visualization_mode(mode.currentData())
+            lambda: None
+            if self._snapshot_restore_active
+            else self._workspace.set_visualization_mode(mode.currentData())
         )
         toolbar.addWidget(mode)
         close_active = self._button(
@@ -549,6 +613,20 @@ class ResearchSuiteWindow(QWidget):
             self.study_environments_requested.emit,
         )
         toolbar.addWidget(environments)
+        save_snapshot = self._button(
+            chart_panel,
+            "research_suite.button.save_snapshot",
+            "Save Snapshot",
+            self.save_snapshot_requested.emit,
+        )
+        toolbar.addWidget(save_snapshot)
+        snapshots = self._button(
+            chart_panel,
+            "research_suite.button.workspace_snapshots",
+            "Workspace Snapshots",
+            self.snapshot_manager_requested.emit,
+        )
+        toolbar.addWidget(snapshots)
         chart_layout.addLayout(toolbar)
         content = QHBoxLayout()
         content.setContentsMargins(0, 0, 0, 0)
@@ -659,7 +737,10 @@ class ResearchSuiteWindow(QWidget):
 
     def _sync_catalog_controls(self) -> None:
         self._controls["research_suite.button.open_chart"].setEnabled(
-            not self._catalog_busy and bool(self._datasets) and not self._workspace_full
+            not self._catalog_busy
+            and not self._snapshot_restore_active
+            and bool(self._datasets)
+            and not self._workspace_full
         )
 
     def _sync_study_environment_controls(self) -> None:
@@ -667,14 +748,54 @@ class ResearchSuiteWindow(QWidget):
             self._setup_service_available
             and self._active_dataset_ready
             and not self._active_environment_apply
+            and not self._snapshot_restore_active
         )
         self._controls["research_suite.button.save_environment"].setEnabled(
             self._setup_service_available
             and self._active_study_count > 0
             and not self._active_environment_apply
+            and not self._snapshot_restore_active
         )
         self._controls["research_suite.button.study_environments"].setEnabled(
-            self._setup_service_available
+            self._setup_service_available and not self._snapshot_restore_active
+        )
+
+    def _sync_snapshot_controls(self) -> None:
+        if "research_suite.button.save_snapshot" not in self._controls:
+            return
+        self._controls["research_suite.button.save_snapshot"].setEnabled(
+            self._snapshot_service_available
+            and self._snapshot_has_charts
+            and self._snapshot_all_charts_idle
+            and not self._snapshot_restore_active
+        )
+        self._controls["research_suite.button.workspace_snapshots"].setEnabled(
+            self._snapshot_service_available and not self._snapshot_restore_active
+        )
+
+    def _sync_restore_mutation_controls(self) -> None:
+        if "research_suite.button.close_active_chart" not in self._controls:
+            return
+        mutable = not self._snapshot_restore_active
+        active = self._active_slot_id is not None
+        self._controls["research_suite.button.close_active_chart"].setEnabled(
+            mutable and active
+        )
+        self._controls["research_suite.button.toggle_autoscale"].setEnabled(
+            mutable and active
+        )
+        self._controls["research_suite.button.toggle_volume"].setEnabled(
+            mutable and active and self._active_volume_available
+        )
+        self._controls["research_suite.button.pan_anchor"].setEnabled(mutable)
+        mode = self.findChild(QComboBox, "research_suite.combo.workspace_mode")
+        if mode is not None:
+            mode.setEnabled(mutable)
+        self._study_manager.setEnabled(mutable)
+        self._controls["research_suite.button.cancel"].setEnabled(
+            self._snapshot_restore_active
+            or self._catalog_busy
+            or (active and self._active_busy)
         )
 
     def _require_dataset_combo(self) -> QComboBox:

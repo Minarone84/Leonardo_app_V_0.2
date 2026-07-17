@@ -1,0 +1,378 @@
+{
+  "append_expected_mapping": {
+    "chart_001": 3,
+    "chart_002": 2
+  },
+  "existing_append_workspace": {
+    "active_chart_ref": "existing_chart_4",
+    "chart_count": 2,
+    "occupied_positions": [
+      1,
+      4
+    ]
+  },
+  "fixture_version": "1.0",
+  "preflight_cases": [
+    {
+      "accepted_markets": [
+        {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "ETHUSDT",
+          "timeframe": "15m"
+        }
+      ],
+      "artifact_compatibility": "compatible",
+      "case": "replace_compatible",
+      "expected": "compatible",
+      "mode": "replace"
+    },
+    {
+      "case": "append_capacity_blocked",
+      "existing_chart_count": 7,
+      "expected": "blocked_capacity",
+      "mode": "append"
+    },
+    {
+      "case": "missing_dataset",
+      "expected": "blocked_dataset",
+      "missing_market": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "ETHUSDT",
+        "timeframe": "15m"
+      },
+      "mode": "replace"
+    },
+    {
+      "artifact_compatibility": "stale",
+      "case": "stale_embedded_artifact",
+      "expected": "blocked_artifact",
+      "mode": "replace"
+    }
+  ],
+  "replace_rollback_workspace": {
+    "active_chart_ref": "rollback_chart_001",
+    "charts": [
+      {
+        "chart_ref": "rollback_chart_001",
+        "detached": false,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        "pane_sizes": [
+          {
+            "pane_ref": "price",
+            "size": 720
+          }
+        ],
+        "price_scale": {
+          "autoscale_enabled": true,
+          "manual_high": null,
+          "manual_low": null
+        },
+        "study_environment": null,
+        "viewport": {
+          "center_timestamp_ms": 1784290000000,
+          "visible_count": 80
+        },
+        "volume_visible": false,
+        "workspace_position": 4
+      }
+    ],
+    "pan_anchor_enabled": false,
+    "visualization_mode": "scroll_4"
+  },
+  "restore_failures": [
+    {
+      "expected_added_removed": true,
+      "expected_existing_preserved": true,
+      "failure_chart_ref": "chart_001",
+      "mode": "append"
+    },
+    {
+      "expected_rollback_restored": true,
+      "failure_chart_ref": "chart_001",
+      "mode": "replace"
+    }
+  ],
+  "snapshot": {
+    "charts": [
+      {
+        "chart_ref": "chart_002",
+        "detached": true,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "ETHUSDT",
+          "timeframe": "15m"
+        },
+        "pane_sizes": [
+          {
+            "pane_ref": "price",
+            "size": 720
+          }
+        ],
+        "price_scale": {
+          "autoscale_enabled": true,
+          "manual_high": null,
+          "manual_low": null
+        },
+        "study_environment": null,
+        "viewport": {
+          "center_timestamp_ms": 1784286000000,
+          "visible_count": 96
+        },
+        "volume_visible": false,
+        "workspace_position": 1
+      },
+      {
+        "chart_ref": "chart_001",
+        "detached": false,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        "pane_sizes": [
+          {
+            "pane_ref": "price",
+            "size": 620
+          },
+          {
+            "pane_ref": "volume",
+            "size": 180
+          },
+          {
+            "pane_ref": "study:entry_002",
+            "size": 160
+          }
+        ],
+        "price_scale": {
+          "autoscale_enabled": false,
+          "manual_high": 70000.0,
+          "manual_low": 60000.0
+        },
+        "study_environment": {
+          "content_hash": "bd15fa8d969fe75ee9457e5a05fcb74cb9b1f76822a1c039d7d0849964777306",
+          "created_at_utc": "2026-07-17T10:00:00+00:00",
+          "created_from": {
+            "exchange": "bybit",
+            "market_type": "linear",
+            "symbol": "BTCUSDT",
+            "timeframe": "1h"
+          },
+          "description": "EMA, RSI, Delta, and one saved SMA artifact.",
+          "display_name": "Momentum Structure",
+          "entries": [
+            {
+              "artifact_id": null,
+              "display_name": "EMA 20",
+              "entry_id": "entry_001",
+              "expected_output_names": [
+                "ema_20"
+              ],
+              "kind": "indicator",
+              "mode": "calculation",
+              "parameters": {
+                "period": 20
+              },
+              "presentation": {
+                "fill_styles": [],
+                "line_styles": [
+                  {
+                    "color": "#22C55E",
+                    "conditional_colors": {},
+                    "conditional_driver_name": null,
+                    "line_pattern": "solid",
+                    "line_width": 2.0,
+                    "marker_shape": "none",
+                    "marker_size": 8,
+                    "output_name": "ema_20",
+                    "render_mode": "line",
+                    "visible": true
+                  }
+                ],
+                "visible": true
+              },
+              "sources": [],
+              "tool_key": "ema",
+              "user_metadata": {
+                "dataset_role": "supporting_indicator",
+                "description": "Fast structural average.",
+                "important": true
+              }
+            },
+            {
+              "artifact_id": null,
+              "display_name": "RSI 14",
+              "entry_id": "entry_002",
+              "expected_output_names": [
+                "rsi_14"
+              ],
+              "kind": "oscillator",
+              "mode": "calculation",
+              "parameters": {
+                "period": 14
+              },
+              "presentation": {
+                "fill_styles": [],
+                "line_styles": [
+                  {
+                    "color": "#A855F7",
+                    "conditional_colors": {},
+                    "conditional_driver_name": null,
+                    "line_pattern": "solid",
+                    "line_width": 1.5,
+                    "marker_shape": "none",
+                    "marker_size": 8,
+                    "output_name": "rsi_14",
+                    "render_mode": "line",
+                    "visible": true
+                  }
+                ],
+                "visible": true
+              },
+              "sources": [],
+              "tool_key": "rsi",
+              "user_metadata": {
+                "dataset_role": "supporting_oscillator",
+                "description": "Momentum confirmation.",
+                "important": true
+              }
+            },
+            {
+              "artifact_id": null,
+              "display_name": "EMA-RSI Delta",
+              "entry_id": "entry_003",
+              "expected_output_names": [
+                "research_fast_research_slow_delta"
+              ],
+              "kind": "construct",
+              "mode": "calculation",
+              "parameters": {
+                "eps": 1e-12,
+                "mode": "abs"
+              },
+              "presentation": {
+                "fill_styles": [],
+                "line_styles": [
+                  {
+                    "color": "#06B6D4",
+                    "conditional_colors": {},
+                    "conditional_driver_name": null,
+                    "line_pattern": "dashed",
+                    "line_width": 1.0,
+                    "marker_shape": "none",
+                    "marker_size": 8,
+                    "output_name": "research_fast_research_slow_delta",
+                    "render_mode": "line",
+                    "visible": true
+                  }
+                ],
+                "visible": true
+              },
+              "sources": [
+                {
+                  "artifact_id": null,
+                  "artifact_kind": null,
+                  "artifact_tool_key": null,
+                  "column_name": null,
+                  "output_name": "ema_20",
+                  "role": "fast",
+                  "source_entry_id": "entry_001",
+                  "source_kind": "environment"
+                },
+                {
+                  "artifact_id": null,
+                  "artifact_kind": null,
+                  "artifact_tool_key": null,
+                  "column_name": null,
+                  "output_name": "rsi_14",
+                  "role": "slow",
+                  "source_entry_id": "entry_002",
+                  "source_kind": "environment"
+                }
+              ],
+              "tool_key": "delta",
+              "user_metadata": {
+                "dataset_role": "supporting_construct",
+                "description": "Cross-family diagnostic construct.",
+                "important": false
+              }
+            },
+            {
+              "artifact_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "display_name": "Saved SMA 50",
+              "entry_id": "entry_004",
+              "expected_output_names": [
+                "sma_50"
+              ],
+              "kind": "indicator",
+              "mode": "artifact",
+              "parameters": {},
+              "presentation": {
+                "fill_styles": [],
+                "line_styles": [
+                  {
+                    "color": "#F59E0B",
+                    "conditional_colors": {},
+                    "conditional_driver_name": null,
+                    "line_pattern": "dotted",
+                    "line_width": 1.0,
+                    "marker_shape": "none",
+                    "marker_size": 8,
+                    "output_name": "sma_50",
+                    "render_mode": "line",
+                    "visible": true
+                  }
+                ],
+                "visible": false
+              },
+              "sources": [],
+              "tool_key": "sma",
+              "user_metadata": {
+                "dataset_role": "visual_only",
+                "description": "Market-bound saved artifact.",
+                "important": false
+              }
+            }
+          ],
+          "environment_id": "env_momentum_001",
+          "object_type": "study_environment",
+          "schema_version": "1.0",
+          "updated_at_utc": "2026-07-17T10:00:00+00:00"
+        },
+        "viewport": {
+          "center_timestamp_ms": 1784293200000,
+          "visible_count": 120
+        },
+        "volume_visible": true,
+        "workspace_position": 3
+      }
+    ],
+    "content_hash": "9b716d0a2b302b6d40334e1a1dc3b5e9971f471038579210356782aad0070c36",
+    "created_at_utc": "2026-07-17T11:00:00+00:00",
+    "description": "Two-chart workspace with one detached chart.",
+    "display_name": "Morning Research Layout",
+    "object_type": "research_workspace_snapshot",
+    "schema_version": "1.0",
+    "snapshot_id": "snapshot_research_001",
+    "updated_at_utc": "2026-07-17T11:00:00+00:00",
+    "workspace": {
+      "active_chart_ref": "chart_002",
+      "pan_anchor_enabled": true,
+      "visualization_mode": "fit_8"
+    }
+  }
+}

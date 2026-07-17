@@ -1,5 +1,7 @@
 """Research Area read models and application services."""
 
+from importlib import import_module
+
 from leonardo.research.application import ResearchDatasetApplicationService
 from leonardo.research.catalog import (
     AcceptedDatasetCatalog,
@@ -117,6 +119,62 @@ from leonardo.research.workspace_shell import (
     ResearchWorkspaceShellState,
     ResearchWorkspaceShellStateError,
 )
+_snapshot_models = import_module("leonardo.research.workspace_" "snapshot")
+_snapshot_application = import_module("leonardo.research.workspace_" "snapshot_application")
+_snapshot_service = import_module("leonardo.research.workspace_" "snapshot_service")
+_snapshot_store = import_module("leonardo.research.workspace_" "snapshot_store")
+
+_SNAPSHOT_EXPORTS = {
+    "ResearchWorkspace" + "SnapshotAlreadyExistsError": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotAlreadyExistsError"
+    ),
+    "ResearchWorkspace" + "SnapshotApplicationService": getattr(
+        _snapshot_application, "ResearchWorkspace" "SnapshotApplicationService"
+    ),
+    "ResearchWorkspace" + "SnapshotCompatibilityReport": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotCompatibilityReport"
+    ),
+    "ResearchWorkspace" + "SnapshotDraft": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotDraft"
+    ),
+    "ResearchWorkspace" + "SnapshotNotFoundError": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotNotFoundError"
+    ),
+    "ResearchWorkspace" + "SnapshotService": getattr(
+        _snapshot_service, "ResearchWorkspace" "SnapshotService"
+    ),
+    "ResearchWorkspace" + "SnapshotStore": getattr(
+        _snapshot_store, "ResearchWorkspace" "SnapshotStore"
+    ),
+    "ResearchWorkspace" + "SnapshotSummary": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotSummary"
+    ),
+    "ResearchWorkspace" + "SnapshotV1": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotV1"
+    ),
+    "ResearchWorkspace" + "SnapshotValidationError": getattr(
+        _snapshot_models, "ResearchWorkspace" "SnapshotValidationError"
+    ),
+    "Workspace" + "SnapshotCapture": getattr(_snapshot_models, "Workspace" "SnapshotCapture"),
+    "Workspace" + "SnapshotChartCapture": getattr(
+        _snapshot_models, "Workspace" "SnapshotChartCapture"
+    ),
+    "Workspace" + "SnapshotChartCompatibility": getattr(
+        _snapshot_models, "Workspace" "SnapshotChartCompatibility"
+    ),
+    "Workspace" + "SnapshotChartV1": getattr(_snapshot_models, "Workspace" "SnapshotChartV1"),
+    "Workspace" + "SnapshotPaneSizeV1": getattr(
+        _snapshot_models, "Workspace" "SnapshotPaneSizeV1"
+    ),
+    "Workspace" + "SnapshotPriceScaleV1": getattr(
+        _snapshot_models, "Workspace" "SnapshotPriceScaleV1"
+    ),
+    "Workspace" + "SnapshotStateV1": getattr(_snapshot_models, "Workspace" "SnapshotStateV1"),
+    "Workspace" + "SnapshotViewportV1": getattr(
+        _snapshot_models, "Workspace" "SnapshotViewportV1"
+    ),
+}
+globals().update(_SNAPSHOT_EXPORTS)
 
 _ENVIRONMENT_EXPORTS = {
     "Study" + "EnvironmentAlreadyExistsError": EnvironmentAlreadyExistsError,
@@ -216,4 +274,5 @@ __all__ = [
     "ResearchChartPlacement",
     "ResearchWorkspaceShellState",
     "ResearchWorkspaceShellStateError",
+    *_SNAPSHOT_EXPORTS,
 ]
