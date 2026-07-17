@@ -1,0 +1,102 @@
+{
+  "actions": [
+    {
+      "action": "open_chart",
+      "expected_slot_id": 1,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-1"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 2,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-2"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 3,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-3"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 4,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-4"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 5,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-5"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 6,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-6"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 7,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-7"
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 8,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-8"
+    },
+    {
+      "action": "open_chart",
+      "expected": "capacity_blocked",
+      "market": "bybit:linear:BTCUSDT:1m"
+    },
+    {
+      "action": "activate",
+      "slot_id": 5
+    },
+    {
+      "action": "remove",
+      "slot_id": 3
+    },
+    {
+      "action": "open_chart",
+      "expected_slot_id": 3,
+      "market": "bybit:linear:BTCUSDT:1m",
+      "session_id": "session-9"
+    },
+    {
+      "action": "remove",
+      "slot_id": 5
+    },
+    {
+      "action": "set_mode",
+      "mode": "fit_8"
+    },
+    {
+      "action": "set_mode",
+      "mode": "scroll_4"
+    }
+  ],
+  "active_chart_routing": {
+    "autoscale": "active slot only",
+    "cancel": "active chart operation only unless catalog is active",
+    "study_apply_default": "active slot only",
+    "study_apply_explicit": "requested valid slot",
+    "study_manager": "active slot only",
+    "volume": "active slot only"
+  },
+  "catalog": [
+    {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSDT",
+      "timeframe": "1m"
+    }
+  ],
+  "fixture_version": "1.0",
+  "initial_mode": "scroll_4",
+  "maximum_slots": 8
+}

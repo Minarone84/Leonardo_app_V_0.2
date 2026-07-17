@@ -76,6 +76,12 @@ from leonardo.research.volume import (
     ResidentVolumeProjection,
     build_resident_volume_projection,
 )
+from leonardo.research.workspace import (
+    MAX_RESEARCH_CHARTS,
+    ResearchChartSlotEntry,
+    ResearchWorkspaceState,
+    ResearchWorkspaceStateError,
+)
 
 __all__ = [
     "build_resident_volume_projection",
@@ -137,4 +143,8 @@ __all__ = [
     "StudyPresentationRegistry",
     "StudyPresentationValidationError",
     "build_default_study_presentation",
+    "MAX_RESEARCH_CHARTS",
+    "ResearchChartSlotEntry",
+    "ResearchWorkspaceState",
+    "ResearchWorkspaceStateError",
 ]

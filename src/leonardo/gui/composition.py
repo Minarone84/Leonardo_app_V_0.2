@@ -271,7 +271,7 @@ class GuiCompositionRoot:
         if (
             self._research_suite_window is None
             or self._research_suite_presenter is None
-            or self._research_suite_presenter.session.is_disposed
+            or self._research_suite_presenter.is_disposed
         ):
             window = ResearchSuiteWindow(
                 action_observer=self._action_observer,

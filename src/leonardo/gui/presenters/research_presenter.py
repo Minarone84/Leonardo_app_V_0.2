@@ -1,4 +1,4 @@
-"""Qt presenter for the single-chart historical Research workflow."""
+"""Qt suite presenter for the eight-slot Research workspace."""
 
 from __future__ import annotations
 
@@ -7,29 +7,23 @@ from collections.abc import Callable
 from PySide6.QtCore import QObject, Qt, Signal
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
-from leonardo.gui.chart import CandlestickInteractionState, PriceScaleState
+from leonardo.gui.presenters.research_chart_presenter import ResearchChartPresenter
 from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
 from leonardo.gui.windows.study_style_dialog import StudyStylePatch
 from leonardo.research import (
     ChartSessionState,
     DatasetCatalogReport,
-    HistoricalDataset,
     HorizontalViewport,
-    PreparedStudy,
-    ResidentOHLCVSlice,
-    ResidentRefillDirection,
-    ResidentStudyProjection,
     ResearchDatasetApplicationService,
     ResearchStudyApplicationService,
-    StudyApplyAttempt,
+    ResearchWorkspaceState,
+    ResearchWorkspaceStateError,
     StudyArtifactRequest,
-    StudyDependencyError,
     StudyExecutionRequest,
-    StudySaveAttempt,
-    StudySaveOutcome,
-    StudyValidationError,
-    build_resident_volume_projection,
 )
+
+# ResearchChartPresenter retains ResidentRefillDirection and
+# build_resident_volume_projection ownership from the accepted single-chart flow.
 
 
 class _QtCallbackDispatcher(QObject):
@@ -49,7 +43,7 @@ class _QtCallbackDispatcher(QObject):
 
 
 class ResearchSuitePresenter(QObject):
-    """Coordinate one Research chart without owning OHLCV or task truth."""
+    """Coordinate shared catalog truth and active routing across chart slots."""
 
     def __init__(
         self,
@@ -68,98 +62,61 @@ class ResearchSuitePresenter(QObject):
         self._service = service
         self._study_service = study_service
         self._dispatcher = _QtCallbackDispatcher(self)
-        self._session = ChartSessionState()
-        self._viewport: HorizontalViewport | None = None
-        self._interaction: CandlestickInteractionState | None = None
+        self._workspace_state = ResearchWorkspaceState()
+        self._chart_presenters: dict[int, ResearchChartPresenter] = {}
         self._active_catalog_task_id: str | None = None
-        self._active_load_task_id: str | None = None
-        self._active_slice_task_id: str | None = None
-        self._open_attempt = None
-        self._slice_attempt = None
-        self._active_study_tasks: dict[str, tuple[str, object]] = {}
+        self._disposed = False
         self._wire()
         self.refresh_catalog()
 
     @property
+    def workspace_state(self) -> ResearchWorkspaceState:
+        return self._workspace_state
+
+    @property
+    def active_slot_id(self) -> int | None:
+        return self._workspace_state.active_slot_id
+
+    @property
     def session(self) -> ChartSessionState:
-        return self._session
+        session = self._workspace_state.active_session
+        if session is None:
+            raise RuntimeError("Research workspace has no active chart")
+        return session
 
     @property
     def viewport(self) -> HorizontalViewport | None:
-        return self._viewport
+        slot_id = self.active_slot_id
+        if slot_id is None:
+            raise RuntimeError("Research workspace has no active chart")
+        return self.chart_presenter(slot_id).viewport
 
-    def submit_study_calculation(self, request: StudyExecutionRequest):
-        if not isinstance(request, StudyExecutionRequest):
-            raise TypeError("request must be a StudyExecutionRequest")
-        dataset = self._session.dataset
-        if dataset is None:
-            raise RuntimeError("an accepted Research dataset is required")
-        attempt = self._session.begin_study_apply()
-        self._view.set_busy(True)
-        self._view.set_status("Applying Research Study")
+    @property
+    def is_disposed(self) -> bool:
+        return self._disposed
+
+    def slot_ids(self) -> tuple[int, ...]:
+        return self._workspace_state.slot_ids()
+
+    def session_for(self, slot_id: int) -> ChartSessionState:
+        return self._workspace_state.session_for(slot_id)
+
+    def viewport_for(self, slot_id: int) -> HorizontalViewport | None:
+        return self.chart_presenter(slot_id).viewport
+
+    def chart_presenter(self, slot_id: int) -> ResearchChartPresenter:
         try:
-            submission = self._study_service.submit_calculation(
-                attempt,
-                dataset,
-                self._session.studies,
-                request,
-                progress_callback=self._on_study_progress,
-                result_callback=lambda result: self._on_study_apply_result(
-                    result, attempt
-                ),
-                callback_dispatcher=self._dispatcher.dispatch,
-            )
-        except Exception:
-            self._session.settle_study_apply_failure(attempt)
-            self._view.set_busy(False)
-            raise
-        self._active_study_tasks[submission.task_id] = ("apply", attempt)
-        return submission
-
-    def submit_artifact_apply(self, request: StudyArtifactRequest):
-        if not isinstance(request, StudyArtifactRequest):
-            raise TypeError("request must be a StudyArtifactRequest")
-        dataset = self._session.dataset
-        if dataset is None:
-            raise RuntimeError("an accepted Research dataset is required")
-        attempt = self._session.begin_study_apply()
-        self._view.set_busy(True)
-        self._view.set_status("Applying Research artifact")
-        try:
-            submission = self._study_service.submit_artifact_apply(
-                attempt,
-                dataset,
-                request,
-                progress_callback=self._on_study_progress,
-                result_callback=lambda result: self._on_study_apply_result(
-                    result, attempt
-                ),
-                callback_dispatcher=self._dispatcher.dispatch,
-            )
-        except Exception:
-            self._session.settle_study_apply_failure(attempt)
-            self._view.set_busy(False)
-            raise
-        self._active_study_tasks[submission.task_id] = ("apply", attempt)
-        return submission
-
-    def _wire(self) -> None:
-        self._view.refresh_requested.connect(self.refresh_catalog)
-        self._view.open_requested.connect(self.open_selected_dataset)
-        self._view.cancel_requested.connect(self.cancel_active_operation)
-        self._view.closed.connect(self.dispose)
-        self._view.chart_workspace.viewportChanged.connect(self._on_viewport_changed)
-        manager = self._view.study_manager
-        manager.visibility_requested.connect(self._set_study_visibility)
-        manager.style_requested.connect(self._open_study_style)
-        manager.reset_style_requested.connect(self._reset_study_style)
-        manager.save_requested.connect(self._save_study)
-        manager.remove_requested.connect(self._remove_study)
+            return self._chart_presenters[slot_id]
+        except KeyError as error:
+            raise ResearchWorkspaceStateError(
+                f"Research chart slot {slot_id} is not occupied"
+            ) from error
 
     def refresh_catalog(self) -> None:
-        self._cancel_task(self._active_catalog_task_id)
-        self._active_catalog_task_id = None
-        self._view.set_busy(True)
+        if self._disposed:
+            return
+        self._cancel_catalog()
+        self._view.set_catalog_busy(True)
         self._view.set_status("Scanning accepted datasets")
         self._view.append_status("Scanning canonical OHLCV storage for accepted datasets...")
         try:
@@ -169,401 +126,248 @@ class ResearchSuitePresenter(QObject):
                 callback_dispatcher=self._dispatcher.dispatch,
             )
         except Exception as error:
-            self._view.set_busy(False)
+            self._view.set_catalog_busy(False)
             self._view.set_status("Catalog submission failed")
             self._view.append_status(f"Catalog submission failed: {error}")
             return
         self._active_catalog_task_id = submission.task_id
 
     def open_selected_dataset(self) -> None:
+        if self._disposed:
+            return
         market_id = self._view.selected_market_id()
         if market_id is None:
             self._view.append_status("No accepted dataset is selected.")
             return
-        self._cancel_chart_tasks()
-        attempt = self._session.begin_dataset_open(market_id)
-        self._open_attempt = attempt
-        self._viewport = None
-        self._interaction = None
-        self._view.clear_chart()
-        self._view.set_busy(True)
-        self._view.set_status("Loading historical dataset")
-        self._view.append_status(f"Opening {market_id.as_key()}...")
         try:
-            submission = self._service.submit_load(
-                market_id,
-                progress_callback=self._on_load_progress,
-                result_callback=self._on_load_result,
-                callback_dispatcher=self._dispatcher.dispatch,
-            )
-        except Exception as error:
-            self._session.settle_dataset_open_failure(attempt)
-            self._view.set_busy(False)
-            self._view.set_status("Dataset submission failed")
-            self._view.append_status(f"Dataset submission failed: {error}")
+            entry = self._workspace_state.create_chart()
+        except ResearchWorkspaceStateError:
+            self._view.set_status("Research workspace is full")
+            self._view.append_status("Eight Research charts are already open.")
+            self._refresh_active_view()
             return
-        self._active_load_task_id = submission.task_id
+        slot_id = entry.slot_id
+        slot_widget = self._view.add_chart_slot(slot_id)
+        presenter_ref: list[ResearchChartPresenter] = []
+
+        def current_runtime() -> bool:
+            return (
+                not self._disposed
+                and bool(presenter_ref)
+                and self._chart_presenters.get(slot_id) is presenter_ref[0]
+            )
+
+        presenter = ResearchChartPresenter(
+            slot_id,
+            slot_widget,
+            self._workspace_state.session_for(slot_id),
+            self._service,
+            self._study_service,
+            self._dispatcher.dispatch,
+            self._on_chart_state_changed,
+            self._view.append_status,
+            current_runtime,
+        )
+        presenter_ref.append(presenter)
+        self._chart_presenters[slot_id] = presenter
+        self._view.workspace_widget.set_active_slot(slot_id)
+        self._refresh_active_view()
+        try:
+            presenter.open_dataset(market_id)
+        except Exception:
+            self._remove_chart(slot_id)
+            self._refresh_active_view()
+
+    def set_active_slot(self, slot_id: int) -> None:
+        if self._disposed:
+            return
+        self._workspace_state.set_active(slot_id)
+        self._view.workspace_widget.set_active_slot(slot_id)
+        self._refresh_active_view()
+
+    def close_active_chart(self) -> None:
+        slot_id = self.active_slot_id
+        if slot_id is not None:
+            self._remove_chart(slot_id)
+            self._refresh_active_view()
 
     def cancel_active_operation(self) -> None:
-        task_ids = tuple(
-            task_id
-            for task_id in (
-                self._active_catalog_task_id,
-                self._active_load_task_id,
-                self._active_slice_task_id,
-                *self._active_study_tasks,
+        if self._active_catalog_task_id is not None:
+            cancelled = self._service.cancel(self._active_catalog_task_id)
+            self._view.set_status("Cancellation requested")
+            self._view.append_status(
+                "Catalog cancellation requested."
+                if cancelled
+                else "Catalog operation already settled."
             )
-            if task_id is not None
-        )
-        if not task_ids:
             return
-        cancelled = False
-        for task_id in task_ids:
-            if task_id in self._active_study_tasks:
-                cancelled = self._study_service.cancel(task_id) or cancelled
-            else:
-                cancelled = self._service.cancel(task_id) or cancelled
-        self._view.set_status("Cancellation requested")
-        self._view.append_status(
-            "Cancellation requested." if cancelled else "Operation already settled."
-        )
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.cancel_active_operation()
+
+    def submit_study_calculation(
+        self, request: StudyExecutionRequest, *, slot_id: int | None = None
+    ):
+        return self._target_presenter(slot_id).submit_study_calculation(request)
+
+    def submit_artifact_apply(
+        self, request: StudyArtifactRequest, *, slot_id: int | None = None
+    ):
+        return self._target_presenter(slot_id).submit_artifact_apply(request)
+
+    def _save_study(self, study_id: str) -> None:
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.save_study(study_id)
+
+    def _set_study_visibility(self, study_id: str, visible: bool) -> None:
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.set_study_visibility(study_id, visible)
+
+    def _open_study_style(self, study_id: str) -> None:
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.open_study_style(study_id)
+
+    def _apply_style_patch(self, patch: StudyStylePatch) -> None:
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.apply_style_patch(patch)
+
+    def _reset_study_style(self, study_id: str) -> None:
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.reset_study_style(study_id)
+
+    def _remove_study(self, study_id: str) -> None:
+        presenter = self._active_presenter()
+        if presenter is not None:
+            presenter.remove_study(study_id)
+
+    def toggle_active_autoscale(self) -> None:
+        presenter = self._active_presenter()
+        if presenter is None:
+            return
+        presenter.set_autoscale_enabled(not presenter.chart_widget.autoscale_enabled)
+
+    def toggle_active_volume(self) -> None:
+        presenter = self._active_presenter()
+        if presenter is None:
+            return
+        workspace = presenter.chart_workspace
+        presenter.set_volume_visible(not workspace.volume_visible)
 
     def dispose(self) -> None:
-        self._cancel_chart_tasks()
-        self._cancel_task(self._active_catalog_task_id)
-        self._active_catalog_task_id = None
-        for task_id in tuple(self._active_study_tasks):
-            self._study_service.cancel(task_id)
-        self._active_study_tasks.clear()
-        self._session.dispose()
+        if self._disposed:
+            return
+        self._disposed = True
+        self._cancel_catalog()
+        for presenter in tuple(self._chart_presenters.values()):
+            presenter.dispose()
+        self._chart_presenters.clear()
+        self._workspace_state.dispose()
+        self._view.workspace_widget.clear()
+        self._view.set_active_chart_state(None, (), False, False, False, False, "")
+
+    def _wire(self) -> None:
+        self._view.refresh_requested.connect(self.refresh_catalog)
+        self._view.open_requested.connect(self.open_selected_dataset)
+        self._view.cancel_requested.connect(self.cancel_active_operation)
+        self._view.close_active_requested.connect(self.close_active_chart)
+        self._view.autoscale_requested.connect(self.toggle_active_autoscale)
+        self._view.volume_requested.connect(self.toggle_active_volume)
+        self._view.closed.connect(self.dispose)
+        self._view.workspace_widget.active_slot_requested.connect(self.set_active_slot)
+        manager = self._view.study_manager
+        manager.visibility_requested.connect(self._set_study_visibility)
+        manager.style_requested.connect(self._open_study_style)
+        manager.reset_style_requested.connect(self._reset_study_style)
+        manager.save_requested.connect(self._save_study)
+        manager.remove_requested.connect(self._remove_study)
 
     def _on_catalog_progress(self, progress: TaskProgress) -> None:
-        if progress.task_id != self._active_catalog_task_id:
+        if self._disposed or progress.task_id != self._active_catalog_task_id:
             return
         self._view.set_status(progress.message)
         self._view.set_progress(progress.current, progress.total)
 
     def _on_catalog_result(self, result: TaskResult) -> None:
-        if result.task_id != self._active_catalog_task_id:
+        if self._disposed or result.task_id != self._active_catalog_task_id:
             return
         self._active_catalog_task_id = None
-        self._view.set_busy(False)
+        self._view.set_catalog_busy(False)
         if result.status == "completed" and isinstance(result.value, DatasetCatalogReport):
             report = result.value
             self._view.set_catalog(report.accepted)
-            self._view.set_status(
-                f"Ready — {report.accepted_count} accepted dataset(s)"
-            )
+            self._view.set_status(f"Ready - {report.accepted_count} accepted dataset(s)")
             self._view.append_status(
                 f"Catalog ready: {report.accepted_count} accepted, "
                 f"{report.rejected_count} refused."
             )
+            self._refresh_active_view()
             return
-        self._handle_terminal_failure("Catalog", result)
+        self._handle_catalog_failure(result)
 
-    def _on_load_progress(self, progress: TaskProgress) -> None:
-        if progress.task_id != self._active_load_task_id:
+    def _on_chart_state_changed(self, slot_id: int) -> None:
+        if self._disposed or slot_id not in self._chart_presenters:
             return
-        self._view.set_status(progress.message)
-        self._view.set_progress(progress.current, progress.total)
+        if slot_id == self.active_slot_id:
+            self._refresh_active_view()
 
-    def _on_load_result(self, result: TaskResult) -> None:
-        if result.task_id != self._active_load_task_id:
+    def _refresh_active_view(self) -> None:
+        presenter = self._active_presenter()
+        if presenter is None:
+            self._view.workspace_widget.set_active_slot(None)
+            self._view.set_active_chart_state(None, (), False, False, False, False, "")
+            self._view.set_workspace_full(self._workspace_state.is_full)
             return
-        self._active_load_task_id = None
-        attempt = self._open_attempt
-        self._open_attempt = None
-        if attempt is None:
-            return
-        if result.status != "completed" or not isinstance(result.value, HistoricalDataset):
-            self._session.settle_dataset_open_failure(attempt)
-            self._view.set_busy(False)
-            self._handle_terminal_failure("Dataset load", result)
-            return
-        dataset = result.value
-        if not self._session.accept_dataset_open(attempt, dataset):
-            return
-        self._viewport = HorizontalViewport(dataset.row_count)
-        self._interaction = CandlestickInteractionState(
-            self._viewport,
-            None,
-            price_scale=PriceScaleState(),
+        session = presenter.session
+        self._view.workspace_widget.set_active_slot(presenter.slot_id)
+        chart = presenter.chart_widget
+        workspace = presenter.chart_workspace
+        self._view.set_active_chart_state(
+            presenter.slot_id,
+            session.study_manager_entries(),
+            presenter.is_busy,
+            chart.autoscale_enabled,
+            workspace.volume_visible,
+            workspace.volume_chart.projection is not None,
+            presenter.status_text,
         )
-        self._request_resident(self._viewport.dataset_interest().center_index)
+        self._view.set_active_chart_market(session.selected_market_id)
+        self._view.set_workspace_full(self._workspace_state.is_full)
 
-    def _request_resident(self, center_index: int) -> None:
-        dataset = self._session.dataset
-        if dataset is None:
+    def _remove_chart(self, slot_id: int) -> None:
+        presenter = self._chart_presenters.pop(slot_id, None)
+        if presenter is None:
             return
-        self._cancel_task(self._active_slice_task_id)
-        attempt = self._session.begin_resident_slice_request()
-        self._slice_attempt = attempt
-        self._view.set_busy(True)
-        self._view.set_status("Preparing resident candles")
-        try:
-            submission = self._service.submit_resident_slice(
-                dataset,
-                center_index,
-                progress_callback=self._on_slice_progress,
-                result_callback=self._on_slice_result,
-                callback_dispatcher=self._dispatcher.dispatch,
-            )
-        except Exception as error:
-            self._session.settle_resident_slice_failure(attempt)
-            self._view.set_busy(False)
-            self._view.set_status("Resident submission failed")
-            self._view.append_status(f"Resident submission failed: {error}")
-            return
-        self._active_slice_task_id = submission.task_id
+        presenter.dispose()
+        self._workspace_state.remove_chart(slot_id)
+        self._view.remove_chart_slot(slot_id)
 
-    def _on_slice_progress(self, progress: TaskProgress) -> None:
-        if progress.task_id != self._active_slice_task_id:
-            return
-        self._view.set_status(progress.message)
-        self._view.set_progress(progress.current, progress.total)
+    def _active_presenter(self) -> ResearchChartPresenter | None:
+        slot_id = self.active_slot_id
+        return None if slot_id is None else self._chart_presenters.get(slot_id)
 
-    def _on_slice_result(self, result: TaskResult) -> None:
-        if result.task_id != self._active_slice_task_id:
-            return
-        self._active_slice_task_id = None
-        attempt = self._slice_attempt
-        self._slice_attempt = None
-        if attempt is None:
-            return
-        if result.status != "completed" or not isinstance(result.value, ResidentOHLCVSlice):
-            self._session.settle_resident_slice_failure(attempt)
-            self._view.set_busy(False)
-            self._handle_terminal_failure("Resident load", result)
-            return
-        resident = result.value
-        viewport = self._viewport
-        interest = None if viewport is None else viewport.dataset_interest()
-        if interest is not None and (
-            interest.start_index < resident.base_index
-            or interest.end_index_exclusive > resident.end_index_exclusive
-        ):
-            self._session.settle_resident_slice_failure(attempt)
-            self._request_resident(interest.center_index)
-            return
-        if not self._session.accept_resident_slice(attempt, resident):
-            return
-        interaction = self._interaction
-        if interaction is None:
-            return
-        interaction.set_resident(resident)
-        dataset = self._session.dataset
-        if dataset is None:
-            self._view.set_busy(False)
-            self._view.set_status("Volume projection failed")
-            self._view.append_status("Volume projection failed: dataset is unavailable.")
-            return
-        try:
-            volume_projection = build_resident_volume_projection(dataset, resident)
-        except (TypeError, ValueError) as error:
-            self._view.set_busy(False)
-            self._view.set_status("Volume projection failed")
-            self._view.append_status(f"Volume projection failed: {error}")
-            return
-        self._view.show_interaction_state(
-            interaction,
-            volume_projection=volume_projection,
-        )
-        self._refresh_study_state()
-        self._view.set_busy(False)
-        self._view.set_status("Chart ready")
-        market = resident.market_id
-        self._view.append_status(
-            f"Chart ready: {market.symbol} {market.timeframe}; "
-            f"resident {resident.base_index}–{resident.end_index_exclusive - 1}."
-        )
+    def _target_presenter(self, slot_id: int | None) -> ResearchChartPresenter:
+        if slot_id is None:
+            presenter = self._active_presenter()
+            if presenter is None:
+                raise RuntimeError("Research workspace has no active chart")
+            return presenter
+        return self.chart_presenter(slot_id)
 
-    def _on_study_progress(self, progress: TaskProgress) -> None:
-        if progress.task_id not in self._active_study_tasks:
-            return
-        self._view.set_status(progress.message)
-        self._view.set_progress(progress.current, progress.total)
+    def _cancel_catalog(self) -> None:
+        if self._active_catalog_task_id is not None:
+            self._service.cancel(self._active_catalog_task_id)
+        self._active_catalog_task_id = None
 
-    def _on_study_apply_result(
-        self, result: TaskResult, attempt: StudyApplyAttempt
-    ) -> None:
-        if self._active_study_tasks.pop(result.task_id, None) is None:
-            return
-        if result.status == "completed" and isinstance(result.value, PreparedStudy):
-            try:
-                accepted = self._session.accept_study_apply(attempt, result.value)
-            except (TypeError, ValueError, StudyValidationError) as error:
-                self._view.append_status(f"Study Apply failed: {error}")
-                accepted = False
-            if accepted:
-                self._refresh_study_state()
-                self._view.set_status("Study applied")
-                self._view.append_status(
-                    f"Study applied: {result.value.study.display_name}."
-                )
-        else:
-            self._session.settle_study_apply_failure(attempt)
-            self._handle_terminal_failure("Study Apply", result)
-        self._refresh_busy_state()
-
-    def _save_study(self, study_id: str) -> None:
-        dataset = self._session.dataset
-        if dataset is None:
-            return
-        attempt = None
-        try:
-            study = self._session.study_registry.get(study_id)
-            attempt = self._session.begin_study_save(study_id)
-            submission = self._study_service.submit_save(
-                attempt,
-                dataset,
-                study,
-                self._session.studies,
-                progress_callback=self._on_study_progress,
-                result_callback=lambda result: self._on_study_save_result(
-                    result, attempt
-                ),
-                callback_dispatcher=self._dispatcher.dispatch,
-            )
-        except Exception as error:
-            if attempt is not None:
-                self._session.settle_study_save_failure(attempt)
-            self._view.append_status(f"Study Save submission failed: {error}")
-            return
-        self._active_study_tasks[submission.task_id] = ("save", attempt)
-        self._view.set_busy(True)
-        self._view.set_status("Saving Research Study")
-
-    def _on_study_save_result(
-        self, result: TaskResult, attempt: StudySaveAttempt
-    ) -> None:
-        if self._active_study_tasks.pop(result.task_id, None) is None:
-            return
-        if result.status == "completed" and isinstance(result.value, StudySaveOutcome):
-            if self._session.accept_study_save(attempt, result.value):
-                self._refresh_study_state()
-                self._view.set_status("Study saved")
-                self._view.append_status(f"Study saved: {attempt.study_id}.")
-        else:
-            self._session.settle_study_save_failure(attempt)
-            self._handle_terminal_failure("Study Save", result)
-        self._refresh_busy_state()
-
-    def _set_study_visibility(self, study_id: str, visible: bool) -> None:
-        try:
-            self._session.set_study_visibility(study_id, visible)
-            self._refresh_study_state()
-        except (TypeError, ValueError) as error:
-            self._view.append_status(f"Study visibility failed: {error}")
-
-    def _open_study_style(self, study_id: str) -> None:
-        presentation = self._presentation(study_id)
-        if presentation is None:
-            return
-        dialog = self._view.open_study_style_dialog(presentation)
-        dialog.patch_applied.connect(self._apply_style_patch)
-        dialog.reset_requested.connect(self._reset_study_style)
-
-    def _apply_style_patch(self, patch: StudyStylePatch) -> None:
-        if not isinstance(patch, StudyStylePatch):
-            raise TypeError("patch must be a StudyStylePatch")
-        try:
-            self._session.set_study_visibility(patch.study_id, patch.visible)
-            for style in patch.signal_styles:
-                self._session.replace_study_line_style(
-                    patch.study_id, style.output_name, style
-                )
-            for style in patch.fill_styles:
-                self._session.replace_study_fill_style(
-                    patch.study_id, style.fill_id, style
-                )
-            self._refresh_study_state()
-        except (TypeError, ValueError) as error:
-            self._view.append_status(f"Study style failed: {error}")
-
-    def _reset_study_style(self, study_id: str) -> None:
-        try:
-            self._session.reset_study_presentation(study_id)
-            self._refresh_study_state()
-        except (TypeError, ValueError) as error:
-            self._view.append_status(f"Study style reset failed: {error}")
-
-    def _remove_study(self, study_id: str) -> None:
-        try:
-            self._session.remove_study(study_id)
-            self._refresh_study_state()
-        except StudyDependencyError as error:
-            self._view.append_status(f"Study removal blocked: {error}")
-        except (TypeError, ValueError) as error:
-            self._view.append_status(f"Study removal failed: {error}")
-
-    def _presentation(self, study_id: str):
-        return next(
-            (
-                item
-                for item in self._session.study_presentations()
-                if item.study_id == study_id
-            ),
-            None,
-        )
-
-    def _refresh_study_state(self) -> None:
-        projections = tuple(
-            item
-            for item in self._session.study_registry.projection_snapshot()
-            if isinstance(item, ResidentStudyProjection)
-        )
-        self._view.set_study_state(
-            projections,
-            self._session.study_presentations(),
-            self._session.study_manager_entries(),
-        )
-
-    def _refresh_busy_state(self) -> None:
-        busy = any(
-            task_id is not None
-            for task_id in (
-                self._active_catalog_task_id,
-                self._active_load_task_id,
-                self._active_slice_task_id,
-            )
-        ) or bool(self._active_study_tasks)
-        self._view.set_busy(busy)
-
-    def _on_viewport_changed(self, _snapshot: object) -> None:
-        viewport = self._viewport
-        resident = self._session.resident
-        if viewport is None or resident is None:
-            return
-        direction = viewport.resident_refill_direction(
-            resident_start_index=resident.base_index,
-            resident_end_index_exclusive=resident.end_index_exclusive,
-            has_more_left=resident.has_more_left,
-            has_more_right=resident.has_more_right,
-        )
-        if direction is ResidentRefillDirection.NONE:
-            return
-        interest = viewport.dataset_interest()
-        if interest is None:
-            return
-        self._request_resident(interest.center_index)
-
-    def _handle_terminal_failure(self, label: str, result: TaskResult) -> None:
+    def _handle_catalog_failure(self, result: TaskResult) -> None:
         if result.status == "cancelled":
-            self._view.set_status(f"{label} cancelled")
-            self._view.append_status(f"{label} cancelled.")
+            self._view.set_status("Catalog cancelled")
+            self._view.append_status("Catalog cancelled.")
             return
         message = result.error_message or result.error_type or "unknown error"
-        self._view.set_status(f"{label} failed")
-        self._view.append_status(f"{label} failed: {message}")
-
-    def _cancel_chart_tasks(self) -> None:
-        self._cancel_task(self._active_load_task_id)
-        self._cancel_task(self._active_slice_task_id)
-        self._active_load_task_id = None
-        self._active_slice_task_id = None
-        self._open_attempt = None
-        self._slice_attempt = None
-
-    def _cancel_task(self, task_id: str | None) -> None:
-        if task_id is not None:
-            self._service.cancel(task_id)
+        self._view.set_status("Catalog failed")
+        self._view.append_status(f"Catalog failed: {message}")

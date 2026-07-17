@@ -1,0 +1,378 @@
+{
+  "final_state": {
+    "active_slot_id": 3,
+    "mode": "scroll_4",
+    "occupied_slot_ids": [
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8
+    ],
+    "removed_session_ids": [
+      "session-3",
+      "session-5"
+    ],
+    "slot_3_session_id": "session-9"
+  },
+  "fixture_version": "1.0",
+  "invariants": {
+    "chart_repositioning_implemented": false,
+    "detach_or_dock_implemented": false,
+    "each_slot_owns_independent_chart_session": true,
+    "each_slot_owns_independent_presentations": true,
+    "each_slot_owns_independent_studies": true,
+    "each_slot_owns_independent_viewport": true,
+    "global_manager_reads_active_slot_only": true,
+    "go_to_date_implemented": false,
+    "inactive_charts_continue_async_work": true,
+    "pan_anchor_implemented": false,
+    "removed_or_reused_slot_ignores_stale_callbacks": true,
+    "slot_widget_owns_no_service": true,
+    "snapshot_persistence_implemented": false,
+    "workspace_widget_owns_no_session": true
+  },
+  "layout_plans": {
+    "0": {
+      "count": 0,
+      "items": [],
+      "row_count": 0
+    },
+    "1": {
+      "count": 1,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 2,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        }
+      ],
+      "row_count": 1
+    },
+    "2": {
+      "count": 2,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 1
+        }
+      ],
+      "row_count": 1
+    },
+    "3": {
+      "count": 3,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 2,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 1
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 2
+        }
+      ],
+      "row_count": 2
+    },
+    "4": {
+      "count": 4,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 1
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 2
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 3
+        }
+      ],
+      "row_count": 2
+    },
+    "5": {
+      "count": 5,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 1
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 2
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 3
+        },
+        {
+          "column": 0,
+          "column_span": 2,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 4
+        }
+      ],
+      "row_count": 3
+    },
+    "6": {
+      "count": 6,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 1
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 2
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 3
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 4
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 5
+        }
+      ],
+      "row_count": 3
+    },
+    "7": {
+      "count": 7,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 1
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 2
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 3
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 4
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 5
+        },
+        {
+          "column": 0,
+          "column_span": 2,
+          "row": 3,
+          "row_span": 1,
+          "visual_index": 6
+        }
+      ],
+      "row_count": 4
+    },
+    "8": {
+      "count": 8,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 0
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 0,
+          "row_span": 1,
+          "visual_index": 1
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 2
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "visual_index": 3
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 4
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 2,
+          "row_span": 1,
+          "visual_index": 5
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 3,
+          "row_span": 1,
+          "visual_index": 6
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 3,
+          "row_span": 1,
+          "visual_index": 7
+        }
+      ],
+      "row_count": 4
+    }
+  },
+  "mode_rules": {
+    "fit_8": {
+      "minimum_height_ratio": 1.0,
+      "vertical_scroll": "off"
+    },
+    "mode_changes_session_identity": false,
+    "mode_changes_slot_identity": false,
+    "scroll_4": {
+      "fit_rows": 2,
+      "minimum_height_ratio_for_4_rows": 2.0,
+      "vertical_scroll": "as_needed"
+    }
+  },
+  "slot_rules": {
+    "active_after_active_remove": "lowest occupied logical slot",
+    "active_after_create": "new slot",
+    "active_after_last_remove": null,
+    "active_after_non_active_remove": "unchanged",
+    "new_chart_uses": "lowest empty logical slot",
+    "ninth_chart": "blocked without mutation",
+    "remove_compacts_logical_slots": false,
+    "reused_slot_gets_new_session": true,
+    "slot_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "visual_layout_compacts_occupied_slots": true
+  }
+}

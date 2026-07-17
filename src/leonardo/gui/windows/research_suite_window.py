@@ -1,4 +1,4 @@
-"""Single-chart historical Research Suite window."""
+"""Eight-slot historical Research Suite window."""
 
 from __future__ import annotations
 
@@ -23,9 +23,13 @@ from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
 from leonardo.gui.chart.interaction import CandlestickInteractionState
 from leonardo.gui.chart.pane_workspace import ChartPaneWorkspaceWidget
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
-from leonardo.gui.widgets import StudyManagerWidget
-from leonardo.gui.windows.study_style_dialog import StudyStyleDialog
+from leonardo.gui.widgets import (
+    ResearchChartSlotWidget,
+    ResearchWorkspaceWidget,
+    StudyManagerWidget,
+)
 from leonardo.gui.windows.shell_widgets import apply_identity
+from leonardo.gui.windows.study_style_dialog import StudyStyleDialog
 from leonardo.research import (
     AcceptedDatasetSummary,
     ResidentStudyProjection,
@@ -34,15 +38,19 @@ from leonardo.research import (
     StudyPresentation,
 )
 
+
 RESEARCH_SUITE_WINDOW_ID = "research_suite.window"
 
 
 class ResearchSuiteWindow(QWidget):
-    """Present one accepted historical dataset through the Research chart."""
+    """Present one shared catalog and up to eight independent Research charts."""
 
     refresh_requested = Signal()
     open_requested = Signal()
     cancel_requested = Signal()
+    close_active_requested = Signal()
+    autoscale_requested = Signal()
+    volume_requested = Signal()
     closed = Signal()
 
     def __init__(
@@ -60,13 +68,16 @@ class ResearchSuiteWindow(QWidget):
         self._datasets: tuple[AcceptedDatasetSummary, ...] = ()
         self._dataset_combo: QComboBox | None = None
         self._status_label: QLabel | None = None
+        self._active_chart_label: QLabel | None = None
         self._dataset_details: QLabel | None = None
         self._progress: QProgressBar | None = None
         self._log_area: QTextEdit | None = None
-        self._chart_workspace = ChartPaneWorkspaceWidget(self)
-        self._chart = self._chart_workspace.price_chart
+        self._workspace = ResearchWorkspaceWidget(self)
         self._study_manager = StudyManagerWidget(self)
         self._style_dialogs: list[StudyStyleDialog] = []
+        self._active_slot_id: int | None = None
+        self._catalog_busy = False
+        self._workspace_full = False
 
         self._apply_window_defaults()
         apply_theme_stylesheet(self, load_default_theme())
@@ -74,12 +85,16 @@ class ResearchSuiteWindow(QWidget):
         self.load_empty_state()
 
     @property
+    def workspace_widget(self) -> ResearchWorkspaceWidget:
+        return self._workspace
+
+    @property
     def chart_widget(self) -> CandlestickChartWidget:
-        return self._chart
+        return self._active_slot_widget().chart_widget
 
     @property
     def chart_workspace(self) -> ChartPaneWorkspaceWidget:
-        return self._chart_workspace
+        return self._active_slot_widget().chart_workspace
 
     @property
     def study_manager(self) -> StudyManagerWidget:
@@ -87,7 +102,7 @@ class ResearchSuiteWindow(QWidget):
 
     @property
     def volume_visible(self) -> bool:
-        return self._chart_workspace.volume_visible
+        return self.chart_workspace.volume_visible
 
     def button_for_id(self, button_id: str) -> QPushButton:
         try:
@@ -100,6 +115,9 @@ class ResearchSuiteWindow(QWidget):
 
     def status_log_text(self) -> str:
         return "" if self._log_area is None else self._log_area.toPlainText()
+
+    def active_chart_text(self) -> str:
+        return "" if self._active_chart_label is None else self._active_chart_label.text()
 
     def selected_market_id(self) -> MarketId | None:
         combo = self._require_dataset_combo()
@@ -132,7 +150,83 @@ class ResearchSuiteWindow(QWidget):
         if normalized and combo.currentIndex() < 0:
             combo.setCurrentIndex(0)
         self._update_dataset_details()
-        self._set_open_enabled(bool(normalized))
+        self._sync_catalog_controls()
+
+    def add_chart_slot(self, slot_id: int) -> ResearchChartSlotWidget:
+        return self._workspace.add_slot(slot_id)
+
+    def remove_chart_slot(self, slot_id: int) -> ResearchChartSlotWidget:
+        return self._workspace.remove_slot(slot_id)
+
+    def set_active_chart_market(self, market_id: MarketId | None) -> None:
+        label = self._active_chart_label
+        if label is None:
+            return
+        if self._active_slot_id is None:
+            label.setText("No active chart")
+        elif market_id is None:
+            label.setText(f"Chart {self._active_slot_id}")
+        else:
+            label.setText(f"Chart {self._active_slot_id} \u2014 {market_id.as_key()}")
+
+    def set_active_chart_state(
+        self,
+        slot_id: int | None,
+        entries: Sequence[StudyManagerEntry],
+        busy: bool,
+        autoscale_enabled: bool,
+        volume_visible: bool,
+        volume_available: bool,
+        status: str,
+    ) -> None:
+        if slot_id is not None and slot_id not in self._workspace.slot_ids():
+            raise KeyError(f"Research chart slot {slot_id} does not exist")
+        self._active_slot_id = slot_id
+        self._study_manager.set_entries(entries)
+        self._controls["research_suite.button.close_active_chart"].setEnabled(
+            slot_id is not None
+        )
+        autoscale = self._controls["research_suite.button.toggle_autoscale"]
+        autoscale.setEnabled(slot_id is not None)
+        autoscale.setText("Disable Autoscale" if autoscale_enabled else "Enable Autoscale")
+        volume = self._controls["research_suite.button.toggle_volume"]
+        volume.setEnabled(slot_id is not None and volume_available)
+        volume.setText("Hide Volume" if volume_visible else "Show Volume")
+        self._controls["research_suite.button.cancel"].setEnabled(
+            self._catalog_busy or (slot_id is not None and busy)
+        )
+        self.set_active_chart_market(
+            None if slot_id is None else self._workspace.slot_widget(slot_id).market_id
+        )
+        if status:
+            self.set_status(status)
+
+    def set_workspace_full(self, full: bool) -> None:
+        if type(full) is not bool:
+            raise TypeError("full must be a boolean")
+        self._workspace_full = full
+        self._sync_catalog_controls()
+
+    def set_catalog_busy(self, busy: bool) -> None:
+        if type(busy) is not bool:
+            raise TypeError("busy must be a boolean")
+        self._catalog_busy = busy
+        self._require_dataset_combo().setEnabled(not busy)
+        self._controls["research_suite.button.refresh"].setEnabled(not busy)
+        self._controls["research_suite.button.cancel"].setEnabled(
+            busy or self._active_chart_busy()
+        )
+        if not busy and self._progress is not None:
+            self._progress.setRange(0, 1)
+            self._progress.setValue(0)
+        self._sync_catalog_controls()
+
+    def set_busy(self, busy: bool, *, can_cancel: bool = True) -> None:
+        if type(can_cancel) is not bool:
+            raise TypeError("can_cancel must be a boolean")
+        self.set_catalog_busy(busy)
+        if busy and not can_cancel:
+            self._controls["research_suite.button.cancel"].setEnabled(False)
 
     def set_status(self, message: str) -> None:
         if not isinstance(message, str):
@@ -147,25 +241,13 @@ class ResearchSuiteWindow(QWidget):
             self._log_area.append(message)
 
     def set_progress(self, current: int | None, total: int | None) -> None:
-        progress = self._progress
-        if progress is None:
+        if self._progress is None:
             return
         if current is None or total is None or total <= 0:
-            progress.setRange(0, 0)
+            self._progress.setRange(0, 0)
             return
-        progress.setRange(0, total)
-        progress.setValue(max(0, min(current, total)))
-
-    def set_busy(self, busy: bool, *, can_cancel: bool = True) -> None:
-        if type(busy) is not bool or type(can_cancel) is not bool:
-            raise TypeError("busy and can_cancel must be booleans")
-        self._require_dataset_combo().setEnabled(not busy)
-        self._controls["research_suite.button.refresh"].setEnabled(not busy)
-        self._set_open_enabled(not busy and bool(self._datasets))
-        self._controls["research_suite.button.cancel"].setEnabled(busy and can_cancel)
-        if not busy and self._progress is not None:
-            self._progress.setRange(0, 1)
-            self._progress.setValue(0)
+        self._progress.setRange(0, total)
+        self._progress.setValue(max(0, min(current, total)))
 
     def show_interaction_state(
         self,
@@ -173,13 +255,7 @@ class ResearchSuiteWindow(QWidget):
         *,
         volume_projection: ResidentVolumeProjection | None = None,
     ) -> None:
-        self._chart_workspace.apply_chart_state(state, volume_projection)
-        autoscale = self._controls["research_suite.button.toggle_autoscale"]
-        autoscale.setEnabled(True)
-        self._sync_autoscale_button()
-        self._controls["research_suite.button.toggle_volume"].setEnabled(
-            volume_projection is not None
-        )
+        self._active_slot_widget().show_interaction_state(state, volume_projection)
 
     def set_study_state(
         self,
@@ -187,7 +263,9 @@ class ResearchSuiteWindow(QWidget):
         presentations: Sequence[StudyPresentation],
         entries: Sequence[StudyManagerEntry],
     ) -> None:
-        self._chart_workspace.apply_study_state(projections, presentations)
+        self._active_slot_widget().set_study_state(
+            tuple(projections), tuple(presentations)
+        )
         self._study_manager.set_entries(entries)
 
     def open_study_style_dialog(
@@ -199,40 +277,50 @@ class ResearchSuiteWindow(QWidget):
         dialog.show()
         return dialog
 
-    def _forget_style_dialog(self, dialog: StudyStyleDialog) -> None:
-        if dialog in self._style_dialogs:
-            self._style_dialogs.remove(dialog)
-
-    def clear_chart(self) -> None:
-        self._chart_workspace.clear()
-        self._study_manager.set_entries(())
-        self._chart_workspace.set_volume_visible(False)
-        autoscale = self._controls.get("research_suite.button.toggle_autoscale")
-        if autoscale is not None:
-            autoscale.setText("Disable Autoscale")
-            autoscale.setEnabled(False)
-        toggle = self._controls.get("research_suite.button.toggle_volume")
-        if toggle is not None:
-            toggle.setText("Show Volume")
-            toggle.setEnabled(False)
+    def clear_chart(self, slot_id: int | None = None) -> None:
+        target = self._active_slot_id if slot_id is None else slot_id
+        if target is None:
+            return
+        self._workspace.slot_widget(target).clear_chart_state()
+        if target == self._active_slot_id:
+            self._study_manager.set_entries(())
 
     def load_empty_state(self) -> None:
         self._datasets = ()
-        combo = self._require_dataset_combo()
-        combo.clear()
+        self._require_dataset_combo().clear()
         self._update_dataset_details()
-        self.clear_chart()
-        self.set_busy(False)
+        self._workspace.clear()
+        self._study_manager.set_entries(())
+        self._active_slot_id = None
+        self._catalog_busy = False
+        self._workspace_full = False
+        self.set_active_chart_state(None, (), False, False, False, False, "")
         self.set_status("Research services are not connected")
         if self._log_area is not None:
             self._log_area.clear()
             self._log_area.setPlaceholderText(
                 "Research dataset and chart workflow messages will appear here."
             )
+        self._sync_catalog_controls()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.closed.emit()
         super().closeEvent(event)
+
+    def _active_slot_widget(self) -> ResearchChartSlotWidget:
+        if self._active_slot_id is None:
+            raise RuntimeError("Research workspace has no active chart")
+        return self._workspace.slot_widget(self._active_slot_id)
+
+    def _active_chart_busy(self) -> bool:
+        if self._active_slot_id is None:
+            return False
+        slot = self._workspace.slot_widget(self._active_slot_id)
+        return slot.findChild(QProgressBar, f"research.chart_slot.{slot.slot_id}.progress").isVisible()
+
+    def _forget_style_dialog(self, dialog: StudyStyleDialog) -> None:
+        if dialog in self._style_dialogs:
+            self._style_dialogs.remove(dialog)
 
     def _apply_window_defaults(self) -> None:
         self.setWindowTitle("Research Suite")
@@ -268,28 +356,53 @@ class ResearchSuiteWindow(QWidget):
             "research_suite.layout.chart_toolbar",
             object_type="layout",
         )
+        active = QLabel("No active chart", chart_panel)
+        active.setObjectName("research_suite.label.active_chart")
+        self._active_chart_label = active
+        toolbar.addWidget(active)
         toolbar.addStretch(1)
-        autoscale_toggle = self._button(
+        mode_label = QLabel("Workspace Mode", chart_panel)
+        mode_label.setObjectName("research_suite.label.workspace_mode")
+        toolbar.addWidget(mode_label)
+        mode = QComboBox(chart_panel)
+        mode.setObjectName("research_suite.combo.workspace_mode")
+        mode.addItem("Scroll 4", "scroll_4")
+        mode.addItem("Fit 8", "fit_8")
+        mode.currentIndexChanged.connect(
+            lambda: self._workspace.set_visualization_mode(mode.currentData())
+        )
+        toolbar.addWidget(mode)
+        close_active = self._button(
+            chart_panel,
+            "research_suite.button.close_active_chart",
+            "Close Active Chart",
+            self.close_active_requested.emit,
+        )
+        close_active.setEnabled(False)
+        toolbar.addWidget(close_active)
+        autoscale = self._button(
             chart_panel,
             "research_suite.button.toggle_autoscale",
             "Disable Autoscale",
-            self._toggle_autoscale,
+            self.autoscale_requested.emit,
         )
-        autoscale_toggle.setEnabled(False)
-        toolbar.addWidget(autoscale_toggle)
-        volume_toggle = self._button(
+        autoscale.setEnabled(False)
+        toolbar.addWidget(autoscale)
+        volume = self._button(
             chart_panel,
             "research_suite.button.toggle_volume",
             "Show Volume",
-            self._toggle_volume,
+            self.volume_requested.emit,
         )
-        volume_toggle.setEnabled(False)
-        toolbar.addWidget(volume_toggle)
+        volume.setEnabled(False)
+        toolbar.addWidget(volume)
         chart_layout.addLayout(toolbar)
-        chart_content = QHBoxLayout()
-        chart_content.addWidget(self._chart_workspace, stretch=4)
-        chart_content.addWidget(self._study_manager, stretch=1)
-        chart_layout.addLayout(chart_content, stretch=1)
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(2)
+        content.addWidget(self._workspace, stretch=4)
+        content.addWidget(self._study_manager, stretch=1)
+        chart_layout.addLayout(content, stretch=1)
         root.addWidget(chart_panel, stretch=1)
         root.addWidget(self._build_status_panel())
 
@@ -319,18 +432,10 @@ class ResearchSuiteWindow(QWidget):
 
     def _build_dataset_controls(self) -> QWidget:
         panel = QGroupBox("Accepted OHLCV Dataset", self)
-        apply_identity(
-            panel,
-            "research_suite.panel.dataset_selector",
-            object_type="panel",
-        )
+        apply_identity(panel, "research_suite.panel.dataset_selector", object_type="panel")
         layout = QHBoxLayout(panel)
         label = QLabel("Dataset", panel)
-        apply_identity(
-            label,
-            "research_suite.label.dataset",
-            object_type="label",
-        )
+        apply_identity(label, "research_suite.label.dataset", object_type="label")
         combo = QComboBox(panel)
         apply_identity(
             combo,
@@ -350,24 +455,14 @@ class ResearchSuiteWindow(QWidget):
             display_label="Dataset Details",
         )
         self._dataset_details = details
-
         refresh = self._button(
-            panel,
-            "research_suite.button.refresh",
-            "Refresh Datasets",
-            self._emit_refresh,
+            panel, "research_suite.button.refresh", "Refresh Datasets", self.refresh_requested.emit
         )
         open_button = self._button(
-            panel,
-            "research_suite.button.open_chart",
-            "Open Chart",
-            self._emit_open,
+            panel, "research_suite.button.open_chart", "Open New Chart", self.open_requested.emit
         )
         cancel = self._button(
-            panel,
-            "research_suite.button.cancel",
-            "Cancel",
-            self._emit_cancel,
+            panel, "research_suite.button.cancel", "Cancel", self.cancel_requested.emit
         )
         cancel.setEnabled(False)
         layout.addWidget(label)
@@ -380,41 +475,23 @@ class ResearchSuiteWindow(QWidget):
 
     def _build_status_panel(self) -> QWidget:
         panel = QGroupBox("Research Activity", self)
-        apply_identity(
-            panel,
-            "research_suite.panel.activity",
-            object_type="panel",
-        )
+        apply_identity(panel, "research_suite.panel.activity", object_type="panel")
         layout = QVBoxLayout(panel)
         progress = QProgressBar(panel)
         progress.setRange(0, 1)
         progress.setValue(0)
-        apply_identity(
-            progress,
-            "research_suite.progress.operation",
-            object_type="progress_bar",
-        )
+        apply_identity(progress, "research_suite.progress.operation", object_type="progress_bar")
         log = QTextEdit(panel)
         log.setReadOnly(True)
         log.setMaximumHeight(110)
-        apply_identity(
-            log,
-            "research_suite.log.activity",
-            object_type="log",
-        )
+        apply_identity(log, "research_suite.log.activity", object_type="log")
         self._progress = progress
         self._log_area = log
         layout.addWidget(progress)
         layout.addWidget(log)
         return panel
 
-    def _button(
-        self,
-        parent: QWidget,
-        object_id: str,
-        label: str,
-        callback,
-    ) -> QPushButton:
+    def _button(self, parent: QWidget, object_id: str, label: str, callback) -> QPushButton:
         button = QPushButton(label, parent)
         apply_identity(
             button,
@@ -427,37 +504,10 @@ class ResearchSuiteWindow(QWidget):
         self._controls[object_id] = button
         return button
 
-    def _toggle_autoscale(self) -> None:
-        enabled = not self._chart.autoscale_enabled
-        self._chart.set_autoscale_enabled(enabled)
-        self._sync_autoscale_button()
-
-    def _sync_autoscale_button(self) -> None:
-        button = self._controls["research_suite.button.toggle_autoscale"]
-        button.setText(
-            "Disable Autoscale"
-            if self._chart.autoscale_enabled
-            else "Enable Autoscale"
+    def _sync_catalog_controls(self) -> None:
+        self._controls["research_suite.button.open_chart"].setEnabled(
+            not self._catalog_busy and bool(self._datasets) and not self._workspace_full
         )
-
-    def _toggle_volume(self) -> None:
-        visible = not self._chart_workspace.volume_visible
-        self._chart_workspace.set_volume_visible(visible)
-        self._controls["research_suite.button.toggle_volume"].setText(
-            "Hide Volume" if visible else "Show Volume"
-        )
-
-    def _emit_refresh(self) -> None:
-        self.refresh_requested.emit()
-
-    def _emit_open(self) -> None:
-        self.open_requested.emit()
-
-    def _emit_cancel(self) -> None:
-        self.cancel_requested.emit()
-
-    def _set_open_enabled(self, enabled: bool) -> None:
-        self._controls["research_suite.button.open_chart"].setEnabled(enabled)
 
     def _require_dataset_combo(self) -> QComboBox:
         if self._dataset_combo is None:
@@ -465,16 +515,15 @@ class ResearchSuiteWindow(QWidget):
         return self._dataset_combo
 
     def _update_dataset_details(self, *_args) -> None:
-        details = self._dataset_details
-        if details is None:
+        if self._dataset_details is None:
             return
         combo = self._require_dataset_combo()
         index = combo.currentIndex()
         if not 0 <= index < len(self._datasets):
-            details.setText("No accepted datasets")
+            self._dataset_details.setText("No accepted datasets")
             return
         item = self._datasets[index]
-        details.setText(
+        self._dataset_details.setText(
             f"{item.row_count:,} candles | "
-            f"{item.first_timestamp_ms} → {item.last_timestamp_ms}"
+            f"{item.first_timestamp_ms} \u2192 {item.last_timestamp_ms}"
         )
