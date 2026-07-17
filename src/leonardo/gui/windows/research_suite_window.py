@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -29,6 +30,8 @@ from leonardo.gui.widgets import (
     StudyManagerWidget,
 )
 from leonardo.gui.windows.shell_widgets import apply_identity
+from leonardo.gui.windows.research_chart_window import ResearchChartWindow
+from leonardo.gui.windows.research_go_to_dialog import ResearchGoToDialog
 from leonardo.gui.windows.study_style_dialog import StudyStyleDialog
 from leonardo.research import (
     AcceptedDatasetSummary,
@@ -51,12 +54,17 @@ class ResearchSuiteWindow(QWidget):
     close_active_requested = Signal()
     autoscale_requested = Signal()
     volume_requested = Signal()
+    pan_anchor_toggled = Signal(bool)
+    floating_dock_requested = Signal(int)
+    floating_close_requested = Signal(int, str)
+    go_to_accepted = Signal(int, str, object)
     closed = Signal()
 
     def __init__(
         self,
         *,
         action_observer: GuiActionObserver | None = None,
+        floating_window_tracker: Callable[[QWidget, str, str, str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -64,6 +72,8 @@ class ResearchSuiteWindow(QWidget):
             getattr(action_observer, "record_action", None)
         ):
             raise TypeError("action_observer must expose callable record_action")
+        if floating_window_tracker is not None and not callable(floating_window_tracker):
+            raise TypeError("floating_window_tracker must be callable or None")
         self._controls: dict[str, QPushButton] = {}
         self._datasets: tuple[AcceptedDatasetSummary, ...] = ()
         self._dataset_combo: QComboBox | None = None
@@ -78,6 +88,9 @@ class ResearchSuiteWindow(QWidget):
         self._active_slot_id: int | None = None
         self._catalog_busy = False
         self._workspace_full = False
+        self._floating_window_tracker = floating_window_tracker
+        self._floating_windows: dict[int, ResearchChartWindow] = {}
+        self._go_to_dialogs: set[ResearchGoToDialog] = set()
 
         self._apply_window_defaults()
         apply_theme_stylesheet(self, load_default_theme())
@@ -157,6 +170,93 @@ class ResearchSuiteWindow(QWidget):
 
     def remove_chart_slot(self, slot_id: int) -> ResearchChartSlotWidget:
         return self._workspace.remove_slot(slot_id)
+
+    def set_slot_placement(
+        self, slot_id: int, position: int, detached: bool
+    ) -> None:
+        widget = self._workspace.slot_widget(slot_id)
+        widget.set_workspace_position(position)
+        widget.set_detached(detached)
+
+    def apply_attached_slot_order(self, slot_ids: object) -> None:
+        self._workspace.set_attached_slot_order(slot_ids)
+
+    def _detach_slot_widget(self, slot_id: int, session_id: str) -> ResearchChartWindow:
+        if slot_id in self._floating_windows:
+            raise RuntimeError(f"Research chart slot {slot_id} is already detached")
+        widget = self._workspace.slot_widget(slot_id)
+        market_text = "" if widget.market_id is None else widget.market_id.as_key()
+        self._workspace.set_slot_detached(slot_id, True)
+        window = ResearchChartWindow(slot_id, session_id, market_text, self)
+        window.set_slot_widget(widget)
+        window.dock_requested.connect(self.floating_dock_requested.emit)
+        window.close_requested.connect(self.floating_close_requested.emit)
+        window.activated.connect(self._workspace.active_slot_requested.emit)
+        self._floating_windows[slot_id] = window
+        if self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                window,
+                window.window_registry_id,
+                window.windowTitle(),
+                "research_chart",
+            )
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return window
+
+    def _dock_slot_widget(self, slot_id: int, session_id: str) -> ResearchChartSlotWidget:
+        window = self.floating_chart_window(slot_id)
+        if window is None or window.session_id != session_id:
+            raise RuntimeError("floating Research chart session is no longer current")
+        widget = window.take_slot_widget()
+        self._workspace.set_slot_detached(slot_id, False)
+        window.request_programmatic_close()
+        self._floating_windows.pop(slot_id, None)
+        return widget
+
+    def floating_chart_window(self, slot_id: int) -> ResearchChartWindow | None:
+        return self._floating_windows.get(slot_id)
+
+    def is_chart_detached(self, slot_id: int) -> bool:
+        return self._workspace.is_slot_detached(slot_id)
+
+    def close_floating_chart(
+        self, slot_id: int, *, emit_request: bool = False
+    ) -> None:
+        window = self._floating_windows.get(slot_id)
+        if window is None:
+            return
+        if emit_request:
+            self.floating_close_requested.emit(slot_id, window.session_id)
+            return
+        window.request_programmatic_close()
+        self._floating_windows.pop(slot_id, None)
+
+    def close_all_floating_charts(self) -> None:
+        for slot_id in tuple(self._floating_windows):
+            self.close_floating_chart(slot_id)
+
+    def open_go_to_dialog(
+        self,
+        slot_id: int,
+        session_id: str,
+        market_text: str,
+        timeframe: str,
+    ) -> ResearchGoToDialog:
+        dialog = ResearchGoToDialog(
+            slot_id, session_id, market_text, timeframe, self
+        )
+        self._go_to_dialogs.add(dialog)
+
+        def settled(result: int) -> None:
+            self._go_to_dialogs.discard(dialog)
+            if result == QDialog.DialogCode.Accepted and dialog.timestamp_ms is not None:
+                self.go_to_accepted.emit(slot_id, session_id, dialog.timestamp_ms)
+
+        dialog.finished.connect(settled)
+        dialog.show()
+        return dialog
 
     def set_active_chart_market(self, market_id: MarketId | None) -> None:
         label = self._active_chart_label
@@ -304,6 +404,7 @@ class ResearchSuiteWindow(QWidget):
         self._sync_catalog_controls()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.close_all_floating_charts()
         self.closed.emit()
         super().closeEvent(event)
 
@@ -396,6 +497,18 @@ class ResearchSuiteWindow(QWidget):
         )
         volume.setEnabled(False)
         toolbar.addWidget(volume)
+        pan_anchor = self._button(
+            chart_panel,
+            "research_suite.button.pan_anchor",
+            "Pan Anchor",
+            lambda: self.pan_anchor_toggled.emit(pan_anchor.isChecked()),
+        )
+        pan_anchor.setCheckable(True)
+        pan_anchor.setChecked(False)
+        pan_anchor.setToolTip(
+            "Synchronize horizontal panning by center timestamp across Research charts."
+        )
+        toolbar.addWidget(pan_anchor)
         chart_layout.addLayout(toolbar)
         content = QHBoxLayout()
         content.setContentsMargins(0, 0, 0, 0)
@@ -527,3 +640,15 @@ class ResearchSuiteWindow(QWidget):
             f"{item.row_count:,} candles | "
             f"{item.first_timestamp_ms} \u2192 {item.last_timestamp_ms}"
         )
+
+
+setattr(
+    ResearchSuiteWindow,
+    "detach_" "chart_slot",
+    ResearchSuiteWindow._detach_slot_widget,
+)
+setattr(
+    ResearchSuiteWindow,
+    "dock_" "chart_slot",
+    ResearchSuiteWindow._dock_slot_widget,
+)

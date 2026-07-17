@@ -34,6 +34,18 @@ class ResearchWorkspaceLayoutPlan:
 def build_research_workspace_layout(
     slot_ids: object, mode: str
 ) -> ResearchWorkspaceLayoutPlan:
+    supplied = _validated_slot_ids(slot_ids, mode)
+    return _build_layout(tuple(sorted(supplied)), mode)
+
+
+def build_research_workspace_layout_in_order(
+    ordered_slot_ids: object, mode: str
+) -> ResearchWorkspaceLayoutPlan:
+    supplied = _validated_slot_ids(ordered_slot_ids, mode)
+    return _build_layout(supplied, mode)
+
+
+def _validated_slot_ids(slot_ids: object, mode: str) -> tuple[int, ...]:
     if mode not in RESEARCH_WORKSPACE_MODES:
         raise ValueError("mode must be 'scroll_4' or 'fit_8'")
     if isinstance(slot_ids, (str, bytes)):
@@ -48,11 +60,18 @@ def build_research_workspace_layout(
         raise ValueError("slot IDs must be unique integers from 1 through 8")
     if len(set(supplied)) != len(supplied):
         raise ValueError("slot IDs must be unique integers from 1 through 8")
-    normalized = tuple(sorted(supplied))
-    positions = _positions(len(normalized))
+    return supplied
+
+
+def _build_layout(
+    ordered_slot_ids: tuple[int, ...], mode: str
+) -> ResearchWorkspaceLayoutPlan:
+    positions = _positions(len(ordered_slot_ids))
     items = tuple(
         ResearchWorkspaceLayoutItem(slot_id, visual_index, *position)
-        for visual_index, (slot_id, position) in enumerate(zip(normalized, positions, strict=True))
+        for visual_index, (slot_id, position) in enumerate(
+            zip(ordered_slot_ids, positions, strict=True)
+        )
     )
     row_count = 0 if not positions else max(position[0] for position in positions) + 1
     if mode == "scroll_4":

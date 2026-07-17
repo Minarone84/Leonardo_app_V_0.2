@@ -1,4 +1,4 @@
-"""GUI-owned reusable widget helpers."""
+"""Deterministic lazy exports for GUI-owned reusable widget helpers."""
 
 from __future__ import annotations
 

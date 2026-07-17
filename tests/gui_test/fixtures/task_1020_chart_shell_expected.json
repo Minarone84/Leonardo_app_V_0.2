@@ -1,0 +1,144 @@
+{
+  "detach_dock_identity": {
+    "artifact_write": false,
+    "same_chart_presenter": true,
+    "same_pane_ids": true,
+    "same_pane_workspace": true,
+    "same_presentation_revisions": true,
+    "same_session": true,
+    "same_slot_widget": true,
+    "same_study_ids": true,
+    "same_viewport": true,
+    "study_recalculation": false
+  },
+  "fixture_version": "1.0",
+  "floating_window": {
+    "dock_does_not_close_chart": true,
+    "os_close_closes_chart": true,
+    "same_widget_reparented": true,
+    "suite_close_closes_all_floating_windows": true,
+    "window_id": "research_chart.<slot_id>.<session_id>",
+    "window_registry_tracking": true
+  },
+  "go_to_rules": {
+    "active_slot_redirect": false,
+    "artifact_write": false,
+    "nearest_timestamp_tie": "earlier",
+    "out_of_range": "clamp_to_dataset_edge",
+    "preserve_vertical_scale": true,
+    "preserve_visible_count": true,
+    "removed_or_reused_slot_result": "ignored",
+    "resident_refill_only_when_needed": true,
+    "study_recalculation": false,
+    "timezone": "UTC"
+  },
+  "pan_anchor_rules": {
+    "crosshair_sync": false,
+    "default_enabled": false,
+    "empty_or_loading_target": "skip",
+    "preserve_target_vertical_scale": true,
+    "preserve_target_visible_count": true,
+    "reentry_guard": true,
+    "resident_refill": "target_local_existing_path",
+    "source_center_timestamp": true,
+    "target_timestamp_resolution": "nearest_canonical_timestamp",
+    "targets": "all_other_loaded_charts_including_detached",
+    "trigger": "user_horizontal_pan_only",
+    "zoom_sync": false
+  },
+  "placement_final": {
+    "attached_slot_order": [
+      5,
+      4,
+      3
+    ],
+    "detached_slot_order": [
+      2
+    ],
+    "embedded_layout": {
+      "count": 3,
+      "items": [
+        {
+          "column": 0,
+          "column_span": 2,
+          "row": 0,
+          "row_span": 1,
+          "slot_id": 5,
+          "visual_index": 0
+        },
+        {
+          "column": 0,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "slot_id": 4,
+          "visual_index": 1
+        },
+        {
+          "column": 1,
+          "column_span": 1,
+          "row": 1,
+          "row_span": 1,
+          "slot_id": 3,
+          "visual_index": 2
+        }
+      ]
+    },
+    "free_positions": [
+      5,
+      6,
+      7,
+      8
+    ],
+    "placements": [
+      {
+        "detached": false,
+        "slot_id": 5,
+        "workspace_position": 1
+      },
+      {
+        "detached": false,
+        "slot_id": 4,
+        "workspace_position": 2
+      },
+      {
+        "detached": true,
+        "slot_id": 2,
+        "workspace_position": 3
+      },
+      {
+        "detached": false,
+        "slot_id": 3,
+        "workspace_position": 4
+      }
+    ],
+    "reserved_positions": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "placement_rules": {
+    "detach_reserves_position": true,
+    "dock_restores_same_position": true,
+    "logical_slot_id_changes": false,
+    "moving_detached_chart": "blocked",
+    "moving_to_attached_position": "swap",
+    "moving_to_detached_reservation": "blocked_without_mutation",
+    "moving_to_empty_position": "move",
+    "new_chart_uses_lowest_free_position": true,
+    "visual_layout_compacts_attached_only": true
+  },
+  "workplan_exclusions": {
+    "analysis": false,
+    "annotations": false,
+    "backtest": false,
+    "data_manager": false,
+    "notebooks": false,
+    "realtime": false,
+    "study_environments": false,
+    "study_setup": false,
+    "workspace_snapshots": false
+  }
+}

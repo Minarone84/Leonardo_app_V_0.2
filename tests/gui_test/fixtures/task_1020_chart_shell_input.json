@@ -1,0 +1,184 @@
+{
+  "fixture_version": "1.0",
+  "go_to_cases": [
+    {
+      "expected_timestamp_ms": 1784280600000,
+      "text": "2026-07-17 09:30",
+      "timeframe": "1m"
+    },
+    {
+      "expected_timestamp_ms": 1784246400000,
+      "text": "2026-07-17",
+      "timeframe": "1D"
+    },
+    {
+      "expected_timestamp_ms": 1784280645000,
+      "text": "2026-07-17T09:30:45",
+      "timeframe": "1h"
+    },
+    {
+      "expected": "invalid_timezone_offset",
+      "text": "2026-07-17T09:30+02:00",
+      "timeframe": "1m"
+    },
+    {
+      "expected": "empty_rejected",
+      "text": "",
+      "timeframe": "1m"
+    }
+  ],
+  "go_to_navigation": {
+    "expected_nearest_index": 4,
+    "expected_nearest_timestamp_ms": 5000,
+    "requested_timestamp_ms": 4600,
+    "resident_before": {
+      "base_index": 0,
+      "end_index_exclusive": 3
+    },
+    "resident_refill_required": true,
+    "timeline_ms": [
+      1000,
+      2000,
+      3000,
+      4000,
+      5000,
+      6000
+    ],
+    "visible_count_before": 3
+  },
+  "identity_fixture": {
+    "chart_presenter_identity": "presenter-slot-4",
+    "pane_ids": [
+      "price",
+      "oscillator:study-rsi"
+    ],
+    "pane_workspace_identity": "panes-slot-4",
+    "presentation_revisions": {
+      "study-rsi": 0,
+      "study-sma": 2
+    },
+    "session_id": "session-slot-4",
+    "slot_id": 4,
+    "slot_widget_identity": "widget-slot-4",
+    "study_ids": [
+      "study-sma",
+      "study-rsi"
+    ],
+    "viewport_identity": "viewport-slot-4"
+  },
+  "pan_anchor": {
+    "enabled": true,
+    "non_sync_events": [
+      "horizontal_zoom",
+      "go_to_date",
+      "dataset_load",
+      "resident_refill",
+      "workspace_mode_change",
+      "detach",
+      "dock",
+      "position_move"
+    ],
+    "source": {
+      "center_index_after_pan": 2,
+      "center_timestamp_ms": 3000,
+      "detached": false,
+      "slot_id": 1,
+      "timeline_ms": [
+        1000,
+        2000,
+        3000,
+        4000,
+        5000
+      ],
+      "visible_count": 3
+    },
+    "targets": [
+      {
+        "detached": true,
+        "expected_center_index": 2,
+        "expected_center_timestamp_ms": 2500,
+        "slot_id": 2,
+        "timeline_ms": [
+          500,
+          1500,
+          2500,
+          3500,
+          4500
+        ],
+        "visible_count": 5
+      },
+      {
+        "detached": false,
+        "expected_center_index": 0,
+        "expected_center_timestamp_ms": 6000,
+        "slot_id": 3,
+        "timeline_ms": [
+          6000,
+          7000,
+          8000
+        ],
+        "visible_count": 2
+      }
+    ]
+  },
+  "placement_actions": [
+    {
+      "action": "register",
+      "slot_id": 1
+    },
+    {
+      "action": "register",
+      "slot_id": 2
+    },
+    {
+      "action": "register",
+      "slot_id": 3
+    },
+    {
+      "action": "register",
+      "slot_id": 4
+    },
+    {
+      "action": "move",
+      "slot_id": 4,
+      "target_position": 2
+    },
+    {
+      "action": "detach",
+      "slot_id": 4
+    },
+    {
+      "action": "move",
+      "expected": "blocked_detached_reservation",
+      "slot_id": 3,
+      "target_position": 2
+    },
+    {
+      "action": "move",
+      "slot_id": 3,
+      "target_position": 4
+    },
+    {
+      "action": "dock",
+      "slot_id": 4
+    },
+    {
+      "action": "detach",
+      "slot_id": 2
+    },
+    {
+      "action": "remove",
+      "slot_id": 1
+    },
+    {
+      "action": "register",
+      "slot_id": 5
+    },
+    {
+      "action": "move",
+      "expected": "blocked_detached_reservation",
+      "slot_id": 5,
+      "target_position": 3
+    }
+  ]
+}

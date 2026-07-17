@@ -82,6 +82,11 @@ from leonardo.research.workspace import (
     ResearchWorkspaceState,
     ResearchWorkspaceStateError,
 )
+from leonardo.research.workspace_shell import (
+    ResearchChartPlacement,
+    ResearchWorkspaceShellState,
+    ResearchWorkspaceShellStateError,
+)
 
 __all__ = [
     "build_resident_volume_projection",
@@ -147,4 +152,7 @@ __all__ = [
     "ResearchChartSlotEntry",
     "ResearchWorkspaceState",
     "ResearchWorkspaceStateError",
+    "ResearchChartPlacement",
+    "ResearchWorkspaceShellState",
+    "ResearchWorkspaceShellStateError",
 ]

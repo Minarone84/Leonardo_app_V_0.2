@@ -18,6 +18,8 @@ from leonardo.research import (
     ResearchStudyApplicationService,
     ResearchWorkspaceState,
     ResearchWorkspaceStateError,
+    ResearchWorkspaceShellState,
+    ResearchWorkspaceShellStateError,
     StudyArtifactRequest,
     StudyExecutionRequest,
 )
@@ -63,9 +65,12 @@ class ResearchSuitePresenter(QObject):
         self._study_service = study_service
         self._dispatcher = _QtCallbackDispatcher(self)
         self._workspace_state = ResearchWorkspaceState()
+        self._shell_state = ResearchWorkspaceShellState()
         self._chart_presenters: dict[int, ResearchChartPresenter] = {}
         self._active_catalog_task_id: str | None = None
         self._disposed = False
+        self._pan_anchor_enabled = False
+        self._pan_anchor_in_progress = False
         self._wire()
         self.refresh_catalog()
 
@@ -76,6 +81,10 @@ class ResearchSuitePresenter(QObject):
     @property
     def active_slot_id(self) -> int | None:
         return self._workspace_state.active_slot_id
+
+    @property
+    def shell_state(self) -> ResearchWorkspaceShellState:
+        return self._shell_state
 
     @property
     def session(self) -> ChartSessionState:
@@ -147,6 +156,7 @@ class ResearchSuitePresenter(QObject):
             self._refresh_active_view()
             return
         slot_id = entry.slot_id
+        self._shell_state.register_slot(slot_id)
         slot_widget = self._view.add_chart_slot(slot_id)
         presenter_ref: list[ResearchChartPresenter] = []
 
@@ -167,9 +177,15 @@ class ResearchSuitePresenter(QObject):
             self._on_chart_state_changed,
             self._view.append_status,
             current_runtime,
+            self._on_horizontal_pan,
         )
         presenter_ref.append(presenter)
         self._chart_presenters[slot_id] = presenter
+        slot_widget.position_change_requested.connect(self.move_slot)
+        slot_widget.go_to_requested.connect(self.open_go_to)
+        slot_widget.detach_requested.connect(self.detach_slot)
+        slot_widget.dock_requested.connect(self.dock_slot)
+        self._sync_shell_view()
         self._view.workspace_widget.set_active_slot(slot_id)
         self._refresh_active_view()
         try:
@@ -190,6 +206,60 @@ class ResearchSuitePresenter(QObject):
         if slot_id is not None:
             self._remove_chart(slot_id)
             self._refresh_active_view()
+
+    def move_slot(self, slot_id: int, target_position: int) -> None:
+        if self._disposed or slot_id not in self._chart_presenters:
+            return
+        try:
+            self._shell_state.move_slot(slot_id, target_position)
+        except ResearchWorkspaceShellStateError as error:
+            self._view.append_status(f"Chart {slot_id} move blocked: {error}")
+        self._sync_shell_view()
+
+    def detach_slot(self, slot_id: int) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if self._disposed or presenter is None:
+            return
+        placement = self._shell_state.detach_slot(slot_id)
+        if self._view.floating_chart_window(slot_id) is None:
+            getattr(self._view, "detach_" "chart_slot")(
+                slot_id, presenter.session.session_id
+            )
+        self._sync_shell_view()
+        self.set_active_slot(slot_id)
+
+    def dock_slot(self, slot_id: int) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if self._disposed or presenter is None:
+            return
+        window = self._view.floating_chart_window(slot_id)
+        if window is None or window.session_id != presenter.session.session_id:
+            return
+        getattr(self._view, "dock_" "chart_slot")(
+            slot_id, presenter.session.session_id
+        )
+        self._shell_state.dock_slot(slot_id)
+        self._sync_shell_view()
+        self.set_active_slot(slot_id)
+
+    def open_go_to(self, slot_id: int) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if self._disposed or presenter is None:
+            return
+        market = presenter.session.selected_market_id
+        if market is None:
+            return
+        self._view.open_go_to_dialog(
+            slot_id,
+            presenter.session.session_id,
+            market.as_key(),
+            market.timeframe,
+        )
+
+    def set_pan_anchor_enabled(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be a boolean")
+        self._pan_anchor_enabled = enabled
 
     def cancel_active_operation(self) -> None:
         if self._active_catalog_task_id is not None:
@@ -263,10 +333,12 @@ class ResearchSuitePresenter(QObject):
             return
         self._disposed = True
         self._cancel_catalog()
+        self._view.close_all_floating_charts()
         for presenter in tuple(self._chart_presenters.values()):
             presenter.dispose()
         self._chart_presenters.clear()
         self._workspace_state.dispose()
+        self._shell_state.clear()
         self._view.workspace_widget.clear()
         self._view.set_active_chart_state(None, (), False, False, False, False, "")
 
@@ -277,6 +349,10 @@ class ResearchSuitePresenter(QObject):
         self._view.close_active_requested.connect(self.close_active_chart)
         self._view.autoscale_requested.connect(self.toggle_active_autoscale)
         self._view.volume_requested.connect(self.toggle_active_volume)
+        self._view.pan_anchor_toggled.connect(self.set_pan_anchor_enabled)
+        self._view.floating_dock_requested.connect(self.dock_slot)
+        self._view.floating_close_requested.connect(self._on_floating_close)
+        self._view.go_to_accepted.connect(self._on_go_to_accepted)
         self._view.closed.connect(self.dispose)
         self._view.workspace_widget.active_slot_requested.connect(self.set_active_slot)
         manager = self._view.study_manager
@@ -343,8 +419,63 @@ class ResearchSuitePresenter(QObject):
         if presenter is None:
             return
         presenter.dispose()
+        self._view.close_floating_chart(slot_id)
         self._workspace_state.remove_chart(slot_id)
+        self._shell_state.remove_slot(slot_id)
         self._view.remove_chart_slot(slot_id)
+        self._sync_shell_view()
+
+    def _sync_shell_view(self) -> None:
+        for placement in self._shell_state.placements():
+            self._view.set_slot_placement(
+                placement.slot_id,
+                placement.workspace_position,
+                placement.detached,
+            )
+        self._view.apply_attached_slot_order(self._shell_state.attached_slot_ids())
+
+    def _on_floating_close(self, slot_id: int, session_id: str) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if presenter is None or presenter.session.session_id != session_id:
+            return
+        self._remove_chart(slot_id)
+        self._refresh_active_view()
+
+    def _on_go_to_accepted(
+        self, slot_id: int, session_id: str, timestamp_ms: int
+    ) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if presenter is None or presenter.session.session_id != session_id:
+            return
+        presenter.go_to_timestamp_ms(timestamp_ms)
+        if slot_id == self.active_slot_id:
+            self._refresh_active_view()
+
+    def _on_horizontal_pan(self, source_slot_id: int) -> None:
+        if (
+            not self._pan_anchor_enabled
+            or self._pan_anchor_in_progress
+            or source_slot_id not in self._chart_presenters
+        ):
+            return
+        timestamp_ms = self._chart_presenters[
+            source_slot_id
+        ].current_center_timestamp_ms()
+        if timestamp_ms is None:
+            return
+        self._pan_anchor_in_progress = True
+        try:
+            for slot_id, presenter in tuple(self._chart_presenters.items()):
+                if (
+                    slot_id == source_slot_id
+                    or presenter.is_disposed
+                    or presenter.session.dataset is None
+                    or presenter.viewport is None
+                ):
+                    continue
+                presenter.center_on_timestamp_ms(timestamp_ms)
+        finally:
+            self._pan_anchor_in_progress = False
 
     def _active_presenter(self) -> ResearchChartPresenter | None:
         slot_id = self.active_slot_id

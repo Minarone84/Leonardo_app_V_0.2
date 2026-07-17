@@ -25,6 +25,7 @@ from leonardo.research import (
     StudySaveAttempt,
     StudySaveOutcome,
     StudyValidationError,
+    ViewportSnapshot,
     build_resident_volume_projection,
 )
 
@@ -43,6 +44,7 @@ class ResearchChartPresenter:
         state_changed: Callable[[int], None],
         suite_log: Callable[[str], None],
         current_runtime: Callable[[], bool],
+        horizontal_pan_callback: Callable[[int], None] | None = None,
     ) -> None:
         if type(slot_id) is not int or slot_id != view.slot_id:
             raise ValueError("slot_id must match the Research chart slot widget")
@@ -69,6 +71,9 @@ class ResearchChartPresenter:
         self._state_changed = state_changed
         self._suite_log = suite_log
         self._current_runtime = current_runtime
+        if horizontal_pan_callback is not None and not callable(horizontal_pan_callback):
+            raise TypeError("horizontal_pan_callback must be callable or None")
+        self._horizontal_pan_callback = horizontal_pan_callback
         self._viewport: HorizontalViewport | None = None
         self._interaction: CandlestickInteractionState | None = None
         self._active_load_task_id: str | None = None
@@ -77,6 +82,8 @@ class ResearchChartPresenter:
         self._slice_attempt = None
         self._active_study_tasks: dict[str, tuple[str, object]] = {}
         self._disposed = False
+        self._last_viewport_snapshot: ViewportSnapshot | None = None
+        self._programmatic_navigation = False
         self._view.chart_workspace.viewportChanged.connect(self._on_viewport_changed)
 
     @property
@@ -127,6 +134,7 @@ class ResearchChartPresenter:
         self._interaction = None
         self._view.clear_chart_state()
         self._view.set_dataset(market_id)
+        self._view.set_go_to_enabled(False)
         self._set_busy(True)
         self._set_status("Loading historical dataset")
         self._log(f"Opening {market_id.as_key()} in Chart {self._slot_id}...")
@@ -139,6 +147,7 @@ class ResearchChartPresenter:
             )
         except Exception as error:
             self._session.settle_dataset_open_failure(attempt)
+            self._view.set_go_to_enabled(False)
             self._set_busy(False)
             self._set_status("Dataset submission failed")
             self._log(f"Chart {self._slot_id} dataset submission failed: {error}")
@@ -331,6 +340,45 @@ class ResearchChartPresenter:
         self._changed()
         return changed
 
+    def current_center_timestamp_ms(self) -> int | None:
+        if not self._runtime_is_current() or self._viewport is None:
+            return None
+        return self._session.timestamp_for_global_index(self._viewport.center_index)
+
+    def center_on_timestamp_ms(self, timestamp_ms: int) -> bool:
+        self._require_current()
+        if type(timestamp_ms) is not int:
+            raise TypeError("timestamp_ms must be an integer")
+        if self._session.dataset is None or self._viewport is None:
+            self._set_status("No accepted dataset for chart navigation")
+            return False
+        global_index = self._session.nearest_global_index_for_timestamp(timestamp_ms)
+        self._programmatic_navigation = True
+        try:
+            changed = self._viewport.center_on_index(global_index)
+            self._last_viewport_snapshot = self._viewport.snapshot()
+            if changed:
+                workspace = self._view.chart_workspace
+                workspace.price_chart.refresh_from_shared_state(
+                    refresh_price_scale=False
+                )
+                workspace.volume_chart.refresh_from_shared_state()
+                for study in self._session.studies:
+                    oscillator = workspace.oscillator_widget(study.study_id)
+                    if oscillator is not None:
+                        oscillator.refresh_from_shared_state()
+                workspace.price_chart.repaint()
+                self._maybe_request_resident()
+            return changed
+        finally:
+            self._programmatic_navigation = False
+
+    def go_to_timestamp_ms(self, timestamp_ms: int) -> bool:
+        changed = self.center_on_timestamp_ms(timestamp_ms)
+        if self._session.dataset is not None and self._viewport is not None:
+            self._set_status("Chart navigation updated")
+        return changed
+
     def dispose(self) -> bool:
         if self._disposed:
             return False
@@ -339,6 +387,7 @@ class ResearchChartPresenter:
         for task_id in tuple(self._active_study_tasks):
             self._study_service.cancel(task_id)
         self._active_study_tasks.clear()
+        self._view.set_go_to_enabled(False)
         try:
             self._view.chart_workspace.viewportChanged.disconnect(self._on_viewport_changed)
         except RuntimeError:
@@ -362,6 +411,7 @@ class ResearchChartPresenter:
             return
         if result.status != "completed" or not isinstance(result.value, HistoricalDataset):
             self._session.settle_dataset_open_failure(attempt)
+            self._view.set_go_to_enabled(False)
             self._set_busy(False)
             self._handle_terminal_failure("Dataset load", result)
             return
@@ -372,6 +422,8 @@ class ResearchChartPresenter:
         self._interaction = CandlestickInteractionState(
             self._viewport, None, price_scale=PriceScaleState()
         )
+        self._last_viewport_snapshot = self._viewport.snapshot()
+        self._view.set_go_to_enabled(True)
         interest = self._viewport.dataset_interest()
         if interest is not None:
             self._request_resident(interest.center_index)
@@ -505,9 +557,24 @@ class ResearchChartPresenter:
             self._handle_terminal_failure("Study Save", result)
         self._refresh_busy_state()
 
-    def _on_viewport_changed(self, _snapshot: object) -> None:
+    def _on_viewport_changed(self, snapshot: object) -> None:
         if not self._runtime_is_current():
             return
+        if not isinstance(snapshot, ViewportSnapshot):
+            return
+        previous = self._last_viewport_snapshot
+        self._last_viewport_snapshot = snapshot
+        is_horizontal_pan = (
+            not self._programmatic_navigation
+            and previous is not None
+            and snapshot.start_index != previous.start_index
+            and snapshot.visible_count == previous.visible_count
+        )
+        self._maybe_request_resident()
+        if is_horizontal_pan and self._horizontal_pan_callback is not None:
+            self._horizontal_pan_callback(self._slot_id)
+
+    def _maybe_request_resident(self) -> None:
         resident = self._session.resident
         if self._viewport is None or resident is None:
             return
