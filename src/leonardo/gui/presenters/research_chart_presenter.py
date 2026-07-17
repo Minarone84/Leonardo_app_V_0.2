@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from uuid import uuid4
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.gui.chart import CandlestickInteractionState, PriceScaleState
@@ -22,12 +24,36 @@ from leonardo.research import (
     StudyArtifactRequest,
     StudyDependencyError,
     StudyExecutionRequest,
+    StudyInputSource,
     StudySaveAttempt,
     StudySaveOutcome,
     StudyValidationError,
     ViewportSnapshot,
     build_resident_volume_projection,
 )
+from leonardo.research.study_environment import (
+    EnvironmentCompatibilityReport,
+    EnvironmentEntryV1,
+    EnvironmentV1,
+)
+
+
+@dataclass(slots=True)
+class _EnvironmentRun:
+    run_id: str
+    environment: EnvironmentV1
+    mode: str
+    session_id: str
+    generation: int
+    existing_study_ids: tuple[str, ...]
+    entry_index: int = 0
+    current_task_id: str | None = None
+    entry_to_study: dict[str, str] | None = None
+    added_study_ids: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        self.entry_to_study = {}
+        self.added_study_ids = []
 
 
 class ResearchChartPresenter:
@@ -81,6 +107,8 @@ class ResearchChartPresenter:
         self._open_attempt = None
         self._slice_attempt = None
         self._active_study_tasks: dict[str, tuple[str, object]] = {}
+        self._environment_report: EnvironmentCompatibilityReport | None = None
+        self._environment_run: _EnvironmentRun | None = None
         self._disposed = False
         self._last_viewport_snapshot: ViewportSnapshot | None = None
         self._programmatic_navigation = False
@@ -124,6 +152,20 @@ class ResearchChartPresenter:
     @property
     def is_disposed(self) -> bool:
         return self._disposed
+
+    @property
+    def environment_apply_active(self) -> bool:
+        return self._environment_run is not None
+
+    def set_environment_compatibility(
+        self, report: EnvironmentCompatibilityReport | None
+    ) -> None:
+        if report is not None and not isinstance(
+            report, EnvironmentCompatibilityReport
+        ):
+            raise TypeError("report must be an environment compatibility report or None")
+        self._environment_report = report
+        self._changed()
 
     def open_dataset(self, market_id):
         self._require_current()
@@ -183,6 +225,8 @@ class ResearchChartPresenter:
 
     def submit_study_calculation(self, request: StudyExecutionRequest):
         self._require_current()
+        if self.environment_apply_active:
+            raise RuntimeError("an environment Apply run is active for this chart")
         if not isinstance(request, StudyExecutionRequest):
             raise TypeError("request must be a StudyExecutionRequest")
         dataset = self._session.dataset
@@ -211,6 +255,8 @@ class ResearchChartPresenter:
 
     def submit_artifact_apply(self, request: StudyArtifactRequest):
         self._require_current()
+        if self.environment_apply_active:
+            raise RuntimeError("an environment Apply run is active for this chart")
         if not isinstance(request, StudyArtifactRequest):
             raise TypeError("request must be a StudyArtifactRequest")
         dataset = self._session.dataset
@@ -238,6 +284,9 @@ class ResearchChartPresenter:
 
     def save_study(self, study_id: str) -> None:
         self._require_current()
+        if self.environment_apply_active:
+            self._log(f"Chart {self._slot_id} Study Save blocked by environment Apply.")
+            return
         dataset = self._session.dataset
         if dataset is None:
             return
@@ -266,6 +315,9 @@ class ResearchChartPresenter:
     def set_study_visibility(self, study_id: str, visible: bool) -> None:
         if not self._runtime_is_current():
             return
+        if self.environment_apply_active:
+            self._log(f"Chart {self._slot_id} Study visibility blocked by environment Apply.")
+            return
         try:
             self._session.set_study_visibility(study_id, visible)
             self._refresh_study_state()
@@ -274,6 +326,8 @@ class ResearchChartPresenter:
 
     def open_study_style(self, study_id: str) -> StudyStyleDialog | None:
         if not self._runtime_is_current():
+            return None
+        if self.environment_apply_active:
             return None
         presentation = self._presentation(study_id)
         if presentation is None:
@@ -289,6 +343,9 @@ class ResearchChartPresenter:
             raise TypeError("patch must be a StudyStylePatch")
         if not self._runtime_is_current():
             self._log(f"Chart {self._slot_id} stale Study style patch rejected.")
+            return
+        if self.environment_apply_active:
+            self._log(f"Chart {self._slot_id} Study style blocked by environment Apply.")
             return
         try:
             self._session.set_study_visibility(patch.study_id, patch.visible)
@@ -307,6 +364,8 @@ class ResearchChartPresenter:
     def reset_study_style(self, study_id: str) -> None:
         if not self._runtime_is_current():
             return
+        if self.environment_apply_active:
+            return
         try:
             self._session.reset_study_presentation(study_id)
             self._refresh_study_state()
@@ -315,6 +374,9 @@ class ResearchChartPresenter:
 
     def remove_study(self, study_id: str) -> None:
         if not self._runtime_is_current():
+            return
+        if self.environment_apply_active:
+            self._log(f"Chart {self._slot_id} Study removal blocked by environment Apply.")
             return
         try:
             self._session.remove_study(study_id)
@@ -379,9 +441,57 @@ class ResearchChartPresenter:
             self._set_status("Chart navigation updated")
         return changed
 
+    def apply_environment(self, environment: EnvironmentV1, mode: str) -> None:
+        self._require_current()
+        if not isinstance(environment, EnvironmentV1):
+            raise TypeError("environment must use the version 1 schema")
+        if mode not in {"append", "replace"}:
+            raise ValueError("environment Apply mode must be append or replace")
+        if self._session.dataset is None or self._viewport is None:
+            raise RuntimeError("an accepted dataset and viewport are required")
+        if self._environment_run is not None:
+            raise RuntimeError("an environment Apply run is already active")
+        if self._active_study_tasks:
+            raise RuntimeError("a conflicting Study mutation is active")
+        report = self._environment_report
+        if (
+            report is None
+            or report.environment_id != environment.environment_id
+            or not report.compatible
+        ):
+            raise RuntimeError("a current blocker-free compatibility report is required")
+        self._environment_run = _EnvironmentRun(
+            run_id=uuid4().hex,
+            environment=environment,
+            mode=mode,
+            session_id=self._session.session_id,
+            generation=self._session.generation,
+            existing_study_ids=tuple(study.study_id for study in self._session.studies),
+        )
+        self._set_busy(True)
+        self._set_status("Applying Study Environment")
+        self._submit_environment_entry()
+
+    def cancel_environment_apply(self) -> bool:
+        run = self._environment_run
+        if run is None:
+            return False
+        if run.current_task_id is None:
+            self._rollback_environment("Environment Apply cancelled")
+            return True
+        cancelled = self._study_service.cancel(run.current_task_id)
+        self._set_status("Environment cancellation requested")
+        return cancelled
+
     def dispose(self) -> bool:
         if self._disposed:
             return False
+        if self._environment_run is not None:
+            run = self._environment_run
+            if run.current_task_id is not None:
+                self._study_service.cancel(run.current_task_id)
+                self._active_study_tasks.pop(run.current_task_id, None)
+            self._rollback_environment("Environment Apply cancelled by chart close")
         self._disposed = True
         self._cancel_dataset_tasks()
         for task_id in tuple(self._active_study_tasks):
@@ -556,6 +666,217 @@ class ResearchChartPresenter:
             self._session.settle_study_save_failure(attempt)
             self._handle_terminal_failure("Study Save", result)
         self._refresh_busy_state()
+
+    def _submit_environment_entry(self) -> None:
+        run = self._environment_run
+        dataset = self._session.dataset
+        if run is None or dataset is None or not self._environment_run_is_current(run):
+            self._rollback_environment("Environment Apply target is stale")
+            return
+        if run.entry_index >= len(run.environment.entries):
+            self._complete_environment_run()
+            return
+        entry = run.environment.entries[run.entry_index]
+        request = self._environment_request(entry, run.entry_to_study or {})
+        attempt = self._session.begin_study_apply()
+        try:
+            if isinstance(request, StudyExecutionRequest):
+                submission = self._study_service.submit_calculation(
+                    attempt,
+                    dataset,
+                    self._session.studies,
+                    request,
+                    progress_callback=self._on_study_progress,
+                    result_callback=lambda result, run_id=run.run_id, item=entry, token=attempt: self._on_environment_entry_result(
+                        result, token, run_id, item
+                    ),
+                    callback_dispatcher=self._dispatch,
+                )
+            else:
+                submission = self._study_service.submit_artifact_apply(
+                    attempt,
+                    dataset,
+                    request,
+                    progress_callback=self._on_study_progress,
+                    result_callback=lambda result, run_id=run.run_id, item=entry, token=attempt: self._on_environment_entry_result(
+                        result, token, run_id, item
+                    ),
+                    callback_dispatcher=self._dispatch,
+                )
+        except Exception as error:
+            self._session.settle_study_apply_failure(attempt)
+            self._rollback_environment(
+                f"Environment entry {entry.entry_id} submission failed: {error}"
+            )
+            return
+        run.current_task_id = submission.task_id
+        self._active_study_tasks[submission.task_id] = ("environment", attempt)
+        self._changed()
+
+    def _on_environment_entry_result(
+        self,
+        result: TaskResult,
+        attempt: StudyApplyAttempt,
+        run_id: str,
+        entry: EnvironmentEntryV1,
+    ) -> None:
+        run = self._environment_run
+        if (
+            run is None
+            or run.run_id != run_id
+            or run.current_task_id != result.task_id
+            or not self._environment_run_is_current(run)
+        ):
+            return
+        run.current_task_id = None
+        self._active_study_tasks.pop(result.task_id, None)
+        if result.status != "completed" or not isinstance(result.value, PreparedStudy):
+            self._session.settle_study_apply_failure(attempt)
+            message = result.error_message or result.error_type or result.status
+            self._rollback_environment(
+                f"Environment entry {entry.entry_id} failed: {message}"
+            )
+            return
+        accepted = False
+        try:
+            accepted = self._session.accept_study_apply(attempt, result.value)
+            study = result.value.study
+            if not accepted:
+                raise StudyValidationError("prepared Study was not current")
+            if study.result.output_names != entry.expected_output_names:
+                raise StudyValidationError("environment output names do not match")
+            run.added_study_ids.append(study.study_id)
+            run.entry_to_study[entry.entry_id] = study.study_id
+            self._apply_environment_presentation(study.study_id, entry)
+        except Exception as error:
+            if accepted and result.value.study.study_id not in run.added_study_ids:
+                run.added_study_ids.append(result.value.study.study_id)
+            self._rollback_environment(
+                f"Environment entry {entry.entry_id} publication failed: {error}"
+            )
+            return
+        run.entry_index += 1
+        self._refresh_study_state()
+        self._submit_environment_entry()
+
+    def _environment_request(
+        self,
+        entry: EnvironmentEntryV1,
+        mapped: dict[str, str],
+    ) -> StudyExecutionRequest | StudyArtifactRequest:
+        if entry.mode == "artifact":
+            return StudyArtifactRequest(
+                entry.kind,
+                entry.tool_key,
+                entry.artifact_id,
+                display_name=entry.display_name,
+                user_metadata=entry.user_metadata,
+            )
+        sources = []
+        for source in entry.sources:
+            if source.source_kind == "ohlcv":
+                sources.append(
+                    StudyInputSource(
+                        role=source.role,
+                        source_kind="ohlcv",
+                        column_name=source.column_name,
+                    )
+                )
+            elif source.source_kind == "environment":
+                study_id = mapped.get(source.source_entry_id or "")
+                if study_id is None:
+                    raise StudyValidationError("environment dependency was not accepted")
+                sources.append(
+                    StudyInputSource(
+                        role=source.role,
+                        source_kind="study",
+                        study_id=study_id,
+                        output_name=source.output_name,
+                    )
+                )
+            else:
+                sources.append(
+                    StudyInputSource(
+                        role=source.role,
+                        source_kind="artifact",
+                        artifact_kind=source.artifact_kind,
+                        artifact_tool_key=source.artifact_tool_key,
+                        artifact_id=source.artifact_id,
+                        output_name=source.output_name,
+                    )
+                )
+        return StudyExecutionRequest(
+            entry.tool_key,
+            entry.parameters,
+            tuple(sources),
+            display_name=entry.display_name,
+            user_metadata=entry.user_metadata,
+        )
+
+    def _apply_environment_presentation(
+        self, study_id: str, entry: EnvironmentEntryV1
+    ) -> None:
+        current = self._presentation(study_id)
+        if current is None:
+            raise StudyValidationError("accepted Study presentation is unavailable")
+        expected_lines = tuple(current.signal_styles)
+        supplied_lines = tuple(item.output_name for item in entry.presentation.line_styles)
+        expected_fills = tuple(current.fill_styles)
+        supplied_fills = tuple(item.fill_id for item in entry.presentation.fill_styles)
+        if expected_lines != supplied_lines or expected_fills != supplied_fills:
+            raise StudyValidationError("environment presentation styles do not match Study")
+        self._session.set_study_visibility(study_id, entry.presentation.visible)
+        for style in entry.presentation.line_styles:
+            self._session.replace_study_line_style(study_id, style.output_name, style)
+        for style in entry.presentation.fill_styles:
+            self._session.replace_study_fill_style(study_id, style.fill_id, style)
+
+    def _complete_environment_run(self) -> None:
+        run = self._environment_run
+        if run is None:
+            return
+        if run.mode == "replace":
+            try:
+                for study_id in reversed(run.existing_study_ids):
+                    self._session.remove_study(study_id)
+            except Exception as error:
+                self._rollback_environment(
+                    f"Environment replace finalization failed: {error}"
+                )
+                return
+        name = run.environment.display_name
+        self._environment_run = None
+        self._environment_report = None
+        self._refresh_study_state()
+        self._refresh_busy_state()
+        self._set_status("Study Environment applied")
+        self._log(f"Chart {self._slot_id} Study Environment applied: {name}.")
+
+    def _rollback_environment(self, message: str) -> None:
+        run = self._environment_run
+        if run is None:
+            return
+        for study_id in reversed(tuple(run.added_study_ids or ())):
+            try:
+                self._session.remove_study(study_id)
+            except (KeyError, StudyDependencyError, StudyValidationError):
+                pass
+        if run.current_task_id is not None:
+            self._active_study_tasks.pop(run.current_task_id, None)
+        self._environment_run = None
+        self._environment_report = None
+        if self._runtime_is_current():
+            self._refresh_study_state()
+            self._refresh_busy_state()
+            self._set_status("Study Environment failed")
+            self._log(f"Chart {self._slot_id} {message}")
+
+    def _environment_run_is_current(self, run: _EnvironmentRun) -> bool:
+        return (
+            self._runtime_is_current()
+            and self._session.session_id == run.session_id
+            and self._session.generation == run.generation
+        )
 
     def _on_viewport_changed(self, snapshot: object) -> None:
         if not self._runtime_is_current():

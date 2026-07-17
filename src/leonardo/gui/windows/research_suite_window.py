@@ -58,6 +58,9 @@ class ResearchSuiteWindow(QWidget):
     floating_dock_requested = Signal(int)
     floating_close_requested = Signal(int, str)
     go_to_accepted = Signal(int, str, object)
+    add_study_requested = Signal()
+    save_environment_requested = Signal()
+    study_environments_requested = Signal()
     closed = Signal()
 
     def __init__(
@@ -85,6 +88,10 @@ class ResearchSuiteWindow(QWidget):
         self._workspace = ResearchWorkspaceWidget(self)
         self._study_manager = StudyManagerWidget(self)
         self._style_dialogs: list[StudyStyleDialog] = []
+        self._setup_service_available = False
+        self._active_dataset_ready = False
+        self._active_study_count = 0
+        self._active_environment_apply = False
         self._active_slot_id: int | None = None
         self._catalog_busy = False
         self._workspace_full = False
@@ -278,10 +285,15 @@ class ResearchSuiteWindow(QWidget):
         volume_visible: bool,
         volume_available: bool,
         status: str,
+        dataset_ready: bool = False,
+        environment_apply_active: bool = False,
     ) -> None:
         if slot_id is not None and slot_id not in self._workspace.slot_ids():
             raise KeyError(f"Research chart slot {slot_id} does not exist")
         self._active_slot_id = slot_id
+        self._active_dataset_ready = dataset_ready
+        self._active_study_count = len(tuple(entries))
+        self._active_environment_apply = environment_apply_active
         self._study_manager.set_entries(entries)
         self._controls["research_suite.button.close_active_chart"].setEnabled(
             slot_id is not None
@@ -300,6 +312,13 @@ class ResearchSuiteWindow(QWidget):
         )
         if status:
             self.set_status(status)
+        self._sync_study_environment_controls()
+
+    def set_study_setup_available(self, available: bool) -> None:
+        if type(available) is not bool:
+            raise TypeError("available must be a boolean")
+        self._setup_service_available = available
+        self._sync_study_environment_controls()
 
     def set_workspace_full(self, full: bool) -> None:
         if type(full) is not bool:
@@ -509,6 +528,27 @@ class ResearchSuiteWindow(QWidget):
             "Synchronize horizontal panning by center timestamp across Research charts."
         )
         toolbar.addWidget(pan_anchor)
+        add_study = self._button(
+            chart_panel,
+            "research_suite.button.add_study",
+            "Add Study",
+            self.add_study_requested.emit,
+        )
+        toolbar.addWidget(add_study)
+        save_environment = self._button(
+            chart_panel,
+            "research_suite.button.save_environment",
+            "Save Environment",
+            self.save_environment_requested.emit,
+        )
+        toolbar.addWidget(save_environment)
+        environments = self._button(
+            chart_panel,
+            "research_suite.button.study_environments",
+            "Study Environments",
+            self.study_environments_requested.emit,
+        )
+        toolbar.addWidget(environments)
         chart_layout.addLayout(toolbar)
         content = QHBoxLayout()
         content.setContentsMargins(0, 0, 0, 0)
@@ -620,6 +660,21 @@ class ResearchSuiteWindow(QWidget):
     def _sync_catalog_controls(self) -> None:
         self._controls["research_suite.button.open_chart"].setEnabled(
             not self._catalog_busy and bool(self._datasets) and not self._workspace_full
+        )
+
+    def _sync_study_environment_controls(self) -> None:
+        self._controls["research_suite.button.add_study"].setEnabled(
+            self._setup_service_available
+            and self._active_dataset_ready
+            and not self._active_environment_apply
+        )
+        self._controls["research_suite.button.save_environment"].setEnabled(
+            self._setup_service_available
+            and self._active_study_count > 0
+            and not self._active_environment_apply
+        )
+        self._controls["research_suite.button.study_environments"].setEnabled(
+            self._setup_service_available
         )
 
     def _require_dataset_combo(self) -> QComboBox:

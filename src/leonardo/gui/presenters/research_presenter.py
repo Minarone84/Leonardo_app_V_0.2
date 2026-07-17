@@ -9,6 +9,18 @@ from PySide6.QtCore import QObject, Qt, Signal
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.gui.presenters.research_chart_presenter import ResearchChartPresenter
 from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
+from leonardo.gui.windows.study_environment_manager_dialog import (
+    EnvironmentApplyIntent,
+    EnvironmentCompatibilityIntent,
+    EnvironmentManagerDialog,
+    EnvironmentMetadataIntent,
+    EnvironmentTarget,
+)
+from leonardo.gui.windows.study_environment_save_dialog import (
+    EnvironmentSaveDialog,
+    EnvironmentSaveIntent,
+)
+from leonardo.gui.windows.study_setup_dialog import StudySetupDialog
 from leonardo.gui.windows.study_style_dialog import StudyStylePatch
 from leonardo.research import (
     ChartSessionState,
@@ -16,12 +28,18 @@ from leonardo.research import (
     HorizontalViewport,
     ResearchDatasetApplicationService,
     ResearchStudyApplicationService,
+    ResearchStudySetupApplicationService,
     ResearchWorkspaceState,
     ResearchWorkspaceStateError,
     ResearchWorkspaceShellState,
     ResearchWorkspaceShellStateError,
     StudyArtifactRequest,
     StudyExecutionRequest,
+)
+from leonardo.research.study_environment import (
+    EnvironmentCompatibilityReport,
+    EnvironmentSummary,
+    EnvironmentV1,
 )
 
 # ResearchChartPresenter retains ResidentRefillDirection and
@@ -52,6 +70,7 @@ class ResearchSuitePresenter(QObject):
         view: ResearchSuiteWindow,
         service: ResearchDatasetApplicationService,
         study_service: ResearchStudyApplicationService,
+        study_setup_service: ResearchStudySetupApplicationService | None = None,
     ) -> None:
         super().__init__(view)
         if not isinstance(view, ResearchSuiteWindow):
@@ -63,6 +82,13 @@ class ResearchSuitePresenter(QObject):
         self._view = view
         self._service = service
         self._study_service = study_service
+        if study_setup_service is not None and not isinstance(
+            study_setup_service, ResearchStudySetupApplicationService
+        ):
+            raise TypeError(
+                "study_setup_service must be ResearchStudySetupApplicationService or None"
+            )
+        self._study_setup_service = study_setup_service
         self._dispatcher = _QtCallbackDispatcher(self)
         self._workspace_state = ResearchWorkspaceState()
         self._shell_state = ResearchWorkspaceShellState()
@@ -71,7 +97,12 @@ class ResearchSuitePresenter(QObject):
         self._disposed = False
         self._pan_anchor_enabled = False
         self._pan_anchor_in_progress = False
+        self._setup_task_ids: set[str] = set()
+        self._setup_dialogs: list[StudySetupDialog] = []
+        self._save_dialogs: list[EnvironmentSaveDialog] = []
+        self._environment_managers: list[EnvironmentManagerDialog] = []
         self._wire()
+        self._view.set_study_setup_available(study_setup_service is not None)
         self.refresh_catalog()
 
     @property
@@ -262,6 +293,11 @@ class ResearchSuitePresenter(QObject):
         self._pan_anchor_enabled = enabled
 
     def cancel_active_operation(self) -> None:
+        if self._setup_task_ids and self._study_setup_service is not None:
+            for task_id in tuple(self._setup_task_ids):
+                self._study_setup_service.cancel(task_id)
+            self._view.set_status("Study Setup cancellation requested")
+            return
         if self._active_catalog_task_id is not None:
             cancelled = self._service.cancel(self._active_catalog_task_id)
             self._view.set_status("Cancellation requested")
@@ -284,6 +320,68 @@ class ResearchSuitePresenter(QObject):
         self, request: StudyArtifactRequest, *, slot_id: int | None = None
     ):
         return self._target_presenter(slot_id).submit_artifact_apply(request)
+
+    def open_study_setup(self) -> None:
+        service = self._study_setup_service
+        presenter = self._active_presenter()
+        if service is None or presenter is None or presenter.environment_apply_active:
+            return
+        dataset = presenter.session.dataset
+        if dataset is None:
+            return
+        slot_id = presenter.slot_id
+        session_id = presenter.session.session_id
+        self._submit_setup_task(
+            lambda callback: service.submit_catalog(
+                dataset,
+                presenter.session.studies,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._open_setup_dialog_result(
+                result, slot_id, session_id
+            ),
+        )
+
+    def open_save_environment(self) -> None:
+        service = self._study_setup_service
+        presenter = self._active_presenter()
+        if (
+            service is None
+            or presenter is None
+            or presenter.environment_apply_active
+            or not presenter.session.studies
+        ):
+            return
+        slot_id = presenter.slot_id
+        session_id = presenter.session.session_id
+        studies = presenter.session.studies
+        presentations = presenter.session.study_presentations()
+        self._submit_setup_task(
+            lambda callback: service.submit_list_environments(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._open_save_dialog_result(
+                result,
+                slot_id,
+                session_id,
+                studies,
+                presentations,
+            ),
+        )
+
+    def open_environment_manager(self) -> None:
+        service = self._study_setup_service
+        if service is None:
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_list_environments(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            self._open_environment_manager_result,
+        )
 
     def _save_study(self, study_id: str) -> None:
         presenter = self._active_presenter()
@@ -333,6 +431,15 @@ class ResearchSuitePresenter(QObject):
             return
         self._disposed = True
         self._cancel_catalog()
+        if self._study_setup_service is not None:
+            for task_id in tuple(self._setup_task_ids):
+                self._study_setup_service.cancel(task_id)
+        self._setup_task_ids.clear()
+        for dialog in (*self._setup_dialogs, *self._save_dialogs, *self._environment_managers):
+            dialog.close()
+        self._setup_dialogs.clear()
+        self._save_dialogs.clear()
+        self._environment_managers.clear()
         self._view.close_all_floating_charts()
         for presenter in tuple(self._chart_presenters.values()):
             presenter.dispose()
@@ -353,6 +460,9 @@ class ResearchSuitePresenter(QObject):
         self._view.floating_dock_requested.connect(self.dock_slot)
         self._view.floating_close_requested.connect(self._on_floating_close)
         self._view.go_to_accepted.connect(self._on_go_to_accepted)
+        self._view.add_study_requested.connect(self.open_study_setup)
+        self._view.save_environment_requested.connect(self.open_save_environment)
+        self._view.study_environments_requested.connect(self.open_environment_manager)
         self._view.closed.connect(self.dispose)
         self._view.workspace_widget.active_slot_requested.connect(self.set_active_slot)
         manager = self._view.study_manager
@@ -410,6 +520,8 @@ class ResearchSuitePresenter(QObject):
             workspace.volume_visible,
             workspace.volume_chart.projection is not None,
             presenter.status_text,
+            dataset_ready=session.dataset is not None,
+            environment_apply_active=presenter.environment_apply_active,
         )
         self._view.set_active_chart_market(session.selected_market_id)
         self._view.set_workspace_full(self._workspace_state.is_full)
@@ -493,6 +605,356 @@ class ResearchSuitePresenter(QObject):
         if self._active_catalog_task_id is not None:
             self._service.cancel(self._active_catalog_task_id)
         self._active_catalog_task_id = None
+
+    def _submit_setup_task(self, submit, handler) -> None:
+        if self._disposed:
+            return
+        task_ref: list[str] = []
+        settled = [False]
+
+        def callback(result: TaskResult) -> None:
+            settled[0] = True
+            task_id = task_ref[0] if task_ref else result.task_id
+            self._setup_task_ids.discard(task_id)
+            if not self._disposed:
+                handler(result)
+
+        try:
+            submission = submit(callback)
+        except Exception as error:
+            self._view.append_status(f"Study Setup submission failed: {error}")
+            return
+        task_ref.append(submission.task_id)
+        if not settled[0]:
+            self._setup_task_ids.add(submission.task_id)
+
+    def _open_setup_dialog_result(
+        self, result: TaskResult, slot_id: int, session_id: str
+    ) -> None:
+        from leonardo.research import StudySetupCatalog
+
+        presenter = self._chart_presenters.get(slot_id)
+        if (
+            result.status != "completed"
+            or not isinstance(result.value, StudySetupCatalog)
+            or presenter is None
+            or presenter.session.session_id != session_id
+        ):
+            return
+        dialog = StudySetupDialog(result.value, self._view)
+        self._setup_dialogs.append(dialog)
+        dialog.request_submitted.connect(
+            lambda request: self._accept_setup_request(
+                slot_id, session_id, request
+            )
+        )
+        dialog.finished.connect(
+            lambda _code, current=dialog: self._forget_dialog(
+                self._setup_dialogs, current
+            )
+        )
+        dialog.show()
+
+    def _accept_setup_request(self, slot_id: int, session_id: str, request) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if presenter is None or presenter.session.session_id != session_id:
+            return
+        try:
+            if isinstance(request, StudyExecutionRequest):
+                presenter.submit_study_calculation(request)
+            elif isinstance(request, StudyArtifactRequest):
+                presenter.submit_artifact_apply(request)
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._view.append_status(f"Chart {slot_id} Study Setup failed: {error}")
+
+    def _open_save_dialog_result(
+        self,
+        result: TaskResult,
+        slot_id: int,
+        session_id: str,
+        studies,
+        presentations,
+    ) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if (
+            result.status != "completed"
+            or presenter is None
+            or presenter.session.session_id != session_id
+            or not isinstance(result.value, tuple)
+            or not all(isinstance(item, EnvironmentSummary) for item in result.value)
+        ):
+            return
+        dialog = EnvironmentSaveDialog(
+            slot_id, session_id, tuple(studies), result.value, self._view
+        )
+        self._save_dialogs.append(dialog)
+        dialog.save_requested.connect(
+            lambda intent: self._save_environment_intent(
+                intent, tuple(studies), tuple(presentations)
+            )
+        )
+        dialog.finished.connect(
+            lambda _code, current=dialog: self._forget_dialog(
+                self._save_dialogs, current
+            )
+        )
+        dialog.show()
+
+    def _save_environment_intent(
+        self,
+        intent: EnvironmentSaveIntent,
+        studies,
+        presentations,
+    ) -> None:
+        service = self._study_setup_service
+        presenter = self._chart_presenters.get(intent.slot_id)
+        if (
+            service is None
+            or presenter is None
+            or presenter.session.session_id != intent.session_id
+            or presenter.session.dataset is None
+        ):
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_save_chart_environment(
+                presenter.session.dataset,
+                studies,
+                presentations,
+                display_name=intent.display_name,
+                description=intent.description,
+                environment_id=intent.environment_id,
+                metadata_overrides=dict(intent.metadata_overrides),
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._environment_save_result(
+                result, intent.slot_id, intent.session_id
+            ),
+        )
+
+    def _environment_save_result(
+        self, result: TaskResult, slot_id: int, session_id: str
+    ) -> None:
+        presenter = self._chart_presenters.get(slot_id)
+        if presenter is None or presenter.session.session_id != session_id:
+            return
+        if result.status == "completed" and isinstance(result.value, EnvironmentV1):
+            self._view.append_status(
+                f"Chart {slot_id} Study Environment saved: {result.value.display_name}."
+            )
+        else:
+            self._view.append_status(
+                f"Chart {slot_id} Study Environment save failed: "
+                f"{result.error_message or result.error_type or result.status}"
+            )
+
+    def _open_environment_manager_result(self, result: TaskResult) -> None:
+        if (
+            result.status != "completed"
+            or not isinstance(result.value, tuple)
+            or not all(isinstance(item, EnvironmentSummary) for item in result.value)
+        ):
+            return
+        targets = tuple(
+            EnvironmentTarget(
+                slot_id,
+                presenter.session.session_id,
+                f"Chart {slot_id}",
+                self._shell_state.placement_for(slot_id).detached,
+            )
+            for slot_id, presenter in sorted(self._chart_presenters.items())
+            if presenter.session.dataset is not None
+        )
+        dialog = EnvironmentManagerDialog(result.value, targets, self._view)
+        self._environment_managers.append(dialog)
+        dialog.environment_selected.connect(
+            lambda environment_id: self._load_manager_environment(
+                dialog, environment_id
+            )
+        )
+        dialog.refresh_requested.connect(
+            lambda: self._refresh_environment_manager(dialog)
+        )
+        dialog.compatibility_requested.connect(
+            lambda intent: self._check_manager_compatibility(dialog, intent)
+        )
+        dialog.metadata_save_requested.connect(
+            lambda intent: self._save_manager_metadata(dialog, intent)
+        )
+        dialog.apply_requested.connect(
+            lambda intent: self._apply_manager_environment(dialog, intent)
+        )
+        dialog.delete_requested.connect(
+            lambda environment_id: self._delete_manager_environment(
+                dialog, environment_id
+            )
+        )
+        dialog.finished.connect(
+            lambda _code, current=dialog: self._forget_dialog(
+                self._environment_managers, current
+            )
+        )
+        if dialog.selected_environment_id is not None:
+            self._load_manager_environment(
+                dialog, dialog.selected_environment_id
+            )
+        dialog.show()
+
+    def _load_manager_environment(
+        self, dialog: EnvironmentManagerDialog, environment_id: str
+    ) -> None:
+        service = self._study_setup_service
+        if service is None or dialog not in self._environment_managers:
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_load_environment(
+                environment_id,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_environment(result.value)
+            if (
+                dialog in self._environment_managers
+                and result.status == "completed"
+                and isinstance(result.value, EnvironmentV1)
+                and dialog.selected_environment_id == environment_id
+            )
+            else None,
+        )
+
+    def _refresh_environment_manager(
+        self, dialog: EnvironmentManagerDialog
+    ) -> None:
+        service = self._study_setup_service
+        if service is None or dialog not in self._environment_managers:
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_list_environments(
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_summaries(result.value)
+            if (
+                dialog in self._environment_managers
+                and result.status == "completed"
+                and isinstance(result.value, tuple)
+            )
+            else None,
+        )
+
+    def _check_manager_compatibility(
+        self,
+        dialog: EnvironmentManagerDialog,
+        intent: EnvironmentCompatibilityIntent,
+    ) -> None:
+        service = self._study_setup_service
+        presenter = self._chart_presenters.get(intent.slot_id)
+        environment = dialog.environment
+        if (
+            service is None
+            or presenter is None
+            or presenter.session.session_id != intent.session_id
+            or presenter.session.dataset is None
+            or environment is None
+            or environment.environment_id != intent.environment_id
+        ):
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_compatibility(
+                environment,
+                presenter.session.dataset,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._manager_compatibility_result(
+                dialog, intent, result
+            ),
+        )
+
+    def _manager_compatibility_result(
+        self,
+        dialog: EnvironmentManagerDialog,
+        intent: EnvironmentCompatibilityIntent,
+        result: TaskResult,
+    ) -> None:
+        presenter = self._chart_presenters.get(intent.slot_id)
+        if (
+            dialog not in self._environment_managers
+            or presenter is None
+            or presenter.session.session_id != intent.session_id
+            or result.status != "completed"
+            or not isinstance(result.value, EnvironmentCompatibilityReport)
+        ):
+            return
+        presenter.set_environment_compatibility(result.value)
+        dialog.set_compatibility(intent, result.value)
+
+    def _save_manager_metadata(
+        self,
+        dialog: EnvironmentManagerDialog,
+        intent: EnvironmentMetadataIntent,
+    ) -> None:
+        service = self._study_setup_service
+        if service is None:
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_update_environment(
+                intent.environment_id,
+                intent.draft,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: dialog.set_environment(result.value)
+            if (
+                dialog in self._environment_managers
+                and result.status == "completed"
+                and isinstance(result.value, EnvironmentV1)
+            )
+            else None,
+        )
+
+    def _apply_manager_environment(
+        self,
+        dialog: EnvironmentManagerDialog,
+        intent: EnvironmentApplyIntent,
+    ) -> None:
+        presenter = self._chart_presenters.get(intent.slot_id)
+        environment = dialog.environment
+        if (
+            presenter is None
+            or presenter.session.session_id != intent.session_id
+            or environment is None
+            or environment.environment_id != intent.environment_id
+        ):
+            return
+        try:
+            presenter.apply_environment(environment, intent.mode)
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._view.append_status(
+                f"Chart {intent.slot_id} Study Environment Apply failed: {error}"
+            )
+
+    def _delete_manager_environment(
+        self, dialog: EnvironmentManagerDialog, environment_id: str
+    ) -> None:
+        service = self._study_setup_service
+        if service is None:
+            return
+        self._submit_setup_task(
+            lambda callback: service.submit_delete_environment(
+                environment_id,
+                result_callback=callback,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda _result: self._refresh_environment_manager(dialog)
+            if dialog in self._environment_managers
+            else None,
+        )
+
+    @staticmethod
+    def _forget_dialog(collection: list, dialog) -> None:
+        if dialog in collection:
+            collection.remove(dialog)
 
     def _handle_catalog_failure(self, result: TaskResult) -> None:
         if result.status == "cancelled":

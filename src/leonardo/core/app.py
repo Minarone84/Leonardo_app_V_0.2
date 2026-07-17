@@ -34,7 +34,10 @@ from leonardo.research import (
     ResearchDatasetApplicationService,
     ResearchStudyApplicationService,
     ResearchStudyService,
+    ResearchStudySetupApplicationService,
+    ResearchStudySetupService,
     ResidentSliceService,
+    StudyEnvironmentStore,
 )
 
 
@@ -56,6 +59,7 @@ class CoreContext:
     ohlcv_maintenance_service: OHLCVMaintenanceApplicationService
     research_dataset_service: ResearchDatasetApplicationService
     research_study_service: ResearchStudyApplicationService
+    research_study_setup_service: ResearchStudySetupApplicationService
 
 
 class LeonardoApp:
@@ -133,6 +137,17 @@ class LeonardoApp:
             self.core_runner,
             self.research_study_domain,
         )
+        self.study_environment_store = StudyEnvironmentStore(
+            self.config.paths.study_environments_dir
+        )
+        self.research_study_setup_domain = ResearchStudySetupService(
+            self.artifact_service,
+            self.study_environment_store,
+        )
+        self.research_study_setup_service = ResearchStudySetupApplicationService(
+            self.core_runner,
+            self.research_study_setup_domain,
+        )
         self.action_registry = ActionRegistry(
             self.audit_log,
             actor_id=self.config.actor_id,
@@ -166,6 +181,7 @@ class LeonardoApp:
             ohlcv_maintenance_service=self.ohlcv_maintenance_service,
             research_dataset_service=self.research_dataset_service,
             research_study_service=self.research_study_service,
+            research_study_setup_service=self.research_study_setup_service,
         )
 
     @property

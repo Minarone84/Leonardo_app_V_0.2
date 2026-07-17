@@ -111,6 +111,7 @@ class ResearchStudyService:
             source_kind="calculation",
             display_name=request.display_name or get_financial_tool_spec(request.tool_key).title,
             result=result,
+            setup_request=request,
             source_studies=tuple(
                 item.study_ref for item in resolved if item.study_ref is not None
             ),
@@ -159,6 +160,7 @@ class ResearchStudyService:
                 else metadata.recipe.display_name
             ),
             result=result,
+            setup_request=request,
             source_artifacts=metadata.recipe.source_artifacts,
             saved_link=link,
         )

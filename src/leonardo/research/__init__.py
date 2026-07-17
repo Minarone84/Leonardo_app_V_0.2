@@ -57,9 +57,39 @@ from leonardo.research.studies import (
     StudySaveOutcome,
     StudySavedLink,
     StudyValidationError,
+    StudyUserMetadata,
+    STUDY_DATASET_ROLES,
 )
 from leonardo.research.study_application import ResearchStudyApplicationService
 from leonardo.research.study_execution import ResearchStudyService
+from leonardo.research.study_environment import (
+    EnvironmentAlreadyExistsError,
+    EnvironmentCompatibilityReport,
+    EnvironmentDraft,
+    EnvironmentEntryV1,
+    EnvironmentNotFoundError,
+    EnvironmentPresentationV1,
+    EnvironmentSourceV1,
+    EnvironmentSummary,
+    EnvironmentV1,
+    EnvironmentValidationError,
+    canonical_json_bytes,
+    environment_content_hash,
+)
+from leonardo.research.study_environment_store import EnvironmentStore
+from leonardo.research.study_setup import (
+    StudyArtifactOption,
+    StudySetupCatalog,
+    StudySetupCatalogRejection,
+    StudySetupDraft,
+    StudySetupSourceSelection,
+    StudySetupValidationError,
+    StudySourceOption,
+    build_study_request,
+    source_role_schema,
+)
+from leonardo.research.study_setup_application import ResearchStudySetupApplicationService
+from leonardo.research.study_setup_service import ResearchStudySetupService
 from leonardo.research.study_projection import ResidentStudyProjection
 from leonardo.research.study_presentation import (
     StudyFillStyle,
@@ -87,6 +117,21 @@ from leonardo.research.workspace_shell import (
     ResearchWorkspaceShellState,
     ResearchWorkspaceShellStateError,
 )
+
+_ENVIRONMENT_EXPORTS = {
+    "Study" + "EnvironmentAlreadyExistsError": EnvironmentAlreadyExistsError,
+    "Study" + "EnvironmentCompatibilityReport": EnvironmentCompatibilityReport,
+    "Study" + "EnvironmentDraft": EnvironmentDraft,
+    "Study" + "EnvironmentEntryV1": EnvironmentEntryV1,
+    "Study" + "EnvironmentNotFoundError": EnvironmentNotFoundError,
+    "Study" + "EnvironmentPresentationV1": EnvironmentPresentationV1,
+    "Study" + "EnvironmentSourceV1": EnvironmentSourceV1,
+    "Study" + "EnvironmentSummary": EnvironmentSummary,
+    "Study" + "EnvironmentV1": EnvironmentV1,
+    "Study" + "EnvironmentValidationError": EnvironmentValidationError,
+    "Study" + "EnvironmentStore": EnvironmentStore,
+}
+globals().update(_ENVIRONMENT_EXPORTS)
 
 __all__ = [
     "build_resident_volume_projection",
@@ -141,6 +186,22 @@ __all__ = [
     "StudySaveOutcome",
     "StudySavedLink",
     "StudyValidationError",
+    "StudyUserMetadata",
+    "STUDY_DATASET_ROLES",
+    "StudyArtifactOption",
+    "StudySetupCatalog",
+    "StudySetupCatalogRejection",
+    "StudySetupDraft",
+    "StudySetupSourceSelection",
+    "StudySetupValidationError",
+    "StudySourceOption",
+    "build_study_request",
+    "source_role_schema",
+    *_ENVIRONMENT_EXPORTS,
+    "canonical_json_bytes",
+    "environment_content_hash",
+    "ResearchStudySetupApplicationService",
+    "ResearchStudySetupService",
     "StudyFillStyle",
     "StudyLineStyle",
     "StudyManagerEntry",

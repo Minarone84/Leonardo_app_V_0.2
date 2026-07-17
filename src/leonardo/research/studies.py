@@ -23,6 +23,20 @@ _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _OHLCV_COLUMNS = frozenset({"open", "high", "low", "close", "volume"})
 _SOURCE_KINDS = frozenset({"ohlcv", "study", "artifact"})
 _STUDY_SOURCE_KINDS = frozenset({"calculation", "artifact"})
+STUDY_DATASET_ROLES = (
+    "unspecified",
+    "core_geography",
+    "volume",
+    "braid",
+    "peaks_troughs",
+    "utc",
+    "supporting_indicator",
+    "supporting_oscillator",
+    "supporting_construct",
+    "helper_dependency",
+    "experimental",
+    "visual_only",
+)
 _PRIVATE_SOURCE_ALIASES = {
     "source": "__research_source",
     "fast": "__research_fast",
@@ -125,6 +139,23 @@ def _frozen_mapping(value: object, field_name: str) -> Mapping[str, object]:
     if not all(isinstance(key, str) for key in copied):
         raise StudyValidationError(f"{field_name} keys must be strings")
     return MappingProxyType(copied)
+
+
+@dataclass(frozen=True, slots=True)
+class StudyUserMetadata:
+    """Semantic user metadata that does not alter Study calculation or identity."""
+
+    important: bool = False
+    dataset_role: str = "unspecified"
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if type(self.important) is not bool:
+            raise StudyValidationError("important must be a boolean")
+        if self.dataset_role not in STUDY_DATASET_ROLES:
+            raise StudyValidationError("dataset_role is not supported")
+        if not isinstance(self.description, str):
+            raise StudyValidationError("description must be a string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +364,7 @@ class StudyExecutionRequest:
     parameters: Mapping[str, object] = field(default_factory=dict)
     input_sources: tuple[StudyInputSource, ...] = ()
     display_name: str | None = None
+    user_metadata: StudyUserMetadata = StudyUserMetadata()
 
     def __post_init__(self) -> None:
         key, spec = _canonical_tool(self.tool_key, "tool_key")
@@ -353,6 +385,8 @@ class StudyExecutionRequest:
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "input_sources", sources)
         object.__setattr__(self, "display_name", display)
+        if not isinstance(self.user_metadata, StudyUserMetadata):
+            raise StudyValidationError("user_metadata must be StudyUserMetadata")
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +395,7 @@ class StudyArtifactRequest:
     tool_key: str
     artifact_id: str
     display_name: str | None = None
+    user_metadata: StudyUserMetadata = StudyUserMetadata()
 
     def __post_init__(self) -> None:
         key, spec = _canonical_tool(self.tool_key, "tool_key")
@@ -374,6 +409,8 @@ class StudyArtifactRequest:
         object.__setattr__(self, "tool_key", key)
         object.__setattr__(self, "artifact_id", _sha256(self.artifact_id, "artifact_id"))
         object.__setattr__(self, "display_name", display)
+        if not isinstance(self.user_metadata, StudyUserMetadata):
+            raise StudyValidationError("user_metadata must be StudyUserMetadata")
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,6 +494,8 @@ class ChartStudy:
     source_kind: str
     display_name: str
     result: FinancialToolCalculationResult
+    setup_request: StudyExecutionRequest | StudyArtifactRequest
+    user_metadata: StudyUserMetadata = StudyUserMetadata()
     source_studies: tuple[StudyDependencyRef, ...] = ()
     source_artifacts: tuple[ArtifactSourceRefV1, ...] = ()
     saved_link: StudySavedLink | None = None
@@ -481,6 +520,8 @@ class ChartStudy:
         object.__setattr__(self, "display_name", _text(self.display_name, "display_name"))
         result = _result_copy(self.result)
         object.__setattr__(self, "result", result)
+        if not isinstance(self.user_metadata, StudyUserMetadata):
+            raise StudyValidationError("user_metadata must be StudyUserMetadata")
         dependencies = tuple(self.source_studies)
         artifacts = tuple(self.source_artifacts)
         if not all(isinstance(item, StudyDependencyRef) for item in dependencies):
@@ -513,6 +554,13 @@ class ChartStudy:
                 or self.saved_link.tool_key != result.tool_key
             ):
                 raise StudyValidationError("saved_link must match the Study result")
+        _validate_setup_request(
+            self.setup_request,
+            source_kind=source_kind,
+            display_name=self.display_name,
+            result=result,
+            user_metadata=self.user_metadata,
+        )
         signals = resolve_output_signals(
             result.tool_key, {**dict(result.parameters), **dict(result.bindings)}
         )
@@ -569,6 +617,7 @@ def build_chart_study(
     source_kind: str,
     display_name: str,
     result: FinancialToolCalculationResult,
+    setup_request: StudyExecutionRequest | StudyArtifactRequest,
     source_studies: Sequence[StudyDependencyRef] = (),
     source_artifacts: Sequence[ArtifactSourceRefV1] = (),
     saved_link: StudySavedLink | None = None,
@@ -588,6 +637,8 @@ def build_chart_study(
         source_kind=source_kind,
         display_name=display_name,
         result=result,
+        setup_request=setup_request,
+        user_metadata=setup_request.user_metadata,
         source_studies=tuple(source_studies),
         source_artifacts=tuple(source_artifacts),
         saved_link=saved_link,
@@ -606,6 +657,34 @@ def build_chart_study(
             signal.name for signal in signals if signal.analysis_usable
         ),
     )
+
+
+def _validate_setup_request(
+    request: object,
+    *,
+    source_kind: str,
+    display_name: str,
+    result: FinancialToolCalculationResult,
+    user_metadata: StudyUserMetadata,
+) -> None:
+    if source_kind == "calculation":
+        if not isinstance(request, StudyExecutionRequest):
+            raise StudyValidationError(
+                "calculation Studies require a StudyExecutionRequest setup_request"
+            )
+        if request.tool_key != result.tool_key:
+            raise StudyValidationError("setup_request tool does not match Study result")
+    else:
+        if not isinstance(request, StudyArtifactRequest):
+            raise StudyValidationError(
+                "artifact Studies require a StudyArtifactRequest setup_request"
+            )
+        if request.tool_key != result.tool_key or request.kind != result.kind:
+            raise StudyValidationError("setup_request artifact does not match Study result")
+    if request.display_name is not None and request.display_name != display_name:
+        raise StudyValidationError("setup_request display name does not match Study")
+    if request.user_metadata != user_metadata:
+        raise StudyValidationError("setup_request metadata does not match Study metadata")
 
 
 class ChartStudyRegistry:

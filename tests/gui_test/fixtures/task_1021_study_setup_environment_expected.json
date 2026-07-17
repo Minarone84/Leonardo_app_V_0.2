@@ -1,0 +1,88 @@
+{
+  "apply_rules": {
+    "append_failure_rolls_back_added": true,
+    "cancel_rolls_back_added": true,
+    "detach_dock_does_not_interrupt": true,
+    "entries_submit_sequentially": true,
+    "entry_dependencies_map_to_new_study_ids": true,
+    "existing_task_runtime_reused": true,
+    "one_environment_run_per_chart": true,
+    "other_charts_continue": true,
+    "replace_failure_preserves_existing": true,
+    "replace_removes_existing_only_after_full_success": true,
+    "stale_slot_or_session_result": "ignored"
+  },
+  "catalog_rules": {
+    "current_artifact_output_count": 1,
+    "current_study_output_count": 2,
+    "ohlcv_option_count": 5,
+    "other_market_artifacts_visible": false,
+    "stale_artifact_selectable": false,
+    "stale_artifact_visible_as_rejection": true,
+    "tool_count": 26
+  },
+  "environment_rules": {
+    "artifact_references_market_bound": true,
+    "chart_slot_state_persisted": false,
+    "computed_arrays_persisted": false,
+    "content_hash": "bd15fa8d969fe75ee9457e5a05fcb74cb9b1f76822a1c039d7d0849964777306",
+    "entry_order": [
+      "entry_001",
+      "entry_002",
+      "entry_003",
+      "entry_004"
+    ],
+    "object_type": "study_environment",
+    "pane_geometry_persisted": false,
+    "pure_calculation_entries_cross_market_reusable": true,
+    "schema_version": "1.0",
+    "style_and_visibility_persisted": true,
+    "topological": true,
+    "user_metadata_persisted": true,
+    "viewport_state_persisted": false
+  },
+  "fixture_version": "1.0",
+  "source_role_rules": {
+    "braids_braid_instability_trap_area": [
+      "fast",
+      "mid?",
+      "slow"
+    ],
+    "delta": [
+      "fast",
+      "slow"
+    ],
+    "derivative_angle": [
+      "source"
+    ],
+    "dynamic_binning_percent_span_angle_angle_momentum": [
+      "source_1",
+      "..."
+    ],
+    "ordinary_indicator_or_oscillator": [],
+    "universal_trend_classifier": [
+      "peak+trough optional exact pair"
+    ]
+  },
+  "store_rules": {
+    "atomic_replace": true,
+    "casefold_unique_display_names": true,
+    "delete_is_exact_environment_only": true,
+    "invalid_files_listed_with_rejection": true,
+    "no_symlink_escape": true,
+    "root_created_on_write_only": true,
+    "update_preserves_id_and_created_at": true
+  },
+  "workplan_exclusions": {
+    "analysis": false,
+    "annotations": false,
+    "backtest": false,
+    "collections": false,
+    "data_manager": false,
+    "notebooks": false,
+    "realtime": false,
+    "recipe_export": false,
+    "workspace_layout_or_detached_state": false,
+    "workspace_snapshots": false
+  }
+}

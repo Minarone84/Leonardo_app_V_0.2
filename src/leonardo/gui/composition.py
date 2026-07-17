@@ -39,6 +39,7 @@ class GuiCoreContext(Protocol):
     ohlcv_maintenance_service: object
     research_dataset_service: object
     research_study_service: object
+    research_study_setup_service: object
 
 
 class GuiCompositionRoot:
@@ -282,6 +283,7 @@ class GuiCompositionRoot:
                 window,
                 getattr(self._context, "research_dataset_service"),
                 getattr(self._context, "research_study_service"),
+                getattr(self._context, "research_study_setup_service"),
             )
             self._research_suite_window = window
             self._research_suite_presenter = presenter
