@@ -11,6 +11,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Qt, Signal
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
+from leonardo.data import MarketId
 from leonardo.gui.presenters.research_chart_presenter import ResearchChartPresenter
 from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
 from leonardo.gui.windows.study_environment_manager_dialog import (
@@ -162,6 +163,7 @@ class ResearchSuitePresenter(QObject):
         study_setup_service: ResearchStudySetupApplicationService | None = None,
         snapshot_service: SnapshotApplicationService | None = None,
         notebook_service: _NoteApplication | None = None,
+        open_data_manager: Callable[[MarketId], None] | None = None,
     ) -> None:
         super().__init__(view)
         if not isinstance(view, ResearchSuiteWindow):
@@ -194,6 +196,9 @@ class ResearchSuitePresenter(QObject):
                 "notebook_service has an invalid application-service type"
             )
         self._notebook_service = notebook_service
+        if open_data_manager is not None and not callable(open_data_manager):
+            raise TypeError("open_data_manager must be callable or None")
+        self._open_data_manager = open_data_manager
         self._dispatcher = _QtCallbackDispatcher(self)
         self._workspace_state = ResearchWorkspaceState()
         self._shell_state = ResearchWorkspaceShellState()
@@ -1929,6 +1934,7 @@ class ResearchSuitePresenter(QObject):
         self._view.snapshot_manager_requested.connect(self.open_snapshot_manager)
         self._view.new_notebook_requested.connect(self.new_notebook)
         self._view.notebooks_requested.connect(self.open_notebook_manager)
+        self._view.open_data_manager_requested.connect(self._request_data_manager)
         self._view.closed.connect(self.dispose)
         self._view.workspace_widget.active_slot_requested.connect(self.set_active_slot)
         manager = self._view.study_manager
@@ -2002,6 +2008,21 @@ class ResearchSuitePresenter(QObject):
         )
         self._view.set_active_chart_market(session.selected_market_id)
         self._view.set_workspace_full(self._workspace_state.is_full)
+
+    def _request_data_manager(self) -> None:
+        if self._disposed or self._snapshot_restore is not None:
+            return
+        presenter = self._active_presenter()
+        dataset = None if presenter is None else presenter.session.dataset
+        if dataset is None:
+            self._view.append_status(
+                "Open Data Manager requires an active accepted dataset."
+            )
+            return
+        if self._open_data_manager is None:
+            self._view.append_status("Data Manager handoff is unavailable.")
+            return
+        self._open_data_manager(dataset.market_id)
 
     def _remove_chart(self, slot_id: int) -> None:
         presenter = self._chart_presenters.pop(slot_id, None)

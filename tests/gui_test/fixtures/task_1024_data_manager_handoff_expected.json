@@ -1,0 +1,130 @@
+{
+  "artifact_preview": {
+    "columns": [
+      "ts_ms",
+      "rsi"
+    ],
+    "total_rows": 6,
+    "truncated": false
+  },
+  "canonical_artifact_order": [
+    "3333333333333333333333333333333333333333333333333333333333333333",
+    "4444444444444444444444444444444444444444444444444444444444444444"
+  ],
+  "canonical_dataset_order": [
+    "bybit|linear|BTCUSDT|1h|accepted",
+    "bybit|linear|ETHUSDT|15m|accepted",
+    "bybit|linear|SOLUSDT|1h|rejected",
+    "<unknown>|rejected"
+  ],
+  "canonical_recipe_order": [
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222222222222222222222222222"
+  ],
+  "dataset_preview": {
+    "columns": [
+      "ts_ms",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ],
+    "total_rows": 6,
+    "truncated": false
+  },
+  "deletion_rules": {
+    "artifact_exact_only": true,
+    "cascade": false,
+    "dataset_deletion": false,
+    "invalid_raw_entry_deletion": false,
+    "recipe_exact_only": true,
+    "recipe_in_use_refused": true
+  },
+  "explicit_exclusions": {
+    "analysis": false,
+    "artifact_collections": false,
+    "artifact_update_or_append": false,
+    "backtest": false,
+    "batch_calculation": false,
+    "database_materialization": false,
+    "database_seed_creation": false,
+    "metadata_editing": false,
+    "ohlcv_repair_or_delete": false,
+    "realtime": false,
+    "recipe_collections": false,
+    "research_calculation": false
+  },
+  "fixture_version": "1.0",
+  "handoff_contract": {
+    "artifact_object": false,
+    "chart_session": false,
+    "data_manager_reloads_from_canonical_persistence": true,
+    "live_dataset_arrays": false,
+    "main_window_open_without_focus_remains_supported": true,
+    "notebook": false,
+    "payload": [
+      "canonical MarketId"
+    ],
+    "study_objects": false,
+    "workspace_snapshot": false
+  },
+  "ownership": {
+    "accepted_dataset_truth": "AcceptedDatasetCatalog",
+    "async_lifecycle": "CoreRunner and TaskManager",
+    "data_manager_coordination": "DataManagerService and DataManagerSuitePresenter",
+    "dataset_bytes": "HistoricalDatasetLoader",
+    "gui_business_logic": false,
+    "recipe_artifact_persistence": "ArtifactService"
+  },
+  "preview_policy": {
+    "default_limit": 200,
+    "head_count": "ceil(limit/2)",
+    "infinity": "rejected",
+    "maximum_limit": 500,
+    "minimum_limit": 1,
+    "nan_display": "",
+    "overlap_duplicates": false,
+    "paths_exposed_to_gui": false,
+    "tail_count": "floor(limit/2)",
+    "timestamps": "decimal_utc_milliseconds",
+    "when_truncated": "deterministic_head_then_tail"
+  },
+  "selected_market_key": "bybit|linear|BTCUSDT|1h",
+  "selection_enablement": {
+    "accepted_market_only": {
+      "delete_artifact": false,
+      "delete_recipe": false,
+      "preview_artifact": false,
+      "preview_dataset": true,
+      "validate_artifact": false
+    },
+    "invalid_artifact": {
+      "delete_artifact": false,
+      "preview_artifact": false,
+      "validate_artifact": false
+    },
+    "invalid_recipe": {
+      "delete_recipe": false
+    },
+    "no_market": {
+      "delete_artifact": false,
+      "delete_recipe": false,
+      "preview_artifact": false,
+      "preview_dataset": false,
+      "validate_artifact": false
+    },
+    "operation_active": {
+      "all_mutating_and_selection_actions": false,
+      "close_window": true
+    },
+    "valid_artifact": {
+      "delete_artifact": true,
+      "preview_artifact": true,
+      "validate_artifact": true
+    },
+    "valid_unused_recipe": {
+      "delete_recipe": true
+    }
+  }
+}

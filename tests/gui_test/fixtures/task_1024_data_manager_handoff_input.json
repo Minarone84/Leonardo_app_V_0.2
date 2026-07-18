@@ -1,0 +1,269 @@
+{
+  "artifact_preview": {
+    "artifact_id": "4444444444444444444444444444444444444444444444444444444444444444",
+    "columns": [
+      "ts_ms",
+      "rsi"
+    ],
+    "rows": [
+      [
+        1784293200000,
+        45.0
+      ],
+      [
+        1784296800000,
+        48.0
+      ],
+      [
+        1784300400000,
+        52.0
+      ],
+      [
+        1784304000000,
+        57.0
+      ],
+      [
+        1784307600000,
+        61.0
+      ],
+      [
+        1784311200000,
+        64.0
+      ]
+    ]
+  },
+  "artifacts": [
+    {
+      "artifact_id": "4444444444444444444444444444444444444444444444444444444444444444",
+      "created_at_utc": "2026-07-18T10:01:00Z",
+      "first_timestamp_ms": 1784293200000,
+      "kind": "oscillator",
+      "last_timestamp_ms": 1784311200000,
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1h"
+      },
+      "output_names": [
+        "rsi"
+      ],
+      "recipe_id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "rejection_reason": "",
+      "row_count": 6,
+      "tool_key": "rsi",
+      "valid": true
+    },
+    {
+      "artifact_id": "3333333333333333333333333333333333333333333333333333333333333333",
+      "created_at_utc": null,
+      "first_timestamp_ms": 0,
+      "kind": "indicator",
+      "last_timestamp_ms": 0,
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1h"
+      },
+      "output_names": [],
+      "recipe_id": "",
+      "rejection_reason": "ArtifactValidationError: values.csv is noncanonical",
+      "row_count": 0,
+      "tool_key": "ema",
+      "valid": false
+    }
+  ],
+  "catalog_report": {
+    "accepted": [
+      {
+        "file_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "first_timestamp_ms": 1784286000000,
+        "last_timestamp_ms": 1784288700000,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "ETHUSDT",
+          "timeframe": "15m"
+        },
+        "persistence_status": "committed",
+        "row_count": 4,
+        "source": "bybit",
+        "validation_status": "ok",
+        "warnings": []
+      },
+      {
+        "file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "first_timestamp_ms": 1784293200000,
+        "last_timestamp_ms": 1784311200000,
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "BTCUSDT",
+          "timeframe": "1h"
+        },
+        "persistence_status": "repaired",
+        "row_count": 6,
+        "source": "bybit",
+        "validation_status": "ok",
+        "warnings": [
+          "gap repaired before acceptance"
+        ]
+      }
+    ],
+    "rejected": [
+      {
+        "code": "csv_hash_mismatch",
+        "market_id": {
+          "exchange": "bybit",
+          "market_type": "linear",
+          "symbol": "SOLUSDT",
+          "timeframe": "1h"
+        },
+        "reason": "candles.csv bytes no longer match accepted evidence"
+      },
+      {
+        "code": "noncanonical_storage_identity",
+        "market_id": null,
+        "reason": "dataset directory cannot be mapped to canonical MarketId"
+      }
+    ]
+  },
+  "dataset_rows": [
+    [
+      1784293200000,
+      64000.0,
+      65100.0,
+      63800.0,
+      64900.0,
+      10.0
+    ],
+    [
+      1784296800000,
+      64900.0,
+      65300.0,
+      64600.0,
+      65050.0,
+      11.0
+    ],
+    [
+      1784300400000,
+      65050.0,
+      65700.0,
+      64900.0,
+      65500.0,
+      12.0
+    ],
+    [
+      1784304000000,
+      65500.0,
+      66000.0,
+      65200.0,
+      65800.0,
+      13.0
+    ],
+    [
+      1784307600000,
+      65800.0,
+      66300.0,
+      65500.0,
+      66100.0,
+      14.0
+    ],
+    [
+      1784311200000,
+      66100.0,
+      66600.0,
+      65900.0,
+      66400.0,
+      15.0
+    ]
+  ],
+  "deletion_cases": [
+    {
+      "confirmation": "cancel",
+      "expected_calls": 0,
+      "kind": "artifact"
+    },
+    {
+      "confirmation": "delete",
+      "expected_calls": 1,
+      "kind": "artifact"
+    },
+    {
+      "confirmation": "delete",
+      "expected": "remain_listed_and_show_error",
+      "kind": "recipe",
+      "service_result": "RecipeInUseError"
+    }
+  ],
+  "fixture_version": "1.0",
+  "recipes": [
+    {
+      "created_at_utc": "2026-07-18T10:00:00Z",
+      "display_name": "RSI 14",
+      "kind": "oscillator",
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1h"
+      },
+      "output_names": [
+        "rsi"
+      ],
+      "recipe_id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "rejection_reason": "",
+      "tool_key": "rsi",
+      "valid": true
+    },
+    {
+      "created_at_utc": "2026-07-18T09:00:00Z",
+      "display_name": "EMA 20",
+      "kind": "indicator",
+      "market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1h"
+      },
+      "output_names": [
+        "ema"
+      ],
+      "recipe_id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "rejection_reason": "",
+      "tool_key": "ema",
+      "valid": true
+    }
+  ],
+  "research_handoff_cases": [
+    {
+      "active_market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "BTCUSDT",
+        "timeframe": "1h"
+      },
+      "expected": "open_and_focus_exact_market"
+    },
+    {
+      "active_market_id": null,
+      "expected": "block_without_opening_or_mutating_data_manager"
+    },
+    {
+      "active_market_id": {
+        "exchange": "bybit",
+        "market_type": "linear",
+        "symbol": "SOLUSDT",
+        "timeframe": "1h"
+      },
+      "expected": "open_and_show_rejected_or_missing_market_status"
+    }
+  ],
+  "selected_market": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSDT",
+    "timeframe": "1h"
+  }
+}

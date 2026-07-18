@@ -65,6 +65,7 @@ class ResearchSuiteWindow(QWidget):
     snapshot_manager_requested = Signal()
     new_notebook_requested = Signal()
     notebooks_requested = Signal()
+    open_data_manager_requested = Signal()
     closed = Signal()
 
     def __init__(
@@ -341,6 +342,7 @@ class ResearchSuiteWindow(QWidget):
             self.set_status(status)
         self._sync_study_environment_controls()
         self._sync_snapshot_controls()
+        self._sync_data_manager_control()
 
     def set_study_setup_available(self, available: bool) -> None:
         if type(available) is not bool:
@@ -382,6 +384,7 @@ class ResearchSuiteWindow(QWidget):
         self._sync_snapshot_controls()
         self._sync_restore_mutation_controls()
         self._sync_notebook_controls()
+        self._sync_data_manager_control()
 
     def set_snapshot_workspace_idle(self, has_charts: bool, all_idle: bool) -> None:
         if type(has_charts) is not bool or type(all_idle) is not bool:
@@ -669,6 +672,13 @@ class ResearchSuiteWindow(QWidget):
             self.notebooks_requested.emit,
         )
         toolbar.addWidget(notebooks)
+        open_data_manager = self._button(
+            chart_panel,
+            "research_suite.button.open_data_manager",
+            "Open Data Manager",
+            self.open_data_manager_requested.emit,
+        )
+        toolbar.addWidget(open_data_manager)
         chart_layout.addLayout(toolbar)
         content = QHBoxLayout()
         content.setContentsMargins(0, 0, 0, 0)
@@ -825,6 +835,15 @@ class ResearchSuiteWindow(QWidget):
         )
         self._controls["research_suite.button.new_notebook"].setEnabled(enabled)
         self._controls["research_suite.button.notebooks"].setEnabled(enabled)
+
+    def _sync_data_manager_control(self) -> None:
+        button = self._controls.get("research_suite.button.open_data_manager")
+        if button is not None:
+            button.setEnabled(
+                self._active_slot_id is not None
+                and self._active_dataset_ready
+                and not self._snapshot_restore_active
+            )
 
     def _sync_restore_mutation_controls(self) -> None:
         if "research_suite.button.close_active_chart" not in self._controls:

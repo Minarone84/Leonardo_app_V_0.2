@@ -19,6 +19,7 @@ from leonardo.core.process_manager import ProcessManager
 from leonardo.core.runtime_manager import RuntimeManagerBackend
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
+from leonardo.data_manager import DataManagerApplicationService, DataManagerService
 from leonardo.ohlcv import (
     CanonicalOHLCVValidator,
     HistoricalDownloadApplicationService,
@@ -68,6 +69,7 @@ class CoreContext:
     research_study_setup_service: ResearchStudySetupApplicationService
     research_workspace_snapshot_service: ResearchWorkspaceSnapshotApplicationService
     research_notebook_service: ResearchNotebookApplicationService
+    data_manager_service: DataManagerApplicationService
 
 
 class LeonardoApp:
@@ -139,6 +141,15 @@ class LeonardoApp:
         )
         self.artifact_service = ArtifactService(
             self.config.paths.historical_data_dir
+        )
+        self.data_manager_domain = DataManagerService(
+            self.accepted_dataset_catalog,
+            self.historical_dataset_loader,
+            self.artifact_service,
+        )
+        self.data_manager_service = DataManagerApplicationService(
+            self.core_runner,
+            self.data_manager_domain,
         )
         self.research_study_domain = ResearchStudyService(self.artifact_service)
         self.research_study_service = ResearchStudyApplicationService(
@@ -217,6 +228,7 @@ class LeonardoApp:
             research_study_setup_service=self.research_study_setup_service,
             research_workspace_snapshot_service=self.research_workspace_snapshot_service,
             research_notebook_service=self.research_notebook_service,
+            data_manager_service=self.data_manager_service,
         )
 
     @property

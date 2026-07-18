@@ -7,8 +7,10 @@ from typing import Protocol
 
 from PySide6.QtWidgets import QWidget
 
+from leonardo.data import MarketId
 from leonardo.gui.action_observer import GuiActionObserver, build_gui_action_observer
 from leonardo.gui.presenters import (
+    DataManagerSuitePresenter,
     HistoricalDownloadPresenter,
     OhlcvMaintenancePresenter,
     ResearchSuitePresenter,
@@ -42,6 +44,7 @@ class GuiCoreContext(Protocol):
     research_study_setup_service: object
     research_workspace_snapshot_service: object
     research_notebook_service: object
+    data_manager_service: object
 
 
 class GuiCompositionRoot:
@@ -67,6 +70,7 @@ class GuiCompositionRoot:
         self._research_suite_window: ResearchSuiteWindow | None = None
         self._research_suite_presenter: ResearchSuitePresenter | None = None
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
+        self._data_manager_suite_presenter: DataManagerSuitePresenter | None = None
         self._analysis_suite_window: AnalysisSuiteWindow | None = None
         self._trading_suite_window: TradingSuiteWindow | None = None
         self._runtime_manager_window: RuntimeManagerWindow | None = None
@@ -105,6 +109,10 @@ class GuiCompositionRoot:
     @property
     def data_manager_suite_window(self) -> DataManagerSuiteWindow | None:
         return self._data_manager_suite_window
+
+    @property
+    def data_manager_suite_presenter(self) -> DataManagerSuitePresenter | None:
+        return self._data_manager_suite_presenter
 
     @property
     def analysis_suite_window(self) -> AnalysisSuiteWindow | None:
@@ -237,13 +245,9 @@ class GuiCompositionRoot:
     def _open_suite_shell(self, action_id: str, parent: LeonardoMainWindow) -> str:
         if action_id == "main_window.open_research_suite":
             return self._open_research_suite(parent)
+        if action_id == "main_window.open_data_manager_suite":
+            return self._open_data_manager_suite(parent)
         mapping = {
-            "main_window.open_data_manager_suite": (
-                "_data_manager_suite_window",
-                DataManagerSuiteWindow,
-                "data_manager_suite.window",
-                "Data Manager Suite",
-            ),
             "main_window.open_analysis_suite": (
                 "_analysis_suite_window",
                 AnalysisSuiteWindow,
@@ -288,6 +292,7 @@ class GuiCompositionRoot:
                 getattr(self._context, "research_study_setup_service"),
                 getattr(self._context, "research_workspace_snapshot_service"),
                 getattr(self._context, "research_notebook_service"),
+                lambda market_id: self._open_data_manager_suite(parent, market_id),
             )
             self._research_suite_window = window
             self._research_suite_presenter = presenter
@@ -300,6 +305,38 @@ class GuiCompositionRoot:
             )
         self._show_window(self._research_suite_window)
         return "Research Suite opened."
+
+    def _open_data_manager_suite(
+        self, parent: LeonardoMainWindow, market_id: MarketId | None = None
+    ) -> str:
+        if (
+            self._data_manager_suite_window is None
+            or self._data_manager_suite_presenter is None
+            or self._data_manager_suite_presenter.is_disposed
+        ):
+            window = DataManagerSuiteWindow(
+                action_observer=self._action_observer,
+                parent=parent,
+            )
+            presenter = DataManagerSuitePresenter(
+                window,
+                getattr(self._context, "data_manager_service"),
+            )
+            self._data_manager_suite_window = window
+            self._data_manager_suite_presenter = presenter
+            self._register_window_actions(window, "data_manager_suite.window")
+            self._install_tracker(
+                window,
+                "data_manager_suite.window",
+                "Data Manager Suite",
+                "suite",
+            )
+        self._show_window(self._data_manager_suite_window)
+        if market_id is not None:
+            self._data_manager_suite_presenter.focus_market(
+                market_id, source="research"
+            )
+        return "Data Manager Suite opened."
 
     def _register_window_actions(self, window: object, window_id: str) -> None:
         observer = self._action_observer
