@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import MappingProxyType
+
+import pytest
 
 from leonardo.data import MarketId
 from leonardo.gui.chart.candlestick_scene import SceneRect
@@ -13,6 +16,7 @@ from leonardo.research import (
     StudyPresentation,
     ViewportSnapshot,
 )
+from leonardo.research.study_presentation import StudyBackgroundRegionStyle
 
 
 def _projection(
@@ -233,6 +237,94 @@ def test_conditional_fills_preserve_every_adjacent_finite_interval() -> None:
     assert sum(max(0, len(fill.points) - 1) for fill in scene.fills) == 3
 
 
+def test_hck_lines_and_fill_share_state_colors_and_nan_segmentation() -> None:
+    nan = float("nan")
+    projection = _projection(
+        "hck-state",
+        {
+            "fast_vwap": (101.0, 102.0, 103.0, nan, 105.0, 106.0, 107.0),
+            "slow_vwap": (99.0, 100.0, 101.0, nan, 103.0, 104.0, 105.0),
+        },
+        {
+            "vwap_color": (
+                "green",
+                "green",
+                "silver",
+                "silver",
+                "red",
+                "red",
+                "green",
+            )
+        },
+    )
+    colors = MappingProxyType(
+        {"green": "#22C55E", "silver": "#22C55E", "red": "#EF4444"}
+    )
+    presentation = StudyPresentation(
+        "hck-state",
+        True,
+        "price",
+        {
+            name: StudyLineStyle(
+                name,
+                "#22C55E",
+                conditional_driver_name="vwap_color",
+                conditional_colors=colors,
+            )
+            for name in ("fast_vwap", "slow_vwap")
+        },
+        {
+            "hck_band": StudyFillStyle(
+                "hck_band",
+                "fast_vwap",
+                "slow_vwap",
+                "#22C55E",
+                0.08,
+                True,
+                conditional_driver_name="vwap_color",
+                conditional_colors=colors,
+            )
+        },
+    )
+    scene = build_study_scene(
+        PriceStudyBundle((projection,), (presentation,)),
+        _viewport(),
+        _scale(),
+        SceneRect(0.0, 0.0, 700.0, 300.0),
+    )
+
+    by_output = {
+        name: tuple(
+            (strip.color, tuple(point.global_index for point in strip.points))
+            for strip in scene.line_strips
+            if strip.output_name == name
+        )
+        for name in ("fast_vwap", "slow_vwap")
+    }
+    assert by_output["fast_vwap"] == by_output["slow_vwap"]
+    assert {color for color, _points in by_output["fast_vwap"]} == {
+        "#22C55E",
+        "#EF4444",
+    }
+    assert all(len(points) >= 2 for _color, points in by_output["fast_vwap"])
+    assert all(len(fill.points) >= 2 for fill in scene.fills)
+    assert {fill.color for fill in scene.fills} == {"#22C55E", "#EF4444"}
+    assert sum(len(strip.points) - 1 for strip in scene.line_strips) == 6
+    assert sum(len(fill.points) - 1 for fill in scene.fills) == 3
+    assert scene.autoscale_values == (
+        101.0,
+        102.0,
+        103.0,
+        105.0,
+        106.0,
+        99.0,
+        100.0,
+        101.0,
+        103.0,
+        104.0,
+    )
+
+
 def test_visible_fill_autoscale_includes_hidden_boundaries_once() -> None:
     projection = _projection(
         "fill-autoscale",
@@ -293,3 +385,94 @@ def test_visible_fill_autoscale_includes_hidden_boundaries_once() -> None:
         SceneRect(0.0, 0.0, 700.0, 300.0),
     )
     assert hidden_scene.autoscale_values == ()
+
+
+def test_background_regions_split_clip_hide_and_do_not_autoscale() -> None:
+    projection = _projection(
+        "utc",
+        {"hor_upper": (110.0,) * 6},
+        {
+            "uptrend": (True, True, False, True, None, True),
+            "downtrend": (False, False, True, True, float("nan"), False),
+        },
+    )
+    styles = {"hor_upper": StudyLineStyle("hor_upper", "#60A5FA", visible=False)}
+    regions = {
+        "utc_uptrend": StudyBackgroundRegionStyle(
+            "utc_uptrend", "uptrend", "#22C55E"
+        ),
+        "utc_downtrend": StudyBackgroundRegionStyle(
+            "utc_downtrend", "downtrend", "#EF4444"
+        ),
+    }
+    presentation = StudyPresentation(
+        "utc",
+        True,
+        "price",
+        styles,
+        {},
+        background_region_styles=regions,
+    )
+    scene = build_study_scene(
+        PriceStudyBundle((projection,), (presentation,)),
+        _viewport(),
+        _scale(),
+        SceneRect(0.0, 0.0, 700.0, 300.0),
+    )
+
+    actual = tuple(
+        (
+            region.region_id,
+            region.start_index,
+            region.end_index,
+            region.x,
+            region.width,
+        )
+        for region in scene.background_regions
+    )
+    assert tuple(item[:3] for item in actual) == (
+        ("utc_uptrend", 2, 3),
+        ("utc_downtrend", 4, 5),
+        ("utc_uptrend", 5, 5),
+        ("utc_uptrend", 7, 7),
+    )
+    assert tuple(item[3] for item in actual) == pytest.approx(
+        (100.0, 300.0, 400.0, 600.0)
+    )
+    assert tuple(item[4] for item in actual) == pytest.approx(
+        (200.0, 200.0, 100.0, 100.0)
+    )
+    assert tuple(region.color for region in scene.background_regions) == (
+        "#22C55E",
+        "#EF4444",
+        "#22C55E",
+        "#22C55E",
+    )
+    assert scene.autoscale_values == ()
+
+    hidden_region = replace(regions["utc_uptrend"], visible=False)
+    hidden_style = replace(
+        presentation,
+        background_region_styles={
+            "utc_uptrend": hidden_region,
+            "utc_downtrend": regions["utc_downtrend"],
+        },
+    )
+    hidden_style_scene = build_study_scene(
+        PriceStudyBundle((projection,), (hidden_style,)),
+        _viewport(),
+        _scale(),
+        SceneRect(0.0, 0.0, 700.0, 300.0),
+    )
+    assert {item.region_id for item in hidden_style_scene.background_regions} == {
+        "utc_downtrend"
+    }
+
+    hidden_study = replace(presentation, visible=False)
+    hidden_study_scene = build_study_scene(
+        PriceStudyBundle((projection,), (hidden_study,)),
+        _viewport(),
+        _scale(),
+        SceneRect(0.0, 0.0, 700.0, 300.0),
+    )
+    assert hidden_study_scene.background_regions == ()

@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QMouseEvent,
+    QPainter,
+    QPainterPath as PainterShape,
+    QPen,
+    QPixmap,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QWidget
 
 from leonardo.gui.chart.candlestick_scene import (
@@ -27,6 +36,9 @@ class OscillatorPalette:
     axis_text: str = "#AAB4C2"
     message_text: str = "#A0A9B5"
     crosshair: str = "#758394"
+    bullish_volume: str = "#22C55E"
+    bearish_volume: str = "#EF4444"
+    neutral_volume: str = "#94A3B8"
 
 
 class OscillatorStudyWidget(QWidget):
@@ -120,6 +132,7 @@ class OscillatorStudyWidget(QWidget):
                 self._presentation,
                 self._interaction.viewport.snapshot(),
                 self._scene_rect(),
+                self._interaction.resident,
             )
         self._invalidate()
 
@@ -237,12 +250,51 @@ class OscillatorStudyWidget(QWidget):
         painter.drawRect(plot)
         painter.setFont(QFont("Consolas", 8))
         for guide in scene.guides:
-            pen = QPen(QColor(self._palette.grid))
-            pen.setStyle(Qt.DashLine)
+            pen = QPen(QColor(guide.color))
+            pen.setWidthF(guide.line_width)
+            pen.setStyle(
+                {
+                    "solid": Qt.SolidLine,
+                    "dashed": Qt.DashLine,
+                    "dotted": Qt.DotLine,
+                }[guide.line_pattern]
+            )
             painter.setPen(pen)
             painter.drawLine(QPointF(plot.left(), guide.y), QPointF(plot.right(), guide.y))
             painter.setPen(QColor(self._palette.axis_text))
             painter.drawText(QPointF(plot.right() + 6, guide.y + 4), f"{guide.value:g}")
+        for fill in scene.fills:
+            path = PainterShape()
+            first = fill.points[0]
+            path.moveTo(first.x, first.upper_y)
+            for point in fill.points[1:]:
+                path.lineTo(point.x, point.upper_y)
+            for point in reversed(fill.points):
+                path.lineTo(point.x, point.lower_y)
+            path.closeSubpath()
+            opacity = painter.opacity()
+            painter.setOpacity(fill.opacity)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(fill.color))
+            draw_path = painter.drawPath
+            draw_path(path)
+            painter.setOpacity(opacity)
+        volume_colors = {
+            "bullish": self._palette.bullish_volume,
+            "bearish": self._palette.bearish_volume,
+            "neutral": self._palette.neutral_volume,
+        }
+        painter.setPen(Qt.PenStyle.NoPen)
+        for bar in scene.histogram_bars:
+            painter.setBrush(QColor(volume_colors[bar.direction]))
+            painter.drawRect(
+                QRectF(
+                    bar.x - bar.width / 2.0,
+                    min(bar.top, bar.bottom),
+                    bar.width,
+                    abs(bar.bottom - bar.top),
+                )
+            )
         for strip in scene.line_strips:
             pen = QPen(QColor(strip.color))
             pen.setWidthF(strip.line_width)

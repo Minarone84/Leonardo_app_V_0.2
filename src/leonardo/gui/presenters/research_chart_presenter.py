@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from importlib import import_module
+from typing import Any, Protocol
 from uuid import uuid4
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
@@ -13,7 +14,6 @@ from leonardo.gui.chart.annotation_scene import (
     ResearchChartAnnotationBundle,
     ResearchChartAnnotationProjection,
 )
-from leonardo.gui.widgets.research_chart_slot_widget import ResearchChartSlotWidget
 from leonardo.gui.windows.study_style_dialog import StudyStyleDialog, StudyStylePatch
 from leonardo.research import (
     ChartSessionState,
@@ -28,7 +28,9 @@ from leonardo.research import (
     StudyApplyAttempt,
     StudyArtifactRequest,
     StudyDependencyError,
+    StudyEditAttempt,
     StudyExecutionRequest,
+    StudyGuideStyle,
     StudyInputSource,
     StudySaveAttempt,
     StudySaveOutcome,
@@ -52,12 +54,70 @@ _ResearchAnnotation = getattr(
 )
 
 
+class _ResearchChartView(Protocol):
+    @property
+    def slot_id(self) -> int: ...
+
+    @property
+    def chart_widget(self) -> Any: ...
+
+    @property
+    def chart_workspace(self) -> Any: ...
+
+    @property
+    def status_text(self) -> str: ...
+
+    def clear_chart_state(self) -> None: ...
+
+    def set_dataset(self, market_id) -> None: ...
+
+    def set_go_to_enabled(self, enabled: bool) -> None: ...
+
+    def set_status(self, message: str) -> None: ...
+
+    def set_progress(self, current: int | None, total: int | None) -> None: ...
+
+    def set_busy(self, busy: bool) -> None: ...
+
+    def show_interaction_state(self, state, volume_projection) -> None: ...
+
+    def set_study_state(self, projections, presentations) -> None: ...
+
+    def set_study_snapshot(self, projections, presentations, entries) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ChartOperationOutcome:
     status: str
     slot_id: int
     session_id: str
     message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StudyOperationOutcome:
+    slot_id: int
+    session_id: str
+    operation: str
+    status: str
+    message: str
+    study_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.slot_id) is not int or self.slot_id < 1:
+            raise ValueError("slot_id must be a positive integer")
+        if not isinstance(self.session_id, str) or not self.session_id:
+            raise ValueError("session_id must be non-empty text")
+        if self.operation not in {"apply", "edit", "save"}:
+            raise ValueError("operation must be apply, edit, or save")
+        if self.status not in {"success", "failure", "cancelled", "stale"}:
+            raise ValueError("invalid Study operation status")
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
+        if self.study_id is not None and (
+            not isinstance(self.study_id, str) or not self.study_id
+        ):
+            raise ValueError("study_id must be non-empty text or None")
 
 
 @dataclass(slots=True)
@@ -85,7 +145,7 @@ class ResearchChartPresenter:
     def __init__(
         self,
         slot_id: int,
-        view: ResearchChartSlotWidget,
+        view: _ResearchChartView,
         session: ChartSessionState,
         service: ResearchDatasetApplicationService,
         study_service: ResearchStudyApplicationService,
@@ -130,6 +190,9 @@ class ResearchChartPresenter:
         self._open_attempt = None
         self._slice_attempt = None
         self._active_study_tasks: dict[str, tuple[str, object]] = {}
+        self._study_completion_callbacks: dict[
+            str, Callable[[StudyOperationOutcome], None]
+        ] = {}
         self._environment_report: EnvironmentCompatibilityReport | None = None
         self._environment_run: _EnvironmentRun | None = None
         self._dataset_completion: Callable[[ChartOperationOutcome], None] | None = None
@@ -254,8 +317,15 @@ class ResearchChartPresenter:
             + ("cancellation requested." if cancelled else "operation already settled.")
         )
 
-    def submit_study_calculation(self, request: StudyExecutionRequest):
+    def submit_study_calculation(
+        self,
+        request: StudyExecutionRequest,
+        *,
+        completion_callback: Callable[[StudyOperationOutcome], None] | None = None,
+    ):
         self._require_current()
+        if completion_callback is not None and not callable(completion_callback):
+            raise TypeError("completion_callback must be callable or None")
         if self.environment_apply_active:
             raise RuntimeError("an environment Apply run is active for this chart")
         if not isinstance(request, StudyExecutionRequest):
@@ -281,6 +351,8 @@ class ResearchChartPresenter:
             self._set_busy(False)
             raise
         self._active_study_tasks[submission.task_id] = ("apply", attempt)
+        if completion_callback is not None:
+            self._study_completion_callbacks[submission.task_id] = completion_callback
         self._changed()
         return submission
 
@@ -313,8 +385,57 @@ class ResearchChartPresenter:
         self._changed()
         return submission
 
-    def save_study(self, study_id: str) -> None:
+    def submit_study_edit(
+        self,
+        study_id: str,
+        request: StudyExecutionRequest,
+        *,
+        completion_callback: Callable[[StudyOperationOutcome], None] | None = None,
+    ):
         self._require_current()
+        if completion_callback is not None and not callable(completion_callback):
+            raise TypeError("completion_callback must be callable or None")
+        if self.environment_apply_active:
+            raise RuntimeError("an environment Apply run is active for this chart")
+        if not isinstance(request, StudyExecutionRequest):
+            raise TypeError("request must be a StudyExecutionRequest")
+        dataset = self._session.dataset
+        if dataset is None:
+            raise RuntimeError("an accepted Research dataset is required")
+        attempt = self._session.begin_study_edit(study_id)
+        self._set_busy(True)
+        self._set_status("Editing Research Study")
+        try:
+            submission = self._study_service.submit_edit(
+                attempt,
+                dataset,
+                self._session.studies,
+                request,
+                progress_callback=self._on_study_progress,
+                result_callback=lambda result: self._on_study_edit_result(
+                    result, attempt
+                ),
+                callback_dispatcher=self._dispatch,
+            )
+        except Exception:
+            self._session.settle_study_edit_failure(attempt)
+            self._set_busy(False)
+            raise
+        self._active_study_tasks[submission.task_id] = ("edit", attempt)
+        if completion_callback is not None:
+            self._study_completion_callbacks[submission.task_id] = completion_callback
+        self._changed()
+        return submission
+
+    def save_study(
+        self,
+        study_id: str,
+        *,
+        completion_callback: Callable[[StudyOperationOutcome], None] | None = None,
+    ):
+        self._require_current()
+        if completion_callback is not None and not callable(completion_callback):
+            raise TypeError("completion_callback must be callable or None")
         if self.environment_apply_active:
             self._log(f"Chart {self._slot_id} Study Save blocked by environment Apply.")
             return
@@ -338,10 +459,17 @@ class ResearchChartPresenter:
             if attempt is not None:
                 self._session.settle_study_save_failure(attempt)
             self._log(f"Chart {self._slot_id} Study Save submission failed: {error}")
-            return
+            self._invoke_study_completion(
+                completion_callback,
+                self._study_outcome("save", "failure", str(error), study_id),
+            )
+            return None
         self._active_study_tasks[submission.task_id] = ("save", attempt)
+        if completion_callback is not None:
+            self._study_completion_callbacks[submission.task_id] = completion_callback
         self._set_busy(True)
         self._set_status("Saving Research Study")
+        return submission
 
     def set_study_visibility(self, study_id: str, visible: bool) -> None:
         if not self._runtime_is_current():
@@ -352,6 +480,7 @@ class ResearchChartPresenter:
         try:
             self._session.set_study_visibility(study_id, visible)
             self._refresh_study_state()
+            self._log(f"Chart {self._slot_id} Study visibility changed: {study_id}.")
         except (TypeError, ValueError) as error:
             self._log(f"Chart {self._slot_id} Study visibility failed: {error}")
 
@@ -363,9 +492,10 @@ class ResearchChartPresenter:
         presentation = self._presentation(study_id)
         if presentation is None:
             return None
-        dialog = StudyStyleDialog(presentation, self._view)
+        dialog = StudyStyleDialog(presentation)
         dialog.patch_applied.connect(self.apply_style_patch)
         dialog.reset_requested.connect(self.reset_study_style)
+        dialog.setParent(self._view, dialog.windowFlags())
         dialog.show()
         return dialog
 
@@ -389,8 +519,49 @@ class ResearchChartPresenter:
                     patch.study_id, style.fill_id, style
                 )
             self._refresh_study_state()
+            self._log(f"Chart {self._slot_id} Study style applied: {patch.study_id}.")
         except (TypeError, ValueError) as error:
             self._log(f"Chart {self._slot_id} Study style failed: {error}")
+
+    def apply_guide_values(
+        self,
+        study_id: str,
+        guide_values: Mapping[str, float],
+    ) -> None:
+        self._require_current()
+        if self.environment_apply_active:
+            raise RuntimeError(
+                "an environment Apply run is active for this chart"
+            )
+        current = self._presentation(study_id)
+        if current is None:
+            raise StudyValidationError("Study presentation is unavailable")
+        if tuple(guide_values) != tuple(current.guide_styles):
+            raise StudyValidationError(
+                "guide value identities do not match Study presentation"
+            )
+        styles = tuple(
+            replace(
+                current.guide_styles[guide_id],
+                value=value,
+            )
+            for guide_id, value in guide_values.items()
+        )
+        self._apply_guide_styles(study_id, styles)
+
+    def _apply_guide_styles(
+        self,
+        study_id: str,
+        styles: tuple[StudyGuideStyle, ...],
+    ) -> None:
+        if not all(isinstance(style, StudyGuideStyle) for style in styles):
+            raise StudyValidationError("guide values are invalid")
+        study = self._session.study_registry.get(study_id)
+        self._session._presentations.replace_guide_styles(study, styles)
+        self._refresh_study_state()
+        self._log(
+            f"Chart {self._slot_id} Study guides applied: {study_id}."
+        )
 
     def reset_study_style(self, study_id: str) -> None:
         if not self._runtime_is_current():
@@ -400,6 +571,7 @@ class ResearchChartPresenter:
         try:
             self._session.reset_study_presentation(study_id)
             self._refresh_study_state()
+            self._log(f"Chart {self._slot_id} Study style reset: {study_id}.")
         except (TypeError, ValueError) as error:
             self._log(f"Chart {self._slot_id} Study style reset failed: {error}")
 
@@ -412,6 +584,7 @@ class ResearchChartPresenter:
         try:
             self._session.remove_study(study_id)
             self._refresh_study_state()
+            self._log(f"Chart {self._slot_id} Study removed: {study_id}.")
         except StudyDependencyError as error:
             self._log(f"Chart {self._slot_id} Study removal blocked: {error}")
         except (TypeError, ValueError) as error:
@@ -588,6 +761,7 @@ class ResearchChartPresenter:
         for task_id in tuple(self._active_study_tasks):
             self._study_service.cancel(task_id)
         self._active_study_tasks.clear()
+        self._study_completion_callbacks.clear()
         self._view.set_go_to_enabled(False)
         self.clear_notebook_annotations()
         try:
@@ -729,40 +903,196 @@ class ResearchChartPresenter:
 
     def _on_study_apply_result(self, result: TaskResult, attempt: StudyApplyAttempt) -> None:
         if not self._runtime_is_current():
+            self._active_study_tasks.pop(result.task_id, None)
+            self._study_completion_callbacks.pop(result.task_id, None)
             return
-        if self._active_study_tasks.pop(result.task_id, None) is None:
+        active = self._active_study_tasks.pop(result.task_id, None)
+        completion = self._study_completion_callbacks.pop(result.task_id, None)
+        if active != ("apply", attempt):
             return
         if result.status == "completed" and isinstance(result.value, PreparedStudy):
+            error_message = ""
             try:
                 accepted = self._session.accept_study_apply(attempt, result.value)
             except (TypeError, ValueError, StudyValidationError) as error:
                 self._log(f"Chart {self._slot_id} Study Apply failed: {error}")
                 accepted = False
+                error_message = str(error)
             if accepted:
-                self._refresh_study_state()
                 self._set_status("Study applied")
                 self._log(
                     f"Chart {self._slot_id} Study applied: {result.value.study.display_name}."
                 )
+                self._invoke_study_completion(
+                    completion,
+                    self._study_outcome(
+                        "apply",
+                        "success",
+                        "Study applied",
+                        result.value.study.study_id,
+                    ),
+                )
+                self._refresh_study_state()
+            else:
+                status = "failure" if error_message else "stale"
+                message = error_message or "Study Apply target is stale"
+                self._set_status(f"Study Apply {status}")
+                self._invoke_study_completion(
+                    completion,
+                    self._study_outcome(
+                        "apply", status, message, result.value.study.study_id
+                    ),
+                )
         else:
             self._session.settle_study_apply_failure(attempt)
             self._handle_terminal_failure("Study Apply", result)
+            self._invoke_study_completion(
+                completion,
+                self._study_outcome(
+                    "apply",
+                    "cancelled" if result.status == "cancelled" else "failure",
+                    result.error_message or result.error_type or result.status,
+                    attempt.study_id,
+                ),
+            )
         self._refresh_busy_state()
 
     def _on_study_save_result(self, result: TaskResult, attempt: StudySaveAttempt) -> None:
         if not self._runtime_is_current():
+            self._active_study_tasks.pop(result.task_id, None)
+            self._study_completion_callbacks.pop(result.task_id, None)
             return
-        if self._active_study_tasks.pop(result.task_id, None) is None:
+        active = self._active_study_tasks.pop(result.task_id, None)
+        completion = self._study_completion_callbacks.pop(result.task_id, None)
+        if active != ("save", attempt):
             return
         if result.status == "completed" and isinstance(result.value, StudySaveOutcome):
             if self._session.accept_study_save(attempt, result.value):
                 self._refresh_study_state()
                 self._set_status("Study saved")
                 self._log(f"Chart {self._slot_id} Study saved: {attempt.study_id}.")
+                self._invoke_study_completion(
+                    completion,
+                    self._study_outcome(
+                        "save", "success", "Study saved", attempt.study_id
+                    ),
+                )
+            else:
+                self._set_status("Study Save stale")
+                self._invoke_study_completion(
+                    completion,
+                    self._study_outcome(
+                        "save",
+                        "stale",
+                        "Study Save target is stale",
+                        attempt.study_id,
+                    ),
+                )
         else:
             self._session.settle_study_save_failure(attempt)
             self._handle_terminal_failure("Study Save", result)
+            self._invoke_study_completion(
+                completion,
+                self._study_outcome(
+                    "save",
+                    "cancelled" if result.status == "cancelled" else "failure",
+                    result.error_message or result.error_type or result.status,
+                    attempt.study_id,
+                ),
+            )
         self._refresh_busy_state()
+
+    def _on_study_edit_result(self, result: TaskResult, attempt: StudyEditAttempt) -> None:
+        if not self._runtime_is_current():
+            self._active_study_tasks.pop(result.task_id, None)
+            self._study_completion_callbacks.pop(result.task_id, None)
+            return
+        active = self._active_study_tasks.pop(result.task_id, None)
+        completion = self._study_completion_callbacks.pop(result.task_id, None)
+        if active != ("edit", attempt):
+            return
+        if result.status == "completed" and isinstance(result.value, PreparedStudy):
+            error_message = ""
+            try:
+                accepted = self._session.accept_study_edit(attempt, result.value)
+            except (
+                TypeError,
+                ValueError,
+                StudyDependencyError,
+                StudyValidationError,
+            ) as error:
+                self._log(f"Chart {self._slot_id} Study Edit failed: {error}")
+                accepted = False
+                error_message = str(error)
+            if accepted:
+                self._refresh_study_state()
+                self._set_status("Study edited")
+                self._log(
+                    f"Chart {self._slot_id} Study edited: "
+                    f"{result.value.study.display_name}."
+                )
+                self._invoke_study_completion(
+                    completion,
+                    self._study_outcome(
+                        "edit",
+                        "success",
+                        "Study edited",
+                        result.value.study.study_id,
+                    ),
+                )
+            else:
+                status = "failure" if error_message else "stale"
+                message = error_message or "Study Edit target is stale"
+                self._set_status(f"Study Edit {status}")
+                self._invoke_study_completion(
+                    completion,
+                    self._study_outcome(
+                        "edit", status, message, attempt.study_id
+                    ),
+                )
+        else:
+            self._session.settle_study_edit_failure(attempt)
+            self._handle_terminal_failure("Study Edit", result)
+            self._invoke_study_completion(
+                completion,
+                self._study_outcome(
+                    "edit",
+                    "cancelled" if result.status == "cancelled" else "failure",
+                    result.error_message or result.error_type or result.status,
+                    attempt.study_id,
+                ),
+            )
+        self._refresh_busy_state()
+
+    def _study_outcome(
+        self,
+        operation: str,
+        status: str,
+        message: str,
+        study_id: str | None,
+    ) -> StudyOperationOutcome:
+        return StudyOperationOutcome(
+            self._slot_id,
+            self._session.session_id,
+            operation,
+            status,
+            message,
+            study_id,
+        )
+
+    def _invoke_study_completion(
+        self,
+        callback: Callable[[StudyOperationOutcome], None] | None,
+        outcome: StudyOperationOutcome,
+    ) -> None:
+        if callback is None or not self._runtime_is_current():
+            return
+        try:
+            callback(outcome)
+        except Exception as error:
+            self._log(
+                f"Chart {self._slot_id} Study completion callback failed: {error}"
+            )
 
     def _submit_environment_entry(self) -> None:
         run = self._environment_run
@@ -923,13 +1253,30 @@ class ResearchChartPresenter:
         supplied_lines = tuple(item.output_name for item in entry.presentation.line_styles)
         expected_fills = tuple(current.fill_styles)
         supplied_fills = tuple(item.fill_id for item in entry.presentation.fill_styles)
-        if expected_lines != supplied_lines or expected_fills != supplied_fills:
+        expected_guides = tuple(current.guide_styles)
+        supplied_guides = tuple(
+            item.guide_id for item in entry.presentation.guide_styles
+        )
+        legacy_tdirsi_without_fill = (
+            entry.tool_key == "tdirsi"
+            and expected_lines == supplied_lines
+            and expected_fills == ("tdirsi_band",)
+            and supplied_fills == ()
+        )
+        if expected_lines != supplied_lines or (
+            expected_fills != supplied_fills and not legacy_tdirsi_without_fill
+        ) or (supplied_guides and expected_guides != supplied_guides):
             raise StudyValidationError("environment presentation styles do not match Study")
         self._session.set_study_visibility(study_id, entry.presentation.visible)
         for style in entry.presentation.line_styles:
             self._session.replace_study_line_style(study_id, style.output_name, style)
         for style in entry.presentation.fill_styles:
             self._session.replace_study_fill_style(study_id, style.fill_id, style)
+        if entry.presentation.guide_styles:
+            self._apply_guide_styles(
+                study_id,
+                entry.presentation.guide_styles,
+            )
 
     def _complete_environment_run(self) -> None:
         run = self._environment_run
@@ -1116,7 +1463,16 @@ class ResearchChartPresenter:
             for item in self._session.study_registry.projection_snapshot()
             if isinstance(item, ResidentStudyProjection)
         )
-        self._view.set_study_state(projections, self._session.study_presentations())
+        presentations = self._session.study_presentations()
+        set_snapshot = getattr(self._view, "set_study_snapshot", None)
+        if callable(set_snapshot):
+            set_snapshot(
+                projections,
+                presentations,
+                self._session.study_manager_entries(),
+            )
+        else:
+            self._view.set_study_state(projections, presentations)
         self._changed()
 
     def _refresh_busy_state(self) -> None:

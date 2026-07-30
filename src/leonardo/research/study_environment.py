@@ -20,7 +20,11 @@ from leonardo.financial_tools import (
     resolve_parameters,
 )
 from leonardo.research.studies import StudyUserMetadata
-from leonardo.research.study_presentation import StudyFillStyle, StudyLineStyle
+from leonardo.research.study_presentation import (
+    StudyFillStyle,
+    StudyGuideStyle,
+    StudyLineStyle,
+)
 from leonardo.research.study_setup import source_role_schema
 
 
@@ -39,6 +43,10 @@ _PRIVATE_SOURCE_ALIASES = {
     "slow": "__research_slow",
     "peak": "__research_peak",
     "trough": "__research_trough",
+    "trend_peak": "__research_trend_peak",
+    "trend_trough": "__research_trend_trough",
+    "range_peak": "__research_range_peak",
+    "range_trough": "__research_range_trough",
 }
 
 
@@ -194,29 +202,45 @@ class StudyEnvironmentPresentationV1:
     visible: bool
     line_styles: tuple[StudyLineStyle, ...]
     fill_styles: tuple[StudyFillStyle, ...]
+    guide_styles: tuple[StudyGuideStyle, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.visible) is not bool:
             raise StudyEnvironmentValidationError("presentation visible must be a boolean")
         lines = tuple(self.line_styles)
         fills = tuple(self.fill_styles)
+        guides = tuple(self.guide_styles)
         if not all(isinstance(item, StudyLineStyle) for item in lines):
             raise StudyEnvironmentValidationError("line_styles contain invalid values")
         if not all(isinstance(item, StudyFillStyle) for item in fills):
             raise StudyEnvironmentValidationError("fill_styles contain invalid values")
+        if not all(isinstance(item, StudyGuideStyle) for item in guides):
+            raise StudyEnvironmentValidationError("guide_styles contain invalid values")
         if len({item.output_name for item in lines}) != len(lines):
             raise StudyEnvironmentValidationError("line style outputs must be unique")
         if len({item.fill_id for item in fills}) != len(fills):
             raise StudyEnvironmentValidationError("fill style IDs must be unique")
+        if len({item.guide_id for item in guides}) != len(guides):
+            raise StudyEnvironmentValidationError("guide style IDs must be unique")
+        if len({item.kind for item in guides}) != len(guides):
+            raise StudyEnvironmentValidationError(
+                "guide style kinds must be unique"
+            )
         object.__setattr__(self, "line_styles", lines)
         object.__setattr__(self, "fill_styles", fills)
+        object.__setattr__(self, "guide_styles", guides)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "visible": self.visible,
             "line_styles": [_line_style_to_dict(item) for item in self.line_styles],
             "fill_styles": [_fill_style_to_dict(item) for item in self.fill_styles],
         }
+        if self.guide_styles:
+            payload["guide_styles"] = [
+                _guide_style_to_dict(item) for item in self.guide_styles
+            ]
+        return payload
 
     @classmethod
     def from_dict(
@@ -230,6 +254,10 @@ class StudyEnvironmentPresentationV1:
             ),
             fill_styles=tuple(
                 _fill_style_from_dict(item) for item in _sequence(data["fill_styles"], "fill_styles")
+            ),
+            guide_styles=tuple(
+                _guide_style_from_dict(item)
+                for item in _sequence(data.get("guide_styles", ()), "guide_styles")
             ),
         )
 
@@ -271,6 +299,24 @@ class StudyEnvironmentEntryV1:
             raise StudyEnvironmentValidationError("user_metadata is invalid")
         if not isinstance(self.presentation, StudyEnvironmentPresentationV1):
             raise StudyEnvironmentValidationError("presentation is invalid")
+        supplied_guides = self.presentation.guide_styles
+        if supplied_guides:
+            expected_guides = (
+                ()
+                if spec.oscillator_visual is None
+                else tuple(
+                    guide.kind
+                    for guide in spec.oscillator_visual.guide_levels
+                )
+            )
+            if tuple(guide.guide_id for guide in supplied_guides) != expected_guides:
+                raise StudyEnvironmentValidationError(
+                    "guide style IDs must exactly match the canonical order"
+                )
+            if tuple(guide.kind for guide in supplied_guides) != expected_guides:
+                raise StudyEnvironmentValidationError(
+                    "guide style kinds must exactly match the canonical order"
+                )
         if not set(item.output_name for item in self.presentation.line_styles).issubset(outputs):
             raise StudyEnvironmentValidationError(
                 "line styles contain outputs outside expected outputs"
@@ -563,6 +609,7 @@ def _validate_topology(entries: tuple[StudyEnvironmentEntryV1, ...]) -> None:
                         "environment dependency output is not analysis-usable"
                     )
         _validate_source_families(entry, seen)
+        _validate_utc_sources(entry, seen)
         seen[entry.entry_id] = entry
 
 
@@ -627,8 +674,9 @@ def _selector_parameters(
             by_role[f"source_{index}"] for index in range(1, len(by_role) + 1)
         )
     elif tool_key == "universal_trend_classifier" and by_role:
-        resolved["peak_column"] = by_role["peak"]
-        resolved["trough_column"] = by_role["trough"]
+        window = resolved["trend_fractal_window"]
+        resolved["peak_column"] = f"peak_fractal_{window}"
+        resolved["trough_column"] = f"trough_fractal_{window}"
     return resolved
 
 
@@ -637,9 +685,6 @@ def _validate_source_roles(tool_key: str, roles: tuple[str, ...]) -> None:
     if schema == ("source_1", "..."):
         if not roles or roles != tuple(f"source_{i}" for i in range(1, len(roles) + 1)):
             raise StudyEnvironmentValidationError("multi-source roles must be contiguous")
-    elif schema == ("peak+trough?",):
-        if roles not in ((), ("peak", "trough")):
-            raise StudyEnvironmentValidationError("UTC requires an exact optional pair")
     elif schema == ("fast", "mid?", "slow"):
         if roles not in (("fast", "slow"), ("fast", "mid", "slow")):
             raise StudyEnvironmentValidationError("invalid fast/mid/slow source roles")
@@ -670,6 +715,52 @@ def _source_alias(role: str) -> str:
         return _PRIVATE_SOURCE_ALIASES[role]
     except KeyError as exc:
         raise StudyEnvironmentValidationError("unsupported source role") from exc
+
+
+def _validate_utc_sources(
+    entry: StudyEnvironmentEntryV1,
+    prior: Mapping[str, StudyEnvironmentEntryV1],
+) -> None:
+    if entry.mode != "calculation" or entry.tool_key != "universal_trend_classifier":
+        return
+    trend_window = entry.parameters["trend_fractal_window"]
+    range_window = entry.parameters["range_fractal_window"]
+    expected = {
+        "trend_peak": f"peak_fractal_{trend_window}",
+        "trend_trough": f"trough_fractal_{trend_window}",
+        "range_peak": f"peak_fractal_{range_window}",
+        "range_trough": f"trough_fractal_{range_window}",
+    }
+    owners: set[tuple[str, str]] = set()
+    for source in entry.sources:
+        if source.output_name != expected[source.role]:
+            raise StudyEnvironmentValidationError(
+                f"UTC {source.role} output must be {expected[source.role]!r}"
+            )
+        if source.source_kind == "environment":
+            owner = prior[source.source_entry_id or ""]
+            if owner.kind != "indicator" or owner.tool_key != "peaks_troughs":
+                raise StudyEnvironmentValidationError(
+                    "UTC dependencies must be Peaks & Troughs outputs"
+                )
+            owners.add(("environment", source.source_entry_id or ""))
+        elif source.source_kind == "artifact":
+            if (
+                source.artifact_kind != "indicator"
+                or source.artifact_tool_key != "peaks_troughs"
+            ):
+                raise StudyEnvironmentValidationError(
+                    "UTC dependencies must be Peaks & Troughs outputs"
+                )
+            owners.add(("artifact", source.artifact_id or ""))
+        else:
+            raise StudyEnvironmentValidationError(
+                "UTC dependencies must be Peaks & Troughs outputs"
+            )
+    if len(owners) != 1:
+        raise StudyEnvironmentValidationError(
+            "UTC sources must come from one Peaks & Troughs owner"
+        )
 
 
 def _metadata_to_dict(value: StudyUserMetadata) -> dict[str, object]:
@@ -724,6 +815,23 @@ def _fill_style_to_dict(value: StudyFillStyle) -> dict[str, object]:
 def _fill_style_from_dict(value: object) -> StudyFillStyle:
     data = dict(_require_mapping(value, "fill_style"))
     return StudyFillStyle(**data)
+
+
+def _guide_style_to_dict(value: StudyGuideStyle) -> dict[str, object]:
+    return {
+        "guide_id": value.guide_id,
+        "kind": value.kind,
+        "value": value.value,
+        "color": value.color,
+        "line_width": value.line_width,
+        "line_pattern": value.line_pattern,
+        "visible": value.visible,
+    }
+
+
+def _guide_style_from_dict(value: object) -> StudyGuideStyle:
+    data = dict(_require_mapping(value, "guide_style"))
+    return StudyGuideStyle(**data)
 
 
 def _market_to_dict(value: MarketId | None) -> dict[str, str] | None:

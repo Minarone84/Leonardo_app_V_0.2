@@ -377,7 +377,8 @@ class ResearchWorkspaceSnapshotV1:
     updated_at_utc: datetime
     workspace: WorkspaceSnapshotStateV1
     charts: tuple[WorkspaceSnapshotChartV1, ...]
-    schema_version: str = "1.0"
+    notebook_id: str | None = None
+    schema_version: str = "1.1"
     object_type: str = "research_workspace_snapshot"
 
     def __post_init__(self) -> None:
@@ -390,8 +391,18 @@ class ResearchWorkspaceSnapshotV1:
         updated = _utc(self.updated_at_utc, "updated_at_utc")
         if updated < created:
             raise ResearchWorkspaceSnapshotValidationError("updated timestamp precedes creation")
-        if self.schema_version != "1.0" or self.object_type != "research_workspace_snapshot":
+        if (
+            self.schema_version not in {"1.0", "1.1"}
+            or self.object_type != "research_workspace_snapshot"
+        ):
             raise ResearchWorkspaceSnapshotValidationError("unsupported snapshot schema")
+        if self.schema_version == "1.0":
+            if self.notebook_id is not None:
+                raise ResearchWorkspaceSnapshotValidationError(
+                    "schema 1.0 snapshots cannot contain notebook_id"
+                )
+        elif self.notebook_id is not None:
+            _identifier(self.notebook_id, "notebook_id")
         if not isinstance(self.workspace, WorkspaceSnapshotStateV1):
             raise ResearchWorkspaceSnapshotValidationError("workspace is invalid")
         charts = tuple(self.charts)
@@ -410,7 +421,7 @@ class ResearchWorkspaceSnapshotV1:
         object.__setattr__(self, "charts", charts)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value = {
             "schema_version": self.schema_version,
             "object_type": self.object_type,
             "snapshot_id": self.snapshot_id,
@@ -422,6 +433,9 @@ class ResearchWorkspaceSnapshotV1:
             "workspace": self.workspace.to_dict(),
             "charts": [item.to_dict() for item in self.charts],
         }
+        if self.schema_version == "1.1":
+            value["notebook_id"] = self.notebook_id
+        return value
 
     def canonical_json_bytes(self) -> bytes:
         return canonical_json_bytes(self.to_dict())
@@ -437,9 +451,10 @@ class ResearchWorkspaceSnapshotV1:
         updated_at_utc: datetime,
         workspace: WorkspaceSnapshotStateV1,
         charts: Sequence[WorkspaceSnapshotChartV1],
+        notebook_id: str | None = None,
     ) -> "ResearchWorkspaceSnapshotV1":
         data = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "object_type": "research_workspace_snapshot",
             "snapshot_id": snapshot_id,
             "display_name": display_name,
@@ -448,6 +463,7 @@ class ResearchWorkspaceSnapshotV1:
             "updated_at_utc": updated_at_utc.isoformat(),
             "workspace": workspace.to_dict(),
             "charts": [item.to_dict() for item in charts],
+            "notebook_id": notebook_id,
         }
         return cls(content_hash=_content_hash(data), **{
             "snapshot_id": snapshot_id,
@@ -457,13 +473,14 @@ class ResearchWorkspaceSnapshotV1:
             "updated_at_utc": updated_at_utc,
             "workspace": workspace,
             "charts": tuple(charts),
+            "notebook_id": notebook_id,
         })
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ResearchWorkspaceSnapshotV1":
-        _require_keys(
-            value,
-            {
+        schema_version = value.get("schema_version")
+        if schema_version == "1.0":
+            expected_keys = {
                 "schema_version",
                 "object_type",
                 "snapshot_id",
@@ -474,7 +491,28 @@ class ResearchWorkspaceSnapshotV1:
                 "updated_at_utc",
                 "workspace",
                 "charts",
-            },
+            }
+        elif schema_version == "1.1":
+            expected_keys = {
+                "schema_version",
+                "object_type",
+                "snapshot_id",
+                "content_hash",
+                "display_name",
+                "description",
+                "created_at_utc",
+                "updated_at_utc",
+                "workspace",
+                "charts",
+                "notebook_id",
+            }
+        else:
+            raise ResearchWorkspaceSnapshotValidationError(
+                "unsupported snapshot schema"
+            )
+        _require_keys(
+            value,
+            expected_keys,
             "snapshot",
         )
         data = dict(value)
@@ -492,6 +530,9 @@ class ResearchWorkspaceSnapshotV1:
             charts=tuple(
                 WorkspaceSnapshotChartV1.from_dict(item)
                 for item in _sequence(data["charts"], "charts")
+            ),
+            notebook_id=(
+                None if schema_version == "1.0" else data["notebook_id"]
             ),
             schema_version=data["schema_version"],
             object_type=data["object_type"],
@@ -534,6 +575,7 @@ class ResearchWorkspaceSnapshotSummary:
     updated_at_utc: datetime | None
     valid: bool = True
     rejection_reason: str = ""
+    notebook_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

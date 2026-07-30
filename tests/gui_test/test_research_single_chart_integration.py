@@ -71,6 +71,36 @@ def _write_accepted_dataset(root: Path, rows: int = 800) -> None:
     )
 
 
+def _select_new_chart_dialog(presenter) -> None:
+    dialog = presenter._new_chart_dialog
+    summary = dialog._dataset_summaries[0]
+    market = summary.market_id
+    for combo, value in (
+        (dialog.exchange_combo, market.exchange),
+        (dialog.market_type_combo, market.market_type),
+        (dialog.asset_combo, market.symbol),
+        (dialog.timeframe_combo, market.timeframe),
+    ):
+        index = combo.findData(value)
+        assert index >= 0
+        combo.setCurrentIndex(index)
+    assert dialog.create_button.isEnabled()
+    dialog.create_button.click()
+
+
+def _open_restored_chart(window, presenter) -> int:
+    _wait_until(lambda: bool(window.dataset_summaries))
+    before = set(window.workspace.slot_ids())
+    presenter.open_new_chart()
+    _select_new_chart_dialog(presenter)
+    _wait_until(lambda: len(window.workspace.slot_ids()) == len(before) + 1)
+    slot_id = next(iter(set(window.workspace.slot_ids()) - before))
+    _wait_until(
+        lambda: presenter._workspace_state.session_for(slot_id).resident is not None
+    )
+    return slot_id
+
+
 def test_composed_research_window_opens_accepted_dataset(tmp_path: Path) -> None:
     qapp = QApplication.instance() or QApplication([])
     config = replace(load_default_config(tmp_path), audit=AuditConfig(enabled=False))
@@ -86,31 +116,28 @@ def test_composed_research_window_opens_accepted_dataset(tmp_path: Path) -> None
         presenter = composition.research_suite_presenter
         assert window is not None
         assert presenter is not None
-        _wait_until(lambda: window.selected_market_id() is not None)
-        window.button_for_id("research_suite.button.open_chart").click()
-        _wait_until(lambda: window.status_text() == "Chart ready")
-        assert presenter.session.dataset_count == 800
-        assert presenter.session.resident_count == 800
-        assert window.chart_widget.interaction_state is not None
-        autoscale_button = window.button_for_id(
-            "research_suite.button.toggle_autoscale"
-        )
+        slot_id = _open_restored_chart(window, presenter)
+        session = presenter._workspace_state.session_for(slot_id)
+        chart_presenter = presenter._chart_presenters[slot_id]
+        panel = window.workspace.chart_panel_for_slot(slot_id)
+        assert session.dataset_count == 800
+        assert session.resident_count == 800
+        assert panel.chart_widget.interaction_state is not None
+        autoscale_button = panel.autoscale_button
         assert autoscale_button.isEnabled() is True
-        assert window.chart_widget.autoscale_enabled is True
+        assert panel.chart_widget.autoscale_enabled is True
         autoscale_button.click()
-        assert window.chart_widget.autoscale_enabled is False
-        assert autoscale_button.text() == "Enable Autoscale"
+        assert panel.chart_widget.autoscale_enabled is False
+        assert autoscale_button.isChecked() is False
         autoscale_button.click()
-        assert window.chart_widget.autoscale_enabled is True
-        assert autoscale_button.text() == "Disable Autoscale"
-        volume_button = window.button_for_id("research_suite.button.toggle_volume")
-        assert volume_button.isEnabled() is True
-        volume_button.click()
-        assert window.volume_visible is True
-        assert window.chart_workspace.volume_chart.projection is not None
+        assert panel.chart_widget.autoscale_enabled is True
+        assert autoscale_button.isChecked() is True
+        chart_presenter.set_volume_visible(True)
+        assert panel.chart_workspace.volume_visible is True
+        assert panel.chart_workspace.volume_chart.projection is not None
         assert (
-            window.chart_workspace.volume_chart.interaction_state
-            is window.chart_widget.interaction_state
+            panel.chart_workspace.volume_chart.interaction_state
+            is panel.chart_widget.interaction_state
         )
         assert any(
             item.metadata.get("operation") == "research_dataset_load"

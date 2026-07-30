@@ -17,6 +17,7 @@ from leonardo.financial_tools import (
     FinancialToolCalculationResult,
     calculate_financial_tool,
     get_financial_tool_spec,
+    resolve_parameters,
     resolve_output_signals,
 )
 from leonardo.research.dataset import HistoricalDataset
@@ -26,6 +27,7 @@ from leonardo.research.studies import (
     StudyApplyAttempt,
     StudyArtifactRequest,
     StudyDependencyRef,
+    StudyEditAttempt,
     StudyError,
     StudyExecutionRequest,
     StudyInputSource,
@@ -51,6 +53,10 @@ _ALIASES = {
     "slow": "__research_slow",
     "peak": "__research_peak",
     "trough": "__research_trough",
+    "trend_peak": "__research_trend_peak",
+    "trend_trough": "__research_trend_trough",
+    "range_peak": "__research_range_peak",
+    "range_trough": "__research_range_trough",
 }
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
 _MULTI_SOURCE_TOOLS = frozenset(
@@ -97,6 +103,13 @@ class ResearchStudyService:
         parameters, bindings, resolved = self._resolve_sources(
             attempt, dataset, snapshot, request, frame
         )
+        if request.tool_key == "universal_trend_classifier":
+            resolved_parameters = resolve_parameters(request.tool_key, parameters)
+            trend_window = int(resolved_parameters["trend_fractal_window"])
+            range_window = int(resolved_parameters["range_fractal_window"])
+            parameters["fractal_window"] = trend_window
+            parameters["trend_fractal_window"] = trend_window
+            parameters["range_fractal_window"] = range_window
         _raise_if_cancelled(cancel, "calculation")
         result = calculate_financial_tool(
             request.tool_key,
@@ -151,6 +164,18 @@ class ResearchStudyService:
             recipe_id=metadata.recipe.recipe_id,
             artifact_id=metadata.artifact_id,
         )
+        edit_request = self._artifact_edit_request(
+            dataset,
+            result,
+            metadata.recipe.parameters,
+            metadata.recipe.source_artifacts,
+            display_name=(
+                request.display_name
+                if request.display_name is not None
+                else metadata.recipe.display_name
+            ),
+            user_metadata=request.user_metadata,
+        )
         study = build_chart_study(
             attempt=attempt,
             source_kind="artifact",
@@ -161,11 +186,133 @@ class ResearchStudyService:
             ),
             result=result,
             setup_request=request,
-            source_artifacts=metadata.recipe.source_artifacts,
+            edit_request=edit_request,
+            source_artifacts=_canonical_study_source_refs(
+                result.tool_key, metadata.recipe.source_artifacts
+            ),
             saved_link=link,
         )
         _raise_if_cancelled(cancel, "Study publication")
         return PreparedStudy(study)
+
+    def prepare_edit(
+        self,
+        attempt: StudyEditAttempt,
+        dataset: HistoricalDataset,
+        studies: Sequence[ChartStudy],
+        request: StudyExecutionRequest,
+        *,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> PreparedStudy:
+        """Calculate one replacement without mutating the current Study."""
+
+        _validate_edit_context(attempt, dataset)
+        if not isinstance(request, StudyExecutionRequest):
+            raise StudyValidationError("request must be a StudyExecutionRequest")
+        snapshot = _study_snapshot(studies)
+        target = _find_study(snapshot, attempt.study_id)
+        if target.result.tool_key != request.tool_key:
+            raise StudyValidationError("edited Study tool key must remain unchanged")
+        if request.display_name != target.display_name:
+            raise StudyValidationError(
+                "edited Study display name must remain unchanged"
+            )
+        if request.user_metadata != target.user_metadata:
+            raise StudyValidationError(
+                "edited Study user metadata must remain unchanged"
+            )
+        if any(
+            source.source_kind == "study" and source.study_id == attempt.study_id
+            for source in request.input_sources
+        ):
+            raise StudyValidationError("a Study may not depend on itself")
+        cancel = cancellation_requested or _never_cancelled
+        _raise_if_cancelled(cancel, "source resolution")
+        frame = _dataset_frame(dataset)
+        parameters, bindings, resolved = self._resolve_sources(
+            attempt, dataset, snapshot, request, frame
+        )
+        if request.tool_key == "universal_trend_classifier":
+            resolved_parameters = resolve_parameters(request.tool_key, parameters)
+            trend_window = int(resolved_parameters["trend_fractal_window"])
+            range_window = int(resolved_parameters["range_fractal_window"])
+            parameters["fractal_window"] = trend_window
+            parameters["trend_fractal_window"] = trend_window
+            parameters["range_fractal_window"] = range_window
+        _raise_if_cancelled(cancel, "calculation")
+        result = calculate_financial_tool(
+            request.tool_key,
+            frame,
+            parameters,
+            bindings=bindings,
+        )
+        _raise_if_cancelled(cancel, "calculation publication")
+        _validate_result_timeline(result, dataset)
+        study = build_chart_study(
+            attempt=attempt,
+            source_kind="calculation",
+            display_name=request.display_name,
+            result=result,
+            setup_request=request,
+            source_studies=tuple(
+                item.study_ref for item in resolved if item.study_ref is not None
+            ),
+            source_artifacts=tuple(
+                item.artifact_ref for item in resolved if item.artifact_ref is not None
+            ),
+            saved_link=None,
+        )
+        _raise_if_cancelled(cancel, "Study publication")
+        return PreparedStudy(study)
+
+    def _artifact_edit_request(
+        self,
+        dataset: HistoricalDataset,
+        result: FinancialToolCalculationResult,
+        recipe_parameters: Mapping[str, object],
+        source_refs: Sequence[ArtifactSourceRefV1],
+        *,
+        display_name: str,
+        user_metadata,
+    ) -> StudyExecutionRequest:
+        parameters = {
+            name: value
+            for name, value in recipe_parameters.items()
+            if name not in _owned_selector_names(
+                result.tool_key, edit_request=True
+            )
+        }
+        selectors = _canonical_selector_lineage(result)
+        sources: dict[str, StudyInputSource] = {
+            role: StudyInputSource(
+                role=role,
+                source_kind="ohlcv",
+                column_name=column,
+            )
+            for role, column in selectors.implicit_ohlcv
+        }
+        for ref in source_refs:
+            _loaded, source_result = self._load_current_research_artifact(
+                dataset, ref.artifact_id
+            )
+            sources[ref.role] = StudyInputSource(
+                role=ref.role,
+                source_kind="artifact",
+                artifact_kind=source_result.kind,
+                artifact_tool_key=source_result.tool_key,
+                artifact_id=ref.artifact_id,
+                output_name=ref.output_name,
+            )
+        ordered_roles = _edit_source_role_order(result, tuple(sources))
+        request = StudyExecutionRequest(
+            tool_key=result.tool_key,
+            parameters=parameters,
+            input_sources=tuple(sources[role] for role in ordered_roles),
+            display_name=display_name,
+            user_metadata=user_metadata,
+        )
+        _validate_role_schema(request.tool_key, request.input_sources)
+        return request
 
     def save_study(
         self,
@@ -263,7 +410,7 @@ class ResearchStudyService:
 
     def _resolve_sources(
         self,
-        attempt: StudyApplyAttempt,
+        attempt: StudyApplyAttempt | StudyEditAttempt,
         dataset: HistoricalDataset,
         studies: tuple[ChartStudy, ...],
         request: StudyExecutionRequest,
@@ -277,13 +424,36 @@ class ResearchStudyService:
             raise StudyValidationError(
                 f"service-owned source selectors were supplied: {supplied!r}"
             )
-        resolved: list[_ResolvedSource] = []
+        resolved_values: list[tuple[_ResolvedSource, tuple[object, ...] | None, str]] = []
         for source in request.input_sources:
             item, values = self._resolve_source(attempt, dataset, studies, source)
-            column = source.column_name if source.source_kind == "ohlcv" else _alias(source.role)
+            column = (
+                source.output_name
+                if request.tool_key == "universal_trend_classifier"
+                else source.column_name
+                if source.source_kind == "ohlcv"
+                else _alias(source.role)
+            )
             if column is None:
                 raise StudyValidationError("resolved source column is missing")
+            resolved_values.append((item, values, column))
+        resolved = tuple(
+            _ResolvedSource(
+                role=item.role,
+                column_name=column,
+                family=item.family,
+                tool_key=item.tool_key,
+                study_ref=item.study_ref,
+                artifact_ref=item.artifact_ref,
+            )
+            for item, _values, column in resolved_values
+        )
+        _validate_source_compatibility(request.tool_key, resolved, parameters)
+        injected: set[str] = set()
+        for _item, values, column in resolved_values:
             if values is not None:
+                if column in injected:
+                    continue
                 if column in frame.columns:
                     raise StudyValidationError(f"source alias collision: {column}")
                 if len(values) != dataset.row_count:
@@ -291,17 +461,7 @@ class ResearchStudyService:
                         "source values do not match the active dataset row count"
                     )
                 frame[column] = values
-            resolved.append(
-                _ResolvedSource(
-                    role=item.role,
-                    column_name=column,
-                    family=item.family,
-                    tool_key=item.tool_key,
-                    study_ref=item.study_ref,
-                    artifact_ref=item.artifact_ref,
-                )
-            )
-        _validate_source_compatibility(request.tool_key, tuple(resolved))
+                injected.add(column)
         by_role = {item.role: item.column_name for item in resolved}
         bindings: dict[str, object] = {}
         if request.tool_key in {"derivative", "angle"}:
@@ -315,13 +475,16 @@ class ResearchStudyService:
                 by_role[f"source_{index}"] for index in range(1, len(by_role) + 1)
             )
         elif request.tool_key == "universal_trend_classifier" and by_role:
-            parameters["peak_column"] = by_role["peak"]
-            parameters["trough_column"] = by_role["trough"]
-        return parameters, bindings, tuple(resolved)
+            trend_window = resolve_parameters(
+                request.tool_key, parameters
+            )["trend_fractal_window"]
+            parameters["peak_column"] = f"peak_fractal_{trend_window}"
+            parameters["trough_column"] = f"trough_fractal_{trend_window}"
+        return parameters, bindings, resolved
 
     def _resolve_source(
         self,
-        attempt: StudyApplyAttempt,
+        attempt: StudyApplyAttempt | StudyEditAttempt,
         dataset: HistoricalDataset,
         studies: tuple[ChartStudy, ...],
         source: StudyInputSource,
@@ -487,6 +650,7 @@ class ResearchStudyService:
         _validate_source_compatibility(
             result.tool_key,
             _combined_semantic_sources(result, tuple(resolved)),
+            result.parameters,
         )
 
     def _load_current_research_artifact(
@@ -599,6 +763,7 @@ class ResearchStudyService:
         _validate_source_compatibility(
             result.tool_key,
             _combined_semantic_sources(result, tuple(resolved)),
+            result.parameters,
         )
 
 
@@ -607,6 +772,19 @@ def _validate_apply_context(
 ) -> None:
     if not isinstance(attempt, StudyApplyAttempt):
         raise StudyValidationError("attempt must be a StudyApplyAttempt")
+    if not isinstance(dataset, HistoricalDataset):
+        raise StudyValidationError("dataset must be a HistoricalDataset")
+    if attempt.market_id != dataset.market_id:
+        raise StudyValidationError("attempt MarketId does not match dataset")
+    if attempt.dataset_fingerprint != dataset.file_sha256:
+        raise StudyValidationError("attempt fingerprint does not match dataset")
+
+
+def _validate_edit_context(
+    attempt: StudyEditAttempt, dataset: HistoricalDataset
+) -> None:
+    if not isinstance(attempt, StudyEditAttempt):
+        raise StudyValidationError("attempt must be a StudyEditAttempt")
     if not isinstance(dataset, HistoricalDataset):
         raise StudyValidationError("dataset must be a HistoricalDataset")
     if attempt.market_id != dataset.market_id:
@@ -671,7 +849,7 @@ def _find_study(studies: tuple[ChartStudy, ...], study_id: str) -> ChartStudy:
 
 
 def _validate_source_study(
-    attempt: StudyApplyAttempt,
+    attempt: StudyApplyAttempt | StudyEditAttempt,
     dataset: HistoricalDataset,
     study: ChartStudy,
 ) -> None:
@@ -822,8 +1000,16 @@ def _validate_role_schema(tool_key: str, sources: tuple[StudyInputSource, ...]) 
             )
         return
     elif tool_key == "universal_trend_classifier":
-        if role_set not in (set(), {"peak", "trough"}):
-            raise StudyValidationError("UTC requires no dependencies or peak and trough")
+        expected_roles = (
+            "trend_peak",
+            "trend_trough",
+            "range_peak",
+            "range_trough",
+        )
+        if roles != expected_roles:
+            raise StudyValidationError(
+                f"UTC source roles must be exactly {expected_roles!r}"
+            )
         return
     else:
         expected = set()
@@ -852,21 +1038,63 @@ def _combined_semantic_sources(
     return (*implicit, *resolved)
 
 
+def _canonical_study_source_refs(
+    tool_key: str,
+    refs: Sequence[ArtifactSourceRefV1],
+) -> tuple[ArtifactSourceRefV1, ...]:
+    snapshot = tuple(refs)
+    if tool_key != "universal_trend_classifier":
+        return snapshot
+    by_role = {item.role: item for item in snapshot}
+    return tuple(
+        by_role[role]
+        for role in (
+            "trend_peak",
+            "trend_trough",
+            "range_peak",
+            "range_trough",
+        )
+    )
+
+
 def _validate_source_compatibility(
-    tool_key: str, sources: tuple[_ResolvedSource, ...]
+    tool_key: str,
+    sources: tuple[_ResolvedSource, ...],
+    parameters: Mapping[str, object] | None = None,
 ) -> None:
     if tool_key == "universal_trend_classifier" and sources:
+        if parameters is None:
+            raise StudyValidationError("UTC source validation requires parameters")
+        resolved_parameters = resolve_parameters(tool_key, parameters)
+        trend_window = resolved_parameters["trend_fractal_window"]
+        range_window = resolved_parameters["range_fractal_window"]
+        expected = {
+            "trend_peak": f"peak_fractal_{trend_window}",
+            "trend_trough": f"trough_fractal_{trend_window}",
+            "range_peak": f"peak_fractal_{range_window}",
+            "range_trough": f"trough_fractal_{range_window}",
+        }
+        owners: set[tuple[str, str]] = set()
         for source in sources:
             if source.family != "indicator" or source.tool_key != "peaks_troughs":
                 raise StudyValidationError("UTC dependencies must be Peaks & Troughs outputs")
-            prefix = "peak_fractal_" if source.role == "peak" else "trough_fractal_"
             output_name = (
                 source.study_ref.output_name
                 if source.study_ref is not None
                 else source.artifact_ref.output_name if source.artifact_ref is not None else ""
             )
-            if not output_name.startswith(prefix):
-                raise StudyValidationError(f"UTC {source.role} output is not canonical")
+            if output_name != expected.get(source.role):
+                raise StudyValidationError(
+                    f"UTC {source.role} output must be {expected.get(source.role)!r}"
+                )
+            if source.study_ref is not None:
+                owners.add(("study", source.study_ref.study_id))
+            elif source.artifact_ref is not None:
+                owners.add(("artifact", source.artifact_ref.artifact_id))
+        if len(owners) != 1:
+            raise StudyValidationError(
+                "UTC sources must come from one Peaks & Troughs owner"
+            )
         return
     spec = get_financial_tool_spec(tool_key)
     construct = spec.construct_io
@@ -885,7 +1113,9 @@ def _validate_source_compatibility(
         raise StudyValidationError("all sources must belong to the same family")
 
 
-def _owned_selector_names(tool_key: str) -> frozenset[str]:
+def _owned_selector_names(
+    tool_key: str, *, edit_request: bool = False
+) -> frozenset[str]:
     if tool_key in {"derivative", "angle"}:
         return frozenset({"source"})
     if tool_key in {"delta"}:
@@ -895,8 +1125,52 @@ def _owned_selector_names(tool_key: str) -> frozenset[str]:
     if tool_key in _MULTI_SOURCE_TOOLS:
         return frozenset({"source_columns"})
     if tool_key == "universal_trend_classifier":
-        return frozenset({"peak_column", "trough_column"})
+        names = {"peak_column", "trough_column"}
+        if edit_request:
+            names.add("fractal_window")
+        return frozenset(names)
     return frozenset()
+
+
+def _edit_source_role_order(
+    result: FinancialToolCalculationResult, supplied_roles: tuple[str, ...]
+) -> tuple[str, ...]:
+    if not supplied_roles:
+        return ()
+    role_set = set(supplied_roles)
+    if result.tool_key in {"derivative", "angle"}:
+        ordered = ("source",)
+    elif result.tool_key == "delta":
+        ordered = ("fast", "slow")
+    elif result.tool_key in {"braids", "braid_instability"}:
+        ordered = ("fast", "mid", "slow")
+    elif result.tool_key == "trap_area":
+        ordered = (
+            ("fast", "mid", "slow")
+            if "mid" in role_set
+            else ("fast", "slow")
+        )
+    elif result.tool_key in _MULTI_SOURCE_TOOLS:
+        ordered = tuple(
+            sorted(
+                supplied_roles,
+                key=lambda role: int(role.removeprefix("source_")),
+            )
+        )
+    elif result.tool_key == "universal_trend_classifier":
+        ordered = (
+            "trend_peak",
+            "trend_trough",
+            "range_peak",
+            "range_trough",
+        )
+    else:
+        ordered = ()
+    if role_set != set(ordered):
+        raise StudyValidationError(
+            f"artifact edit source roles are invalid: {tuple(sorted(role_set))!r}"
+        )
+    return ordered
 
 
 def _alias(role: str) -> str:

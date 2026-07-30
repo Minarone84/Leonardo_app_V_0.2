@@ -28,7 +28,11 @@ def test_setup_dialog_projects_canonical_spec_and_builds_existing_request(tmp_pa
     ).build_catalog(dataset, ())
     dialog = StudySetupDialog(catalog)
     tools = dialog.findChild(QListWidget, "research.study_setup_dialog.list.tools")
-    assert tools.count() == 26
+    assert tools.count() == 25
+    assert all(
+        tools.item(row).text() != "Dynamic Binning"
+        for row in range(tools.count())
+    )
     for row in range(tools.count()):
         if tools.item(row).text() == "EMA":
             tools.setCurrentRow(row)

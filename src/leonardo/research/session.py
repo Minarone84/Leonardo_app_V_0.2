@@ -22,6 +22,8 @@ from leonardo.research.studies import (
     ChartStudyRegistry,
     PreparedStudy,
     StudyApplyAttempt,
+    StudyDependencyError,
+    StudyEditAttempt,
     StudySaveAttempt,
     StudySaveOutcome,
     StudyValidationError,
@@ -105,6 +107,7 @@ class ChartSessionState:
         self._studies = ChartStudyRegistry()
         self._presentations = StudyPresentationRegistry()
         self._study_apply_attempts: dict[str, StudyApplyAttempt] = {}
+        self._study_edit_attempts: dict[str, StudyEditAttempt] = {}
         self._study_save_attempts: dict[str, StudySaveAttempt] = {}
         self._disposed = False
         self._lock = RLock()
@@ -195,6 +198,11 @@ class ChartSessionState:
         with self._lock:
             return len(self._study_save_attempts)
 
+    @property
+    def study_edit_pending(self) -> int:
+        with self._lock:
+            return len(self._study_edit_attempts)
+
     def begin_dataset_open(self, market_id: MarketId) -> DatasetOpenAttempt:
         """Begin a new dataset generation and release all previous data truth."""
 
@@ -215,6 +223,7 @@ class ChartSessionState:
             self._studies.clear()
             self._presentations.clear()
             self._study_apply_attempts.clear()
+            self._study_edit_attempts.clear()
             self._study_save_attempts.clear()
             return attempt
 
@@ -464,6 +473,8 @@ class ChartSessionState:
             self._ensure_active_locked()
             dataset = self._require_dataset_locked()
             study = self._studies.get(study_id)
+            if study_id in self._study_edit_attempts:
+                raise ChartSessionStateError("an Edit is already pending for this Study")
             if study_id in self._study_save_attempts:
                 raise ChartSessionStateError("a Save is already pending for this Study")
             attempt = StudySaveAttempt(
@@ -521,11 +532,166 @@ class ChartSessionState:
             pending = self._study_save_attempts.pop(attempt.study_id, None)
             return not self._disposed and pending == attempt
 
+    def begin_study_edit(self, study_id: str) -> StudyEditAttempt:
+        if not isinstance(study_id, str) or not study_id.strip():
+            raise ValueError("study_id must be a non-empty string")
+        with self._lock:
+            self._ensure_active_locked()
+            dataset = self._require_dataset_locked()
+            study = self._studies.get(study_id)
+            if study_id in self._study_save_attempts:
+                raise ChartSessionStateError("a Save is already pending for this Study")
+            if study_id in self._study_edit_attempts:
+                raise ChartSessionStateError("an Edit is already pending for this Study")
+            blockers = tuple(
+                candidate.study_id
+                for candidate in self._studies.snapshot()
+                if any(
+                    dependency.study_id == study_id
+                    for dependency in candidate.source_studies
+                )
+            )
+            if blockers:
+                raise StudyDependencyError(
+                    f"Study {study_id} cannot be edited while required by: "
+                    f"{', '.join(blockers)}",
+                    blockers=blockers,
+                )
+            attempt = StudyEditAttempt(
+                session_id=self._session_id,
+                generation=self._generation,
+                request_id=uuid4().hex,
+                study_id=study.study_id,
+                market_id=dataset.market_id,
+                dataset_fingerprint=dataset.file_sha256,
+            )
+            self._study_edit_attempts[study_id] = attempt
+            return attempt
+
+    def accept_study_edit(
+        self, attempt: StudyEditAttempt, prepared: PreparedStudy
+    ) -> bool:
+        if not isinstance(attempt, StudyEditAttempt):
+            raise TypeError("attempt must be a StudyEditAttempt")
+        if not isinstance(prepared, PreparedStudy):
+            raise TypeError("prepared must be a PreparedStudy")
+        with self._lock:
+            self._require_attempt_session_locked(attempt.session_id)
+            pending = self._study_edit_attempts.pop(attempt.study_id, None)
+            if self._disposed or pending != attempt:
+                return False
+            dataset = self._dataset
+            if (
+                dataset is None
+                or attempt.generation != self._generation
+                or attempt.market_id != dataset.market_id
+                or attempt.dataset_fingerprint != dataset.file_sha256
+            ):
+                return False
+            try:
+                current = self._studies.get(attempt.study_id)
+            except KeyError:
+                return False
+            replacement = prepared.study
+            if (
+                replacement.study_id != attempt.study_id
+                or replacement.session_id != attempt.session_id
+                or replacement.generation != attempt.generation
+                or replacement.market_id != attempt.market_id
+                or replacement.dataset_fingerprint != attempt.dataset_fingerprint
+            ):
+                raise StudyValidationError(
+                    "prepared Study does not match its Edit attempt"
+                )
+            if replacement.result.tool_key != current.result.tool_key:
+                raise StudyValidationError(
+                    "edited Study tool key must remain unchanged"
+                )
+            if replacement.display_name != current.display_name:
+                raise StudyValidationError(
+                    "edited Study display name must remain unchanged"
+                )
+            if replacement.user_metadata != current.user_metadata:
+                raise StudyValidationError(
+                    "edited Study user metadata must remain unchanged"
+                )
+            blockers = tuple(
+                candidate.study_id
+                for candidate in self._studies.snapshot()
+                if any(
+                    dependency.study_id == attempt.study_id
+                    for dependency in candidate.source_studies
+                )
+            )
+            if blockers:
+                raise StudyDependencyError(
+                    f"Study {attempt.study_id} cannot be edited while required by: "
+                    f"{', '.join(blockers)}",
+                    blockers=blockers,
+                )
+            if replacement.result.row_count != dataset.row_count:
+                raise StudyValidationError(
+                    "edited Study row count does not match the active dataset"
+                )
+            if tuple(
+                int(value) for value in replacement.result.to_frame()["ts_ms"]
+            ) != dataset.ts_ms:
+                raise StudyValidationError(
+                    "edited Study timeline does not match the active dataset"
+                )
+            if any(
+                dependency.study_id == attempt.study_id
+                for dependency in replacement.source_studies
+            ):
+                raise StudyValidationError("a Study may not depend on itself")
+            for dependency in replacement.source_studies:
+                try:
+                    source = self._studies.get(dependency.study_id)
+                except KeyError:
+                    return False
+                if (
+                    source.session_id != self._session_id
+                    or source.generation != self._generation
+                    or source.market_id != dataset.market_id
+                    or source.dataset_fingerprint != dataset.file_sha256
+                    or dependency.output_name not in source.result.output_names
+                    or source.result.row_count != dataset.row_count
+                    or tuple(
+                        int(value) for value in source.result.to_frame()["ts_ms"]
+                    )
+                    != dataset.ts_ms
+                ):
+                    return False
+            projection = None
+            if self._resident is not None:
+                from leonardo.research.study_projection import project_study
+
+                projection = project_study(replacement, self._resident)
+            presentation = self._presentations.reconcile_for_edit(
+                current, replacement
+            )
+            self._studies.replace_for_edit(
+                attempt.study_id,
+                replacement,
+                projection=projection,
+            )
+            self._presentations.replace_for_edit(replacement, presentation)
+            return True
+
+    def settle_study_edit_failure(self, attempt: StudyEditAttempt) -> bool:
+        if not isinstance(attempt, StudyEditAttempt):
+            raise TypeError("attempt must be a StudyEditAttempt")
+        with self._lock:
+            self._require_attempt_session_locked(attempt.session_id)
+            pending = self._study_edit_attempts.pop(attempt.study_id, None)
+            return not self._disposed and pending == attempt
+
     def remove_study(self, study_id: str) -> ChartStudy:
         with self._lock:
             self._ensure_active_locked()
             removed = self._studies.remove(study_id)
             self._presentations.remove(study_id)
+            self._study_edit_attempts.pop(study_id, None)
             self._study_save_attempts.pop(study_id, None)
             return removed
 
@@ -577,6 +743,7 @@ class ChartSessionState:
             self._studies.clear()
             self._presentations.clear()
             self._study_apply_attempts.clear()
+            self._study_edit_attempts.clear()
             self._study_save_attempts.clear()
             return True
 

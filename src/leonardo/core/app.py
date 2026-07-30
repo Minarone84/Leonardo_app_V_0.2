@@ -41,6 +41,7 @@ from leonardo.research import (
     ResearchStudySetupApplicationService,
     ResearchStudySetupService,
     ResearchWorkspaceSnapshotApplicationService,
+    ResearchWorkspaceNotebookLinkService,
     ResearchWorkspaceSnapshotService,
     ResearchWorkspaceSnapshotStore,
     ResidentSliceService,
@@ -170,27 +171,36 @@ class LeonardoApp:
         self.workspace_snapshot_store = ResearchWorkspaceSnapshotStore(
             self.config.paths.workspace_snapshots_dir
         )
-        self.research_workspace_snapshot_domain = ResearchWorkspaceSnapshotService(
-            self.accepted_dataset_catalog,
-            self.historical_dataset_loader,
-            self.research_study_setup_domain,
-            self.workspace_snapshot_store,
-        )
-        self.research_workspace_snapshot_service = (
-            ResearchWorkspaceSnapshotApplicationService(
-                self.core_runner,
-                self.research_workspace_snapshot_domain,
-            )
-        )
         self.research_notebook_store = ResearchNotebookStore(
             self.config.paths.research_notebooks_dir
         )
         self.research_notebook_domain = ResearchNotebookService(
             self.research_notebook_store
         )
+        self.research_workspace_notebook_link_domain = (
+            ResearchWorkspaceNotebookLinkService(
+                self.workspace_snapshot_store,
+                self.research_notebook_domain,
+            )
+        )
+        self.research_workspace_snapshot_domain = ResearchWorkspaceSnapshotService(
+            self.accepted_dataset_catalog,
+            self.historical_dataset_loader,
+            self.research_study_setup_domain,
+            self.workspace_snapshot_store,
+            self.research_workspace_notebook_link_domain,
+        )
+        self.research_workspace_snapshot_service = (
+            ResearchWorkspaceSnapshotApplicationService(
+                self.core_runner,
+                self.research_workspace_snapshot_domain,
+                self.research_workspace_notebook_link_domain,
+            )
+        )
         self.research_notebook_service = ResearchNotebookApplicationService(
             self.core_runner,
             self.research_notebook_domain,
+            self.research_workspace_notebook_link_domain,
         )
         self.action_registry = ActionRegistry(
             self.audit_log,

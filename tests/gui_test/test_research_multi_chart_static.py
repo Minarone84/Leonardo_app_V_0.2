@@ -34,6 +34,13 @@ ADDED_TEST_AND_DOC_PATHS = (
     "docs/core_docs/TASK_1019_EIGHT_SLOT_RESEARCH_WORKSPACE.md",
 )
 
+TASK_1019_WORKSPACE_PATHS = (
+    "src/leonardo/research/workspace.py",
+    "src/leonardo/gui/widgets/research_workspace_layout.py",
+    "src/leonardo/gui/widgets/research_chart_slot_widget.py",
+    "src/leonardo/gui/widgets/research_workspace_widget.py",
+)
+
 
 def _source(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
@@ -88,7 +95,7 @@ def test_presenter_boundaries_exclude_core_store_and_artifact_service() -> None:
 
 
 def test_no_later_task_implementations_enter_task_1019_production() -> None:
-    combined = "\n".join(_source(path) for path in PRODUCTION_PATHS)
+    combined = "\n".join(_source(path) for path in TASK_1019_WORKSPACE_PATHS)
     for token in (
         "PanAnchor",
         "WorkspaceSnapshot",

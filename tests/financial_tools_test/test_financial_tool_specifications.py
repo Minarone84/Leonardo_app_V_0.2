@@ -76,7 +76,7 @@ EXACT_PARAMETERS = {
         ("hr_trend_max_gap", "int", True, 20, 1, None, (), "HR Trend Max Gap"),
         ("hr_min_inside_ratio", "float", True, 0.8, 1e-6, 1.0, (), "HR Min Inside Ratio"),
         ("min_range_swings", "int", True, 4, 4, None, (), "Min Range Swings"),
-        ("range_fractal_window", "int", True, 3, 3, None, (3, 5, 7, 9, 11), "Range Trend Fractal"),
+        ("range_fractal_window", "int", True, 3, 3, None, (3, 5, 7, 9, 11), "Horizontal Range Fractal"),
         ("hr_break_mode", "str", True, "close", None, None, ("close", "wick", "hybrid"), "Range Break Mode"),
     ),
     "rsi": PERIOD_14,
@@ -109,11 +109,11 @@ EXACT_PARAMETERS = {
     "derivative": (("order", "int", False, 1, 1, 2, (), "Derivative Order"),),
     "angle": (("unit", "str", False, "deg", None, None, ("deg", "rad"), "Unit"),),
     "braids": (("fast", "str", True, "", None, None, (), "Fast Source"),
-               ("mid", "str", False, "", None, None, (), "Mid Source"),
+               ("mid", "str", True, "", None, None, (), "Mid Source"),
                ("slow", "str", True, "", None, None, (), "Slow Source"),
                ("tie_policy", "str", False, "carry", None, None, ("carry", "drop"), "Tie Policy")),
     "braid_instability": (("fast", "str", True, "", None, None, (), "Fast Source"),
-                          ("mid", "str", False, "", None, None, (), "Mid Source"),
+                          ("mid", "str", True, "", None, None, (), "Mid Source"),
                           ("slow", "str", True, "", None, None, (), "Slow Source"),
                           ("n", "int", False, 5, 1, None, (), "Instability Window")),
     "delta": (("fast", "str", True, "", None, None, (), "Fast Source"),
@@ -200,11 +200,11 @@ EXACT_PARAMETER_DESCRIPTIONS = (
     ("derivative", "order", "Derivative order. Supported values in this phase: 1 or 2."),
     ("angle", "unit", "Output angular unit for the unary angle construct."),
     ("braids", "fast", "Fast source column name."),
-    ("braids", "mid", "Optional mid source column name."),
+    ("braids", "mid", "Mid source column name."),
     ("braids", "slow", "Slow source column name."),
     ("braids", "tie_policy", "How braid-state ties are handled for the ambient braid state output."),
     ("braid_instability", "fast", "Fast source column name."),
-    ("braid_instability", "mid", "Optional mid source column name."),
+    ("braid_instability", "mid", "Mid source column name."),
     ("braid_instability", "slow", "Slow source column name."),
     ("braid_instability", "n", "Rolling window used to compute braid instability."),
     ("delta", "fast", "Fast source column name."),
@@ -229,6 +229,9 @@ def test_catalog_has_exact_frozen_inventory_and_order() -> None:
     assert tuple(CONSTRUCT_SPECS) == CONSTRUCTS
     assert tuple(ALL_FINANCIAL_TOOL_SPECS) == INDICATORS + OSCILLATORS + CONSTRUCTS
     assert len(ALL_FINANCIAL_TOOL_SPECS) == 26
+    assert sum(
+        len(spec.parameters) for spec in ALL_FINANCIAL_TOOL_SPECS.values()
+    ) == 88
 
 
 def test_exact_parameter_metadata_for_every_tool() -> None:

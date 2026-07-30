@@ -34,6 +34,8 @@ from leonardo.research.notebook import (
     ResearchNotebookValidationError,
     ResearchNotebookV1,
 )
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.window_geometry import apply_initial_window_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +57,6 @@ class ResearchNotebookWindow(QDialog):
         super().__init__(parent)
         self.setObjectName("research.notebook_window")
         self.setWindowTitle("Research Notebook")
-        self.resize(980, 720)
         self._notebook_id: str | None = None
         self._pages: list[ResearchNotebookPageV1] = []
         self._last_valid_draft: ResearchNotebookDraft | None = None
@@ -98,14 +99,6 @@ class ResearchNotebookWindow(QDialog):
         self._remove_page.setObjectName(
             "research.notebook_window.button.remove_page"
         )
-        self._add_note = QPushButton("Add Note", self)
-        self._add_note.setObjectName("research.notebook_window.button.add_note")
-        self._add_trade = QPushButton("Add Trade", self)
-        self._add_trade.setObjectName(
-            "research.notebook_window.button.add_trade"
-        )
-        self._add_poi = QPushButton("Add POI", self)
-        self._add_poi.setObjectName("research.notebook_window.button.add_poi")
         self._save = QPushButton("Save", self)
         self._save.setObjectName("research.notebook_window.button.save")
         self._save_as = QPushButton("Save As", self)
@@ -137,11 +130,6 @@ class ResearchNotebookWindow(QDialog):
         page_actions.addWidget(self._add_current)
         page_actions.addWidget(self._remove_page)
         page_actions.addStretch(1)
-        row_actions = QHBoxLayout()
-        row_actions.addWidget(self._add_note)
-        row_actions.addWidget(self._add_trade)
-        row_actions.addWidget(self._add_poi)
-        row_actions.addStretch(1)
         actions = QHBoxLayout()
         actions.addWidget(self._validation, stretch=1)
         actions.addWidget(self._dirty_label)
@@ -154,7 +142,6 @@ class ResearchNotebookWindow(QDialog):
         layout.addLayout(settings)
         layout.addLayout(page_actions)
         layout.addWidget(self._tabs, stretch=1)
-        layout.addLayout(row_actions)
         layout.addLayout(actions)
 
         self._name.textChanged.connect(self._editor_changed)
@@ -169,9 +156,12 @@ class ResearchNotebookWindow(QDialog):
         self._save.clicked.connect(lambda: self._emit_save(False))
         self._save_as.clicked.connect(lambda: self._emit_save(True))
         self._close.clicked.connect(self.close_requested.emit)
-        self._add_note.clicked.connect(lambda: self._add_row("note"))
-        self._add_trade.clicked.connect(lambda: self._add_row("trade"))
-        self._add_poi.clicked.connect(lambda: self._add_row("poi"))
+        apply_initial_window_size(
+            self,
+            parent=parent,
+            width_fraction=1 / 2,
+            height_fraction=1 / 2,
+        )
         self.set_draft(
             ResearchNotebookDraft(
                 "Untitled Notebook",
@@ -286,7 +276,7 @@ class ResearchNotebookWindow(QDialog):
 
     def _sync_mutation_controls(self) -> None:
         enabled = not self._save_pending
-        for control in (
+        controls = [
             self._name,
             self._description,
             self._show_poi,
@@ -297,10 +287,14 @@ class ResearchNotebookWindow(QDialog):
             self._tabs,
             self._add_current,
             self._remove_page,
-            self._add_note,
-            self._add_trade,
-            self._add_poi,
+        ]
+        for object_name in (
+            "research.notebook_window.button.add_note",
+            "research.notebook_window.button.add_trade",
+            "research.notebook_window.button.add_poi",
         ):
+            controls.extend(self.findChildren(QPushButton, object_name))
+        for control in controls:
             control.setEnabled(enabled)
         save_enabled = enabled and self._current_valid
         self._save.setEnabled(save_enabled)
@@ -462,16 +456,55 @@ class ResearchNotebookWindow(QDialog):
                         item.description,
                     ),
                 )
+            categories = QTabWidget(container)
+            categories.setObjectName("research.notebook_window.tabs.categories")
+            for label, table, button_text, object_name, kind in (
+                (
+                    "Notes",
+                    notes,
+                    "Add Note",
+                    "research.notebook_window.button.add_note",
+                    "note",
+                ),
+                (
+                    "Potential Trades",
+                    trades,
+                    "Add Trade",
+                    "research.notebook_window.button.add_trade",
+                    "trade",
+                ),
+                (
+                    "Points of Interest",
+                    points,
+                    "Add POI",
+                    "research.notebook_window.button.add_poi",
+                    "poi",
+                ),
+            ):
+                category = QWidget(categories)
+                category_layout = QVBoxLayout(category)
+                category_layout.addWidget(table)
+                command_row = QHBoxLayout()
+                add_button = QPushButton(button_text, category)
+                add_button.setObjectName(object_name)
+                add_button.clicked.connect(
+                    lambda _checked=False, row_kind=kind: self._add_row(row_kind)
+                )
+                command_row.addWidget(add_button)
+                command_row.addStretch(1)
+                category_layout.addLayout(command_row)
+                categories.addTab(category, label)
             page_layout = QVBoxLayout(container)
-            page_layout.addWidget(QLabel("Notes", container))
-            page_layout.addWidget(notes)
-            page_layout.addWidget(QLabel("Potential Trades", container))
-            page_layout.addWidget(trades)
-            page_layout.addWidget(QLabel("Points of Interest", container))
-            page_layout.addWidget(points)
+            page_layout.addWidget(categories)
             container.setProperty("market_id", page.market_id)
             for table in (notes, trades, points):
                 table.itemChanged.connect(self._editor_changed)
+                table.itemChanged.connect(
+                    lambda _item, value=table: resize_table_columns_to_contents(
+                        value
+                    )
+                )
+                resize_table_columns_to_contents(table)
             self._tabs.addTab(container, page.market_id.as_key())
 
     @staticmethod
@@ -549,6 +582,7 @@ class ResearchNotebookWindow(QDialog):
             market_id,
             values,
         )
+        resize_table_columns_to_contents(table)
         self._editor_changed()
 
     def _page_from_tab(self, index: int) -> ResearchNotebookPageV1:
@@ -653,5 +687,6 @@ class ResearchNotebookWindow(QDialog):
         for row in range(table.rowCount()):
             if self._row_id(table, row) == row_id:
                 table.removeRow(row)
+                resize_table_columns_to_contents(table)
                 self._editor_changed()
                 return

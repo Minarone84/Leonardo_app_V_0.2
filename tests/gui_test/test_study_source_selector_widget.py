@@ -10,7 +10,7 @@ pytest.importorskip("PySide6")
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from leonardo.gui.widgets.study_source_selector_widget import StudySourceSelectorWidget
 from leonardo.research import (
@@ -20,6 +20,7 @@ from leonardo.research import (
     StudySetupDraft,
     StudySetupCatalogRejection,
     build_study_request,
+    source_role_schema,
 )
 from tests.research_test.test_study_execution import accepted_context
 
@@ -107,3 +108,52 @@ def test_saved_artifact_sources_show_disabled_rejections_and_non_analysis_output
     row.kind.setCurrentIndex(row.kind.findData("ohlcv"))
     assert row.item.currentIndex() == -1
     assert widget.selections() == ()
+
+
+def test_braid_mid_is_fixed_while_trap_area_mid_remains_optional(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    catalog = ResearchStudySetupService(
+        artifacts, StudyEnvironmentStore(tmp_path / "env")
+    ).build_catalog(dataset, ())
+
+    for tool_key in ("braids", "braid_instability"):
+        widget = StudySourceSelectorWidget(catalog, source_role_schema(tool_key))
+        assert tuple(row.role for row in widget._rows) == ("fast", "mid", "slow")
+        assert widget._add.isHidden()
+        mid = next(row for row in widget._rows if row.role == "mid")
+        assert mid.remove.isHidden()
+
+    trap_area = StudySourceSelectorWidget(catalog, source_role_schema("trap_area"))
+    assert tuple(row.role for row in trap_area._rows) == ("fast", "slow")
+    assert trap_area._add.text() == "Add Mid"
+    assert not trap_area._add.isHidden()
+
+
+def test_utc_has_four_mandatory_stable_generic_role_rows(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    catalog = ResearchStudySetupService(
+        artifacts, StudyEnvironmentStore(tmp_path / "env")
+    ).build_catalog(dataset, ())
+    widget = StudySourceSelectorWidget(
+        catalog,
+        source_role_schema("universal_trend_classifier"),
+    )
+
+    assert tuple(row.role for row in widget._rows) == (
+        "trend_peak",
+        "trend_trough",
+        "range_peak",
+        "range_trough",
+    )
+    assert tuple(
+        row.container.findChild(QLabel).text() for row in widget._rows
+    ) == (
+        "Trend Peak",
+        "Trend Trough",
+        "Range Peak",
+        "Range Trough",
+    )
+    assert widget._add.isHidden()
+    assert all(row.remove.isHidden() for row in widget._rows)

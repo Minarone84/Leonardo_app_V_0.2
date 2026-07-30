@@ -192,7 +192,12 @@ def calculate_financial_tool(
         if runtime_type == "boolean":
             frame[name] = values.astype(bool)
         elif runtime_type == "categorical":
-            frame[name] = values.astype(object)
+            frame[name] = values.astype(
+                FinancialToolCalculationResult.categorical_output_dtype(
+                    tool_key=key,
+                    output_name=name,
+                )
+            )
         else:
             frame[name] = pd.to_numeric(values, errors="raise").astype("float32")
 

@@ -38,8 +38,22 @@ def test_pure_modules_and_gui_boundaries_remain_separate() -> None:
             assert forbidden not in source
 
 
-def test_snapshot_schema_has_no_notebook_reference() -> None:
+def test_snapshot_schema_persists_only_canonical_notebook_identity() -> None:
     source = (ROOT / "src/leonardo/research/workspace_snapshot.py").read_text(
         encoding="utf-8"
     )
-    assert "notebook" not in source.lower()
+    assert "notebook_id" in source
+    for forbidden in (
+        "notebook_display_name",
+        "ResearchNotebookV1",
+        "ResearchNotebookSummary",
+        "ResearchNotebookStore",
+        "ResearchNotebookService",
+        "ResearchNotebookApplicationService",
+        "leonardo.research.notebook",
+        "leonardo.research.notebook_store",
+        "leonardo.research.notebook_service",
+        "leonardo.research.notebook_application",
+        "PySide6",
+    ):
+        assert forbidden not in source

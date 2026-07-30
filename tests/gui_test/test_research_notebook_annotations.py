@@ -18,13 +18,15 @@ from leonardo.research.notebook import (
     ResearchNotebookPointOfInterestV1,
     ResearchNotebookPotentialTradeV1,
 )
-from tests.gui_test.test_research_study_presenter import _open
+from tests.gui_test.test_research_notebook_presenter import (
+    _open_legacy_notebook_suite,
+)
 from tests.gui_test.test_research_single_chart_integration import _wait_until
 
 
 def test_only_trade_and_poi_rows_publish_to_exact_market_chart(tmp_path) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         presenter.new_notebook()
         editor = window.findChild(ResearchNotebookWindow)
@@ -74,6 +76,8 @@ def test_only_trade_and_poi_rows_publish_to_exact_market_chart(tmp_path) -> None
         assert {glyph.row_id for glyph in scene.glyphs} == {"trade_one", "poi_one"}
     finally:
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -83,7 +87,7 @@ def test_snapshot_defers_go_to_and_duplicate_attached_detached_publication(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         presenter.open_selected_dataset()
         _wait_until(lambda: len(presenter.slot_ids()) == 2)
@@ -185,6 +189,8 @@ def test_snapshot_defers_go_to_and_duplicate_attached_detached_publication(
     finally:
         presenter._snapshot_restore = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()

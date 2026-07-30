@@ -12,6 +12,12 @@ from .naming import canonicalize_tool_key, resolve_output_names
 from .specifications import get_financial_tool_spec, resolve_output_signals, resolve_parameters
 
 
+_COLOR_STATE_CATEGORICAL_DTYPE = pd.CategoricalDtype(
+    categories=("red", "silver", "green"),
+    ordered=False,
+)
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class FinancialToolCalculationResult:
     tool_key: str
@@ -170,6 +176,22 @@ class FinancialToolCalculationResult:
         return tuple(runtime_types)
 
     @classmethod
+    def categorical_output_dtype(
+        cls,
+        *,
+        tool_key: str,
+        output_name: str,
+    ) -> pd.CategoricalDtype:
+        if (tool_key, output_name) not in {
+            ("hck", "vwap_color"),
+            ("strategy", "st_vwap_color"),
+        }:
+            raise ValueError(
+                f"no canonical categorical dtype for {tool_key}.{output_name}"
+            )
+        return _COLOR_STATE_CATEGORICAL_DTYPE
+
+    @classmethod
     def validate_runtime_outputs(
         cls,
         *,
@@ -201,14 +223,24 @@ class FinancialToolCalculationResult:
                 if values.dtype != np.dtype("bool") or values.isna().any():
                     raise ValueError(f"{name} runtime dtype must be non-null boolean")
             elif runtime_type == "categorical":
-                if values.dtype != np.dtype("object") or values.isna().any():
-                    raise ValueError(f"{name} runtime dtype must be non-null object strings")
-                if not values.map(lambda value: isinstance(value, str)).all():
-                    raise ValueError(f"{name} must contain categorical strings")
-                if tool_key in {"hck", "strategy"} and not values.isin(
-                    {"red", "silver", "green"}
-                ).all():
-                    raise ValueError(f"{name} contains an invalid color state")
+                expected_dtype = cls.categorical_output_dtype(
+                    tool_key=tool_key,
+                    output_name=name,
+                )
+                if not isinstance(values.dtype, pd.CategoricalDtype):
+                    raise ValueError(
+                        f"{name} runtime dtype must be the canonical categorical dtype"
+                    )
+                if tuple(values.cat.categories) != tuple(expected_dtype.categories):
+                    raise ValueError(
+                        f"{name} runtime categories must match the canonical sequence"
+                    )
+                if values.cat.ordered is not expected_dtype.ordered:
+                    raise ValueError(
+                        f"{name} runtime categorical ordering must be canonical"
+                    )
+                if values.isna().any():
+                    raise ValueError(f"{name} categorical state must be non-null")
             else:
                 raise ValueError(f"unsupported runtime output type: {runtime_type}")
         return runtime_types

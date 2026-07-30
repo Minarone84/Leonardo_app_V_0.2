@@ -44,6 +44,10 @@ _PRIVATE_SOURCE_ALIASES = {
     "slow": "__research_slow",
     "peak": "__research_peak",
     "trough": "__research_trough",
+    "trend_peak": "__research_trend_peak",
+    "trend_trough": "__research_trend_trough",
+    "range_peak": "__research_range_peak",
+    "range_trough": "__research_range_trough",
 }
 
 
@@ -193,7 +197,16 @@ def _validate_study_source_lineage(
 
     selectors = _canonical_selector_lineage(result)
     expected_roles = selectors.external_roles
-    if set(roles) != set(expected_roles) or len(roles) != len(expected_roles):
+    utc_roles_valid = roles == expected_roles or (
+        not studies and roles == tuple(sorted(expected_roles))
+    )
+    if (
+        result.tool_key == "universal_trend_classifier"
+        and not utc_roles_valid
+    ) or (
+        result.tool_key != "universal_trend_classifier"
+        and (set(roles) != set(expected_roles) or len(roles) != len(expected_roles))
+    ):
         raise StudyValidationError(
             f"Study lineage roles {tuple(sorted(roles))!r} do not match selectors "
             f"{tuple(sorted(expected_roles))!r}"
@@ -203,6 +216,23 @@ def _validate_study_source_lineage(
         if by_role[role].output_name != output_name:
             raise StudyValidationError(
                 f"Study lineage output for {role!r} must be {output_name!r}"
+            )
+    if result.tool_key == "universal_trend_classifier" and references:
+        owners = {
+            (
+                "study",
+                item.study_id,
+            )
+            if isinstance(item, StudyDependencyRef)
+            else (
+                "artifact",
+                item.artifact_id,
+            )
+            for item in references
+        }
+        if len(owners) != 1:
+            raise StudyValidationError(
+                "UTC sources must come from one Peaks & Troughs owner"
             )
     _validate_implicit_ohlcv_families(result, selectors)
     return expected_roles
@@ -265,19 +295,29 @@ def _canonical_selector_lineage(
         trough = parameters.get("trough_column")
         if peak is None and trough is None:
             return _CanonicalSelectorLineage((), (), ())
+        trend_window = parameters.get("trend_fractal_window")
+        range_window = parameters.get("range_fractal_window")
         if (
-            peak != _PRIVATE_SOURCE_ALIASES["peak"]
-            or trough != _PRIVATE_SOURCE_ALIASES["trough"]
+            type(trend_window) is not int
+            or trend_window <= 0
+            or type(range_window) is not int
+            or range_window <= 0
         ):
-            raise StudyValidationError("UTC peak and trough selectors must form an exact pair")
-        window = parameters.get("trend_fractal_window")
-        if type(window) is not int or window <= 0:
-            raise StudyValidationError("UTC trend_fractal_window must be a positive integer")
+            raise StudyValidationError("UTC fractal windows must be positive integers")
+        if (
+            peak != f"peak_fractal_{trend_window}"
+            or trough != f"trough_fractal_{trend_window}"
+        ):
+            raise StudyValidationError(
+                "UTC trend peak and trough selectors must form an exact pair"
+            )
         return _CanonicalSelectorLineage(
-            ("peak", "trough"),
+            ("trend_peak", "trend_trough", "range_peak", "range_trough"),
             (
-                ("peak", f"peak_fractal_{window}"),
-                ("trough", f"trough_fractal_{window}"),
+                ("trend_peak", f"peak_fractal_{trend_window}"),
+                ("trend_trough", f"trough_fractal_{trend_window}"),
+                ("range_peak", f"peak_fractal_{range_window}"),
+                ("range_trough", f"trough_fractal_{range_window}"),
             ),
             (),
         )
@@ -485,6 +525,26 @@ class StudySaveAttempt:
 
 
 @dataclass(frozen=True, slots=True)
+class StudyEditAttempt:
+    session_id: str
+    generation: int
+    request_id: str
+    study_id: str
+    market_id: MarketId
+    dataset_fingerprint: str
+
+    def __post_init__(self) -> None:
+        StudyApplyAttempt(
+            session_id=self.session_id,
+            generation=self.generation,
+            request_id=self.request_id,
+            study_id=self.study_id,
+            market_id=self.market_id,
+            dataset_fingerprint=self.dataset_fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ChartStudy:
     study_id: str
     session_id: str
@@ -495,6 +555,7 @@ class ChartStudy:
     display_name: str
     result: FinancialToolCalculationResult
     setup_request: StudyExecutionRequest | StudyArtifactRequest
+    edit_request: StudyExecutionRequest
     user_metadata: StudyUserMetadata = StudyUserMetadata()
     source_studies: tuple[StudyDependencyRef, ...] = ()
     source_artifacts: tuple[ArtifactSourceRefV1, ...] = ()
@@ -561,6 +622,15 @@ class ChartStudy:
             result=result,
             user_metadata=self.user_metadata,
         )
+        _validate_edit_request(
+            self.edit_request,
+            setup_request=self.setup_request,
+            source_kind=source_kind,
+            display_name=self.display_name,
+            result=result,
+            user_metadata=self.user_metadata,
+            source_artifacts=artifacts,
+        )
         signals = resolve_output_signals(
             result.tool_key, {**dict(result.parameters), **dict(result.bindings)}
         )
@@ -613,17 +683,34 @@ class StudySaveOutcome:
 
 def build_chart_study(
     *,
-    attempt: StudyApplyAttempt,
+    attempt: StudyApplyAttempt | StudyEditAttempt,
     source_kind: str,
     display_name: str,
     result: FinancialToolCalculationResult,
     setup_request: StudyExecutionRequest | StudyArtifactRequest,
+    edit_request: StudyExecutionRequest | None = None,
     source_studies: Sequence[StudyDependencyRef] = (),
     source_artifacts: Sequence[ArtifactSourceRefV1] = (),
     saved_link: StudySavedLink | None = None,
 ) -> ChartStudy:
     """Build one canonical Study from an accepted attempt and full result."""
 
+    if source_kind == "calculation":
+        if not isinstance(setup_request, StudyExecutionRequest):
+            raise StudyValidationError(
+                "calculation Studies require a StudyExecutionRequest setup_request"
+            )
+        resolved_edit_request = setup_request
+        if edit_request is not None and edit_request != resolved_edit_request:
+            raise StudyValidationError(
+                "calculation Study edit_request must equal setup_request"
+            )
+    else:
+        if not isinstance(edit_request, StudyExecutionRequest):
+            raise StudyValidationError(
+                "artifact Studies require an explicit edit_request"
+            )
+        resolved_edit_request = edit_request
     signals = resolve_output_signals(
         result.tool_key, {**dict(result.parameters), **dict(result.bindings)}
     )
@@ -638,6 +725,7 @@ def build_chart_study(
         display_name=display_name,
         result=result,
         setup_request=setup_request,
+        edit_request=resolved_edit_request,
         user_metadata=setup_request.user_metadata,
         source_studies=tuple(source_studies),
         source_artifacts=tuple(source_artifacts),
@@ -685,6 +773,62 @@ def _validate_setup_request(
         raise StudyValidationError("setup_request display name does not match Study")
     if request.user_metadata != user_metadata:
         raise StudyValidationError("setup_request metadata does not match Study metadata")
+
+
+def _validate_edit_request(
+    request: object,
+    *,
+    setup_request: StudyExecutionRequest | StudyArtifactRequest,
+    source_kind: str,
+    display_name: str,
+    result: FinancialToolCalculationResult,
+    user_metadata: StudyUserMetadata,
+    source_artifacts: tuple[ArtifactSourceRefV1, ...],
+) -> None:
+    if not isinstance(request, StudyExecutionRequest):
+        raise StudyValidationError("edit_request must be a StudyExecutionRequest")
+    if request.tool_key != result.tool_key:
+        raise StudyValidationError("edit_request tool does not match Study result")
+    if request.display_name != display_name:
+        raise StudyValidationError("edit_request display name does not match Study")
+    if request.user_metadata != user_metadata:
+        raise StudyValidationError("edit_request metadata does not match Study metadata")
+    if source_kind == "calculation" and request != setup_request:
+        raise StudyValidationError(
+            "calculation Study edit_request must equal setup_request"
+        )
+    if source_kind == "artifact" and any(
+        source.source_kind == "study" for source in request.input_sources
+    ):
+        raise StudyValidationError(
+            "artifact Study edit_request may not contain transient Study sources"
+        )
+    if source_kind == "artifact":
+        selectors = _canonical_selector_lineage(result)
+        expected_roles = {
+            role for role, _column in selectors.implicit_ohlcv
+        } | {ref.role for ref in source_artifacts}
+        by_role = {source.role: source for source in request.input_sources}
+        if set(by_role) != expected_roles:
+            raise StudyValidationError(
+                "artifact Study edit_request lineage does not match result"
+            )
+        for role, column in selectors.implicit_ohlcv:
+            source = by_role[role]
+            if source.source_kind != "ohlcv" or source.column_name != column:
+                raise StudyValidationError(
+                    "artifact Study edit_request OHLCV lineage does not match result"
+                )
+        for ref in source_artifacts:
+            source = by_role[ref.role]
+            if (
+                source.source_kind != "artifact"
+                or source.artifact_id != ref.artifact_id
+                or source.output_name != ref.output_name
+            ):
+                raise StudyValidationError(
+                    "artifact Study edit_request artifact lineage does not match result"
+                )
 
 
 class ChartStudyRegistry:
@@ -735,6 +879,29 @@ class ChartStudyRegistry:
             raise StudyValidationError("saved_link must be a StudySavedLink")
         replacement = replace(study, saved_link=saved_link)
         self._studies[study_id] = replacement
+        return replacement
+
+    def replace_for_edit(
+        self,
+        study_id: str,
+        replacement: ChartStudy,
+        *,
+        projection: object | None,
+    ) -> ChartStudy:
+        current = self.get(study_id)
+        if not isinstance(replacement, ChartStudy):
+            raise StudyValidationError("replacement must be a ChartStudy")
+        if replacement.study_id != current.study_id:
+            raise StudyValidationError("edited Study identity must remain unchanged")
+        if replacement.result.tool_key != current.result.tool_key:
+            raise StudyValidationError("edited Study tool key must remain unchanged")
+        if projection is not None and getattr(projection, "study_id", None) != study_id:
+            raise StudyValidationError("edited Study projection identity must match")
+        self._studies[study_id] = replacement
+        if projection is None:
+            self._projections.pop(study_id, None)
+        else:
+            self._projections[study_id] = projection
         return replacement
 
     def remove(self, study_id: str) -> ChartStudy:

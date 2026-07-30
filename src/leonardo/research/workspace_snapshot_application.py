@@ -13,18 +13,31 @@ from leonardo.research.workspace_snapshot import (
     WorkspaceSnapshotCapture,
 )
 from leonardo.research.workspace_snapshot_service import ResearchWorkspaceSnapshotService
+from leonardo.research.workspace_notebook_link import (
+    ResearchWorkspaceNotebookLinkService,
+)
 
 
 class ResearchWorkspaceSnapshotApplicationService:
     """Run snapshot persistence and preflight through the shared CoreRunner."""
 
-    def __init__(self, core_runner: CoreRunner, service: ResearchWorkspaceSnapshotService) -> None:
+    def __init__(
+        self,
+        core_runner: CoreRunner,
+        service: ResearchWorkspaceSnapshotService,
+        notebook_link: ResearchWorkspaceNotebookLinkService,
+    ) -> None:
         if not isinstance(core_runner, CoreRunner):
             raise TypeError("core_runner must be CoreRunner")
         if not isinstance(service, ResearchWorkspaceSnapshotService):
             raise TypeError("service must be ResearchWorkspaceSnapshotService")
+        if not isinstance(notebook_link, ResearchWorkspaceNotebookLinkService):
+            raise TypeError(
+                "notebook_link must be ResearchWorkspaceNotebookLinkService"
+            )
         self._core_runner = core_runner
         self._service = service
+        self._notebook_link = notebook_link
         self._cancellations: dict[str, Event] = {}
         self._lock = RLock()
 
@@ -103,6 +116,48 @@ class ResearchWorkspaceSnapshotApplicationService:
             ),
             "Research Workspace Snapshot delete",
             "research.workspace_snapshot.delete",
+            **callbacks,
+        )
+
+    def submit_assign_notebook(
+        self,
+        snapshot_id: str,
+        notebook_id: str,
+        **callbacks,
+    ):
+        return self._submit(
+            lambda reporter, cancelled: self._publishing(
+                reporter,
+                cancelled,
+                "Assigning Workspace Snapshot Notebook",
+                lambda: self._notebook_link.assign_notebook(
+                    snapshot_id,
+                    notebook_id,
+                ),
+            ),
+            "Research Workspace Snapshot Notebook assign",
+            "research.workspace_snapshot.notebook_assign",
+            **callbacks,
+        )
+
+    def submit_unassign_notebook(
+        self,
+        snapshot_id: str,
+        notebook_id: str,
+        **callbacks,
+    ):
+        return self._submit(
+            lambda reporter, cancelled: self._publishing(
+                reporter,
+                cancelled,
+                "Unassigning Workspace Snapshot Notebook",
+                lambda: self._notebook_link.unassign_notebook(
+                    snapshot_id,
+                    notebook_id,
+                ),
+            ),
+            "Research Workspace Snapshot Notebook unassign",
+            "research.workspace_snapshot.notebook_unassign",
             **callbacks,
         )
 

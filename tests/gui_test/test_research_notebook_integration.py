@@ -9,13 +9,15 @@ from PySide6.QtWidgets import QApplication
 
 from leonardo.data import MarketId
 from leonardo.gui.windows.research_notebook_window import ResearchNotebookWindow
+from tests.gui_test.test_research_notebook_presenter import (
+    _open_legacy_notebook_suite,
+)
 from tests.gui_test.test_research_single_chart_integration import _wait_until
-from tests.gui_test.test_research_study_presenter import _open
 
 
 def test_composed_notebook_save_creates_one_canonical_file(tmp_path) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         presenter.new_notebook()
         editor = window.findChild(ResearchNotebookWindow)
@@ -33,6 +35,8 @@ def test_composed_notebook_save_creates_one_canonical_file(tmp_path) -> None:
         assert app.research_notebook_store.load(editor.notebook_id).content_hash
     finally:
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -42,7 +46,7 @@ def test_go_to_prefers_active_then_lowest_position_and_never_opens_chart(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         presenter.open_selected_dataset()
         _wait_until(lambda: len(presenter.slot_ids()) == 2)
@@ -81,6 +85,8 @@ def test_go_to_prefers_active_then_lowest_position_and_never_opens_chart(
         assert len(presenter.slot_ids()) == count
         assert "No open Research chart" in window.status_text()
     finally:
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()

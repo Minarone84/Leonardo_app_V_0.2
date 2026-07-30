@@ -27,12 +27,17 @@ def test_shell_widgets_do_not_own_services_or_persistence() -> None:
         "ResearchDatasetApplicationService",
         "ResearchStudyApplicationService",
         "pathlib",
-        "open(",
     )
     for path in paths:
         source = Path(path).read_text(encoding="utf-8")
-        ast.parse(source)
+        tree = ast.parse(source)
         assert all(token not in source for token in forbidden)
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "open"
+            for node in ast.walk(tree)
+        )
 
 
 def test_task_1021_through_1025_features_are_absent() -> None:

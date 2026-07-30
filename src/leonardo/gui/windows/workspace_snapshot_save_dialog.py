@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QTableWidget,
@@ -22,6 +23,8 @@ from leonardo.research.workspace_snapshot import (
     ResearchWorkspaceSnapshotSummary,
     WorkspaceSnapshotCapture,
 )
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.window_geometry import apply_initial_window_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +46,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("research.workspace_snapshot_save_dialog")
-        self.setWindowTitle("Save Workspace Snapshot")
+        self.setWindowTitle("Save Workspace")
         self._capture = capture
         self._summaries = tuple(item for item in summaries if item.valid)
         layout = QVBoxLayout(self)
@@ -63,23 +66,47 @@ class WorkspaceSnapshotSaveDialog(QDialog):
         layout.addWidget(self.existing_combo)
         self.name_edit = QLineEdit(self)
         self.name_edit.setObjectName("research.workspace_snapshot_save_dialog.edit.name")
-        self.name_edit.setPlaceholderText("Snapshot name")
+        self.name_edit.setPlaceholderText("Workspace name")
         layout.addWidget(self.name_edit)
-        self.description_edit = QLineEdit(self)
+        self.description_edit = QPlainTextEdit(self)
         self.description_edit.setObjectName("research.workspace_snapshot_save_dialog.edit.description")
         self.description_edit.setPlaceholderText("Description")
+        line_spacing = self.description_edit.fontMetrics().lineSpacing()
+        document_margins = round(
+            self.description_edit.document().documentMargin() * 2
+        )
+        self.description_edit.setMinimumHeight(
+            3 * line_spacing
+            + 2 * self.description_edit.frameWidth()
+            + document_margins
+        )
         layout.addWidget(self.description_edit)
-        self.chart_table = QTableWidget(0, 8, self)
+        self.chart_table = QTableWidget(0, 11, self)
         self.chart_table.setObjectName("research.workspace_snapshot_save_dialog.table.charts")
         self.chart_table.setHorizontalHeaderLabels(
-            ("Position", "Market", "Detached", "Studies", "Viewport center UTC", "Visible bars", "Scale", "Volume")
+            (
+                "Position",
+                "Exchange",
+                "Market Type",
+                "Asset",
+                "Timeframe",
+                "Detached",
+                "Studies",
+                "Viewport center UTC",
+                "Visible bars",
+                "Scale",
+                "Volume",
+            )
         )
         for chart in capture.charts:
             row = self.chart_table.rowCount()
             self.chart_table.insertRow(row)
             values = (
                 chart.workspace_position,
-                chart.market_id.as_key(),
+                chart.market_id.exchange,
+                chart.market_id.market_type,
+                chart.market_id.symbol,
+                chart.market_id.timeframe,
                 "Yes" if chart.detached else "No",
                 len(chart.studies),
                 chart.viewport.center_timestamp_ms,
@@ -89,6 +116,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
             )
             for column, value in enumerate(values):
                 self.chart_table.setItem(row, column, QTableWidgetItem(str(value)))
+        resize_table_columns_to_contents(self.chart_table)
         layout.addWidget(self.chart_table)
         self.validation_label = QLabel("", self)
         self.validation_label.setObjectName("research.workspace_snapshot_save_dialog.label.validation")
@@ -106,6 +134,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
         self.update_radio.toggled.connect(self._sync)
         self.existing_combo.currentIndexChanged.connect(self._populate_existing)
         self.name_edit.textChanged.connect(self._sync)
+        apply_initial_window_size(self, parent=parent)
         self._sync()
 
     def _populate_existing(self) -> None:
@@ -113,7 +142,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
             return
         summary = self._summaries[self.existing_combo.currentIndex()]
         self.name_edit.setText(summary.display_name)
-        self.description_edit.setText(summary.description)
+        self.description_edit.setPlainText(summary.description)
 
     def _sync(self) -> None:
         update = self.update_radio.isChecked()
@@ -124,7 +153,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
             for item in self._summaries
         )
         valid = bool(name) and ((update and self.existing_combo.currentIndex() >= 0) or not duplicate)
-        self.validation_label.setText("" if valid else "Enter a unique non-empty snapshot name.")
+        self.validation_label.setText("" if valid else "Enter a unique non-empty workspace name.")
         self.save_button.setEnabled(valid)
 
     def _emit_save(self) -> None:
@@ -135,7 +164,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
                 "update" if update else "create",
                 snapshot_id,
                 self.name_edit.text().strip(),
-                self.description_edit.text(),
+                self.description_edit.toPlainText(),
             )
         )
         self.accept()

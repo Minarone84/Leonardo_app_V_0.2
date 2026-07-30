@@ -9,21 +9,66 @@ from uuid import uuid4
 from leonardo.core.core_runner import CallbackDispatcher, CoreRunner, TaskResult, TaskSubmission
 from leonardo.research.notebook import ResearchNotebookDraft
 from leonardo.research.notebook_service import ResearchNotebookService
+from leonardo.research.workspace_notebook_link import (
+    ResearchWorkspaceNotebookLinkService,
+)
+
+
+class _DeleteCancellationControl:
+    """Atomically order cancellation and coordinated Notebook deletion."""
+
+    def __init__(self, lock: RLock) -> None:
+        self._cancelled = Event()
+        self._state = "cancellable"
+        self._lock = lock
+
+    def is_set(self) -> bool:
+        return self._cancelled.is_set()
+
+    def request_cancellation(self) -> bool:
+        with self._lock:
+            if self._state != "cancellable":
+                return False
+            self._cancelled.set()
+            return True
+
+    def begin_persistence(self) -> bool:
+        with self._lock:
+            if self._state != "cancellable" or self._cancelled.is_set():
+                return False
+            self._state = "persistence_started"
+            return True
+
+    def mark_terminal(self) -> None:
+        with self._lock:
+            self._state = "terminal"
+
+    def is_terminal(self) -> bool:
+        with self._lock:
+            return self._state == "terminal"
 
 
 class ResearchNotebookApplicationService:
     """Run Research Notebook persistence through the shared CoreRunner."""
 
     def __init__(
-        self, core_runner: CoreRunner, service: ResearchNotebookService
+        self,
+        core_runner: CoreRunner,
+        service: ResearchNotebookService,
+        notebook_link: ResearchWorkspaceNotebookLinkService,
     ) -> None:
         if not isinstance(core_runner, CoreRunner):
             raise TypeError("core_runner must be CoreRunner")
         if not isinstance(service, ResearchNotebookService):
             raise TypeError("service must be ResearchNotebookService")
+        if not isinstance(notebook_link, ResearchWorkspaceNotebookLinkService):
+            raise TypeError(
+                "notebook_link must be ResearchWorkspaceNotebookLinkService"
+            )
         self._core_runner = core_runner
         self._service = service
-        self._cancellations: dict[str, Event] = {}
+        self._notebook_link = notebook_link
+        self._cancellations: dict[str, Event | _DeleteCancellationControl] = {}
         self._lock = RLock()
 
     def build_draft(self, **values) -> ResearchNotebookDraft:
@@ -83,15 +128,10 @@ class ResearchNotebookApplicationService:
         )
 
     def submit_delete_notebook(self, notebook_id: str, **callbacks):
-        return self._submit(
-            lambda reporter, cancelled: self._publishing(
-                reporter,
-                cancelled,
-                "Deleting Research Notebook",
-                lambda: self._service.delete_notebook(notebook_id),
-            ),
-            "Research Notebook delete",
-            "research.notebook.delete",
+        cancellation = _DeleteCancellationControl(self._lock)
+        return self._submit_delete(
+            notebook_id,
+            cancellation,
             **callbacks,
         )
 
@@ -100,10 +140,77 @@ class ResearchNotebookApplicationService:
             raise ValueError("task_id must be non-empty text")
         with self._lock:
             cancellation = self._cancellations.get(task_id)
-        if cancellation is None or cancellation.is_set():
+        if cancellation is None:
             return False
-        cancellation.set()
+        if isinstance(cancellation, _DeleteCancellationControl):
+            if not cancellation.request_cancellation():
+                return False
+        else:
+            if cancellation.is_set():
+                return False
+            cancellation.set()
         return self._core_runner.cancel(task_id)
+
+    def _submit_delete(
+        self,
+        notebook_id: str,
+        cancellation: _DeleteCancellationControl,
+        *,
+        progress_callback=None,
+        result_callback=None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        completed = Event()
+        task_ref: list[str] = []
+        dispatcher = callback_dispatcher or _inline_dispatch
+
+        def job(reporter):
+            reporter.report("Deleting Research Notebook", current=0, total=1)
+            if not cancellation.begin_persistence():
+                from leonardo.research.studies import StudyOperationCancelled
+
+                raise StudyOperationCancelled(
+                    "Deleting Research Notebook cancelled before publication"
+                )
+            value = self._notebook_link.delete_notebook_with_reference_cleanup(
+                notebook_id
+            )
+            reporter.report(
+                "Deleting Research Notebook complete",
+                current=1,
+                total=1,
+            )
+            return value
+
+        def on_progress(progress) -> None:
+            if progress_callback is not None:
+                dispatcher(lambda: progress_callback(progress))
+
+        def on_result(result: TaskResult) -> None:
+            completed.set()
+            task_id = task_ref[0] if task_ref else result.task_id
+            cancellation.mark_terminal()
+            with self._lock:
+                if self._cancellations.get(task_id) is cancellation:
+                    self._cancellations.pop(task_id, None)
+            if result_callback is not None:
+                dispatcher(lambda: result_callback(result))
+
+        submission = self._core_runner.submit_blocking_job(
+            job,
+            task_name="Research Notebook delete",
+            progress_callback=on_progress if progress_callback is not None else None,
+            result_callback=on_result,
+            callback_dispatcher=None,
+            allow_duplicate_name=True,
+            correlation_id=uuid4().hex,
+            metadata={"operation": "research.notebook.delete"},
+        )
+        task_ref.append(submission.task_id)
+        with self._lock:
+            if not completed.is_set() and not cancellation.is_terminal():
+                self._cancellations[submission.task_id] = cancellation
+        return submission
 
     def _submit(
         self,

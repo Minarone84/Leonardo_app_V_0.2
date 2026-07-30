@@ -18,6 +18,9 @@ from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.data import canonicalize_market_id
 from leonardo.gui.composition import GuiCompositionRoot
+from tests.gui_test.test_research_single_chart_integration import (
+    _open_restored_chart,
+)
 
 
 class _WorkflowProvider:
@@ -154,9 +157,11 @@ def test_gui_download_validation_and_research_open_use_one_composed_workflow(
 
         main.action_for_id("main_window.open_research_suite").trigger()
         research_window = composition.research_suite_window
+        research_presenter = composition.research_suite_presenter
         assert research_window is not None
-        _wait_until(lambda: research_window.status_text().startswith("Ready"))
-        assert research_window.selected_market_id() is None
+        assert research_presenter is not None
+        _wait_until(lambda: research_presenter._active_catalog_task_id is None)
+        assert research_window.dataset_summaries == ()
 
         download_window.button_for_id("ohlcv_maintenance").click()
         maintenance_window = composition.ohlcv_maintenance_window
@@ -174,14 +179,23 @@ def test_gui_download_validation_and_research_open_use_one_composed_workflow(
         )
         assert maintenance_window.status_text().startswith("Accepted")
 
-        research_window.button_for_id("research_suite.button.refresh").click()
-        _wait_until(lambda: research_window.selected_market_id() == market)
-        research_window.button_for_id("research_suite.button.open_chart").click()
-        _wait_until(lambda: research_window.status_text() == "Chart ready")
+        research_window.close()
+        _wait_until(lambda: composition.research_suite_window is None)
+        main.action_for_id("main_window.open_research_suite").trigger()
+        research_window = composition.research_suite_window
         research_presenter = composition.research_suite_presenter
+        assert research_window is not None
         assert research_presenter is not None
-        assert research_presenter.session.dataset_count == 3
-        assert research_presenter.session.resident_count == 3
+        _wait_until(
+            lambda: tuple(
+                summary.market_id for summary in research_window.dataset_summaries
+            )
+            == (market,)
+        )
+        slot_id = _open_restored_chart(research_window, research_presenter)
+        session = research_presenter._workspace_state.session_for(slot_id)
+        assert session.dataset_count == 3
+        assert session.resident_count == 3
 
         operations = {
             item.metadata.get("operation") for item in app.task_manager.snapshots()

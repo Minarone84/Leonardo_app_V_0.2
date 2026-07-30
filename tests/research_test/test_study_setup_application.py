@@ -32,7 +32,10 @@ def test_setup_application_runs_catalog_through_core_and_cleans_tasks(tmp_path: 
         )
         assert completed.wait(3.0)
         assert results[0].status == "completed"
-        assert len(results[0].value.tools) == 26
+        assert len(results[0].value.tools) == 25
+        assert "dynamic_binning" not in tuple(
+            item.key for item in results[0].value.tools
+        )
         assert submission.task_id not in application._cancellations
     finally:
         runner.shutdown()

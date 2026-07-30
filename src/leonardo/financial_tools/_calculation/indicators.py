@@ -5,6 +5,7 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 
+from ..calculation_models import FinancialToolCalculationResult
 from .common import _ema, _ew_vwap, _fractal_extrema, _numeric_series, _wma
 
 
@@ -100,7 +101,16 @@ def _hck_values(data: pd.DataFrame, fast_length: int, slow_length: int) -> tuple
     typical = (high + low + close) / 3.0
     fast = _ew_vwap(typical, volume, fast_length)
     slow = _ew_vwap(typical, volume, slow_length)
-    color = pd.Series("silver", index=data.index, dtype=object)
+    color = pd.Series(
+        pd.Categorical(
+            ["silver"] * len(data),
+            dtype=FinancialToolCalculationResult.categorical_output_dtype(
+                tool_key="hck",
+                output_name="vwap_color",
+            ),
+        ),
+        index=data.index,
+    )
     color.loc[fast > slow] = "green"
     color.loc[fast < slow] = "red"
     return fast, slow, color

@@ -161,13 +161,51 @@ def test_all_26_tools_prepare_against_full_dataset(tmp_path: Path) -> None:
         prepare(service, dataset, "hma", parameters={"period": 3}),
     )
     output_names = tuple(study.result.output_names[0] for study in indicator_sources)
+    peaks_troughs_source = prepare(
+        service,
+        dataset,
+        "peaks_troughs",
+    )
 
     prepared_keys: set[str] = set()
     for key in ALL_FINANCIAL_TOOL_SPECS:
         parameters: dict[str, object] = {}
         sources: tuple[StudyInputSource, ...] = ()
         studies = ()
-        if key in {"derivative", "angle"}:
+        if key == "universal_trend_classifier":
+            parameters = {
+                "fractal_window": 3,
+                "trend_fractal_window": 5,
+                "range_fractal_window": 3,
+            }
+            studies = (peaks_troughs_source,)
+            sources = (
+                StudyInputSource(
+                    "trend_peak",
+                    "study",
+                    study_id=peaks_troughs_source.study_id,
+                    output_name="peak_fractal_5",
+                ),
+                StudyInputSource(
+                    "trend_trough",
+                    "study",
+                    study_id=peaks_troughs_source.study_id,
+                    output_name="trough_fractal_5",
+                ),
+                StudyInputSource(
+                    "range_peak",
+                    "study",
+                    study_id=peaks_troughs_source.study_id,
+                    output_name="peak_fractal_3",
+                ),
+                StudyInputSource(
+                    "range_trough",
+                    "study",
+                    study_id=peaks_troughs_source.study_id,
+                    output_name="trough_fractal_3",
+                ),
+            )
+        elif key in {"derivative", "angle"}:
             sources = (StudyInputSource("source", "ohlcv", column_name="close"),)
         elif key == "delta":
             sources = (
@@ -203,6 +241,26 @@ def test_all_26_tools_prepare_against_full_dataset(tmp_path: Path) -> None:
             studies=studies,
         )
         assert study.result.row_count == dataset.row_count
+        if key == "universal_trend_classifier":
+            assert study.result.parameters["fractal_window"] == 5
+            assert study.result.parameters["trend_fractal_window"] == 5
+            assert study.result.parameters["range_fractal_window"] == 3
+            assert tuple(ref.role for ref in study.source_studies) == (
+                "trend_peak",
+                "trend_trough",
+                "range_peak",
+                "range_trough",
+            )
+            assert tuple(ref.output_name for ref in study.source_studies) == (
+                "peak_fractal_5",
+                "trough_fractal_5",
+                "peak_fractal_3",
+                "trough_fractal_3",
+            )
+            assert {
+                ref.study_id
+                for ref in study.source_studies
+            } == {peaks_troughs_source.study_id}
         prepared_keys.add(study.result.tool_key)
 
     assert prepared_keys == set(ALL_FINANCIAL_TOOL_SPECS)

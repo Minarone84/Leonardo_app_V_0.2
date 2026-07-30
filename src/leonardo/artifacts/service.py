@@ -507,6 +507,18 @@ class ArtifactService:
             output_names=metadata.recipe.output_names,
         )
         frame = decode_values_csv(values_bytes, metadata.recipe.output_names, runtime_types)
+        for name, runtime_type in zip(
+            metadata.recipe.output_names,
+            runtime_types,
+            strict=True,
+        ):
+            if runtime_type == "categorical":
+                frame[name] = frame[name].astype(
+                    FinancialToolCalculationResult.categorical_output_dtype(
+                        tool_key=metadata.recipe.tool_key,
+                        output_name=name,
+                    )
+                )
         if (
             len(frame) != metadata.row_count
             or int(frame["ts_ms"].iloc[0]) != metadata.first_timestamp_ms

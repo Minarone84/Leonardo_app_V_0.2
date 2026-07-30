@@ -25,9 +25,9 @@ from leonardo.research.notebook import (
     ResearchNotebookDraft,
 )
 from tests.gui_test.test_research_notebook_presenter import (
+    _open_legacy_notebook_suite,
     _open_persisted_editor,
 )
-from tests.gui_test.test_research_study_presenter import _open
 
 
 def test_notebook_runtime_tracks_generations_and_one_mutation_task() -> None:
@@ -43,7 +43,7 @@ def test_stale_save_load_and_delete_results_do_not_mutate_newer_editor(
     tmp_path
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         notebook, old_editor = _open_persisted_editor(app, window, presenter)
         old_generation = presenter._notebook_editor_generation
@@ -85,6 +85,8 @@ def test_stale_save_load_and_delete_results_do_not_mutate_newer_editor(
         assert newer_editor.last_valid_draft.display_name == "Newer Notebook"
     finally:
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -94,7 +96,7 @@ def test_dispose_cancels_one_notebook_task_and_clears_each_chart_once(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, _window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     chart = presenter.chart_presenter(presenter.active_slot_id)
     cancellations: list[str] = []
     clears: list[int] = []
@@ -117,6 +119,7 @@ def test_dispose_cancels_one_notebook_task_and_clears_each_chart_once(
     assert cancellations == ["notebook_task"]
     assert clears == [chart.slot_id]
     assert presenter._chart_presenters == {}
+    window.close()
     main.close()
     QCoreApplication.processEvents()
     app.shutdown()
@@ -126,7 +129,7 @@ def test_failed_save_restores_invalid_dirty_editor_without_raw_data_loss(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, _window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     callbacks = []
 
     def controlled_update(_notebook_id, _draft, **values):
@@ -190,6 +193,8 @@ def test_failed_save_restores_invalid_dirty_editor_without_raw_data_loss(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()

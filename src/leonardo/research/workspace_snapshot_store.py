@@ -112,6 +112,30 @@ class ResearchWorkspaceSnapshotStore:
                 updated_at_utc=self._now(),
                 workspace=draft.workspace,
                 charts=draft.charts,
+                notebook_id=current.notebook_id,
+            )
+            self._write(path, snapshot, refuse_existing=False)
+            return snapshot
+
+    def replace_notebook_id(
+        self,
+        snapshot_id: str,
+        notebook_id: str | None,
+    ) -> ResearchWorkspaceSnapshotV1:
+        path = self.snapshot_path(snapshot_id)
+        with self._lock:
+            if not path.exists():
+                raise ResearchWorkspaceSnapshotNotFoundError(snapshot_id)
+            current = self._load_path(path)
+            snapshot = ResearchWorkspaceSnapshotV1.build(
+                snapshot_id=current.snapshot_id,
+                display_name=current.display_name,
+                description=current.description,
+                created_at_utc=current.created_at_utc,
+                updated_at_utc=self._now(),
+                workspace=current.workspace,
+                charts=current.charts,
+                notebook_id=notebook_id,
             )
             self._write(path, snapshot, refuse_existing=False)
             return snapshot
@@ -167,6 +191,7 @@ class ResearchWorkspaceSnapshotStore:
                 chart_count=len(snapshot.charts),
                 created_at_utc=snapshot.created_at_utc,
                 updated_at_utc=snapshot.updated_at_utc,
+                notebook_id=snapshot.notebook_id,
             )
         except Exception as exc:
             return ResearchWorkspaceSnapshotSummary(

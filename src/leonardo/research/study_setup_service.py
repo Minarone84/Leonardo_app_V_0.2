@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 from leonardo.artifacts import ArtifactError, ArtifactService
 from leonardo.financial_tools import (
-    ALL_FINANCIAL_TOOL_SPECS,
     resolve_output_signals,
     resolve_parameters,
 )
@@ -32,6 +31,7 @@ from leonardo.research.study_environment import (
 from leonardo.research.study_environment_store import StudyEnvironmentStore
 from leonardo.research.study_presentation import StudyPresentation
 from leonardo.research.study_setup import (
+    RESEARCH_FINANCIAL_TOOL_SPECS,
     StudyArtifactOption,
     StudySetupCatalog,
     StudySetupCatalogRejection,
@@ -99,6 +99,19 @@ class ResearchStudySetupService:
         rejections: list[StudySetupCatalogRejection] = []
         for summary in self._artifacts.list_artifacts(dataset.market_id):
             _raise_if_cancelled(cancel, "artifact catalog traversal")
+            if summary.tool_key == "dynamic_binning":
+                rejections.append(
+                    StudySetupCatalogRejection(
+                        artifact_id=summary.artifact_id,
+                        kind=summary.kind,
+                        tool_key=summary.tool_key,
+                        reason=(
+                            "Dynamic Binning is reserved for Analysis and "
+                            "unavailable in Research."
+                        ),
+                    )
+                )
+                continue
             try:
                 if not summary.valid:
                     raise StudyEnvironmentValidationError(
@@ -135,6 +148,13 @@ class ResearchStudySetupService:
                             )
                             if signal.analysis_usable
                         ),
+                        parameters=loaded.metadata.recipe.parameters,
+                        source_bindings=_artifact_source_bindings(
+                            loaded.metadata.recipe.tool_key,
+                            loaded.metadata.recipe.parameters,
+                            loaded.metadata.recipe.bindings,
+                            loaded.metadata.recipe.source_artifacts,
+                        ),
                     )
                 )
             except (ArtifactError, OSError, TypeError, ValueError) as exc:
@@ -148,7 +168,7 @@ class ResearchStudySetupService:
                 )
         return StudySetupCatalog(
             market_id=dataset.market_id,
-            tools=tuple(ALL_FINANCIAL_TOOL_SPECS.values()),
+            tools=RESEARCH_FINANCIAL_TOOL_SPECS,
             ohlcv_sources=ohlcv,
             study_sources=study_sources,
             artifact_options=tuple(options),
@@ -189,6 +209,11 @@ class ResearchStudySetupService:
         prior: set[str] = set()
         entries: list[StudyEnvironmentEntryV1] = []
         for study in study_snapshot:
+            if study.result.tool_key == "dynamic_binning":
+                raise StudyEnvironmentValidationError(
+                    "Dynamic Binning is reserved for Analysis and cannot be "
+                    "saved in a Research Study Environment."
+                )
             request = study.setup_request
             presentation = presentation_by_id[study.study_id]
             metadata = overrides.get(study.study_id, study.user_metadata)
@@ -269,6 +294,12 @@ class ResearchStudySetupService:
         blockers: list[str] = []
         for entry in environment.entries:
             _raise_if_cancelled(cancel, "environment compatibility traversal")
+            if entry.tool_key == "dynamic_binning":
+                blockers.append(
+                    f"{entry.entry_id}: Dynamic Binning is reserved for Analysis "
+                    "and unavailable in Research"
+                )
+                continue
             artifact_refs = []
             if entry.mode == "artifact":
                 artifact_refs.append(
@@ -367,6 +398,66 @@ def _canonical_user_parameters(
         for name, value in resolve_parameters(tool_key, parameters).items()
         if name not in selectors
     }
+
+
+def _artifact_source_bindings(
+    tool_key: str,
+    parameters: Mapping[str, object],
+    bindings: Mapping[str, object],
+    source_artifacts: Sequence[object],
+) -> tuple[tuple[str, str], ...]:
+    artifact_outputs = {
+        ref.role: ref.output_name
+        for ref in source_artifacts
+    }
+
+    def value(role: str, fallback: object) -> str:
+        selected = artifact_outputs.get(role, fallback)
+        if not isinstance(selected, str) or not selected:
+            raise ValueError(f"Artifact source binding is missing: {role}")
+        return selected
+
+    if tool_key in {"derivative", "angle"}:
+        return (("source", value("source", bindings.get("source"))),)
+    if tool_key == "delta":
+        return tuple(
+            (role, value(role, parameters.get(role)))
+            for role in ("fast", "slow")
+        )
+    if tool_key in {"braids", "braid_instability"}:
+        return tuple(
+            (role, value(role, parameters.get(role)))
+            for role in ("fast", "mid", "slow")
+        )
+    if tool_key == "trap_area":
+        projected = [
+            ("fast", value("fast", parameters.get("fast"))),
+        ]
+        mid = artifact_outputs.get("mid", parameters.get("mid"))
+        if mid not in (None, ""):
+            projected.append(("mid", value("mid", mid)))
+        projected.append(("slow", value("slow", parameters.get("slow"))))
+        return tuple(projected)
+    if tool_key in {"dynamic_binning", "percent_span_angle", "angle_momentum"}:
+        columns = parameters.get("source_columns")
+        if not isinstance(columns, str) or not columns:
+            raise ValueError("Artifact source_columns binding is missing")
+        projected = []
+        for index, column in enumerate(columns.split(","), start=1):
+            role = f"source_{index}"
+            projected.append((role, value(role, column)))
+        return tuple(projected)
+    if tool_key == "universal_trend_classifier":
+        return tuple(
+            (role, value(role, None))
+            for role in (
+                "trend_peak",
+                "trend_trough",
+                "range_peak",
+                "range_trough",
+            )
+        )
+    return ()
 
 
 def _owned_selector_names(tool_key: str) -> frozenset[str]:

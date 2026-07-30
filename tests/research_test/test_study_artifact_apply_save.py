@@ -13,6 +13,7 @@ from leonardo.financial_tools import (
     calculate_financial_tool,
 )
 from leonardo.research import (
+    RESEARCH_FINANCIAL_TOOL_SPECS,
     ResearchStudyService,
     StudyArtifactRequest,
     StudyInputSource,
@@ -402,8 +403,10 @@ def test_legitimate_artifact_source_selector_families_still_pass(tmp_path: Path)
         "universal_trend_classifier",
         parameters={"fractal_window": 5, "trend_fractal_window": 5},
         sources=(
-            _artifact_input("peak", peaks_saved, "peak_fractal_5"),
-            _artifact_input("trough", peaks_saved, "trough_fractal_5"),
+            _artifact_input("trend_peak", peaks_saved, "peak_fractal_5"),
+            _artifact_input("trend_trough", peaks_saved, "trough_fractal_5"),
+            _artifact_input("range_peak", peaks_saved, "peak_fractal_3"),
+            _artifact_input("range_trough", peaks_saved, "trough_fractal_3"),
         ),
     )
     assert utc.result.row_count == dataset.row_count
@@ -694,6 +697,10 @@ def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path)
         key: service.save_study(_save_attempt(study), dataset, study, (study,))
         for key, study in source_studies.items()
     }
+    peaks = prepare(service, dataset, "peaks_troughs")
+    peaks_saved = service.save_study(
+        _save_attempt(peaks), dataset, peaks, (peaks,)
+    )
 
     completed: set[str] = set()
     for tool_key in ALL_FINANCIAL_TOOL_SPECS:
@@ -719,9 +726,24 @@ def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path)
             )
         elif tool_key in {"dynamic_binning", "percent_span_angle", "angle_momentum"}:
             sources = (StudyInputSource("source_1", "ohlcv", column_name="close"),)
-        study = prepare(service, dataset, tool_key, sources=sources)
-        outcome = service.save_study(
-            _save_attempt(study), dataset, study, (study,)
+        elif tool_key == "universal_trend_classifier":
+            sources = (
+                _artifact_input("trend_peak", peaks_saved, "peak_fractal_5"),
+                _artifact_input("trend_trough", peaks_saved, "trough_fractal_5"),
+                _artifact_input("range_peak", peaks_saved, "peak_fractal_3"),
+                _artifact_input("range_trough", peaks_saved, "trough_fractal_3"),
+            )
+        study = (
+            peaks
+            if tool_key == "peaks_troughs"
+            else prepare(service, dataset, tool_key, sources=sources)
+        )
+        outcome = (
+            peaks_saved
+            if tool_key == "peaks_troughs"
+            else service.save_study(
+                _save_attempt(study), dataset, study, (study,)
+            )
         )
         loaded = service.prepare_artifact(
             apply_attempt(dataset),
@@ -743,3 +765,158 @@ def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path)
         completed.add(tool_key)
 
     assert completed == set(ALL_FINANCIAL_TOOL_SPECS)
+
+
+def test_all_25_research_tools_save_apply_exact_payload_and_idempotent_save(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    service = ResearchStudyService(artifacts)
+    source_studies = {
+        key: prepare(service, dataset, key, parameters={"period": 3})
+        for key in ("sma", "ema", "hma")
+    }
+    source_saves = {
+        key: service.save_study(_save_attempt(study), dataset, study, (study,))
+        for key, study in source_studies.items()
+    }
+    peaks = prepare(service, dataset, "peaks_troughs")
+    peaks_saved = service.save_study(
+        _save_attempt(peaks), dataset, peaks, (peaks,)
+    )
+    research_keys = tuple(spec.key for spec in RESEARCH_FINANCIAL_TOOL_SPECS)
+    assert len(research_keys) == 25
+    assert "dynamic_binning" not in research_keys
+    assert "dynamic_binning" in ALL_FINANCIAL_TOOL_SPECS
+
+    completed: set[str] = set()
+    for tool_key in research_keys:
+        sources: tuple[StudyInputSource, ...] = ()
+        if tool_key in {"derivative", "angle"}:
+            sources = (
+                StudyInputSource("source", "ohlcv", column_name="close"),
+            )
+        elif tool_key == "delta":
+            sources = (
+                StudyInputSource("fast", "ohlcv", column_name="high"),
+                StudyInputSource("slow", "ohlcv", column_name="low"),
+            )
+        elif tool_key in {"braids", "braid_instability"}:
+            sources = tuple(
+                _artifact_input(role, source_saves[key], f"{key}_3")
+                for role, key in zip(
+                    ("fast", "mid", "slow"),
+                    ("sma", "ema", "hma"),
+                    strict=True,
+                )
+            )
+        elif tool_key == "trap_area":
+            sources = (
+                StudyInputSource("fast", "ohlcv", column_name="high"),
+                StudyInputSource("slow", "ohlcv", column_name="low"),
+            )
+        elif tool_key in {"percent_span_angle", "angle_momentum"}:
+            sources = (
+                StudyInputSource("source_1", "ohlcv", column_name="close"),
+            )
+        elif tool_key == "universal_trend_classifier":
+            sources = (
+                _artifact_input("trend_peak", peaks_saved, "peak_fractal_5"),
+                _artifact_input(
+                    "trend_trough", peaks_saved, "trough_fractal_5"
+                ),
+                _artifact_input("range_peak", peaks_saved, "peak_fractal_3"),
+                _artifact_input(
+                    "range_trough", peaks_saved, "trough_fractal_3"
+                ),
+            )
+        study = (
+            peaks
+            if tool_key == "peaks_troughs"
+            else prepare(service, dataset, tool_key, sources=sources)
+        )
+        outcome = (
+            peaks_saved
+            if tool_key == "peaks_troughs"
+            else service.save_study(
+                _save_attempt(study), dataset, study, (study,)
+            )
+        )
+        assert outcome.saved_link.recipe_id
+        assert outcome.saved_link.artifact_id
+        loaded = service.prepare_artifact(
+            apply_attempt(dataset),
+            dataset,
+            StudyArtifactRequest(
+                outcome.saved_link.kind,
+                outcome.saved_link.tool_key,
+                outcome.saved_link.artifact_id,
+            ),
+        ).study
+        assert loaded.result.to_frame().equals(
+            study.result.to_frame().reset_index(drop=True)
+        )
+        assert loaded.result.analysis == study.result.analysis
+        linked = replace(study, saved_link=outcome.saved_link)
+        repeated = service.save_study(
+            _save_attempt(linked), dataset, linked, (linked,)
+        )
+        assert repeated.created is False
+        assert repeated.saved_link == outcome.saved_link
+        completed.add(tool_key)
+
+    assert completed == set(research_keys)
+
+
+def test_utc_four_role_artifact_lineage_saves_loads_and_reapplies(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    service = ResearchStudyService(artifacts)
+    peaks = prepare(service, dataset, "peaks_troughs")
+    peaks_saved = service.save_study(
+        _save_attempt(peaks), dataset, peaks, (peaks,)
+    )
+    sources = (
+        _artifact_input("trend_peak", peaks_saved, "peak_fractal_5"),
+        _artifact_input("trend_trough", peaks_saved, "trough_fractal_5"),
+        _artifact_input("range_peak", peaks_saved, "peak_fractal_3"),
+        _artifact_input("range_trough", peaks_saved, "trough_fractal_3"),
+    )
+    utc = prepare(
+        service,
+        dataset,
+        "universal_trend_classifier",
+        sources=sources,
+    )
+    outcome = service.save_study(_save_attempt(utc), dataset, utc, (utc,))
+    loaded = artifacts.load_artifact(
+        dataset.market_id,
+        outcome.saved_link.kind,
+        outcome.saved_link.tool_key,
+        outcome.saved_link.artifact_id,
+    )
+    assert tuple(ref.role for ref in loaded.metadata.recipe.source_artifacts) == (
+        "range_peak",
+        "range_trough",
+        "trend_peak",
+        "trend_trough",
+    )
+    reapplied = service.prepare_artifact(
+        apply_attempt(dataset),
+        dataset,
+        StudyArtifactRequest(
+            outcome.saved_link.kind,
+            outcome.saved_link.tool_key,
+            outcome.saved_link.artifact_id,
+        ),
+    ).study
+    assert reapplied.market_id == dataset.market_id
+    assert tuple(ref.role for ref in reapplied.source_artifacts) == (
+        "trend_peak",
+        "trend_trough",
+        "range_peak",
+        "range_trough",
+    )
+    assert reapplied.result.to_frame().equals(utc.result.to_frame())
+    assert tuple(reapplied.result.to_frame().ts_ms) == dataset.ts_ms

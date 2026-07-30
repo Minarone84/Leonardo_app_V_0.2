@@ -49,6 +49,7 @@ from leonardo.research.studies import (
     StudyArtifactRequest,
     StudyDependencyError,
     StudyDependencyRef,
+    StudyEditAttempt,
     StudyError,
     StudyExecutionRequest,
     StudyInputSource,
@@ -80,6 +81,8 @@ from leonardo.research.study_environment import (
 )
 from leonardo.research.study_environment_store import EnvironmentStore
 from leonardo.research.study_setup import (
+    RESEARCH_EXCLUDED_FINANCIAL_TOOL_KEYS,
+    RESEARCH_FINANCIAL_TOOL_SPECS,
     StudyArtifactOption,
     StudySetupCatalog,
     StudySetupCatalogRejection,
@@ -95,6 +98,7 @@ from leonardo.research.study_setup_service import ResearchStudySetupService
 from leonardo.research.study_projection import ResidentStudyProjection
 from leonardo.research.study_presentation import (
     StudyFillStyle,
+    StudyGuideStyle,
     StudyLineStyle,
     StudyManagerEntry,
     StudyPresentation,
@@ -123,6 +127,9 @@ _snapshot_models = import_module("leonardo.research.workspace_" "snapshot")
 _snapshot_application = import_module("leonardo.research.workspace_" "snapshot_application")
 _snapshot_service = import_module("leonardo.research.workspace_" "snapshot_service")
 _snapshot_store = import_module("leonardo.research.workspace_" "snapshot_store")
+_snapshot_note_link = import_module(
+    "leonardo.research.workspace_" "notebook_link"
+)
 _note_models = import_module("leonardo.research.note" "book")
 _note_application = import_module("leonardo.research.note" "book_application")
 _note_service = import_module("leonardo.research.note" "book_service")
@@ -211,6 +218,12 @@ _SNAPSHOT_EXPORTS = {
     "ResearchWorkspace" + "SnapshotValidationError": getattr(
         _snapshot_models, "ResearchWorkspace" "SnapshotValidationError"
     ),
+    "ResearchWorkspace" + "NotebookLinkError": getattr(
+        _snapshot_note_link, "ResearchWorkspace" "NotebookLinkError"
+    ),
+    "ResearchWorkspace" + "NotebookLinkService": getattr(
+        _snapshot_note_link, "ResearchWorkspace" "NotebookLinkService"
+    ),
     "Workspace" + "SnapshotCapture": getattr(_snapshot_models, "Workspace" "SnapshotCapture"),
     "Workspace" + "SnapshotChartCapture": getattr(
         _snapshot_models, "Workspace" "SnapshotChartCapture"
@@ -291,6 +304,7 @@ __all__ = [
     "StudyArtifactRequest",
     "StudyDependencyError",
     "StudyDependencyRef",
+    "StudyEditAttempt",
     "StudyError",
     "StudyExecutionRequest",
     "StudyInputSource",
@@ -303,6 +317,8 @@ __all__ = [
     "StudyValidationError",
     "StudyUserMetadata",
     "STUDY_DATASET_ROLES",
+    "RESEARCH_EXCLUDED_FINANCIAL_TOOL_KEYS",
+    "RESEARCH_FINANCIAL_TOOL_SPECS",
     "StudyArtifactOption",
     "StudySetupCatalog",
     "StudySetupCatalogRejection",
@@ -318,6 +334,7 @@ __all__ = [
     "ResearchStudySetupApplicationService",
     "ResearchStudySetupService",
     "StudyFillStyle",
+    "StudyGuideStyle",
     "StudyLineStyle",
     "StudyManagerEntry",
     "StudyPresentation",

@@ -2411,48 +2411,47 @@ def _calculate_universal_trend_classifier(
     parameters: Mapping[str, object],
     bindings: Mapping[str, object],
 ) -> tuple[tuple[pd.Series, ...], Mapping[str, object]]:
-    from .common import _fractal_extrema, _numeric_series
+    from .common import _numeric_series
 
-    fractal_window = int(parameters["fractal_window"])
     trend_window = int(parameters["trend_fractal_window"])
     range_window = int(parameters["range_fractal_window"])
-    if fractal_window != trend_window:
-        raise ValueError("fractal_window and trend_fractal_window must be equal")
 
     peak_column = parameters["peak_column"]
     trough_column = parameters["trough_column"]
-    if (peak_column is None) != (trough_column is None):
-        raise ValueError("peak_column and trough_column must be provided together")
+    if (
+        not isinstance(peak_column, str)
+        or not peak_column.strip()
+        or not isinstance(trough_column, str)
+        or not trough_column.strip()
+    ):
+        raise ValueError(
+            "UTC trend dependency pair peak_column and trough_column is required"
+        )
 
     working = data.copy(deep=True)
-    high = _numeric_series(working, "high", context="universal_trend_classifier")
-    low = _numeric_series(working, "low", context="universal_trend_classifier")
-    if peak_column is None:
-        trend_peak = _default_peak_column(trend_window)
-        trend_trough = _default_trough_column(trend_window)
-        working[trend_peak] = _fractal_extrema(high, window=trend_window, peak=True)
-        working[trend_trough] = _fractal_extrema(low, window=trend_window, peak=False)
-    else:
-        if not isinstance(peak_column, str) or not isinstance(trough_column, str):
-            raise ValueError("custom peak_column and trough_column must be strings")
-        if peak_column not in working.columns or trough_column not in working.columns:
-            raise ValueError("custom peak_column and trough_column must exist")
-        _numeric_series(working, peak_column, context="universal_trend_classifier")
-        _numeric_series(working, trough_column, context="universal_trend_classifier")
+    if peak_column not in working.columns or trough_column not in working.columns:
+        raise ValueError(
+            "UTC trend dependency pair "
+            f"{peak_column!r} and {trough_column!r} is missing"
+        )
+    _numeric_series(working, peak_column, context="universal_trend_classifier")
+    _numeric_series(working, trough_column, context="universal_trend_classifier")
 
     range_peak = _default_peak_column(range_window)
     range_trough = _default_trough_column(range_window)
     historical_parameters = dict(parameters)
-    if peak_column is not None and {peak_column, trough_column}.intersection({range_peak, range_trough}):
-        range_peak, range_trough = _private_range_dependency_columns(
-            working.columns,
-            range_peak,
-            range_trough,
+    historical_parameters["fractal_window"] = trend_window
+    historical_parameters["trend_fractal_window"] = trend_window
+    historical_parameters["range_fractal_window"] = range_window
+    if range_peak not in working.columns or range_trough not in working.columns:
+        raise ValueError(
+            "UTC range dependency pair "
+            f"{range_peak!r} and {range_trough!r} is missing"
         )
-        historical_parameters["range_peak_column"] = range_peak
-        historical_parameters["range_trough_column"] = range_trough
-    working[range_peak] = _fractal_extrema(high, window=range_window, peak=True)
-    working[range_trough] = _fractal_extrema(low, window=range_window, peak=False)
+    _numeric_series(working, range_peak, context="universal_trend_classifier")
+    _numeric_series(working, range_trough, context="universal_trend_classifier")
+    historical_parameters["range_peak_column"] = range_peak
+    historical_parameters["range_trough_column"] = range_trough
 
     result = _compute_historical(working, **historical_parameters)
     return tuple(pd.Series(result[name], index=data.index) for name in _OUTPUT_COLUMNS), {}

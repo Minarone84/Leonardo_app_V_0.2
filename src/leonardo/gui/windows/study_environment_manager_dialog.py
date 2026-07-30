@@ -32,6 +32,8 @@ from leonardo.research import (
     StudyEnvironmentV1,
     StudyUserMetadata,
 )
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.window_geometry import apply_initial_window_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +80,19 @@ class StudyEnvironmentManagerDialog(QDialog):
         summaries: tuple[StudyEnvironmentSummary, ...],
         targets: tuple[StudyEnvironmentTarget, ...],
         parent: QWidget | None = None,
+        *,
+        mode: str = "manage",
     ) -> None:
         super().__init__(parent)
+        if mode not in {"load", "manage"}:
+            raise ValueError("mode must be 'load' or 'manage'")
+        self._mode = mode
         self.setObjectName("research.environment_manager_dialog")
-        self.setWindowTitle("Study Environments")
+        self.setWindowTitle(
+            "Load Study Environment"
+            if mode == "load"
+            else "Manage Study Environments"
+        )
         self._summaries = tuple(summaries)
         self._environment: StudyEnvironmentV1 | None = None
         self._report: StudyEnvironmentCompatibilityReport | None = None
@@ -115,8 +126,9 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._compatibility.setReadOnly(True)
         self._refresh = QPushButton("Refresh", self)
         self._refresh.setObjectName("research.environment_manager_dialog.button.refresh")
-        self._save = QPushButton("Save Metadata", self)
+        self._save = QPushButton("Save Changes", self)
         self._save.setObjectName("research.environment_manager_dialog.button.save_metadata")
+        self._save.setVisible(mode == "manage")
         self._apply = QPushButton("Apply", self)
         self._apply.setObjectName("research.environment_manager_dialog.button.apply")
         self._delete = QPushButton("Delete", self)
@@ -141,8 +153,8 @@ class StudyEnvironmentManagerDialog(QDialog):
         details.addWidget(self._compatibility)
         details.addLayout(buttons)
         body = QHBoxLayout()
-        body.addWidget(self._list, 1)
-        body.addLayout(details, 3)
+        body.addWidget(self._list, 13)
+        body.addLayout(details, 27)
         self.setLayout(body)
 
         self._list.currentItemChanged.connect(self._selection_changed)
@@ -152,6 +164,15 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._apply.clicked.connect(self._emit_apply)
         self._delete.clicked.connect(self._confirm_delete)
         self._close.clicked.connect(self.reject)
+        self._table.itemChanged.connect(self._resize_study_columns)
+        self._name.setReadOnly(mode == "load")
+        self._description.setReadOnly(mode == "load")
+        apply_initial_window_size(
+            self,
+            parent=parent,
+            width_fraction=1 / 2,
+            height_fraction=1 / 2,
+        )
         self.set_summaries(self._summaries)
 
     @property
@@ -200,11 +221,10 @@ class StudyEnvironmentManagerDialog(QDialog):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, column, item)
             important = QTableWidgetItem()
-            important.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsUserCheckable
-            )
+            flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            if self._mode == "manage":
+                flags |= Qt.ItemFlag.ItemIsUserCheckable
+            important.setFlags(flags)
             important.setCheckState(
                 Qt.CheckState.Checked if entry.user_metadata.important else Qt.CheckState.Unchecked
             )
@@ -213,8 +233,16 @@ class StudyEnvironmentManagerDialog(QDialog):
             for value in STUDY_DATASET_ROLES:
                 role.addItem(value.replace("_", " ").title(), value)
             role.setCurrentIndex(role.findData(entry.user_metadata.dataset_role))
+            role.setEnabled(self._mode == "manage")
+            role.currentIndexChanged.connect(self._resize_study_columns)
             self._table.setCellWidget(row, 4, role)
-            self._table.setItem(row, 5, QTableWidgetItem(entry.user_metadata.description))
+            description = QTableWidgetItem(entry.user_metadata.description)
+            if self._mode == "load":
+                description.setFlags(
+                    description.flags() & ~Qt.ItemFlag.ItemIsEditable
+                )
+            self._table.setItem(row, 5, description)
+        self._resize_study_columns()
         self._compatibility.setPlainText("Compatibility not checked")
         self._sync_enabled()
         self._request_compatibility()
@@ -291,6 +319,8 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._sync_enabled()
 
     def _emit_metadata_save(self) -> None:
+        if self._mode != "manage":
+            return
         try:
             intent = self.metadata_intent()
         except (TypeError, ValueError):
@@ -333,6 +363,12 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._delete.setEnabled(item is not None)
         self._apply.setEnabled(
             loaded and self._report is not None and self._report.compatible
+        )
+
+    def _resize_study_columns(self, *_args) -> None:
+        resize_table_columns_to_contents(
+            self._table,
+            {4: 1.20, 5: 3.00},
         )
 
 

@@ -13,8 +13,12 @@ from leonardo.gui.presenters import (
     DataManagerSuitePresenter,
     HistoricalDownloadPresenter,
     OhlcvMaintenancePresenter,
-    ResearchSuitePresenter,
 )
+from leonardo.gui.research.composition import create_restored_research_suite
+from leonardo.gui.research.lifecycle_presenter import (
+    RestoredResearchLifecyclePresenter,
+)
+from leonardo.gui.research.suite_window import ResearchSuiteWindow
 from leonardo.gui.window_tracking import GuiWindowTracker
 from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow
 from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow
@@ -22,7 +26,6 @@ from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindo
 from leonardo.gui.windows.historical_download_manager_window import HistoricalDownloadManagerWindow
 from leonardo.gui.windows.main_window import LeonardoMainWindow
 from leonardo.gui.windows.ohlcv_maintenance_window import OhlcvMaintenanceWindow
-from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
 from leonardo.gui.windows.trading_suite_window import TradingSuiteWindow
 
@@ -68,7 +71,7 @@ class GuiCompositionRoot:
         self._ohlcv_maintenance_window: OhlcvMaintenanceWindow | None = None
         self._ohlcv_maintenance_presenter: OhlcvMaintenancePresenter | None = None
         self._research_suite_window: ResearchSuiteWindow | None = None
-        self._research_suite_presenter: ResearchSuitePresenter | None = None
+        self._research_suite_presenter: RestoredResearchLifecyclePresenter | None = None
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
         self._data_manager_suite_presenter: DataManagerSuitePresenter | None = None
         self._analysis_suite_window: AnalysisSuiteWindow | None = None
@@ -103,7 +106,9 @@ class GuiCompositionRoot:
         return self._research_suite_window
 
     @property
-    def research_suite_presenter(self) -> ResearchSuitePresenter | None:
+    def research_suite_presenter(
+        self,
+    ) -> RestoredResearchLifecyclePresenter | None:
         return self._research_suite_presenter
 
     @property
@@ -275,36 +280,50 @@ class GuiCompositionRoot:
         return f"{title} shell opened."
 
     def _open_research_suite(self, parent: LeonardoMainWindow) -> str:
-        if (
-            self._research_suite_window is None
-            or self._research_suite_presenter is None
-            or self._research_suite_presenter.is_disposed
-        ):
-            window = ResearchSuiteWindow(
-                action_observer=self._action_observer,
-                floating_window_tracker=self._install_tracker,
-                parent=parent,
+        window = self._research_suite_window
+        presenter = self._research_suite_presenter
+        if (window is None) != (presenter is None):
+            raise RuntimeError(
+                "Research Suite window and presenter retention is inconsistent"
             )
-            presenter = ResearchSuitePresenter(
-                window,
-                getattr(self._context, "research_dataset_service"),
-                getattr(self._context, "research_study_service"),
-                getattr(self._context, "research_study_setup_service"),
-                getattr(self._context, "research_workspace_snapshot_service"),
-                getattr(self._context, "research_notebook_service"),
-                lambda market_id: self._open_data_manager_suite(parent, market_id),
+        if window is None:
+            window, presenter = create_restored_research_suite(
+                self._context.research_dataset_service,
+                self._context.research_study_service,
+                self._context.research_study_setup_service,
+                self._context.research_workspace_snapshot_service,
+                self._context.research_notebook_service,
+                self._install_tracker,
+                parent=parent,
             )
             self._research_suite_window = window
             self._research_suite_presenter = presenter
-            self._register_window_actions(window, "research_suite.window")
-            self._install_tracker(
-                window,
-                "research_suite.window",
-                "Research Suite",
-                "suite",
+            window.closed.connect(
+                lambda current_window=window, current_presenter=presenter: (
+                    self._retire_research_suite(
+                        current_window,
+                        current_presenter,
+                    )
+                )
             )
-        self._show_window(self._research_suite_window)
+        self._show_window(window)
         return "Research Suite opened."
+
+    def _retire_research_suite(
+        self,
+        window: ResearchSuiteWindow,
+        presenter: RestoredResearchLifecyclePresenter,
+    ) -> None:
+        if (
+            self._research_suite_window is not window
+            or self._research_suite_presenter is not presenter
+        ):
+            return
+        presenter.dispose()
+        self._research_suite_window = None
+        self._research_suite_presenter = None
+        self._trackers.pop("research_suite.window", None)
+        window.deleteLater()
 
     def _open_data_manager_suite(
         self, parent: LeonardoMainWindow, market_id: MarketId | None = None

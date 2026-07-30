@@ -93,24 +93,133 @@ def test_numeric_artifact_and_recipe_round_trip(tmp_path: Path) -> None:
 def test_hck_categorical_round_trip(tmp_path: Path) -> None:
     market, data = _accepted_dataset(tmp_path)
     result = calculate_financial_tool("hck", data)
-    saved = ArtifactService(tmp_path).save_calculation(market, result)
-    loaded = ArtifactService(tmp_path).load_artifact(market, "indicator", "hck", saved.metadata.artifact_id)
-    assert loaded.frame.vwap_color.tolist() == result.to_frame().vwap_color.tolist()
+    service = ArtifactService(tmp_path)
+    saved = service.save_calculation(market, result)
+    loaded = service.load_artifact(
+        market, "indicator", "hck", saved.metadata.artifact_id
+    )
+    expected_dtype = FinancialToolCalculationResult.categorical_output_dtype(
+        tool_key="hck",
+        output_name="vwap_color",
+    )
+    pd.testing.assert_frame_equal(
+        loaded.frame,
+        result.to_frame().reset_index(drop=True),
+    )
+    assert loaded.frame.vwap_color.dtype == expected_dtype
+    assert tuple(loaded.frame.vwap_color.cat.categories) == (
+        "red",
+        "silver",
+        "green",
+    )
+    assert loaded.frame.vwap_color.cat.ordered is False
     assert loaded.frame.fast_vwap.dtype == np.dtype("float32")
+
+
+def test_strategy_categorical_round_trip(tmp_path: Path) -> None:
+    market, data = _accepted_dataset(tmp_path, rows=420)
+    result = calculate_financial_tool("strategy", data)
+    service = ArtifactService(tmp_path)
+    saved = service.save_calculation(market, result)
+    loaded = service.load_artifact(
+        market, "indicator", "strategy", saved.metadata.artifact_id
+    )
+    expected_dtype = FinancialToolCalculationResult.categorical_output_dtype(
+        tool_key="strategy",
+        output_name="st_vwap_color",
+    )
+    pd.testing.assert_frame_equal(
+        loaded.frame,
+        result.to_frame().reset_index(drop=True),
+    )
+    assert loaded.frame.st_vwap_color.dtype == expected_dtype
+    assert tuple(loaded.frame.st_vwap_color.cat.categories) == (
+        "red",
+        "silver",
+        "green",
+    )
+    assert loaded.frame.st_vwap_color.cat.ordered is False
+    assert all(
+        loaded.frame[name].dtype == np.dtype("float32")
+        for name in result.output_names
+        if name != "st_vwap_color"
+    )
 
 
 def test_utc_boolean_and_numeric_round_trip(tmp_path: Path) -> None:
     market, data = _accepted_dataset(tmp_path)
-    result = calculate_financial_tool("universal_trend_classifier", data)
+    original_data = data.copy(deep=True)
+    dependency_names = (
+        "peak_fractal_3",
+        "trough_fractal_3",
+        "peak_fractal_5",
+        "trough_fractal_5",
+        "peak_fractal_7",
+        "trough_fractal_7",
+        "peak_fractal_9",
+        "trough_fractal_9",
+        "peak_fractal_11",
+        "trough_fractal_11",
+    )
+    dependencies = calculate_financial_tool("peaks_troughs", data)
+    assert dependencies.output_names == dependency_names
+
+    utc_data = data.copy(deep=True)
+    dependency_frame = dependencies.to_frame()
+    for output_name in dependencies.output_names:
+        utc_data[output_name] = dependency_frame[output_name].to_numpy(copy=True)
+
+    pd.testing.assert_frame_equal(data, original_data)
+    pd.testing.assert_frame_equal(utc_data.loc[:, data.columns], original_data)
+    assert utc_data.index.equals(original_data.index)
+    assert len(utc_data) == len(original_data)
+
+    result = calculate_financial_tool(
+        "universal_trend_classifier",
+        utc_data,
+        {
+            "peak_column": "peak_fractal_5",
+            "trough_column": "trough_fractal_5",
+        },
+    )
+    assert result.tool_key == "universal_trend_classifier"
+    assert result.parameters["peak_column"] == "peak_fractal_5"
+    assert result.parameters["trough_column"] == "trough_fractal_5"
+    assert result.parameters["trend_fractal_window"] == 5
+    assert result.parameters["range_fractal_window"] == 3
+    assert len(result.output_names) == 27
+    assert not set(dependency_names).intersection(result.output_names)
+    assert not set(dependency_names).intersection(result.to_frame().columns)
+    original_result = result.to_frame()
+
     service = ArtifactService(tmp_path)
     saved = service.save_calculation(market, result)
     loaded = service.load_artifact(
         market, "indicator", "universal_trend_classifier", saved.metadata.artifact_id
     )
-    expected = result.to_frame().reset_index(drop=True)
-    pd.testing.assert_frame_equal(loaded.frame, expected)
+    recipe = service.load_recipe(
+        market,
+        "indicator",
+        "universal_trend_classifier",
+        saved.metadata.recipe.recipe_id,
+    )
+
+    assert recipe == saved.metadata.recipe
+    assert recipe.parameters["peak_column"] == "peak_fractal_5"
+    assert recipe.parameters["trough_column"] == "trough_fractal_5"
+    assert recipe.parameters["trend_fractal_window"] == 5
+    assert recipe.parameters["range_fractal_window"] == 3
+    assert loaded.metadata == saved.metadata
+    assert loaded.metadata.recipe.recipe_id == saved.metadata.recipe.recipe_id
+    assert not set(dependency_names).intersection(loaded.frame.columns)
+    pd.testing.assert_frame_equal(
+        loaded.frame,
+        result.to_frame().reset_index(drop=True),
+    )
     assert loaded.frame.horizontal_range.dtype == bool
     assert loaded.frame.hor_upper.dtype == np.dtype("float32")
+    pd.testing.assert_frame_equal(result.to_frame(), original_result)
+    pd.testing.assert_frame_equal(data, original_data)
 
 
 def test_dynamic_binning_analysis_round_trip_and_tree(tmp_path: Path) -> None:
@@ -193,7 +302,16 @@ def test_service_rejects_forged_runtime_outputs_before_persistence(tmp_path: Pat
     numeric_text["sma_3"] = numeric_text["sma_3"].map(str).astype(object)
     hck = calculate_financial_tool("hck", data)
     bad_color = hck.to_frame()
-    bad_color.loc[bad_color.index[0], "vwap_color"] = "blue"
+    bad_color_values = bad_color["vwap_color"].astype(object).tolist()
+    bad_color_values[0] = "blue"
+    bad_color["vwap_color"] = pd.Series(
+        pd.Categorical(
+            bad_color_values,
+            categories=("red", "silver", "green", "blue"),
+            ordered=False,
+        ),
+        index=bad_color.index,
+    )
 
     for result in (
         _unsafe_configuration_result(sma, frame=numeric_text),

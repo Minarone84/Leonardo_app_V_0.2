@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
 from leonardo.research import StudyManagerEntry
 
 
@@ -33,10 +34,19 @@ class StudyManagerWidget(QWidget):
         self.setObjectName("research.study_manager")
         self._entries: tuple[StudyManagerEntry, ...] = ()
         self._updating = False
-        self._table = QTableWidget(0, 6, self)
+        self._table = QTableWidget(0, 8, self)
         self._table.setObjectName("research.study_manager.table")
         self._table.setHorizontalHeaderLabels(
-            ("Visible", "Study", "Tool", "Source", "Saved", "Pane")
+            (
+                "Visible",
+                "Study",
+                "Tool",
+                "Parameters",
+                "Sources",
+                "Origin",
+                "Saved",
+                "Pane",
+            )
         )
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -102,19 +112,50 @@ class StudyManagerWidget(QWidget):
                 visible.setCheckState(Qt.Checked if entry.visible else Qt.Unchecked)
                 self._table.setItem(row, 0, visible)
                 values = (
-                    entry.display_name,
-                    entry.tool_title,
-                    entry.source_kind,
-                    "Yes" if entry.saved else "No",
-                    entry.pane_label,
+                    (
+                        entry.compact_label,
+                        (
+                            f"Original Study name: {entry.display_name}"
+                            if entry.display_name != entry.compact_label
+                            else f"Study: {entry.display_name}"
+                        ),
+                    ),
+                    (entry.tool_title, entry.tool_title),
+                    (entry.parameter_summary, entry.parameter_details),
+                    (entry.source_summary, entry.source_details),
+                    (
+                        entry.origin_label,
+                        (
+                            "Calculated in the current Research workflow."
+                            if entry.origin_label == "Calculated"
+                            else "Loaded from a saved immutable Artifact."
+                        ),
+                    ),
+                    (
+                        "Yes" if entry.saved else "No",
+                        (
+                            "Saved Study with canonical Recipe and Artifact."
+                            if entry.saved
+                            else "In-session Study not yet saved."
+                        ),
+                    ),
+                    (
+                        entry.pane_label,
+                        {
+                            "Price": "Price chart pane.",
+                            "Oscillator": "Oscillator Study pane.",
+                            "Non-visual": "Non-visual Study.",
+                        }[entry.pane_label],
+                    ),
                 )
-                for column, value in enumerate(values, start=1):
+                for column, (value, tooltip) in enumerate(values, start=1):
                     item = QTableWidgetItem(value)
                     item.setData(Qt.UserRole, entry.study_id)
+                    item.setToolTip(tooltip)
                     self._table.setItem(row, column, item)
                 if entry.study_id == selected_id:
                     self._table.selectRow(row)
-            self._table.resizeColumnsToContents()
+            resize_table_columns_to_contents(self._table)
         finally:
             self._updating = False
         self._empty.setVisible(not snapshot)

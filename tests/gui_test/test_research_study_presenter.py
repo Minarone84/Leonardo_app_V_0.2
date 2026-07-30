@@ -12,12 +12,14 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 
+import leonardo.research.study_execution as study_execution
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.gui.composition import GuiCompositionRoot
 from leonardo.gui.windows.study_style_dialog import StudyStylePatch
 from leonardo.research import StudyArtifactRequest, StudyExecutionRequest
 from tests.gui_test.test_research_single_chart_integration import (
+    _open_restored_chart,
     _wait_until,
     _write_accepted_dataset,
 )
@@ -35,47 +37,113 @@ def _open(tmp_path: Path):
     window = composition.research_suite_window
     presenter = composition.research_suite_presenter
     assert window is not None and presenter is not None
-    _wait_until(lambda: window.selected_market_id() is not None)
-    window.button_for_id("research_suite.button.open_chart").click()
-    _wait_until(lambda: window.status_text() == "Chart ready")
-    return app, main, window, presenter
+    slot_id = _open_restored_chart(window, presenter)
+    return app, main, window, presenter._chart_presenters[slot_id]
 
 
-def test_presenter_apply_style_save_and_artifact_apply_share_renderer(tmp_path: Path) -> None:
+def test_presenter_apply_edit_save_and_artifact_apply_share_renderer(
+    tmp_path: Path, monkeypatch
+) -> None:
     qapp = QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    calculations: list[str] = []
+    original_calculate = study_execution.calculate_financial_tool
+
+    def counted_calculate(tool_key, *args, **kwargs):
+        calculations.append(tool_key)
+        return original_calculate(tool_key, *args, **kwargs)
+
+    monkeypatch.setattr(
+        study_execution, "calculate_financial_tool", counted_calculate
+    )
+    app, main, window, chart_presenter = _open(tmp_path)
     try:
-        presenter.submit_study_calculation(StudyExecutionRequest("sma", {"period": 3}))
-        _wait_until(lambda: presenter.session.study_count == 1)
-        study = presenter.session.studies[0]
-        initial = presenter.session.study_presentations()[0]
+        chart_presenter.submit_study_calculation(
+            StudyExecutionRequest("sma", {"period": 3})
+        )
+        _wait_until(lambda: chart_presenter.session.study_count == 1)
+        study = chart_presenter.session.studies[0]
+        initial = chart_presenter.session.study_presentations()[0]
         line = replace(initial.signal_styles["sma_3"], color="#FFFFFF")
-        presenter._apply_style_patch(
+        chart_presenter.apply_style_patch(
             StudyStylePatch(study.study_id, True, (line,), ())
         )
-        styled = presenter.session.study_presentations()[0]
+        styled = chart_presenter.session.study_presentations()[0]
         assert styled.revision == 1
         assert not app.artifact_service.list_artifacts(study.market_id)
+        row = chart_presenter._view.price_overlay.study_rows[0]
+        row.values_button.click()
+        assert not row.current_values_visible
+        pane_id = styled.pane_id
 
-        presenter._save_study(study.study_id)
-        _wait_until(lambda: presenter.session.studies[0].saved_link is not None)
-        saved = presenter.session.studies[0]
+        chart_presenter.submit_study_edit(
+            study.study_id,
+            StudyExecutionRequest("sma", {"period": 5}),
+        )
+        _wait_until(
+            lambda: chart_presenter.session.studies[0].edit_request.parameters
+            == {"period": 5}
+        )
+        edited = chart_presenter.session.studies[0]
+        edited_presentation = chart_presenter.session.study_presentations()[0]
+        assert edited.study_id == study.study_id
+        assert edited.saved_link is None
+        assert edited_presentation.pane_id == pane_id
+        assert edited_presentation.signal_styles["sma_5"].color == "#FFFFFF"
+        assert chart_presenter._view.price_overlay.study_rows[0] is row
+        assert not row.current_values_visible
+        assert calculations == ["sma", "sma"]
+
+        chart_presenter.save_study(edited.study_id)
+        _wait_until(
+            lambda: chart_presenter.session.studies[0].saved_link is not None
+        )
+        saved = chart_presenter.session.studies[0]
         assert saved.study_id == study.study_id
-        assert presenter.session.study_presentations()[0] == styled
+        assert chart_presenter.session.study_presentations()[0] == edited_presentation
         assert saved.saved_link is not None
+        artifact_id = saved.saved_link.artifact_id
+        artifact_count = len(app.artifact_service.list_artifacts(saved.market_id))
+        assert calculations == ["sma", "sma"]
 
-        presenter._remove_study(saved.study_id)
-        assert presenter.session.study_count == 0
-        presenter.submit_artifact_apply(
+        chart_presenter.submit_study_edit(
+            saved.study_id,
+            StudyExecutionRequest("sma", {"period": 7}),
+        )
+        _wait_until(
+            lambda: chart_presenter.session.studies[0].saved_link is None
+        )
+        edited_saved = chart_presenter.session.studies[0]
+        assert edited_saved.study_id == saved.study_id
+        assert edited_saved.edit_request.parameters == {"period": 7}
+        assert len(app.artifact_service.list_artifacts(saved.market_id)) == artifact_count
+
+        chart_presenter.remove_study(edited_saved.study_id)
+        assert chart_presenter.session.study_count == 0
+        count_before_artifact_apply = len(calculations)
+        chart_presenter.submit_artifact_apply(
             StudyArtifactRequest(
                 saved.result.kind,
                 saved.result.tool_key,
-                saved.saved_link.artifact_id,
+                artifact_id,
             )
         )
-        _wait_until(lambda: presenter.session.study_count == 1)
-        assert window.chart_widget.study_scene is not None
-        assert window.chart_widget.study_scene.line_strips
+        _wait_until(lambda: chart_presenter.session.study_count == 1)
+        artifact_study = chart_presenter.session.studies[0]
+        assert len(calculations) == count_before_artifact_apply
+        assert artifact_study.source_kind == "artifact"
+        chart_presenter.submit_study_edit(
+            artifact_study.study_id,
+            artifact_study.edit_request,
+        )
+        _wait_until(
+            lambda: chart_presenter.session.studies[0].source_kind == "calculation"
+        )
+        final = chart_presenter.session.studies[0]
+        assert final.study_id == artifact_study.study_id
+        assert final.saved_link is None
+        assert len(app.artifact_service.list_artifacts(saved.market_id)) == artifact_count
+        assert chart_presenter.chart_widget.study_scene is not None
+        assert chart_presenter.chart_widget.study_scene.line_strips
     finally:
         main.close()
         QCoreApplication.processEvents()

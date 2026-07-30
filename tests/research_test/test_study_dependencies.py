@@ -152,18 +152,34 @@ def test_non_range_index_source_is_injected_by_position(tmp_path: Path) -> None:
     assert non_range.result.to_frame().equals(canonical.result.to_frame())
 
 
-def test_utc_external_sources_require_exact_trend_window_pair(tmp_path: Path) -> None:
+def test_utc_external_sources_require_exact_windows_and_one_owner(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
     service = ResearchStudyService(artifacts)
     peaks = prepare(service, dataset, "peaks_troughs")
 
-    def sources(peak_output: str, trough_output: str):
+    def sources(
+        trend_peak: str = "peak_fractal_5",
+        trend_trough: str = "trough_fractal_5",
+        range_peak: str = "peak_fractal_3",
+        range_trough: str = "trough_fractal_3",
+        *,
+        range_owner=peaks,
+    ):
         return (
             StudyInputSource(
-                "peak", "study", study_id=peaks.study_id, output_name=peak_output
+                "trend_peak", "study", study_id=peaks.study_id, output_name=trend_peak
             ),
             StudyInputSource(
-                "trough", "study", study_id=peaks.study_id, output_name=trough_output
+                "trend_trough", "study", study_id=peaks.study_id, output_name=trend_trough
+            ),
+            StudyInputSource(
+                "range_peak", "study", study_id=range_owner.study_id, output_name=range_peak
+            ),
+            StudyInputSource(
+                "range_trough",
+                "study",
+                study_id=range_owner.study_id,
+                output_name=range_trough,
             ),
         )
 
@@ -173,8 +189,27 @@ def test_utc_external_sources_require_exact_trend_window_pair(tmp_path: Path) ->
             dataset,
             "universal_trend_classifier",
             parameters={"fractal_window": 5, "trend_fractal_window": 5},
-            sources=sources("peak_fractal_3", "trough_fractal_11"),
+            sources=sources(trend_peak="peak_fractal_3"),
             studies=(peaks,),
+        )
+
+    with pytest.raises(StudyValidationError, match="must be 'peak_fractal_3'"):
+        prepare(
+            service,
+            dataset,
+            "universal_trend_classifier",
+            sources=sources(range_peak="peak_fractal_5"),
+            studies=(peaks,),
+        )
+
+    other = replace(peaks, study_id="other-peaks")
+    with pytest.raises(StudyValidationError, match="one Peaks"):
+        prepare(
+            service,
+            dataset,
+            "universal_trend_classifier",
+            sources=sources(range_owner=other),
+            studies=(peaks, other),
         )
 
     exact = prepare(
@@ -182,13 +217,48 @@ def test_utc_external_sources_require_exact_trend_window_pair(tmp_path: Path) ->
         dataset,
         "universal_trend_classifier",
         parameters={"fractal_window": 5, "trend_fractal_window": 5},
-        sources=sources("peak_fractal_5", "trough_fractal_5"),
+        sources=sources(),
         studies=(peaks,),
+    )
+    assert tuple(ref.role for ref in exact.source_studies) == (
+        "trend_peak",
+        "trend_trough",
+        "range_peak",
+        "range_trough",
     )
     assert tuple(ref.output_name for ref in exact.source_studies) == (
         "peak_fractal_5",
         "trough_fractal_5",
+        "peak_fractal_3",
+        "trough_fractal_3",
     )
+
+    stale = replace(peaks, dataset_fingerprint="b" * 64)
+    with pytest.raises(StudyValidationError, match="fingerprint"):
+        prepare(
+            service,
+            dataset,
+            "universal_trend_classifier",
+            sources=tuple(
+                replace(source, study_id=stale.study_id) for source in sources()
+            ),
+            studies=(stale,),
+        )
+    foreign_market = replace(
+        peaks,
+        market_id=replace(peaks.market_id, symbol="ETHUSDT"),
+    )
+    with pytest.raises(StudyValidationError, match="MarketId"):
+        prepare(
+            service,
+            dataset,
+            "universal_trend_classifier",
+            sources=tuple(
+                replace(source, study_id=foreign_market.study_id)
+                for source in sources()
+            ),
+            studies=(foreign_market,),
+        )
 
 
 @pytest.mark.parametrize("tool_key", ["braids", "braid_instability"])

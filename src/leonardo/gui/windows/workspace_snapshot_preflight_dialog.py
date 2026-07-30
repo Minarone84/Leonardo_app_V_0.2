@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.research.workspace_snapshot import ResearchWorkspaceSnapshotCompatibilityReport
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.window_geometry import apply_initial_window_size
 
 
 class WorkspaceSnapshotPreflightDialog(QDialog):
@@ -25,7 +27,7 @@ class WorkspaceSnapshotPreflightDialog(QDialog):
             raise TypeError("report must be a Workspace Snapshot compatibility report")
         self.report = report
         self.setObjectName("research.workspace_snapshot_preflight_dialog")
-        self.setWindowTitle("Workspace Snapshot Preflight")
+        self.setWindowTitle("Load Workspace")
         layout = QVBoxLayout(self)
         mode = QLabel(report.mode.title(), self)
         mode.setObjectName("research.workspace_snapshot_preflight_dialog.label.mode")
@@ -44,6 +46,8 @@ class WorkspaceSnapshotPreflightDialog(QDialog):
             )
             for column, value in enumerate(values):
                 table.setItem(row, column, QTableWidgetItem(str(value)))
+        self.table = table
+        resize_table_columns_to_contents(table)
         layout.addWidget(table)
         text = QTextEdit(self)
         text.setObjectName("research.workspace_snapshot_preflight_dialog.text.report")
@@ -56,7 +60,7 @@ class WorkspaceSnapshotPreflightDialog(QDialog):
         progress.setValue(1)
         layout.addWidget(progress)
         buttons = QHBoxLayout()
-        load = QPushButton("Load", self)
+        load = QPushButton("Load Workspace", self)
         load.setObjectName("research.workspace_snapshot_preflight_dialog.button.load")
         load.setEnabled(report.compatible)
         cancel = QPushButton("Cancel", self)
@@ -66,3 +70,4 @@ class WorkspaceSnapshotPreflightDialog(QDialog):
         layout.addLayout(buttons)
         load.clicked.connect(lambda: (self.load_requested.emit(report), self.accept()))
         cancel.clicked.connect(self.reject)
+        apply_initial_window_size(self, parent=parent)

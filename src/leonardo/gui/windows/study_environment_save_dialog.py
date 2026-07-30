@@ -26,6 +26,8 @@ from leonardo.research import (
     StudyEnvironmentSummary,
     StudyUserMetadata,
 )
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.window_geometry import apply_initial_window_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,8 +119,16 @@ class StudyEnvironmentSaveDialog(QDialog):
         self._name.textChanged.connect(self._validate)
         self._description.textChanged.connect(self._validate)
         self._table.itemChanged.connect(self._validate)
+        self._table.itemChanged.connect(self._resize_study_columns)
         self._save.clicked.connect(self._emit_save)
         self._cancel.clicked.connect(self.reject)
+        self._resize_study_columns()
+        apply_initial_window_size(
+            self,
+            parent=parent,
+            width_fraction=1 / 2,
+            height_fraction=1 / 2,
+        )
         self._sync_mode()
 
     @property
@@ -189,9 +199,16 @@ class StudyEnvironmentSaveDialog(QDialog):
                 role.addItem(value.replace("_", " ").title(), value)
             role.setCurrentIndex(role.findData(study.user_metadata.dataset_role))
             role.currentIndexChanged.connect(self._validate)
+            role.currentIndexChanged.connect(self._resize_study_columns)
             self._table.setCellWidget(row, 5, role)
             self._table.setItem(row, 6, QTableWidgetItem(study.user_metadata.description))
         self._table.blockSignals(False)
+
+    def _resize_study_columns(self, *_args) -> None:
+        resize_table_columns_to_contents(
+            self._table,
+            {3: 1.20, 5: 1.20, 6: 3.00},
+        )
 
     def _sync_mode(self, *_args) -> None:
         self._existing.setEnabled(self._update.isChecked())

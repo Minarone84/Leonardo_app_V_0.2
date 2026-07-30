@@ -53,7 +53,13 @@ def _calculate_tdirsi(
     data: pd.DataFrame, parameters: Mapping[str, object], bindings: Mapping[str, object]
 ) -> tuple[tuple[pd.Series, ...], Mapping[str, object]]:
     close = _numeric_series(data, "close", context="tdirsi")
-    rsi = _rsi_values(close, int(parameters["period"]))
+    # OLD TDI consumes the finalized public RSI line after float32
+    # conversion, then promotes it for subsequent rolling calculations.
+    # This explicit quantization boundary preserves donor-exact behavior.
+    rsi = _rsi_values(
+        close,
+        int(parameters["period"]),
+    ).astype("float32").astype("float64")
     band_length = int(parameters["band_length"])
     basis = rsi.rolling(band_length, min_periods=band_length).mean()
     deviation = rsi.rolling(band_length, min_periods=band_length).std(ddof=0)

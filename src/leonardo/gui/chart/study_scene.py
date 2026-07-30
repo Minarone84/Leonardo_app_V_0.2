@@ -40,6 +40,7 @@ class PriceStudyBundle:
                 presentation.revision,
                 presentation.visible,
                 presentation.pane_id,
+                tuple(presentation.background_region_styles.items()),
             )
             for projection, presentation in zip(
                 self.projections, self.presentations, strict=True
@@ -95,10 +96,24 @@ class StudyFillStrip:
 
 
 @dataclass(frozen=True, slots=True)
+class StudyBackgroundRegion:
+    study_id: str
+    region_id: str
+    driver_output_name: str
+    color: str
+    opacity: float
+    start_index: int
+    end_index: int
+    x: float
+    width: float
+
+
+@dataclass(frozen=True, slots=True)
 class StudyScene:
     line_strips: tuple[StudyLineStrip, ...]
     markers: tuple[StudyMarkerGlyph, ...]
     fills: tuple[StudyFillStrip, ...]
+    background_regions: tuple[StudyBackgroundRegion, ...]
     autoscale_values: tuple[float, ...]
     cache_identity: tuple[object, ...]
 
@@ -177,6 +192,7 @@ def build_study_scene(
     lines: list[StudyLineStrip] = []
     markers: list[StudyMarkerGlyph] = []
     fills: list[StudyFillStrip] = []
+    background_regions: list[StudyBackgroundRegion] = []
     autoscale = visible_price_study_values(bundle, viewport)
     for projection, presentation in zip(
         bundle.projections, bundle.presentations, strict=True
@@ -184,6 +200,13 @@ def build_study_scene(
         if not presentation.visible or presentation.pane_id != "price":
             continue
         indices = _visible_indices(projection, viewport)
+        for region in presentation.background_region_styles.values():
+            if region.visible:
+                background_regions.extend(
+                    _background_regions(
+                        projection, region, indices, viewport, plot_rect
+                    )
+                )
         for fill in presentation.fill_styles.values():
             if fill.visible:
                 fills.extend(
@@ -212,7 +235,15 @@ def build_study_scene(
         plot_rect.width,
         plot_rect.height,
     )
-    return StudyScene(tuple(lines), tuple(markers), tuple(fills), autoscale, identity)
+    background_regions.sort(key=lambda item: (item.start_index, item.end_index))
+    return StudyScene(
+        tuple(lines),
+        tuple(markers),
+        tuple(fills),
+        tuple(background_regions),
+        autoscale,
+        identity,
+    )
 
 
 def _visible_indices(
@@ -340,6 +371,48 @@ def _finish_fill(output, study_id, style, color, points) -> None:
         )
 
 
+def _background_regions(projection, style, indices, viewport, plot):
+    values = projection.style_driver_series[style.driver_output_name]
+    output: list[StudyBackgroundRegion] = []
+    start: int | None = None
+    end: int | None = None
+    for global_index in indices:
+        value = values[global_index - projection.base_index]
+        if _is_truthy(value):
+            if start is None:
+                start = global_index
+            end = global_index
+        elif start is not None and end is not None:
+            output.append(
+                _background_region(
+                    projection.study_id, style, start, end, viewport, plot
+                )
+            )
+            start = end = None
+    if start is not None and end is not None:
+        output.append(
+            _background_region(projection.study_id, style, start, end, viewport, plot)
+        )
+    return output
+
+
+def _background_region(study_id, style, start, end, viewport, plot):
+    bar_width = plot.width / viewport.visible_count
+    left = max(plot.x, _x(start, viewport, plot) - bar_width / 2.0)
+    right = min(plot.right, _x(end, viewport, plot) + bar_width / 2.0)
+    return StudyBackgroundRegion(
+        study_id,
+        style.region_id,
+        style.driver_output_name,
+        style.color,
+        style.opacity,
+        start,
+        end,
+        left,
+        max(0.0, right - left),
+    )
+
+
 def _point(global_index, value, viewport, scale, plot) -> StudyScenePoint:
     return StudyScenePoint(
         global_index,
@@ -361,3 +434,16 @@ def _y(value: float, scale: PriceScaleSnapshot, plot: SceneRect) -> float:
 
 def _is_finite(value: object) -> bool:
     return type(value) in (int, float) and math.isfinite(float(value))
+
+
+def _is_truthy(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        try:
+            return bool(value)
+        except (TypeError, ValueError):
+            return False
+    return math.isfinite(numeric) and bool(numeric)

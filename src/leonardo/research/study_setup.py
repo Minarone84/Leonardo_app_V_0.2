@@ -25,6 +25,31 @@ from leonardo.research.studies import (
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
 _KINDS = frozenset({"ohlcv", "study", "artifact"})
 _MODES = frozenset({"calculation", "artifact"})
+RESEARCH_EXCLUDED_FINANCIAL_TOOL_KEYS = frozenset({"dynamic_binning"})
+RESEARCH_FINANCIAL_TOOL_SPECS = tuple(
+    spec
+    for key, spec in ALL_FINANCIAL_TOOL_SPECS.items()
+    if key not in RESEARCH_EXCLUDED_FINANCIAL_TOOL_KEYS
+)
+_GLOBAL_FINANCIAL_TOOL_KEYS = tuple(ALL_FINANCIAL_TOOL_SPECS)
+_RESEARCH_FINANCIAL_TOOL_KEYS = tuple(
+    spec.key for spec in RESEARCH_FINANCIAL_TOOL_SPECS
+)
+if "dynamic_binning" not in ALL_FINANCIAL_TOOL_SPECS:
+    raise RuntimeError("Dynamic Binning must remain globally registered")
+if (
+    frozenset(_GLOBAL_FINANCIAL_TOOL_KEYS) - frozenset(_RESEARCH_FINANCIAL_TOOL_KEYS)
+    != RESEARCH_EXCLUDED_FINANCIAL_TOOL_KEYS
+):
+    raise RuntimeError("Research Financial Tool exclusions are invalid")
+if _RESEARCH_FINANCIAL_TOOL_KEYS != tuple(
+    key
+    for key in _GLOBAL_FINANCIAL_TOOL_KEYS
+    if key not in RESEARCH_EXCLUDED_FINANCIAL_TOOL_KEYS
+):
+    raise RuntimeError("Research Financial Tool ordering is invalid")
+if len(_RESEARCH_FINANCIAL_TOOL_KEYS) != len(set(_RESEARCH_FINANCIAL_TOOL_KEYS)):
+    raise RuntimeError("Research Financial Tool keys must be unique")
 _MULTI_SOURCE_TOOLS = frozenset(
     {"dynamic_binning", "percent_span_angle", "angle_momentum"}
 )
@@ -114,6 +139,8 @@ class StudyArtifactOption:
     display_name: str
     output_names: tuple[str, ...]
     analysis_usable_output_names: tuple[str, ...] | None = None
+    parameters: Mapping[str, object] = field(default_factory=dict)
+    source_bindings: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.market_id, MarketId):
@@ -137,6 +164,60 @@ class StudyArtifactOption:
                 "analysis-usable artifact outputs must exist in output_names"
             )
         object.__setattr__(self, "analysis_usable_output_names", analysis)
+        supplied_parameters = _mapping(self.parameters, "parameters")
+        excluded = _artifact_parameter_exclusions(spec.key)
+        parameters = {
+            parameter.name: supplied_parameters[parameter.name]
+            for parameter in spec.parameters
+            if parameter.name in supplied_parameters
+            and parameter.name not in excluded
+        }
+        object.__setattr__(
+            self,
+            "parameters",
+            _mapping(parameters, "parameters"),
+        )
+        bindings = tuple(self.source_bindings)
+        normalized_bindings: list[tuple[str, str]] = []
+        roles: set[str] = set()
+        for item in bindings:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise StudySetupValidationError(
+                    "source_bindings entries must be (role, value) pairs"
+                )
+            role = _text(item[0], "source binding role")
+            value = _text(item[1], "source binding value")
+            if role in roles:
+                raise StudySetupValidationError(
+                    "source binding roles must be unique"
+                )
+            if value.startswith(("__research_", "__study_")):
+                raise StudySetupValidationError(
+                    "source binding values must not contain internal aliases"
+                )
+            if len(value) == 64 and all(
+                character in "0123456789abcdef" for character in value
+            ):
+                raise StudySetupValidationError(
+                    "source binding values must not contain Artifact IDs"
+                )
+            roles.add(role)
+            normalized_bindings.append((role, value))
+        object.__setattr__(self, "source_bindings", tuple(normalized_bindings))
+
+
+def _artifact_parameter_exclusions(tool_key: str) -> frozenset[str]:
+    if tool_key in {"derivative", "angle"}:
+        return frozenset({"source"})
+    if tool_key == "delta":
+        return frozenset({"fast", "slow"})
+    if tool_key in {"braids", "braid_instability", "trap_area"}:
+        return frozenset({"fast", "mid", "slow"})
+    if tool_key in _MULTI_SOURCE_TOOLS:
+        return frozenset({"source_columns"})
+    if tool_key == "universal_trend_classifier":
+        return frozenset({"fractal_window", "peak_column", "trough_column"})
+    return frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,8 +254,10 @@ class StudySetupCatalog:
             raise StudySetupValidationError("tools must contain FinancialToolSpec values")
         if len({item.key for item in tools}) != len(tools):
             raise StudySetupValidationError("catalog tool keys must be unique")
-        if tuple(item.key for item in tools) != tuple(ALL_FINANCIAL_TOOL_SPECS):
-            raise StudySetupValidationError("catalog must contain all canonical tools in order")
+        if tools != RESEARCH_FINANCIAL_TOOL_SPECS:
+            raise StudySetupValidationError(
+                "catalog must contain all Research Financial Tools in canonical order"
+            )
         for values, cls, name in (
             (self.ohlcv_sources, StudySourceOption, "ohlcv_sources"),
             (self.study_sources, StudySourceOption, "study_sources"),
@@ -185,6 +268,11 @@ class StudySetupCatalog:
             if not all(isinstance(item, cls) for item in normalized):
                 raise StudySetupValidationError(f"{name} contains invalid values")
             object.__setattr__(self, name, normalized)
+        tool_keys = frozenset(item.key for item in tools)
+        if any(item.tool_key not in tool_keys for item in self.artifact_options):
+            raise StudySetupValidationError(
+                "artifact option tool is not present in the Research catalog"
+            )
 
     @property
     def source_options(self) -> tuple[StudySourceOption, ...]:
@@ -254,12 +342,19 @@ def source_role_schema(tool_key: str) -> tuple[str, ...]:
         return ("source",)
     if key == "delta":
         return ("fast", "slow")
-    if key in {"braids", "braid_instability", "trap_area"}:
+    if key in {"braids", "braid_instability"}:
+        return ("fast", "mid", "slow")
+    if key == "trap_area":
         return ("fast", "mid?", "slow")
     if key in _MULTI_SOURCE_TOOLS:
         return ("source_1", "...")
     if key == "universal_trend_classifier":
-        return ("peak+trough?",)
+        return (
+            "trend_peak",
+            "trend_trough",
+            "range_peak",
+            "range_trough",
+        )
     return ()
 
 
@@ -340,6 +435,8 @@ def build_study_request(
                 output_name=selection.output_name,
             )
         )
+    if draft.tool_key == "universal_trend_classifier":
+        _validate_utc_sources(parameters, tuple(draft.sources), tuple(input_sources), options)
     construct = spec.construct_io
     if construct is not None and any(
         family not in construct.allowed_source_families for family in families
@@ -367,16 +464,54 @@ def _validate_roles(tool_key: str, roles: tuple[str, ...]) -> None:
         if not roles or roles != expected:
             raise StudySetupValidationError("multi-source roles must be contiguous and ordered")
         return
-    if schema == ("peak+trough?",):
-        if roles not in ((), ("peak", "trough")):
-            raise StudySetupValidationError("UTC sources must be absent or an exact peak/trough pair")
-        return
     if schema == ("fast", "mid?", "slow"):
         if roles not in (("fast", "slow"), ("fast", "mid", "slow")):
             raise StudySetupValidationError("source roles must be fast, optional mid, slow")
         return
     if roles != schema:
         raise StudySetupValidationError(f"source roles must be {schema!r}")
+
+
+def _validate_utc_sources(
+    parameters: Mapping[str, object],
+    selections: tuple[StudySetupSourceSelection, ...],
+    sources: tuple[StudyInputSource, ...],
+    options: Sequence[StudySourceOption],
+) -> None:
+    trend_window = parameters["trend_fractal_window"]
+    range_window = parameters["range_fractal_window"]
+    expected = {
+        "trend_peak": f"peak_fractal_{trend_window}",
+        "trend_trough": f"trough_fractal_{trend_window}",
+        "range_peak": f"peak_fractal_{range_window}",
+        "range_trough": f"trough_fractal_{range_window}",
+    }
+    matched = tuple(
+        _match_source_option(selection, options) for selection in selections
+    )
+    if any(option is None for option in matched):
+        raise StudySetupValidationError("UTC source selection is not in the catalog")
+    if any(
+        source.source_kind not in {"study", "artifact"}
+        or source.output_name != expected[source.role]
+        for source in sources
+    ):
+        raise StudySetupValidationError(
+            "UTC sources must use the exact Peaks & Troughs outputs for both windows"
+        )
+    if any(option.family != "indicator" for option in matched if option is not None):
+        raise StudySetupValidationError("UTC sources must be indicator outputs")
+    owners = {
+        (
+            source.source_kind,
+            source.study_id if source.source_kind == "study" else source.artifact_id,
+        )
+        for source in sources
+    }
+    if len(owners) != 1:
+        raise StudySetupValidationError(
+            "UTC sources must come from one Peaks & Troughs owner"
+        )
 
 
 def _match_source_option(

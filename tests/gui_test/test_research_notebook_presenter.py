@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,16 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication, QLineEdit, QTableWidget, QTabWidget
 
+from leonardo.core.app import LeonardoApp
+from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.core.core_runner import TaskResult, TaskSubmission
+from leonardo.gui.composition import GuiCompositionRoot
+from leonardo.gui.presenters.research_presenter import (
+    ResearchSuitePresenter as LegacyResearchSuitePresenter,
+)
+from leonardo.gui.windows.research_suite_window import (
+    ResearchSuiteWindow as LegacyResearchSuiteWindow,
+)
 from leonardo.gui.windows.research_notebook_manager_dialog import (
     ResearchNotebookManagerDialog,
 )
@@ -20,13 +30,41 @@ from leonardo.research.notebook import (
     ResearchNotebookNoteV1,
     ResearchNotebookPageV1,
 )
-from tests.gui_test.test_research_single_chart_integration import _wait_until
-from tests.gui_test.test_research_study_presenter import _open
+from tests.gui_test.test_research_single_chart_integration import (
+    _wait_until,
+    _write_accepted_dataset,
+)
+
+
+def _open_legacy_notebook_suite(tmp_path: Path):
+    # Test-only legacy Notebook characterization for deferred Task 1035.
+    # This is not the production Research composition path.
+    config = replace(load_default_config(tmp_path), audit=AuditConfig(enabled=False))
+    _write_accepted_dataset(config.paths.historical_data_dir)
+    app = LeonardoApp(config)
+    app.startup()
+    app.start_core_runtime()
+    composition = GuiCompositionRoot(app.context)
+    main = composition.create_main_window()
+    window = LegacyResearchSuiteWindow(parent=main)
+    presenter = LegacyResearchSuitePresenter(
+        window,
+        app.context.research_dataset_service,
+        app.context.research_study_service,
+        app.context.research_study_setup_service,
+        app.context.research_workspace_snapshot_service,
+        app.context.research_notebook_service,
+    )
+    window.show()
+    _wait_until(lambda: window.selected_market_id() is not None)
+    window.button_for_id("research_suite.button.open_chart").click()
+    _wait_until(lambda: window.status_text() == "Chart ready")
+    return app, main, window, presenter
 
 
 def test_suite_new_notebook_uses_current_chart_page(tmp_path) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         window.button_for_id("research_suite.button.new_notebook").click()
         QCoreApplication.processEvents()
@@ -36,6 +74,8 @@ def test_suite_new_notebook_uses_current_chart_page(tmp_path) -> None:
         assert editor.current_draft().pages[0].market_id == presenter.session.dataset.market_id
     finally:
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -96,7 +136,7 @@ def test_dirty_close_save_discard_cancel(
     tmp_path, monkeypatch, decision: str, closed: bool
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         notebook, editor = _open_persisted_editor(app, window, presenter)
         monkeypatch.setattr(
@@ -119,6 +159,8 @@ def test_dirty_close_save_discard_cancel(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -132,7 +174,7 @@ def test_active_dirty_delete_save_discard_cancel(
     tmp_path, monkeypatch, decision: str, deleted: bool
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         notebook, editor = _open_persisted_editor(app, window, presenter)
         dialog, generation = _install_manager(window, presenter)
@@ -154,6 +196,8 @@ def test_active_dirty_delete_save_discard_cancel(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -163,7 +207,7 @@ def test_failed_save_clears_close_and_later_manual_save_does_not_close(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     callbacks = []
     submissions = iter(("save_failed", "save_manual"))
 
@@ -210,6 +254,8 @@ def test_failed_save_clears_close_and_later_manual_save_does_not_close(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -219,7 +265,7 @@ def test_transition_is_blocked_while_notebook_task_is_active(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         _notebook, editor = _open_persisted_editor(app, window, presenter)
         decisions: list[str] = []
@@ -239,6 +285,8 @@ def test_transition_is_blocked_while_notebook_task_is_active(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -252,7 +300,7 @@ def test_dirty_notebook_replacement_uses_save_discard_cancel(
     tmp_path, monkeypatch, decision: str, replaced: bool
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         _notebook, editor = _open_persisted_editor(app, window, presenter)
         monkeypatch.setattr(
@@ -273,6 +321,8 @@ def test_dirty_notebook_replacement_uses_save_discard_cancel(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -282,7 +332,7 @@ def test_save_submission_failure_clears_pending_transition(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     try:
         _notebook, editor = _open_persisted_editor(app, window, presenter)
         monkeypatch.setattr(
@@ -306,6 +356,8 @@ def test_save_submission_failure_clears_pending_transition(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -313,7 +365,7 @@ def test_save_submission_failure_clears_pending_transition(
 
 def test_stale_manager_prevents_deferred_delete(tmp_path, monkeypatch) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     callback = []
 
     def controlled_update(_notebook_id, _draft, **values):
@@ -351,6 +403,8 @@ def test_stale_manager_prevents_deferred_delete(tmp_path, monkeypatch) -> None:
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -364,7 +418,7 @@ def test_invalid_dirty_save_never_submits_or_transitions(
     tmp_path, monkeypatch, transition: str
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     submissions: list[object] = []
     try:
         _notebook, editor = _open_persisted_editor(app, window, presenter)
@@ -401,6 +455,8 @@ def test_invalid_dirty_save_never_submits_or_transitions(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -410,7 +466,7 @@ def test_invalid_active_dirty_delete_submits_neither_save_nor_delete(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     submissions: list[str] = []
     try:
         notebook, editor = _open_persisted_editor(app, window, presenter)
@@ -446,6 +502,8 @@ def test_invalid_active_dirty_delete_submits_neither_save_nor_delete(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()
@@ -455,7 +513,7 @@ def test_presenter_submits_exact_current_valid_draft_not_cached_draft(
     tmp_path, monkeypatch
 ) -> None:
     QApplication.instance() or QApplication([])
-    app, main, window, presenter = _open(tmp_path)
+    app, main, window, presenter = _open_legacy_notebook_suite(tmp_path)
     captured = []
 
     def controlled_update(_notebook_id, draft, **values):
@@ -486,6 +544,8 @@ def test_presenter_submits_exact_current_valid_draft_not_cached_draft(
     finally:
         presenter._notebook_task_id = None
         presenter._close_notebook_editor()
+        presenter.dispose()
+        window.close()
         main.close()
         QCoreApplication.processEvents()
         app.shutdown()

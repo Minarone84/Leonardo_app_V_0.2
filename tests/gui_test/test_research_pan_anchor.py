@@ -21,42 +21,45 @@ def test_pan_anchor_is_off_by_default_and_horizontal_pan_preserves_target_zoom(
     tmp_path: Path,
 ) -> None:
     qapp = QApplication.instance() or QApplication([])
-    app, main, window, presenter = _composed(tmp_path)
+    app, main, window, lifecycle = _composed(tmp_path)
     try:
-        source = _open_chart(window, presenter)
-        target = _open_chart(window, presenter)
-        detached_target = _open_chart(window, presenter)
-        presenter.detach_slot(detached_target)
-        source_viewport = presenter.viewport_for(source)
-        target_viewport = presenter.viewport_for(target)
-        detached_viewport = presenter.viewport_for(detached_target)
+        source = _open_chart(window, lifecycle)
+        target = _open_chart(window, lifecycle)
+        detached_target = _open_chart(window, lifecycle)
+        window.workspace.detach_chart(detached_target)
+        source_presenter = lifecycle._chart_presenters[source]
+        target_presenter = lifecycle._chart_presenters[target]
+        detached_presenter = lifecycle._chart_presenters[detached_target]
+        source_viewport = source_presenter.viewport
+        target_viewport = target_presenter.viewport
+        detached_viewport = detached_presenter.viewport
         assert (
             source_viewport is not None
             and target_viewport is not None
             and detached_viewport is not None
         )
-        pan_anchor = window.button_for_id("research_suite.button.pan_anchor")
+        pan_anchor = window.action_for_text("Pan Anchor")
         assert pan_anchor.isCheckable() and not pan_anchor.isChecked()
         before = target_viewport.snapshot()
         source_viewport.pan_left(7)
-        presenter.chart_presenter(source).chart_workspace.viewportChanged.emit(
+        source_presenter.chart_workspace.viewportChanged.emit(
             source_viewport.snapshot()
         )
         assert target_viewport.snapshot() == before
-        pan_anchor.click()
+        pan_anchor.trigger()
         target_visible = target_viewport.visible_count
         detached_before = detached_viewport.snapshot()
-        target_scale = presenter.chart_presenter(target).interaction.price_scale.snapshot()
+        target_scale = target_presenter.interaction.price_scale.snapshot()
         source_viewport.pan_left(5)
-        presenter.chart_presenter(source).chart_workspace.viewportChanged.emit(
+        source_presenter.chart_workspace.viewportChanged.emit(
             source_viewport.snapshot()
         )
         assert target_viewport.visible_count == target_visible
-        assert presenter.chart_presenter(target).interaction.price_scale.snapshot() == target_scale
+        assert target_presenter.interaction.price_scale.snapshot() == target_scale
         assert detached_viewport.snapshot() != detached_before
         after_pan = target_viewport.snapshot()
         source_viewport.zoom_in_at(source_viewport.center_index, 0.5)
-        presenter.chart_presenter(source).chart_workspace.viewportChanged.emit(
+        source_presenter.chart_workspace.viewportChanged.emit(
             source_viewport.snapshot()
         )
         assert target_viewport.snapshot() == after_pan
@@ -94,15 +97,17 @@ def test_pan_anchor_silently_skips_loading_target(tmp_path: Path) -> None:
 
 def test_programmatic_go_to_does_not_reenter_pan_anchor(tmp_path: Path) -> None:
     qapp = QApplication.instance() or QApplication([])
-    app, main, window, presenter = _composed(tmp_path)
+    app, main, window, lifecycle = _composed(tmp_path)
     try:
-        first = _open_chart(window, presenter)
-        second = _open_chart(window, presenter)
-        window.button_for_id("research_suite.button.pan_anchor").click()
-        second_before = presenter.viewport_for(second).snapshot()
-        timestamp = presenter.session_for(first).dataset.ts_ms[0]
-        presenter.chart_presenter(first).go_to_timestamp_ms(timestamp)
-        assert presenter.viewport_for(second).snapshot() == second_before
+        first = _open_chart(window, lifecycle)
+        second = _open_chart(window, lifecycle)
+        window.action_for_text("Pan Anchor").trigger()
+        first_presenter = lifecycle._chart_presenters[first]
+        second_viewport = lifecycle._chart_presenters[second].viewport
+        second_before = second_viewport.snapshot()
+        timestamp = lifecycle._workspace_state.session_for(first).dataset.ts_ms[0]
+        first_presenter.go_to_timestamp_ms(timestamp)
+        assert second_viewport.snapshot() == second_before
     finally:
         main.close()
         app.shutdown()

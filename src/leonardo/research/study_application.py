@@ -20,6 +20,7 @@ from leonardo.research.studies import (
     ChartStudy,
     StudyApplyAttempt,
     StudyArtifactRequest,
+    StudyEditAttempt,
     StudyExecutionRequest,
     StudySaveAttempt,
 )
@@ -142,6 +143,43 @@ class ResearchStudyApplicationService:
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
             metadata={"study_id": attempt.study_id, "artifact_id": request.artifact_id},
+        )
+
+    def submit_edit(
+        self,
+        attempt: StudyEditAttempt,
+        dataset: HistoricalDataset,
+        studies: Sequence[ChartStudy],
+        request: StudyExecutionRequest,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        snapshot = tuple(studies)
+        cancellation = _CancellationControl(self._lock)
+
+        def job(reporter: ProgressReporter):
+            reporter.report("Resolving Research Study Edit sources", current=0, total=2)
+            prepared = self._studies.prepare_edit(
+                attempt,
+                dataset,
+                snapshot,
+                request,
+                cancellation_requested=cancellation.cancellation_requested,
+            )
+            reporter.report("Research Study Edit ready", current=2, total=2)
+            return prepared
+
+        return self._submit(
+            job,
+            task_name=f"Research Study Edit {request.tool_key}",
+            operation="research_study_edit",
+            cancellation=cancellation,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"study_id": attempt.study_id, "tool_key": request.tool_key},
         )
 
     def submit_save(

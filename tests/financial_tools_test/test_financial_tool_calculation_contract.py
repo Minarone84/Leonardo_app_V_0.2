@@ -29,6 +29,26 @@ def _frame(rows: int = 48) -> pd.DataFrame:
     )
 
 
+def _utc_frame(rows: int = 96) -> pd.DataFrame:
+    data = _frame(rows)
+    dependencies = calculate_financial_tool("peaks_troughs", data).to_frame()
+    for name in (
+        "peak_fractal_5",
+        "trough_fractal_5",
+        "peak_fractal_3",
+        "trough_fractal_3",
+    ):
+        data[name] = dependencies[name]
+    return data
+
+
+def _utc_parameters() -> dict[str, object]:
+    return {
+        "peak_column": "peak_fractal_5",
+        "trough_column": "trough_fractal_5",
+    }
+
+
 def test_public_api_and_alias_are_exact() -> None:
     assert financial_tools.__all__ == (
         "ALL_FINANCIAL_TOOL_SPECS", "CANONICAL_TOOL_ALIASES", "CONSTRUCT_SPECS",
@@ -40,7 +60,7 @@ def test_public_api_and_alias_are_exact() -> None:
         "canonicalize_tool_key", "get_financial_tool_spec", "list_financial_tool_specs",
         "resolve_output_names", "resolve_output_signals", "resolve_parameters", "validate_catalog",
     )
-    result = calculate_financial_tool("UTC", _frame(96))
+    result = calculate_financial_tool("UTC", _utc_frame(), _utc_parameters())
     assert result.tool_key == "universal_trend_classifier"
     assert isinstance(result, FinancialToolCalculationResult)
 
@@ -216,22 +236,74 @@ def test_result_constructor_rejects_noncanonical_numeric_runtime(values: pd.Seri
         _rebuild_result(result, frame=forged)
 
 
-@pytest.mark.parametrize("tool_key", ("hck", "strategy"))
-def test_result_constructor_rejects_invalid_color_state(tool_key: str) -> None:
-    result = calculate_financial_tool(tool_key, _frame())
-    forged = result.to_frame()
-    color_name = next(name for name in result.output_names if "color" in name)
-    forged.loc[forged.index[0], color_name] = "blue"
-    with pytest.raises(ValueError, match="invalid color state"):
-        _rebuild_result(result, frame=forged)
-
-
-def test_result_constructor_rejects_null_categorical_state() -> None:
+def _assert_hck_categorical_rejected(values: pd.Series) -> None:
     result = calculate_financial_tool("hck", _frame())
     forged = result.to_frame()
-    forged.loc[forged.index[0], "vwap_color"] = None
-    with pytest.raises(ValueError, match="non-null object strings"):
+    forged["vwap_color"] = values
+    with pytest.raises(ValueError):
         _rebuild_result(result, frame=forged)
+
+
+def _hck_color_values() -> tuple[pd.Index, list[object]]:
+    values = calculate_financial_tool("hck", _frame()).to_frame()["vwap_color"]
+    return values.index, values.astype(object).tolist()
+
+
+@pytest.mark.parametrize("dtype", ("object", "string"))
+def test_result_constructor_rejects_string_categorical_runtime(dtype: str) -> None:
+    index, values = _hck_color_values()
+    _assert_hck_categorical_rejected(pd.Series(values, index=index, dtype=dtype))
+
+
+@pytest.mark.parametrize(
+    ("categories", "ordered"),
+    (
+        (("green", "silver", "red"), False),
+        (("red", "green"), False),
+        (("red", "silver", "green", "blue"), False),
+        (("red", "silver", "green"), True),
+    ),
+)
+def test_result_constructor_rejects_noncanonical_categorical_dtype(
+    categories: tuple[str, ...],
+    ordered: bool,
+) -> None:
+    index, values = _hck_color_values()
+    _assert_hck_categorical_rejected(
+        pd.Series(
+            pd.Categorical(values, categories=categories, ordered=ordered),
+            index=index,
+        )
+    )
+
+
+def test_result_constructor_rejects_unknown_categorical_value() -> None:
+    index, values = _hck_color_values()
+    _assert_hck_categorical_rejected(
+        pd.Series(
+            pd.Categorical(
+                ["blue", *values[1:]],
+                categories=("red", "silver", "green", "blue"),
+                ordered=False,
+            ),
+            index=index,
+        )
+    )
+
+
+def test_result_constructor_rejects_null_categorical_value() -> None:
+    index, values = _hck_color_values()
+    values[0] = None
+    _assert_hck_categorical_rejected(
+        pd.Series(
+            pd.Categorical(
+                values,
+                categories=("red", "silver", "green"),
+                ordered=False,
+            ),
+            index=index,
+        )
+    )
 
 
 def test_braids_runtime_state_is_numeric_float32_and_domain_checked() -> None:
@@ -247,7 +319,35 @@ def test_braids_runtime_state_is_numeric_float32_and_domain_checked() -> None:
 
 
 def test_utc_runtime_boolean_outputs_remain_bool() -> None:
-    result = calculate_financial_tool("universal_trend_classifier", _frame(96))
+    with pytest.raises(ValueError, match="trend dependency pair"):
+        calculate_financial_tool("universal_trend_classifier", _frame(96))
+    result = calculate_financial_tool(
+        "universal_trend_classifier", _utc_frame(), _utc_parameters()
+    )
+    assert tuple(result.to_frame()) == ("ts_ms", *result.output_names)
+    assert tuple(result.parameters) == (
+        "source",
+        "fractal_window",
+        "trend_fractal_window",
+        "peak_column",
+        "trough_column",
+        "min_hr_band_perc",
+        "hr_trend_length",
+        "hr_trend_atr_mult",
+        "hr_trend_atr_len",
+        "hr_trend_tol_mult",
+        "hr_trend_max_gap",
+        "hr_min_inside_ratio",
+        "min_range_swings",
+        "range_fractal_window",
+        "hr_break_mode",
+    )
+    assert not {
+        "peak_fractal_5",
+        "trough_fractal_5",
+        "peak_fractal_3",
+        "trough_fractal_3",
+    }.intersection(result.output_names)
     runtime_types = FinancialToolCalculationResult.runtime_output_types(
         tool_key=result.tool_key,
         parameters=result.parameters,

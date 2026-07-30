@@ -6,49 +6,67 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_single_chart_research_wiring_is_explicit_and_legacy_free() -> None:
-    paths = {
-        "window": ROOT / "src/leonardo/gui/windows/research_suite_window.py",
-        "presenter": ROOT / "src/leonardo/gui/presenters/research_presenter.py",
-        "composition": ROOT / "src/leonardo/gui/composition.py",
-        "application": ROOT / "src/leonardo/research/application.py",
-        "volume": ROOT / "src/leonardo/research/volume.py",
-        "workspace": ROOT / "src/leonardo/gui/chart/pane_workspace.py",
+def _direct_calls(source: str) -> set[str]:
+    tree = ast.parse(source)
+    return {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    for path in paths.values():
-        ast.parse(path.read_text(encoding="utf-8"))
 
-    window = paths["window"].read_text(encoding="utf-8")
-    presenter = paths["presenter"].read_text(encoding="utf-8")
-    composition = paths["composition"].read_text(encoding="utf-8")
-    application = paths["application"].read_text(encoding="utf-8")
-    volume = paths["volume"].read_text(encoding="utf-8")
-    workspace = paths["workspace"].read_text(encoding="utf-8")
 
-    assert "research_suite.window" in window
-    assert "research_suite.combo.accepted_dataset" in window
-    assert "ChartPaneWorkspaceWidget" in window
-    assert "research_suite.button.toggle_autoscale" in window
-    assert "research_suite.button.toggle_volume" in window
-    assert "build_resident_volume_projection" in presenter
-    assert "record_action(" not in window
-    assert "ResearchSuitePresenter" in composition
-    assert "research_dataset_service" in composition
-    assert "submit_catalog" in application
-    assert "submit_resident_slice" in application
-    assert "ChartSessionState" in presenter
-    assert "HorizontalViewport" in presenter
-    assert "ResidentRefillDirection" in presenter
+def test_real_service_research_composition_has_one_shared_construction_authority() -> None:
+    paths = {
+        "main_composition": ROOT / "src/leonardo/gui/composition.py",
+        "research_composition": ROOT
+        / "src/leonardo/gui/research/composition.py",
+        "service_launcher": ROOT
+        / "tools/dev_launch_research_gui_service_wiring.py",
+    }
+    sources = {
+        name: path.read_text(encoding="utf-8") for name, path in paths.items()
+    }
+    for source in sources.values():
+        ast.parse(source)
 
-    assert "QSplitter" in workspace
-    assert "DEFAULT_VOLUME_MEAN_PERIOD" in volume
+    main_composition = sources["main_composition"]
+    research_composition = sources["research_composition"]
+    service_launcher = sources["service_launcher"]
 
-    combined = "\n".join((window, presenter, composition, application, volume, workspace))
+    assert (
+        "from leonardo.gui.research.composition import "
+        "create_restored_research_suite"
+    ) in main_composition
+    assert "create_restored_research_suite(" in main_composition
+    assert "leonardo.gui.windows.research_suite_window" not in main_composition
+    assert "ResearchSuitePresenter" not in main_composition
+    assert "ResearchSuiteWindow" not in _direct_calls(main_composition)
+    assert "RestoredResearchLifecyclePresenter" not in _direct_calls(
+        main_composition
+    )
+
+    assert (
+        "from leonardo.gui.research.composition import "
+        "create_restored_research_suite"
+    ) in service_launcher
+    assert "create_restored_research_suite(" in service_launcher
+    assert "ResearchSuiteWindow" not in _direct_calls(service_launcher)
+    assert "RestoredResearchLifecyclePresenter" not in _direct_calls(
+        service_launcher
+    )
+
+    direct_calls = _direct_calls(research_composition)
+    assert "ResearchSuiteWindow" in direct_calls
+    assert "RestoredResearchLifecyclePresenter" in direct_calls
+    assert "create_restored_research_suite" in research_composition
     for forbidden in (
-        "DatasetId",
-        "CoreBridge",
-        "QApplication.processEvents",
-        "leonardo.contracts",
-        "dummy_data",
+        "LeonardoApp",
+        "CoreRunner",
+        "TaskManager",
+        "WindowRegistry",
+        "OHLCVStore",
+        "ArtifactService",
+        "AcceptedDatasetCatalog",
+        "research_gui_dev_fixtures",
     ):
-        assert forbidden not in combined
+        assert forbidden not in research_composition

@@ -25,6 +25,8 @@ from leonardo.research.workspace_snapshot import (
     ResearchWorkspaceSnapshotSummary,
     ResearchWorkspaceSnapshotV1,
 )
+from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.window_geometry import apply_initial_window_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +51,20 @@ class WorkspaceSnapshotManagerDialog(QDialog):
     delete_requested = Signal(str)
 
     def __init__(
-        self, summaries: tuple[ResearchWorkspaceSnapshotSummary, ...], parent=None
+        self,
+        summaries: tuple[ResearchWorkspaceSnapshotSummary, ...],
+        parent=None,
+        *,
+        mode: str = "manage",
     ) -> None:
         super().__init__(parent)
+        if mode not in {"load", "manage"}:
+            raise ValueError("mode must be 'load' or 'manage'")
+        self._mode = mode
         self.setObjectName("research.workspace_snapshot_manager_dialog")
-        self.setWindowTitle("Workspace Snapshots")
+        self.setWindowTitle(
+            "Load Workspace" if mode == "load" else "Manage Workspaces"
+        )
         self._summaries = tuple(summaries)
         self._snapshot: ResearchWorkspaceSnapshotV1 | None = None
         self._report: ResearchWorkspaceSnapshotCompatibilityReport | None = None
@@ -67,9 +78,20 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         self.description_edit.setObjectName("research.workspace_snapshot_manager_dialog.edit.description")
         layout.addWidget(self.name_edit)
         layout.addWidget(self.description_edit)
-        self.chart_table = QTableWidget(0, 5, self)
+        self.chart_table = QTableWidget(0, 8, self)
         self.chart_table.setObjectName("research.workspace_snapshot_manager_dialog.table.charts")
-        self.chart_table.setHorizontalHeaderLabels(("Position", "Market", "Detached", "Studies", "Viewport"))
+        self.chart_table.setHorizontalHeaderLabels(
+            (
+                "Position",
+                "Exchange",
+                "Market Type",
+                "Asset",
+                "Timeframe",
+                "Detached",
+                "Studies",
+                "Viewport",
+            )
+        )
         layout.addWidget(self.chart_table)
         modes = QHBoxLayout()
         self.append_radio = QRadioButton("Append", self)
@@ -86,7 +108,8 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         layout.addWidget(self.compatibility_text)
         buttons = QHBoxLayout()
         self.refresh_button = self._button("refresh", "Refresh")
-        self.metadata_button = self._button("save_metadata", "Save Metadata")
+        self.metadata_button = self._button("save_metadata", "Save Changes")
+        self.metadata_button.setVisible(mode == "manage")
         self.load_button = self._button("load", "Load")
         self.delete_button = self._button("delete", "Delete")
         self.close_button = self._button("close", "Close")
@@ -106,6 +129,9 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         self.delete_button.clicked.connect(self._emit_delete)
         self.close_button.clicked.connect(self.reject)
         self.append_radio.toggled.connect(self._mode_changed)
+        self.name_edit.setReadOnly(mode == "load")
+        self.description_edit.setReadOnly(mode == "load")
+        apply_initial_window_size(self, parent=parent)
         self.set_summaries(self._summaries)
 
     @property
@@ -144,13 +170,17 @@ class WorkspaceSnapshotManagerDialog(QDialog):
             self.chart_table.insertRow(row)
             values = (
                 chart.workspace_position,
-                chart.market_id.as_key(),
+                chart.market_id.exchange,
+                chart.market_id.market_type,
+                chart.market_id.symbol,
+                chart.market_id.timeframe,
                 "Yes" if chart.detached else "No",
                 0 if chart.study_environment is None else len(chart.study_environment.entries),
                 f"{chart.viewport.center_timestamp_ms} / {chart.viewport.visible_count}",
             )
             for column, value in enumerate(values):
                 self.chart_table.setItem(row, column, QTableWidgetItem(str(value)))
+        resize_table_columns_to_contents(self.chart_table)
         self.compatibility_text.clear()
         self._sync()
 
@@ -198,7 +228,7 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         )
 
     def _emit_metadata(self) -> None:
-        if self._snapshot is not None:
+        if self._mode == "manage" and self._snapshot is not None:
             self.metadata_requested.emit(
                 WorkspaceSnapshotMetadataIntent(
                     self._snapshot.snapshot_id,
@@ -217,8 +247,8 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         summary = self._summaries[row]
         decision = QMessageBox.question(
             self,
-            "Delete Workspace Snapshot",
-            f'Delete Workspace Snapshot "{summary.display_name}" ({snapshot_id})?',
+            "Delete Workspace",
+            f'Delete Workspace "{summary.display_name}" ({snapshot_id})?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

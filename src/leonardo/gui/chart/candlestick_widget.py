@@ -518,6 +518,23 @@ class CandlestickChartWidget(QWidget):
         plot = _qt_rect(scene.plot_rect)
         painter.fillRect(plot, QColor(self._palette.background))
 
+        painter.save()
+        painter.setClipRect(plot)
+        painter.setPen(Qt.NoPen)
+        for region in studies.background_regions:
+            color = QColor(region.color)
+            color.setAlphaF(region.opacity)
+            painter.setBrush(QBrush(color))
+            painter.drawRect(
+                QRectF(
+                    region.x,
+                    scene.plot_rect.y,
+                    region.width,
+                    scene.plot_rect.height,
+                )
+            )
+        painter.restore()
+
         grid_pen = QPen(QColor(self._palette.grid))
         grid_pen.setWidth(1)
         painter.setPen(grid_pen)

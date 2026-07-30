@@ -23,6 +23,9 @@ from leonardo.research.workspace_snapshot import (
     WorkspaceSnapshotStateV1,
 )
 from leonardo.research.workspace_snapshot_store import ResearchWorkspaceSnapshotStore
+from leonardo.research.workspace_notebook_link import (
+    ResearchWorkspaceNotebookLinkService,
+)
 
 
 CancellationCheck = Callable[[], bool]
@@ -37,6 +40,7 @@ class ResearchWorkspaceSnapshotService:
         loader: HistoricalDatasetLoader,
         study_setup: ResearchStudySetupService,
         store: ResearchWorkspaceSnapshotStore,
+        notebook_link: ResearchWorkspaceNotebookLinkService,
         *,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
@@ -49,10 +53,15 @@ class ResearchWorkspaceSnapshotService:
             raise TypeError("study_setup must be ResearchStudySetupService")
         if not isinstance(store, ResearchWorkspaceSnapshotStore):
             raise TypeError("store must be ResearchWorkspaceSnapshotStore")
+        if not isinstance(notebook_link, ResearchWorkspaceNotebookLinkService):
+            raise TypeError(
+                "notebook_link must be ResearchWorkspaceNotebookLinkService"
+            )
         self._catalog = catalog
         self._loader = loader
         self._study_setup = study_setup
         self._store = store
+        self._notebook_link = notebook_link
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: uuid4().hex)
 
@@ -180,6 +189,11 @@ class ResearchWorkspaceSnapshotService:
         append_positions: tuple[tuple[str, int], ...] = ()
         if mode == "append" and current_count + len(snapshot.charts) <= 8:
             append_positions = self.plan_append_positions(snapshot, occupied)
+        blockers.extend(
+            self._notebook_link.validate_notebook_reference(
+                snapshot.notebook_id
+            )
+        )
         chart_reports: list[WorkspaceSnapshotChartCompatibility] = []
         for chart in snapshot.charts:
             _raise_if_cancelled(cancel)

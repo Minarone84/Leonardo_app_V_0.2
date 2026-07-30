@@ -64,7 +64,7 @@ def _rma(series: pd.Series, period: int) -> pd.Series:
         value = values[position]
         if np.isnan(value):
             continue
-        previous = previous + alpha * (value - previous)
+        previous = alpha * float(value) + (1.0 - alpha) * previous
         output[position] = previous
     return pd.Series(output, index=series.index)
 
