@@ -1,20 +1,46 @@
 # Leonardo Light V2 GUI Shell
 
-The GUI is a replaceable Qt presentation shell.
-
-It owns windows, widgets, layouts, user interaction, appearance, navigation and
-derived display state. It does not own provider behaviour, persistence policy,
-financial calculations, validation truth, backtest mathematics, risk or order
-execution.
+The GUI is a replaceable Qt presentation shell. It owns windows, widgets,
+layouts, user interaction, appearance, navigation, and derived display state.
+It does not own provider behaviour, persistence policy, financial calculations,
+validation truth, backtest mathematics, risk, or order execution.
 
 The live Qt object tree is authoritative. Meaningful controls use stable
-`QObject.objectName()` values and optional action/appearance properties. There
-is no handwritten duplicate widget tree in TOML or JSON.
+`QObject.objectName()` values, and appearance roles may classify editable
+presentation surfaces. There is no handwritten duplicate widget tree in TOML
+or JSON.
 
-Short Qt operations run directly on the GUI thread. Long-running work is
-submitted by an application service to Core and returns through queued Qt
-signals.
+Simple GUI actions run synchronously on the Qt thread. Long-running work runs
+through the shared Core runtime and returns through queued Qt signals;
+background work must not mutate Qt widgets directly.
 
-Production shells start in honest empty/unavailable states. Test fixtures belong
-under tests or explicit demo tools and must not be presented as completed
-application behaviour.
+## Current workflows
+
+Implemented production workflows are:
+
+- Historical Download;
+- OHLCV Maintenance;
+- Research Suite;
+- Runtime Manager;
+- Research persistence workflows.
+
+Current shell-only or incomplete workflows are:
+
+- the Connection Suite live dashboard beyond historical REST workflows;
+- Analysis;
+- Backtesting;
+- Real-Time;
+- Trading;
+- application-wide Appearance Settings;
+- other visibly unavailable future suites exposed by the current shell.
+
+An incomplete shell must remain honest about unavailable behavior. Current
+Research architecture and workflow details are documented in the
+[Research Suite manual](../research_docs/RESEARCH_SUITE.md).
+
+## Window tracking
+
+Long-lived top-level windows that remain open until the user or application
+closes them must register with the shared application `WindowRegistry` through
+the application window tracker. Short modal confirmation prompts do not need an
+independent durable registry identity.

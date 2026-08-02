@@ -31,7 +31,7 @@ ADDED_TEST_AND_DOC_PATHS = (
     "tests/gui_test/test_research_multi_chart_static.py",
     "tests/gui_test/fixtures/task_1019_workspace_input.json",
     "tests/gui_test/fixtures/task_1019_workspace_expected.json",
-    "docs/core_docs/TASK_1019_EIGHT_SLOT_RESEARCH_WORKSPACE.md",
+    "docs/history/tasks/TASK_1019_EIGHT_SLOT_RESEARCH_WORKSPACE.md",
 )
 
 TASK_1019_WORKSPACE_PATHS = (
