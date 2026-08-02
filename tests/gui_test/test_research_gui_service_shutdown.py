@@ -8,7 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from leonardo.core.window_registry import WindowRegistry
 from leonardo.gui.research import ResearchSuiteWindow, RestoredResearchLifecyclePresenter
@@ -138,3 +138,77 @@ def test_suite_close_orders_presenter_disposal_without_event_drain_workaround() 
     assert "processEvents" not in lifecycle_source
     assert "processEvents" not in launcher_source
     qapp.processEvents()
+
+
+def test_clear_research_suite_confirms_resets_and_remains_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary, _registry = _tracked_presenter()
+    try:
+        _complete_catalog(service, DatasetCatalogReport((summary,), ()))
+        slot_id, load_id = _open_pending(presenter, service)
+        assert not window.action_for_text("Clear Research Suite").isEnabled()
+        service.complete(load_id)
+        service.complete(service.pending_ids("resident")[-1])
+        _settle_qt()
+        assert window.action_for_text("Clear Research Suite").isEnabled()
+        window.workspace.detach_chart(slot_id)
+        window.action_for_text("Pan Anchor").trigger()
+        window.action_for_text("Fit 8").trigger()
+        presenter._current_workspace_snapshot_id = "snapshot_current"
+        presenter._assigned_notebook_id = "notebook_current"
+        action = window.action_for_text("Clear Research Suite")
+        quick = window.quick_button_for_action("Clear Research Suite")
+        assert action.objectName() == "research_restoration.action.clear_research_suite"
+        assert quick.objectName() == "research_restoration.quick.clear_research_suite"
+        assert quick.defaultAction() is action
+
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+        )
+        action.trigger()
+        assert window.workspace.slot_ids() == (slot_id,)
+        assert window.workspace.detached_slot_ids() == (slot_id,)
+
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+        )
+        class _DirtyNotebook:
+            is_dirty = True
+
+            @staticmethod
+            def dirty_decision():
+                return "cancel"
+
+        presenter._notebook_editor = _DirtyNotebook()
+        action.trigger()
+        assert window.workspace.slot_ids() == (slot_id,)
+        presenter._notebook_editor = None
+        action.trigger()
+        qapp.processEvents()
+        assert window.workspace.slot_ids() == ()
+        assert window.workspace.detached_slot_ids() == ()
+        assert presenter._chart_presenters == {}
+        assert not presenter._disposed
+        assert presenter._current_workspace_snapshot_id is None
+        assert presenter._assigned_notebook_id is None
+        assert not window.action_for_text("Pan Anchor").isChecked()
+        assert "#FCA5A5" in window.quick_button_for_action("Pan Anchor").styleSheet()
+        assert window.action_for_text("Scroll 4").isChecked()
+        assert window.workspace.visualization_mode == "scroll_4"
+        assert window.findChild(
+            object, "research_restoration.activity.log"
+        ).toPlainText() == "Research Suite cleared."
+        assert window.dataset_summaries == (summary,)
+
+        window.action_for_text("New Chart...").trigger()
+        assert presenter._new_chart_dialog.isVisible()
+    finally:
+        presenter.dispose()
+        window.close()
+        qapp.processEvents()

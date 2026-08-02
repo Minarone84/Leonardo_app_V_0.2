@@ -562,6 +562,150 @@ def test_canonical_oscillator_defaults_and_tdirsi_fill_are_exact(
     assert fill.conditional_colors == {}
 
 
+def test_task_1050_semantic_default_color_matrix_is_exact(tmp_path: Path) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    service = ResearchStudyService(artifacts)
+
+    def prepared(tool_key, *, parameters=None, sources=(), studies=()):
+        return prepare(
+            service,
+            dataset,
+            tool_key,
+            parameters=parameters or {},
+            sources=sources,
+            studies=studies,
+        )
+
+    expected_single = {
+        "sma": "#F59E0B",
+        "ema": "#22C55E",
+        "tema": "#A855F7",
+        "hma": "#06B6D4",
+        "kama": "#EF4444",
+        "rsi": "#A855F7",
+        "mfi": "#14B8A6",
+        "obv": "#E5E7EB",
+    }
+    for tool_key, color in expected_single.items():
+        presentation = build_default_study_presentation(prepared(tool_key))
+        assert {style.color for style in presentation.signal_styles.values()} == {color}
+
+    bb = build_default_study_presentation(prepared("bb"))
+    assert bb.signal_styles["bb_middle"].color == "#F59E0B"
+    assert bb.signal_styles["bb_upper_band"].color == "#60A5FA"
+    assert bb.signal_styles["bb_lower_band"].color == "#60A5FA"
+    assert bb.fill_styles["bb_band"].color == "#60A5FA"
+    assert bb.fill_styles["bb_band"].opacity == 0.12
+
+    arsi = build_default_study_presentation(prepared("arsi"))
+    assert tuple(style.color for style in arsi.signal_styles.values()) == (
+        "#8B5CF6",
+        "#FF5D00",
+    )
+    smi = build_default_study_presentation(prepared("smi"))
+    assert tuple(style.color for style in smi.signal_styles.values()) == (
+        "#06B6D4",
+        "#F59E0B",
+    )
+    volume = build_default_study_presentation(prepared("volume"))
+    assert next(
+        style.color
+        for name, style in volume.signal_styles.items()
+        if name.startswith("volume_mean_")
+    ) == "#06B6D4"
+
+    source_studies = tuple(
+        prepared(key, parameters={"period": 3}) for key in ("sma", "ema", "hma")
+    )
+    source_names = tuple(study.result.output_names[0] for study in source_studies)
+    construct_cases = {
+        "derivative": (
+            "#FF9F1C",
+            (StudyInputSource("source", "ohlcv", column_name="close"),),
+            (),
+        ),
+        "angle": (
+            "#00E5FF",
+            (StudyInputSource("source", "ohlcv", column_name="close"),),
+            (),
+        ),
+        "braids": (
+            "#B967FF",
+            tuple(
+                StudyInputSource(
+                    role,
+                    "study",
+                    study_id=study.study_id,
+                    output_name=output,
+                )
+                for role, study, output in zip(
+                    ("fast", "mid", "slow"),
+                    source_studies,
+                    source_names,
+                    strict=True,
+                )
+            ),
+            source_studies,
+        ),
+        "braid_instability": (
+            "#FF3DCE",
+            tuple(
+                StudyInputSource(
+                    role,
+                    "study",
+                    study_id=study.study_id,
+                    output_name=output,
+                )
+                for role, study, output in zip(
+                    ("fast", "mid", "slow"),
+                    source_studies,
+                    source_names,
+                    strict=True,
+                )
+            ),
+            source_studies,
+        ),
+        "delta": (
+            "#FFF200",
+            (
+                StudyInputSource("fast", "ohlcv", column_name="high"),
+                StudyInputSource("slow", "ohlcv", column_name="low"),
+            ),
+            (),
+        ),
+        "trap_area": (
+            "#FF6B35",
+            (
+                StudyInputSource("fast", "ohlcv", column_name="high"),
+                StudyInputSource("slow", "ohlcv", column_name="low"),
+            ),
+            (),
+        ),
+        "percent_span_angle": (
+            "#39FF14",
+            (StudyInputSource("source_1", "ohlcv", column_name="close"),),
+            (),
+        ),
+        "angle_momentum": (
+            "#4DA3FF",
+            (StudyInputSource("source_1", "ohlcv", column_name="close"),),
+            (),
+        ),
+    }
+    for tool_key, (color, sources, studies) in construct_cases.items():
+        presentation = build_default_study_presentation(
+            prepared(tool_key, sources=sources, studies=studies)
+        )
+        assert {style.color for style in presentation.signal_styles.values()} == {color}
+
+    peaks = build_default_study_presentation(prepared("peaks_troughs"))
+    assert len(peaks.signal_styles) == 10
+    assert all(style.marker_size == 14 for style in peaks.signal_styles.values())
+    assert {
+        name for name, style in peaks.signal_styles.items() if style.visible
+    } == {"peak_fractal_3", "trough_fractal_3"}
+
+
 @pytest.mark.parametrize(
     ("tool_key", "parameters", "expected"),
     (

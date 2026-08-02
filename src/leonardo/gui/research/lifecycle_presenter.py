@@ -9,17 +9,19 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.gui.presenters.research_chart_presenter import (
     ChartOperationOutcome,
+    EnvironmentApplyProgress,
     ResearchChartPresenter,
     StudyOperationOutcome,
 )
 from leonardo.gui.research.chart_panel import ResearchChartPanel
 from leonardo.gui.research.financial_tools_dialog import (
     ResearchFinancialToolsDialog,
+    ResearchSavedArtifactBatchIntent,
     ResearchStudyApplyIntent,
     ResearchStudyEditDialog,
     ResearchStudyEditIntent,
@@ -124,6 +126,27 @@ class _StudyEditOpenTarget:
 
 
 @dataclass(slots=True)
+class _SavedArtifactBatchRun:
+    slot_id: int
+    session_id: str
+    presenter: ResearchChartPresenter
+    dialog: ResearchFinancialToolsDialog
+    requests: tuple[StudyArtifactRequest, ...]
+    index: int = 0
+    successful_artifact_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _FinancialToolsSaveRun:
+    slot_id: int
+    session_id: str
+    presenter: ResearchChartPresenter
+    dialog: ResearchFinancialToolsDialog
+    intent: ResearchStudyApplyIntent
+    study_id: str | None = None
+
+
+@dataclass(slots=True)
 class _SnapshotRestoreRun:
     run_id: str
     snapshot: ResearchWorkspaceSnapshotV1
@@ -142,6 +165,18 @@ class _SnapshotRestoreRun:
     pre_pan_anchor_enabled: bool = False
     pre_current_workspace_snapshot_id: str | None = None
     pre_assigned_notebook_id: str | None = None
+    failure_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ManagerEnvironmentApplyRun:
+    run_id: str
+    slot_id: int
+    session_id: str
+    environment_id: str
+    mode: str
+    presenter: ResearchChartPresenter
+    dialog: StudyEnvironmentManagerDialog
 
 
 class RestoredResearchLifecyclePresenter(QObject):
@@ -215,6 +250,9 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._catalog_revisions: dict[int, int] = {}
         self._deferred_catalog_refresh: set[int] = set()
         self._financial_tools_open_requested: set[int] = set()
+        self._saved_artifact_batch_runs: dict[int, _SavedArtifactBatchRun] = {}
+        self._financial_tools_save_runs: dict[int, _FinancialToolsSaveRun] = {}
+        self._financial_tools_settled_status: dict[int, str] = {}
         self._active_catalog_task_id: str | None = None
         self._dataset_summaries = ()
         self._disposed = False
@@ -227,6 +265,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._environment_save_dialogs: dict[int, StudyEnvironmentSaveDialog] = {}
         self._environment_managers: dict[int, StudyEnvironmentManagerDialog] = {}
         self._environment_manager_modes: dict[int, str] = {}
+        self._environment_apply_runs: dict[int, _ManagerEnvironmentApplyRun] = {}
         self._snapshot_task_ids: set[str] = set()
         self._snapshot_save_dialog: WorkspaceSnapshotSaveDialog | None = None
         self._snapshot_manager: WorkspaceSnapshotManagerDialog | None = None
@@ -277,15 +316,13 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._view.manage_workspace_snapshots_requested.connect(
             lambda: self._open_snapshot_manager("manage")
         )
-        self._view.create_notebook_requested.connect(self._new_notebook)
         self._view.open_notebook_requested.connect(self._open_assigned_notebook)
         self._view.notebook_manager_requested.connect(
             self._open_notebook_manager
         )
-        self._view.save_notebook_requested.connect(
-            lambda: self._save_notebook_editor(False)
+        self._view.clear_research_suite_requested.connect(
+            self._request_clear_research_suite
         )
-        self._view.load_notebook_requested.connect(self._open_notebook_manager)
         self._view.closed.connect(self.dispose)
         self._view.workspace.set_external_close_owner(True)
         self._view.workspace.chart_close_requested.connect(self._close_chart)
@@ -303,9 +340,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         pan_anchor = self._view.action_for_text("Pan Anchor")
         pan_anchor.setChecked(False)
         pan_anchor.setEnabled(True)
-        pan_anchor.setToolTip("")
-        pan_anchor.setStatusTip("")
         pan_anchor.toggled.connect(self._set_pan_anchor_enabled)
+        self._set_pan_anchor_enabled(False)
         self._refresh_command_actions()
         self._refresh_catalog()
 
@@ -356,6 +392,14 @@ class RestoredResearchLifecyclePresenter(QObject):
         for dialog in tuple(self._environment_save_dialogs.values()):
             self._close_and_delete_dialog(dialog)
         self._environment_save_dialogs.clear()
+        for run in tuple(self._environment_apply_runs.values()):
+            run.presenter.cancel_environment_apply()
+            run.dialog.finish_apply(
+                run.run_id,
+                "cancellation",
+                "Study Environment cancelled by Research shutdown.",
+            )
+        self._environment_apply_runs.clear()
         for dialog in tuple(self._environment_managers.values()):
             self._close_and_delete_dialog(dialog)
         self._environment_managers.clear()
@@ -671,16 +715,74 @@ class RestoredResearchLifecyclePresenter(QObject):
             bool(self._snapshot_service and not snapshot_busy),
         )
         notebook_busy = self._notebook_task_id is not None
-        editor_valid = (
-            self._notebook_editor is not None
-            and self._notebook_editor.is_current_valid
-        )
         self._view.set_notebook_actions_state(
             bool(self._notebook_service and not notebook_busy),
-            bool(self._notebook_service and not notebook_busy),
-            bool(editor_valid and not notebook_busy),
-            bool(self._notebook_service and not notebook_busy),
         )
+        self._view.set_clear_research_suite_enabled(
+            not self._clear_suite_conflict_active()
+        )
+
+    def _clear_suite_conflict_active(self) -> bool:
+        return bool(
+            self._disposed
+            or self._setup_task_ids
+            or self._snapshot_task_ids
+            or self._snapshot_restore is not None
+            or self._notebook_task_id is not None
+            or self._notebook_link_operation_token is not None
+            or self._active_study_setup_catalog_tasks
+            or self._saved_artifact_batch_runs
+            or self._financial_tools_save_runs
+            or self._environment_apply_runs
+            or any(
+                presenter.is_busy or presenter.environment_apply_active
+                for presenter in self._chart_presenters.values()
+            )
+        )
+
+    def _request_clear_research_suite(self) -> None:
+        if self._clear_suite_conflict_active():
+            return
+        answer = QMessageBox.question(
+            self._view,
+            "Clear Research Suite",
+            "Close all Research charts and secondary windows and reset the "
+            "Research Suite? Persisted datasets, Artifacts, Recipes, Study "
+            "Environments, Workspaces, and Notebooks will not be deleted.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        editor = self._notebook_editor
+        if editor is not None and editor.is_dirty:
+            decision = editor.dirty_decision()
+            if decision == "cancel":
+                return
+            if decision == "save":
+                self._notebook_pending_action = ("clear_suite", None)
+                self._save_notebook_editor(False)
+                return
+        self._perform_clear_research_suite()
+
+    def _perform_clear_research_suite(self) -> None:
+        if self._clear_suite_conflict_active():
+            return
+        self._close_notebook_editor()
+        self._close_secondary_windows_after_workspace_restore()
+        if self._snapshot_preflight_dialog is not None:
+            self._close_and_delete_dialog(self._snapshot_preflight_dialog)
+            self._snapshot_preflight_dialog = None
+        for slot_id in tuple(self._view.workspace.slot_ids()):
+            presenter = self._chart_presenters.get(slot_id)
+            if presenter is not None:
+                self._remove_chart(slot_id, presenter)
+        self._current_workspace_snapshot_id = None
+        self._assigned_notebook_id = None
+        self._sync_notebook_assignment()
+        self._set_pan_anchor_enabled(False)
+        self._view.set_workspace_view_mode("Scroll 4")
+        self._view.workspace.set_visualization_mode("scroll_4")
+        self._view.reset_activity("Research Suite cleared.")
+        self._refresh_command_actions()
 
     def _open_save_environment(self) -> None:
         presenter = self._active_presenter()
@@ -780,23 +882,6 @@ class RestoredResearchLifecyclePresenter(QObject):
                 environment_id=intent.environment_id,
                 metadata_overrides=dict(intent.metadata_overrides),
             )
-            entries = tuple(
-                replace(
-                    entry,
-                    presentation=replace(
-                        entry.presentation,
-                        guide_styles=tuple(
-                            presentation.guide_styles.values()
-                        ),
-                    ),
-                )
-                for entry, presentation in zip(
-                    draft.entries,
-                    presentations,
-                    strict=True,
-                )
-            )
-            draft = replace(draft, entries=entries)
         except (TypeError, ValueError) as error:
             self._append_activity(f"Study Environment build failed: {error}")
             return
@@ -921,6 +1006,9 @@ class RestoredResearchLifecyclePresenter(QObject):
         )
         dialog.apply_requested.connect(
             lambda intent: self._apply_manager_environment(dialog, intent)
+        )
+        dialog.cancel_apply_requested.connect(
+            lambda: self._cancel_manager_environment(dialog)
         )
         dialog.delete_requested.connect(
             lambda environment_id: self._delete_manager_environment(
@@ -1068,12 +1156,127 @@ class RestoredResearchLifecyclePresenter(QObject):
             or environment.environment_id != intent.environment_id
         ):
             return
+        run_id = uuid4().hex
+        run = _ManagerEnvironmentApplyRun(
+            run_id,
+            intent.slot_id,
+            intent.session_id,
+            intent.environment_id,
+            dialog.mode,
+            presenter,
+            dialog,
+        )
+        self._environment_apply_runs[id(dialog)] = run
+        dialog.begin_apply(run_id, len(environment.entries))
+        self._refresh_command_actions()
         try:
-            presenter.apply_environment(environment, intent.mode)
+            presenter.apply_environment(
+                environment,
+                intent.mode,
+                run_id=run_id,
+                progress_callback=lambda progress: self._manager_environment_progress(
+                    run, progress
+                ),
+                completion_callback=lambda outcome: self._manager_environment_complete(
+                    run, outcome
+                ),
+            )
         except (RuntimeError, TypeError, ValueError) as error:
+            self._environment_apply_runs.pop(id(dialog), None)
+            dialog.finish_apply(run_id, "failure", str(error))
+            self._refresh_command_actions()
             self._append_activity(
                 f"Chart {intent.slot_id} Study Environment Apply failed: {error}"
             )
+
+    def _manager_environment_progress(
+        self,
+        run: _ManagerEnvironmentApplyRun,
+        progress: EnvironmentApplyProgress,
+    ) -> None:
+        if not self._manager_environment_run_is_current(run):
+            return
+        if (
+            progress.slot_id != run.slot_id
+            or progress.session_id != run.session_id
+            or progress.environment_id != run.environment_id
+            or progress.run_id != run.run_id
+        ):
+            return
+        if progress.phase == "applying":
+            status = (
+                f"Applying Study {progress.entry_number} of "
+                f"{progress.total_entries}: {progress.display_name}"
+            )
+        elif progress.phase == "complete":
+            status = (
+                f"Study {progress.entry_number} of "
+                f"{progress.total_entries} complete."
+            )
+        else:
+            return
+        run.dialog.set_apply_progress(
+            run.run_id,
+            progress.accepted_entries,
+            status,
+        )
+
+    def _manager_environment_complete(
+        self,
+        run: _ManagerEnvironmentApplyRun,
+        outcome: ChartOperationOutcome,
+    ) -> None:
+        if not self._manager_environment_run_is_current(run):
+            return
+        if (
+            outcome.slot_id != run.slot_id
+            or outcome.session_id != run.session_id
+        ):
+            return
+        self._environment_apply_runs.pop(id(run.dialog), None)
+        if outcome.status == "success":
+            run.dialog.finish_apply(run.run_id, "success")
+            self._append_activity(
+                f"Chart {run.slot_id} Study Environment applied."
+            )
+            if run.mode == "load":
+                run.dialog.accept()
+        else:
+            message = outcome.message or (
+                "Study Environment cancelled."
+                if outcome.status in {"cancelled", "cancellation"}
+                else "Study Environment failed."
+            )
+            run.dialog.finish_apply(run.run_id, outcome.status, message)
+            self._append_activity(
+                f"Chart {run.slot_id} Study Environment Apply "
+                f"{outcome.status}: {message}"
+            )
+        self._refresh_command_actions()
+
+    def _cancel_manager_environment(
+        self, dialog: StudyEnvironmentManagerDialog
+    ) -> None:
+        run = self._environment_apply_runs.get(id(dialog))
+        if not self._manager_environment_run_is_current(run):
+            return
+        run.presenter.cancel_environment_apply()
+
+    def _manager_environment_run_is_current(
+        self, run: _ManagerEnvironmentApplyRun | None
+    ) -> bool:
+        if run is None:
+            return False
+        return bool(
+            not self._disposed
+            and self._environment_apply_runs.get(id(run.dialog)) is run
+            and run.dialog in self._environment_managers.values()
+            and run.dialog.mode == run.mode
+            and run.dialog.apply_run_id == run.run_id
+            and self._chart_presenters.get(run.slot_id) is run.presenter
+            and not run.presenter.is_disposed
+            and run.presenter.session.session_id == run.session_id
+        )
 
     def _delete_manager_environment(
         self, dialog: StudyEnvironmentManagerDialog, environment_id: str
@@ -1095,6 +1298,7 @@ class RestoredResearchLifecyclePresenter(QObject):
     ) -> None:
         if self._environment_save_dialogs.get(slot_id) is dialog:
             self._environment_save_dialogs.pop(slot_id, None)
+        self._refresh_command_actions()
 
     def _forget_environment_manager(
         self, key: int, dialog: StudyEnvironmentManagerDialog
@@ -1102,6 +1306,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         if self._environment_managers.get(key) is dialog:
             self._environment_managers.pop(key, None)
             self._environment_manager_modes.pop(key, None)
+        self._environment_apply_runs.pop(id(dialog), None)
+        self._refresh_command_actions()
 
     def _capture_snapshot_workspace(self) -> WorkspaceSnapshotCapture:
         presenters = self._ready_presenters()
@@ -1510,27 +1716,38 @@ class RestoredResearchLifecyclePresenter(QObject):
     ) -> None:
         if self._snapshot_restore is not None:
             return
-        active_slot_id = self._view.workspace.active_slot_id
-        active_session_id = (
-            None
-            if active_slot_id is None
-            else self._workspace_state.session_for(active_slot_id).session_id
-        )
-        if report.mode == "append":
-            positions = dict(report.append_positions)
-            rollback = None
-            preexisting = self._view.workspace.slot_ids()
-        else:
-            positions = {
-                chart.chart_ref: chart.workspace_position
-                for chart in snapshot.charts
-            }
-            rollback = self._capture_rollback_snapshot()
-            preexisting = ()
-            for slot_id in tuple(self._view.workspace.slot_ids()):
-                presenter = self._chart_presenters.get(slot_id)
-                if presenter is not None:
-                    self._remove_chart(slot_id, presenter)
+        dialog = self._snapshot_preflight_dialog
+        if dialog is None:
+            return
+        dialog.begin_restore(len(snapshot.charts))
+        try:
+            active_slot_id = self._view.workspace.active_slot_id
+            active_session_id = (
+                None
+                if active_slot_id is None
+                else self._workspace_state.session_for(active_slot_id).session_id
+            )
+            if report.mode == "append":
+                positions = dict(report.append_positions)
+                rollback = None
+                preexisting = self._view.workspace.slot_ids()
+            else:
+                positions = {
+                    chart.chart_ref: chart.workspace_position
+                    for chart in snapshot.charts
+                }
+                rollback = self._capture_rollback_snapshot()
+                preexisting = ()
+                for slot_id in tuple(self._view.workspace.slot_ids()):
+                    presenter = self._chart_presenters.get(slot_id)
+                    if presenter is not None:
+                        self._remove_chart(slot_id, presenter)
+        except Exception as error:
+            message = str(error)
+            dialog.show_failure(message)
+            self._append_activity(f"Workspace Snapshot restore failed: {message}")
+            self._refresh_command_actions()
+            return
         self._snapshot_restore = _SnapshotRestoreRun(
             uuid4().hex,
             snapshot,
@@ -1578,45 +1795,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         draft: ResearchWorkspaceSnapshotDraft,
         capture: WorkspaceSnapshotCapture,
     ) -> ResearchWorkspaceSnapshotDraft:
-        charts = []
-        for chart, captured in zip(
-            draft.charts,
-            capture.charts,
-            strict=True,
-        ):
-            environment = chart.study_environment
-            if environment is None:
-                charts.append(chart)
-                continue
-            entries = tuple(
-                replace(
-                    entry,
-                    presentation=replace(
-                        entry.presentation,
-                        guide_styles=tuple(
-                            presentation.guide_styles.values()
-                        ),
-                    ),
-                )
-                for entry, presentation in zip(
-                    environment.entries,
-                    captured.presentations,
-                    strict=True,
-                )
-            )
-            environment = StudyEnvironmentV1.build(
-                environment_id=environment.environment_id,
-                display_name=environment.display_name,
-                description=environment.description,
-                created_at_utc=environment.created_at_utc,
-                updated_at_utc=environment.updated_at_utc,
-                created_from=environment.created_from,
-                entries=entries,
-            )
-            charts.append(
-                replace(chart, study_environment=environment)
-            )
-        return replace(draft, charts=tuple(charts))
+        _ = capture
+        return draft
 
     def _restore_next_snapshot_chart(self) -> None:
         run = self._snapshot_restore
@@ -1626,6 +1806,13 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._complete_snapshot_restore()
             return
         chart = run.snapshot.charts[run.index]
+        chart_number = run.index + 1
+        total = len(run.snapshot.charts)
+        dialog = self._current_snapshot_progress_dialog()
+        if dialog is not None:
+            dialog.set_restore_stage(
+                f"Creating Chart {chart_number} of {total}..."
+            )
         try:
             slot_id, presenter = self._create_restored_chart(
                 chart.market_id,
@@ -1639,9 +1826,22 @@ class RestoredResearchLifecyclePresenter(QObject):
         run.current_slot_id = slot_id
         run.added_slots.append(slot_id)
         run.chart_slots[chart.chart_ref] = slot_id
+        session_id = presenter.session.session_id
+        if dialog is not None:
+            dialog.set_restore_stage(
+                f"Chart {chart_number} of {total}: Loading historical dataset..."
+            )
         try:
             presenter.open_dataset(
                 chart.market_id,
+                progress_callback=lambda progress, current_run=run.run_id, ref=chart.chart_ref, current_slot=slot_id, current_session=session_id, expected_dialog=dialog: self._snapshot_dataset_progress(
+                    current_run,
+                    ref,
+                    current_slot,
+                    current_session,
+                    expected_dialog,
+                    progress,
+                ),
                 completion_callback=lambda outcome, run_id=run.run_id, ref=chart.chart_ref: self._snapshot_dataset_complete(
                     run_id, ref, outcome
                 ),
@@ -1650,6 +1850,38 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._fail_snapshot_restore(
                 f"{chart.chart_ref} dataset failed: {error}"
             )
+
+    def _snapshot_dataset_progress(
+        self,
+        run_id: str,
+        chart_ref: str,
+        slot_id: int,
+        session_id: str,
+        dialog: WorkspaceSnapshotPreflightDialog | None,
+        progress: TaskProgress,
+    ) -> None:
+        run = self._snapshot_restore
+        presenter = self._chart_presenters.get(slot_id)
+        if (
+            run is None
+            or run.run_id != run_id
+            or run.index >= len(run.snapshot.charts)
+            or run.snapshot.charts[run.index].chart_ref != chart_ref
+            or run.current_slot_id != slot_id
+            or presenter is None
+            or presenter.is_disposed
+            or presenter.session.session_id != session_id
+            or dialog is None
+            or self._snapshot_preflight_dialog is not dialog
+            or not dialog.restore_active
+        ):
+            return
+        chart_number = run.index + 1
+        total = len(run.snapshot.charts)
+        dialog.restore_status.setText(
+            f"Chart {chart_number} of {total}: Loading historical dataset..."
+        )
+        dialog.set_current_progress(progress.current, progress.total)
 
     def _snapshot_dataset_complete(
         self, run_id: str, chart_ref: str, outcome: ChartOperationOutcome
@@ -1676,6 +1908,12 @@ class RestoredResearchLifecyclePresenter(QObject):
         if chart.study_environment is None:
             self._finish_snapshot_chart(chart, presenter)
             return
+        dialog = self._current_snapshot_progress_dialog()
+        if dialog is not None:
+            dialog.set_restore_stage(
+                f"Chart {run.index + 1} of {len(run.snapshot.charts)}: "
+                "Applying Study Environment..."
+            )
         presenter.set_environment_compatibility(
             StudyEnvironmentCompatibilityReport(
                 chart.study_environment.environment_id
@@ -1723,6 +1961,13 @@ class RestoredResearchLifecyclePresenter(QObject):
         run = self._snapshot_restore
         if run is None:
             return
+        dialog = self._current_snapshot_progress_dialog()
+        chart_number = run.index + 1
+        total = len(run.snapshot.charts)
+        if dialog is not None:
+            dialog.set_restore_stage(
+                f"Chart {chart_number} of {total}: Restoring chart view..."
+            )
         try:
             presenter.restore_snapshot_view_state(chart)
             if chart.detached:
@@ -1732,6 +1977,8 @@ class RestoredResearchLifecyclePresenter(QObject):
                 f"{chart.chart_ref} view restore failed: {error}"
             )
             return
+        if dialog is not None:
+            dialog.complete_chart(chart_number, total)
         run.index += 1
         run.current_slot_id = None
         self._restore_next_snapshot_chart()
@@ -1744,9 +1991,9 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._view.workspace.set_visualization_mode(
                 run.snapshot.workspace.visualization_mode
             )
-            self._pan_anchor_enabled = run.snapshot.workspace.pan_anchor_enabled
-            pan_anchor = self._view.action_for_text("Pan Anchor")
-            pan_anchor.setChecked(self._pan_anchor_enabled)
+            self._set_pan_anchor_enabled(
+                run.snapshot.workspace.pan_anchor_enabled
+            )
             active_slot = run.chart_slots[
                 run.snapshot.workspace.active_chart_ref
             ]
@@ -1767,6 +2014,8 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._current_workspace_snapshot_id = run.snapshot.snapshot_id
             self._assigned_notebook_id = run.snapshot.notebook_id
         self._snapshot_restore = None
+        if not rollback:
+            self._close_secondary_windows_after_workspace_restore()
         self._sync_notebook_assignment()
         self._refresh_command_actions()
         self._refresh_notebook_annotations()
@@ -1775,11 +2024,58 @@ class RestoredResearchLifecyclePresenter(QObject):
             if rollback
             else "Workspace Snapshot restored."
         )
-        if not rollback and self._assigned_notebook_id is not None:
-            self._request_notebook_transition(
-                "open_assigned",
-                self._assigned_notebook_id,
-            )
+        dialog = self._snapshot_preflight_dialog
+        if dialog is not None:
+            if rollback:
+                dialog.show_rollback_success(
+                    run.failure_message or "unknown restore failure"
+                )
+            else:
+                dialog.show_success()
+                dialog.accept()
+        if not rollback:
+            if self._assigned_notebook_id is None:
+                if self._notebook_editor is not None:
+                    self._request_notebook_transition("close", None)
+            elif (
+                self._notebook_editor is None
+                or self._notebook_editor.notebook_id
+                != self._assigned_notebook_id
+            ):
+                self._request_notebook_transition(
+                    "open_assigned",
+                    self._assigned_notebook_id,
+                )
+
+    def _close_secondary_windows_after_workspace_restore(self) -> None:
+        self._new_chart_dialog.close()
+        for slot_id in tuple(self._financial_tools_dialogs):
+            self._retire_financial_tools_dialog(slot_id)
+        for slot_id, study_id in tuple(self._study_edit_dialogs):
+            self._retire_study_edit(slot_id, study_id)
+        for slot_id in tuple(self._studies_manager_dialogs):
+            self._retire_studies_manager(slot_id)
+        for slot_id, study_id in tuple(self._study_style_dialogs):
+            self._retire_study_style(slot_id, study_id)
+        for slot_id in tuple(self._go_to_dialogs):
+            self._retire_go_to_dialog(slot_id)
+        for dialog in tuple(self._environment_save_dialogs.values()):
+            self._close_and_delete_dialog(dialog)
+        self._environment_save_dialogs.clear()
+        for dialog in tuple(self._environment_managers.values()):
+            self._close_and_delete_dialog(dialog)
+        self._environment_managers.clear()
+        self._environment_manager_modes.clear()
+        if self._snapshot_save_dialog is not None:
+            self._close_and_delete_dialog(self._snapshot_save_dialog)
+            self._snapshot_save_dialog = None
+        if self._snapshot_manager is not None:
+            self._close_and_delete_dialog(self._snapshot_manager)
+            self._snapshot_manager = None
+            self._snapshot_manager_mode = None
+        if self._notebook_manager is not None:
+            self._close_and_delete_dialog(self._notebook_manager)
+            self._notebook_manager = None
 
     def _fail_snapshot_restore(self, message: str) -> None:
         run = self._snapshot_restore
@@ -1797,6 +2093,9 @@ class RestoredResearchLifecyclePresenter(QObject):
             and not run.rollback
         ):
             rollback = run.rollback_snapshot
+            dialog = self._snapshot_preflight_dialog
+            if dialog is not None:
+                dialog.begin_rollback(len(rollback.charts))
             self._snapshot_restore = _SnapshotRestoreRun(
                 uuid4().hex,
                 rollback,
@@ -1811,6 +2110,7 @@ class RestoredResearchLifecyclePresenter(QObject):
                     run.pre_current_workspace_snapshot_id
                 ),
                 pre_assigned_notebook_id=run.pre_assigned_notebook_id,
+                failure_message=message,
             )
             self._restore_next_snapshot_chart()
             return
@@ -1827,7 +2127,7 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._view.workspace.set_visualization_mode(
                 run.pre_visualization_mode
             )
-            self._pan_anchor_enabled = run.pre_pan_anchor_enabled
+            self._set_pan_anchor_enabled(run.pre_pan_anchor_enabled)
         self._current_workspace_snapshot_id = (
             run.pre_current_workspace_snapshot_id
         )
@@ -1835,6 +2135,23 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._sync_notebook_assignment()
         self._refresh_command_actions()
         self._append_activity("Workspace Snapshot restore failed.")
+        dialog = self._snapshot_preflight_dialog
+        if dialog is not None:
+            if run.rollback:
+                dialog.show_rollback_failure(
+                    run.failure_message or "unknown restore failure",
+                    message,
+                )
+            else:
+                dialog.show_failure(message)
+
+    def _current_snapshot_progress_dialog(
+        self,
+    ) -> WorkspaceSnapshotPreflightDialog | None:
+        dialog = self._snapshot_preflight_dialog
+        if dialog is None or not dialog.restore_active:
+            return None
+        return dialog
 
     def _forget_snapshot_save_dialog(
         self, dialog: WorkspaceSnapshotSaveDialog
@@ -1936,6 +2253,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         dialog.refresh_requested.connect(
             lambda: self._refresh_notebook_manager(dialog)
         )
+        dialog.create_requested.connect(self._new_notebook)
         dialog.open_requested.connect(
             lambda notebook_id: self._request_notebook_transition(
                 "open", notebook_id
@@ -1964,7 +2282,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._track_window(
             dialog,
             "research.notebook_manager",
-            "Research Notebooks",
+            "Notebook Manager",
         )
         dialog.show()
 
@@ -2175,6 +2493,13 @@ class RestoredResearchLifecyclePresenter(QObject):
     def _perform_notebook_transition(
         self, action: str, notebook_id: str | None
     ) -> None:
+        if action == "close":
+            self._close_notebook_editor()
+            return
+        if action == "clear_suite":
+            self._close_notebook_editor()
+            self._perform_clear_research_suite()
+            return
         if action == "new":
             self._close_notebook_editor()
             pages = tuple(
@@ -2745,6 +3070,13 @@ class RestoredResearchLifecyclePresenter(QObject):
                     self._submit_study_calculation(current, captured, request)
                 )
             )
+            dialog.save_requested.connect(
+                lambda request, current=slot_id, captured=dialog: (
+                    self._submit_financial_tools_save(
+                        current, captured, request
+                    )
+                )
+            )
             dialog.apply_saved_artifact_requested.connect(
                 lambda request, current=slot_id, captured=dialog: (
                     self._submit_saved_artifact_apply(current, captured, request)
@@ -2760,7 +3092,10 @@ class RestoredResearchLifecyclePresenter(QObject):
                 )
         else:
             dialog.set_catalog(catalog)
-        dialog.set_busy(False)
+        dialog.set_busy(
+            False,
+            self._financial_tools_settled_status.pop(slot_id, ""),
+        )
         self._catalog_visible_study_ids[slot_id] = attempt.study_ids
         self._append_activity(
             f"Chart {slot_id} Financial Tools catalog ready: "
@@ -2912,6 +3247,156 @@ class RestoredResearchLifecyclePresenter(QObject):
             )
             dialog.set_busy(False)
         self._sync_financial_tools_state(slot_id, presenter)
+
+    def _submit_financial_tools_save(
+        self,
+        slot_id: int,
+        dialog: ResearchFinancialToolsDialog,
+        intent: object,
+    ) -> None:
+        presenter = self._financial_tools_target(slot_id, dialog)
+        if (
+            presenter is None
+            or presenter.is_busy
+            or slot_id in self._financial_tools_save_runs
+            or slot_id in self._saved_artifact_batch_runs
+        ):
+            self._append_activity(
+                f"Chart {slot_id} Financial Tools Save target stale or busy."
+            )
+            return
+        if not isinstance(intent, ResearchStudyApplyIntent):
+            self._append_activity(
+                f"Chart {slot_id} Study Save submission failed: invalid request"
+            )
+            return
+        run = _FinancialToolsSaveRun(
+            slot_id,
+            presenter.session.session_id,
+            presenter,
+            dialog,
+            intent,
+        )
+        self._financial_tools_save_runs[slot_id] = run
+        dialog.set_busy(True, "Applying Study before Save...")
+        try:
+            presenter.submit_study_calculation(
+                intent.request,
+                completion_callback=lambda outcome, captured=run: self._on_financial_tools_save_calculation(
+                    captured, outcome
+                ),
+            )
+        except Exception as error:
+            self._financial_tools_save_runs.pop(slot_id, None)
+            message = f"Study Save stopped before persistence: {error}"
+            dialog.set_busy(False, message)
+            self._sync_financial_tools_state(slot_id, presenter)
+            self._append_activity(f"Chart {slot_id} {message}")
+
+    def _on_financial_tools_save_calculation(
+        self,
+        run: _FinancialToolsSaveRun,
+        outcome: StudyOperationOutcome,
+    ) -> None:
+        if not self._financial_tools_save_run_is_current(run, outcome):
+            return
+        if outcome.status != "success" or outcome.study_id is None:
+            self._financial_tools_save_runs.pop(run.slot_id, None)
+            message = (
+                "Study Save stopped before persistence: "
+                f"{outcome.message}"
+            )
+            run.dialog.set_busy(False, message)
+            self._sync_financial_tools_state(run.slot_id, run.presenter)
+            self._append_activity(f"Chart {run.slot_id} {message}")
+            return
+        run.study_id = outcome.study_id
+        try:
+            presentation = self._presentation(
+                run.presenter, outcome.study_id
+            )
+            if presentation is None:
+                raise ValueError("accepted Study presentation is unavailable")
+            if tuple(run.intent.guide_values) != tuple(
+                presentation.guide_styles
+            ):
+                raise ValueError(
+                    "guide value identities do not match Study presentation"
+                )
+            if run.intent.guide_values:
+                run.presenter.apply_guide_values(
+                    outcome.study_id,
+                    run.intent.guide_values,
+                )
+        except Exception as error:
+            self._financial_tools_save_runs.pop(run.slot_id, None)
+            message = f"Study applied but Save stopped: {error}"
+            self._financial_tools_settled_status[run.slot_id] = message
+            run.dialog.set_busy(False, message)
+            self._refresh_studies_manager(run.slot_id, run.presenter)
+            self._refresh_study_style_dialogs(run.slot_id, run.presenter)
+            self._sync_financial_tools_state(run.slot_id, run.presenter)
+            self._append_activity(f"Chart {run.slot_id} {message}")
+            return
+        run.dialog.set_busy(True, "Saving Study...")
+        try:
+            run.presenter.save_study(
+                outcome.study_id,
+                completion_callback=lambda save_outcome, captured=run: self._on_financial_tools_save_complete(
+                    captured, save_outcome
+                ),
+            )
+        except Exception as error:
+            self._financial_tools_save_runs.pop(run.slot_id, None)
+            message = f"Study applied but Save failed: {error}"
+            self._financial_tools_settled_status[run.slot_id] = message
+            run.dialog.set_busy(False, message)
+            self._refresh_studies_manager(run.slot_id, run.presenter)
+            self._sync_financial_tools_state(run.slot_id, run.presenter)
+            self._append_activity(f"Chart {run.slot_id} {message}")
+
+    def _on_financial_tools_save_complete(
+        self,
+        run: _FinancialToolsSaveRun,
+        outcome: StudyOperationOutcome,
+    ) -> None:
+        if not self._financial_tools_save_run_is_current(run, outcome):
+            return
+        self._financial_tools_save_runs.pop(run.slot_id, None)
+        self._refresh_studies_manager(run.slot_id, run.presenter)
+        self._refresh_study_style_dialogs(run.slot_id, run.presenter)
+        if outcome.status == "success" and outcome.study_id == run.study_id:
+            self._financial_tools_settled_status[run.slot_id] = "Study saved."
+            run.dialog.set_busy(False, "Study saved.")
+            if run.slot_id not in self._active_study_setup_catalog_tasks:
+                self._request_study_catalog_refresh(
+                    run.slot_id, run.presenter
+                )
+            self._append_activity(
+                f"Chart {run.slot_id} Study saved: {run.study_id}."
+            )
+        else:
+            message = f"Study applied but Save failed: {outcome.message}"
+            self._financial_tools_settled_status[run.slot_id] = message
+            run.dialog.set_busy(False, message)
+            self._append_activity(f"Chart {run.slot_id} {message}")
+        self._sync_financial_tools_state(run.slot_id, run.presenter)
+
+    def _financial_tools_save_run_is_current(
+        self,
+        run: _FinancialToolsSaveRun,
+        outcome: StudyOperationOutcome,
+    ) -> bool:
+        return (
+            not self._disposed
+            and self._financial_tools_save_runs.get(run.slot_id) is run
+            and self._financial_tools_dialogs.get(run.slot_id) is run.dialog
+            and self._chart_presenters.get(run.slot_id) is run.presenter
+            and not run.presenter.is_disposed
+            and run.presenter.session.session_id == run.session_id
+            and outcome.slot_id == run.slot_id
+            and outcome.session_id == run.session_id
+        )
 
     def _open_study_edit(self, slot_id: int, study_id: str) -> None:
         presenter = self._chart_presenters.get(slot_id)
@@ -3186,26 +3671,116 @@ class RestoredResearchLifecyclePresenter(QObject):
         request: object,
     ) -> None:
         presenter = self._financial_tools_target(slot_id, dialog)
-        if presenter is None:
+        if (
+            presenter is None
+            or presenter.is_busy
+            or slot_id in self._saved_artifact_batch_runs
+            or slot_id in self._financial_tools_save_runs
+        ):
             self._append_activity(
-                f"Chart {slot_id} Financial Tools dialog target stale."
+                f"Chart {slot_id} Financial Tools dialog target stale or busy."
             )
             return
-        if not isinstance(request, StudyArtifactRequest):
+        if not isinstance(request, ResearchSavedArtifactBatchIntent):
             self._append_activity(
                 f"Chart {slot_id} saved Artifact Apply submission failed: "
                 "invalid request"
             )
             return
-        dialog.set_busy(True, "Applying saved Artifact...")
+        run = _SavedArtifactBatchRun(
+            slot_id,
+            presenter.session.session_id,
+            presenter,
+            dialog,
+            request.requests,
+        )
+        self._saved_artifact_batch_runs[slot_id] = run
+        self._submit_next_saved_artifact(run)
+
+    def _submit_next_saved_artifact(
+        self, run: _SavedArtifactBatchRun
+    ) -> None:
+        if not self._saved_artifact_batch_run_is_current(run):
+            return
+        total = len(run.requests)
+        if run.index >= total:
+            self._saved_artifact_batch_runs.pop(run.slot_id, None)
+            message = f"Applied {total} saved Artifacts."
+            self._financial_tools_settled_status[run.slot_id] = message
+            run.dialog.set_busy(False, message)
+            self._refresh_studies_manager(run.slot_id, run.presenter)
+            self._sync_financial_tools_state(run.slot_id, run.presenter)
+            self._append_activity(f"Chart {run.slot_id} {message}")
+            return
+        current_number = run.index + 1
+        run.dialog.set_busy(
+            True,
+            f"Applying saved Artifact {current_number} of {total}...",
+        )
+        request = run.requests[run.index]
         try:
-            presenter.submit_artifact_apply(request)
-        except Exception as error:
-            dialog.set_busy(False)
-            self._sync_financial_tools_state(slot_id, presenter)
-            self._append_activity(
-                f"Chart {slot_id} saved Artifact Apply submission failed: {error}"
+            run.presenter.submit_artifact_apply(
+                request,
+                completion_callback=lambda outcome, captured=run: self._on_saved_artifact_batch_item_complete(
+                    captured, outcome
+                ),
             )
+        except Exception as error:
+            self._stop_saved_artifact_batch(
+                run,
+                f"{error}",
+            )
+
+    def _on_saved_artifact_batch_item_complete(
+        self,
+        run: _SavedArtifactBatchRun,
+        outcome: StudyOperationOutcome,
+    ) -> None:
+        if (
+            not self._saved_artifact_batch_run_is_current(run)
+            or outcome.slot_id != run.slot_id
+            or outcome.session_id != run.session_id
+        ):
+            return
+        request = run.requests[run.index]
+        if outcome.status != "success" or outcome.study_id is None:
+            self._stop_saved_artifact_batch(run, outcome.message)
+            return
+        run.successful_artifact_ids.append(request.artifact_id)
+        run.dialog.settle_saved_artifact_success(request.artifact_id)
+        run.index += 1
+        self._refresh_studies_manager(run.slot_id, run.presenter)
+        self._submit_next_saved_artifact(run)
+
+    def _stop_saved_artifact_batch(
+        self,
+        run: _SavedArtifactBatchRun,
+        message: str,
+    ) -> None:
+        if self._saved_artifact_batch_runs.get(run.slot_id) is not run:
+            return
+        self._saved_artifact_batch_runs.pop(run.slot_id, None)
+        status = (
+            f"Saved Artifact batch stopped at {run.index + 1} "
+            f"of {len(run.requests)}: {message}"
+        )
+        self._financial_tools_settled_status[run.slot_id] = status
+        run.dialog.set_busy(False, status)
+        self._refresh_studies_manager(run.slot_id, run.presenter)
+        self._sync_financial_tools_state(run.slot_id, run.presenter)
+        self._append_activity(f"Chart {run.slot_id} {status}")
+
+    def _saved_artifact_batch_run_is_current(
+        self, run: _SavedArtifactBatchRun
+    ) -> bool:
+        return (
+            not self._disposed
+            and self._saved_artifact_batch_runs.get(run.slot_id) is run
+            and self._financial_tools_dialogs.get(run.slot_id) is run.dialog
+            and self._chart_presenters.get(run.slot_id) is run.presenter
+            and not run.presenter.is_disposed
+            and run.presenter.session.session_id == run.session_id
+        )
 
     def _financial_tools_target(
         self, slot_id: int, dialog: ResearchFinancialToolsDialog
@@ -3624,6 +4199,9 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._study_setup_service.cancel(task_id)
 
     def _retire_financial_tools_dialog(self, slot_id: int) -> None:
+        self._saved_artifact_batch_runs.pop(slot_id, None)
+        self._financial_tools_save_runs.pop(slot_id, None)
+        self._financial_tools_settled_status.pop(slot_id, None)
         dialog = self._financial_tools_dialogs.pop(slot_id, None)
         if dialog is None:
             return
@@ -3705,6 +4283,10 @@ class RestoredResearchLifecyclePresenter(QObject):
         if type(enabled) is not bool:
             raise TypeError("enabled must be a boolean")
         self._pan_anchor_enabled = enabled
+        action = self._view.action_for_text("Pan Anchor")
+        if action.isChecked() != enabled:
+            action.setChecked(enabled)
+        self._view.set_pan_anchor_visual_state(enabled)
 
     @staticmethod
     def _close_and_delete_dialog(dialog: QDialog) -> None:
@@ -3747,18 +4329,32 @@ class RestoredResearchLifecyclePresenter(QObject):
 
     def _submit_setup_task(self, submit, settled) -> None:
         task_ref: list[str] = []
+        early_result: list[TaskResult] = []
 
         def callback(result: TaskResult) -> None:
-            task_id = task_ref[0] if task_ref else result.task_id
+            if not task_ref:
+                early_result.append(result)
+                return
+            task_id = task_ref[0]
             self._setup_task_ids.discard(task_id)
             self._refresh_command_actions()
             if not self._disposed:
                 settled(result)
 
-        submission = submit(callback)
+        try:
+            submission = submit(callback)
+        except Exception:
+            self._refresh_command_actions()
+            raise
         task_ref.append(submission.task_id)
-        self._setup_task_ids.add(submission.task_id)
-        self._refresh_command_actions()
+        if early_result:
+            result = early_result.pop(0)
+            self._refresh_command_actions()
+            if not self._disposed:
+                settled(result)
+        else:
+            self._setup_task_ids.add(submission.task_id)
+            self._refresh_command_actions()
 
     def _submit_snapshot_task(self, submit, settled) -> None:
         task_ref: list[str] = []

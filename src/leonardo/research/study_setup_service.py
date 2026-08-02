@@ -202,13 +202,14 @@ class ResearchStudySetupService:
         overrides = dict(metadata_overrides or {})
         if not all(isinstance(value, StudyUserMetadata) for value in overrides.values()):
             raise StudyEnvironmentValidationError("metadata overrides are invalid")
+        ordered_studies = _stable_study_order(study_snapshot)
         entry_ids = {
             study.study_id: f"entry_{index:03d}"
-            for index, study in enumerate(study_snapshot, start=1)
+            for index, study in enumerate(ordered_studies, start=1)
         }
         prior: set[str] = set()
         entries: list[StudyEnvironmentEntryV1] = []
-        for study in study_snapshot:
+        for study in ordered_studies:
             if study.result.tool_key == "dynamic_binning":
                 raise StudyEnvironmentValidationError(
                     "Dynamic Binning is reserved for Analysis and cannot be "
@@ -250,6 +251,7 @@ class ResearchStudySetupService:
                         visible=presentation.visible,
                         line_styles=tuple(presentation.signal_styles.values()),
                         fill_styles=tuple(presentation.fill_styles.values()),
+                        guide_styles=tuple(presentation.guide_styles.values()),
                     ),
                 )
             )
@@ -387,6 +389,57 @@ def _environment_source(source, entry_ids: Mapping[str, str], prior: set[str]):
         artifact_id=source.artifact_id,
         output_name=source.output_name,
     )
+
+
+def _stable_study_order(
+    studies: tuple[ChartStudy, ...],
+) -> tuple[ChartStudy, ...]:
+    by_id = {study.study_id: study for study in studies}
+    if len(by_id) != len(studies):
+        raise StudyEnvironmentValidationError("Study identities must be unique")
+    dependencies: dict[str, set[str]] = {}
+    for study in studies:
+        request = study.setup_request
+        required: set[str] = set()
+        if isinstance(request, StudyExecutionRequest):
+            for source in request.input_sources:
+                if source.source_kind != "study":
+                    continue
+                dependency_id = source.study_id or ""
+                dependency = by_id.get(dependency_id)
+                if dependency is None:
+                    raise StudyEnvironmentValidationError(
+                        f"Study dependency is missing: {dependency_id or '<empty>'}"
+                    )
+                if source.output_name not in dependency.analysis_usable_output_names:
+                    raise StudyEnvironmentValidationError(
+                        "Study dependency output is missing: "
+                        f"{dependency_id}/{source.output_name or '<empty>'}"
+                    )
+                required.add(dependency_id)
+        dependencies[study.study_id] = required
+
+    ordered: list[ChartStudy] = []
+    accepted: set[str] = set()
+    remaining = list(studies)
+    while remaining:
+        ready = next(
+            (
+                study
+                for study in remaining
+                if dependencies[study.study_id].issubset(accepted)
+            ),
+            None,
+        )
+        if ready is None:
+            cycle = ", ".join(study.study_id for study in remaining)
+            raise StudyEnvironmentValidationError(
+                f"Study dependency cycle detected: {cycle}"
+            )
+        ordered.append(ready)
+        accepted.add(ready.study_id)
+        remaining.remove(ready)
+    return tuple(ordered)
 
 
 def _canonical_user_parameters(

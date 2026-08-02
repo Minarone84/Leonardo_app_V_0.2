@@ -49,6 +49,17 @@ class WorkspaceSnapshotSaveDialog(QDialog):
         self.setWindowTitle("Save Workspace")
         self._capture = capture
         self._summaries = tuple(item for item in summaries if item.valid)
+        self._create_name = ""
+        self._create_description = ""
+        self.setStyleSheet(
+            "QRadioButton::indicator {"
+            " background-color: #111827; border: 1px solid #9CA3AF;"
+            " width: 13px; height: 13px; border-radius: 7px;"
+            "}"
+            "QRadioButton::indicator:checked {"
+            " background-color: #9CA3AF; border: 1px solid #D1D5DB;"
+            "}"
+        )
         layout = QVBoxLayout(self)
         modes = QHBoxLayout()
         self.create_radio = QRadioButton("Create", self)
@@ -131,7 +142,7 @@ class WorkspaceSnapshotSaveDialog(QDialog):
         layout.addLayout(buttons)
         self.save_button.clicked.connect(self._emit_save)
         self.cancel_button.clicked.connect(self.reject)
-        self.update_radio.toggled.connect(self._sync)
+        self.update_radio.toggled.connect(self._mode_changed)
         self.existing_combo.currentIndexChanged.connect(self._populate_existing)
         self.name_edit.textChanged.connect(self._sync)
         apply_initial_window_size(self, parent=parent)
@@ -144,26 +155,44 @@ class WorkspaceSnapshotSaveDialog(QDialog):
         self.name_edit.setText(summary.display_name)
         self.description_edit.setPlainText(summary.description)
 
+    def _mode_changed(self, update: bool) -> None:
+        if update:
+            self._create_name = self.name_edit.text()
+            self._create_description = self.description_edit.toPlainText()
+            self._populate_existing()
+        else:
+            self.name_edit.setText(self._create_name)
+            self.description_edit.setPlainText(self._create_description)
+        self._sync()
+
     def _sync(self) -> None:
         update = self.update_radio.isChecked()
         self.existing_combo.setEnabled(update)
+        self.name_edit.setReadOnly(update)
         name = self.name_edit.text().strip()
-        duplicate = any(
-            item.display_name.casefold() == name.casefold()
-            for item in self._summaries
-        )
-        valid = bool(name) and ((update and self.existing_combo.currentIndex() >= 0) or not duplicate)
+        if update:
+            valid = self.existing_combo.currentIndex() >= 0
+        else:
+            duplicate = any(
+                item.display_name.casefold() == name.casefold()
+                for item in self._summaries
+            )
+            valid = bool(name) and not duplicate
         self.validation_label.setText("" if valid else "Enter a unique non-empty workspace name.")
         self.save_button.setEnabled(valid)
 
     def _emit_save(self) -> None:
         update = self.update_radio.isChecked()
         snapshot_id = self.existing_combo.currentData() if update else None
+        display_name = self.name_edit.text().strip()
+        if update:
+            summary = self._summaries[self.existing_combo.currentIndex()]
+            display_name = summary.display_name
         self.save_requested.emit(
             WorkspaceSnapshotSaveIntent(
                 "update" if update else "create",
                 snapshot_id,
-                self.name_edit.text().strip(),
+                display_name,
                 self.description_edit.toPlainText(),
             )
         )

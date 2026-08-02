@@ -197,7 +197,11 @@ class ResearchChartPanel(QFrame):
         presentation_by_id = {item.study_id: item for item in presentations}
         entry_by_id = {item.study_id: item for item in entries}
         price_studies = tuple(
-            (projection_by_id[item.study_id], entry_by_id[item.study_id])
+            (
+                projection_by_id[item.study_id],
+                item,
+                entry_by_id[item.study_id],
+            )
             for item in presentations
             if item.pane_id == "price"
             and item.study_id in projection_by_id
@@ -226,7 +230,13 @@ class ResearchChartPanel(QFrame):
                 continue
             if interaction_state is None:
                 continue
-            overlay = OscillatorPaneOverlay(projection, entry, interaction_state, pane)
+            overlay = OscillatorPaneOverlay(
+                projection,
+                presentation,
+                entry,
+                interaction_state,
+                pane,
+            )
             overlay.move_up_requested.connect(
                 self.oscillator_move_up_requested.emit
             )
@@ -403,6 +413,9 @@ class ResearchChartPanel(QFrame):
             raise TypeError("entries must contain StudyManagerEntry values")
 
         projection_by_id = {item.study_id: item for item in projection_snapshot}
+        presentation_by_id = {
+            item.study_id: item for item in presentation_snapshot
+        }
         entry_by_id = {item.study_id: item for item in entry_snapshot}
         oscillator_ids = tuple(
             presentation.study_id
@@ -423,6 +436,7 @@ class ResearchChartPanel(QFrame):
         price_studies = tuple(
             (
                 projection_by_id[presentation.study_id],
+                presentation,
                 entry_by_id[presentation.study_id],
             )
             for presentation in presentation_snapshot
@@ -443,12 +457,17 @@ class ResearchChartPanel(QFrame):
                 if pane is None:
                     continue
                 projection = projection_by_id[study_id]
+                presentation = presentation_by_id[study_id]
                 entry = entry_by_id[study_id]
                 overlay = self._oscillator_overlays.get(study_id)
                 created = overlay is None
                 if overlay is None:
                     overlay = OscillatorPaneOverlay(
-                        projection, entry, self._interaction_state, pane
+                        projection,
+                        presentation,
+                        entry,
+                        self._interaction_state,
+                        pane,
                     )
                     overlay.move_up_requested.connect(
                         self.oscillator_move_up_requested.emit
@@ -462,7 +481,12 @@ class ResearchChartPanel(QFrame):
                     overlay.remove_requested.connect(self.study_remove_requested.emit)
                     self._oscillator_overlays[study_id] = overlay
                 else:
-                    overlay.set_snapshot(projection, entry, self._interaction_state)
+                    overlay.set_snapshot(
+                        projection,
+                        presentation,
+                        entry,
+                        self._interaction_state,
+                    )
                 overlay.set_actions_available(
                     self._study_overlay_actions_available
                 )

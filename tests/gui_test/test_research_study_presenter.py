@@ -120,15 +120,30 @@ def test_presenter_apply_edit_save_and_artifact_apply_share_renderer(
         chart_presenter.remove_study(edited_saved.study_id)
         assert chart_presenter.session.study_count == 0
         count_before_artifact_apply = len(calculations)
+        with pytest.raises(TypeError):
+            chart_presenter.submit_artifact_apply(
+                StudyArtifactRequest(
+                    saved.result.kind,
+                    saved.result.tool_key,
+                    artifact_id,
+                ),
+                completion_callback=object(),
+            )
+        outcomes = []
         chart_presenter.submit_artifact_apply(
             StudyArtifactRequest(
                 saved.result.kind,
                 saved.result.tool_key,
                 artifact_id,
-            )
+            ),
+            completion_callback=outcomes.append,
         )
         _wait_until(lambda: chart_presenter.session.study_count == 1)
         artifact_study = chart_presenter.session.studies[0]
+        assert len(outcomes) == 1
+        assert outcomes[0].operation == "apply"
+        assert outcomes[0].status == "success"
+        assert outcomes[0].study_id == artifact_study.study_id
         assert len(calculations) == count_before_artifact_apply
         assert artifact_study.source_kind == "artifact"
         chart_presenter.submit_study_edit(

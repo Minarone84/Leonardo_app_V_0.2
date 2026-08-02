@@ -40,6 +40,12 @@ def test_pan_anchor_is_off_by_default_and_horizontal_pan_preserves_target_zoom(
         )
         pan_anchor = window.action_for_text("Pan Anchor")
         assert pan_anchor.isCheckable() and not pan_anchor.isChecked()
+        quick = window.quick_button_for_action("Pan Anchor")
+        assert "#FCA5A5" in quick.styleSheet()
+        assert quick.accessibleName() == "Pan Anchor off"
+        assert quick.toolTip() == (
+            "Pan Anchor is off. Charts may be panned independently."
+        )
         before = target_viewport.snapshot()
         source_viewport.pan_left(7)
         source_presenter.chart_workspace.viewportChanged.emit(
@@ -47,6 +53,12 @@ def test_pan_anchor_is_off_by_default_and_horizontal_pan_preserves_target_zoom(
         )
         assert target_viewport.snapshot() == before
         pan_anchor.trigger()
+        assert "#86EFAC" in quick.styleSheet()
+        assert quick.accessibleName() == "Pan Anchor on"
+        assert quick.toolTip() == (
+            "Pan Anchor is on. Horizontal user panning keeps ready charts "
+            "aligned by UTC timestamp."
+        )
         target_visible = target_viewport.visible_count
         detached_before = detached_viewport.snapshot()
         target_scale = target_presenter.interaction.price_scale.snapshot()

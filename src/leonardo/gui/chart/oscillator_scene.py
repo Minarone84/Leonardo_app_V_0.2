@@ -265,7 +265,7 @@ def _threshold_values(
     levels = {
         guide.kind: float(guide.value)
         for guide in presentation.guide_styles.values()
-        if guide.visible and guide.kind in {"oversold", "overbought"}
+        if guide.kind in {"oversold", "overbought"}
     }
     if set(levels) != {"oversold", "overbought"}:
         return None
@@ -279,9 +279,9 @@ def _threshold_identity(
     if tool_key not in {"rsi", "arsi", "mfi"}:
         return ()
     return tuple(
-        (guide.kind, float(guide.value))
+        (guide.kind, float(guide.value), guide.visible)
         for guide in presentation.guide_styles.values()
-        if guide.visible and guide.kind in {"oversold", "overbought"}
+        if guide.kind in {"oversold", "overbought"}
     )
 
 
@@ -308,9 +308,9 @@ def _append_line_run(
             midpoint = (start.value + end.value) / 2.0
             color = (
                 "#22C55E"
-                if midpoint <= lower
+                if midpoint < lower
                 else "#EF4444"
-                if midpoint >= upper
+                if midpoint > upper
                 else base_color
             )
             _append_or_merge_line_strip(

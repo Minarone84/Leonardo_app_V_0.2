@@ -8,6 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from tests.gui_test.test_research_gui_service_catalog import _settle_qt
@@ -17,6 +18,7 @@ from tests.gui_test.test_research_gui_service_financial_tools import (
     real_presenter,
 )
 from tests.gui_test.test_research_gui_service_study_apply import (
+    _three_artifact_catalog,
     _apply_tool,
     _complete_catalog_refresh,
     _select_tool,
@@ -282,6 +284,74 @@ def test_dependency_block_close_and_slot_reuse_reject_retired_style_target(
         assert presenter._studies_manager_dialogs == {}
         assert presenter._study_style_dialogs == {}
         assert not new_manager.isVisible()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_chart_close_cancels_saved_artifact_batch_and_rejects_late_next(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, datasets, studies, setup, summary = real_presenter(
+        tmp_path
+    )
+    try:
+        slot_id = open_ready_chart(window, presenter, datasets, summary)
+        dialog = open_financial_tools(window, presenter, setup, slot_id)
+        dialog.set_catalog(_three_artifact_catalog(dialog))
+        for row in range(2):
+            dialog.saved_artifact_table.item(row, 0).setCheckState(
+                Qt.CheckState.Checked
+            )
+        dialog.apply_saved_artifact_button.click()
+        first_task = next(iter(studies.pending))
+        window.workspace.chart_panel_for_slot(slot_id).close_button.click()
+        assert studies.cancel_counts[first_task] == 1
+        assert slot_id not in presenter._saved_artifact_batch_runs
+        studies.complete(first_task)
+        _settle_qt()
+        assert len(
+            [
+                request
+                for kind, request in studies.submissions
+                if kind == "artifact"
+            ]
+        ) == 1
+        reused = open_ready_chart(window, presenter, datasets, summary)
+        assert reused == slot_id
+        assert presenter._workspace_state.session_for(reused).study_count == 0
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_chart_close_during_financial_tools_save_calculation_prevents_save(
+    tmp_path: Path,
+) -> None:
+    from tests.gui_test.test_research_gui_service_study_save import (
+        saving_presenter,
+    )
+
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, datasets, studies, setup, summary = saving_presenter(
+        tmp_path
+    )
+    try:
+        slot_id = open_ready_chart(window, presenter, datasets, summary)
+        dialog = open_financial_tools(window, presenter, setup, slot_id)
+        _select_tool(dialog, "SMA")
+        dialog.save_button.click()
+        calculation = next(iter(studies.pending))
+        window.workspace.chart_panel_for_slot(slot_id).close_button.click()
+        assert studies.cancel_counts[calculation] == 1
+        assert slot_id not in presenter._financial_tools_save_runs
+        studies.complete(calculation)
+        _settle_qt()
+        assert all(kind != "save" for kind, _request in studies.submissions)
+        reused = open_ready_chart(window, presenter, datasets, summary)
+        assert reused == slot_id
+        assert presenter._workspace_state.session_for(reused).study_count == 0
     finally:
         presenter.dispose()
         window.close()

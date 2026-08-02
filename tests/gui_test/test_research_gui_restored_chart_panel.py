@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QRectF, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
@@ -19,13 +20,20 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
+from leonardo.gui.chart.candlestick_widget import (
+    CandlestickChartWidget,
+    CandlestickPalette,
+    _format_crosshair_time,
+)
 from leonardo.gui.chart.pane_workspace import ChartPaneWorkspaceWidget
+from leonardo.gui.chart.volume_scene import _format_volume, build_volume_scene
 from leonardo.gui.research import ResearchChartPanel, ResearchWorkspaceWidget
 from leonardo.gui.research.pane_overlays import (
     OscillatorPaneOverlay,
     PricePaneOverlay,
 )
+from leonardo.research.volume import ResidentVolumeProjection
+from leonardo.research import StudyLineStyle, StudyPresentation
 from tools.research_gui_dev_fixtures import build_primary_chart_fixture
 
 
@@ -71,6 +79,14 @@ def _rendered_pixel(widget, point: QPoint):
     image.fill(Qt.GlobalColor.transparent)
     widget.render(image)
     return image.pixelColor(point)
+
+
+def _semantic_text(label) -> str:
+    return str(label.property("semantic_text"))
+
+
+def _color_count(label, color: str) -> int:
+    return label.text().count(f'color:{color}')
 
 
 def test_panel_reuses_v2_workspace_and_has_only_bottom_controls(
@@ -253,8 +269,306 @@ def test_price_overlay_uses_shared_crosshair_state(panel: ResearchChartPanel) ->
         f"O: {resident.open[10]:.2f}  H: {resident.high[10]:.2f}  "
         f"L: {resident.low[10]:.2f}  C: {resident.close[10]:.2f}"
     )
-    assert panel.price_overlay.ohlc_label.text() == expected
+    assert _semantic_text(panel.price_overlay.ohlc_label) == expected
     assert panel.price_overlay.ohlc_label.text() != before
+
+
+def test_price_overlay_colors_only_values_from_current_palette_and_styles(
+    panel: ResearchChartPanel,
+) -> None:
+    fixture = build_primary_chart_fixture()
+    interaction = panel.chart_widget.interaction_state
+    assert interaction is not None and interaction.resident is not None
+    palette = CandlestickPalette(up_fill="#123456", down_fill="#ABCDEF")
+    panel.chart_widget.set_chart_palette(palette)
+    assert panel.chart_widget.render_palette is palette
+
+    interaction.viewport.set_crosshair(0)
+    panel.refresh_overlays()
+    assert interaction.resident.close[0] == interaction.resident.open[0]
+    assert _color_count(panel.price_overlay.ohlc_label, palette.up_fill) == 4
+    assert f'color:{palette.up_fill}">O:' not in panel.price_overlay.ohlc_label.text()
+
+    bearish = next(
+        index
+        for index, (open_value, close_value) in enumerate(
+            zip(
+                interaction.resident.open,
+                interaction.resident.close,
+                strict=True,
+            )
+        )
+        if close_value < open_value
+    )
+    interaction.viewport.set_crosshair(bearish)
+    panel.refresh_overlays()
+    assert _color_count(panel.price_overlay.ohlc_label, palette.down_fill) == 4
+
+    sma_row, bb_row = panel.price_overlay.study_rows
+    assert _color_count(sma_row.values_label, "#F59E0B") == 1
+    assert sma_row.current_values_text == _semantic_text(sma_row.values_label)
+
+    bb_presentation = replace(
+        fixture.study_presentations[1],
+        signal_styles={
+            "bb_middle": replace(
+                fixture.study_presentations[1].signal_styles["bb_middle"],
+                color="#111111",
+            ),
+            "bb_upper_band": replace(
+                fixture.study_presentations[1].signal_styles["bb_upper_band"],
+                color="#222222",
+            ),
+            "bb_lower_band": replace(
+                fixture.study_presentations[1].signal_styles["bb_lower_band"],
+                color="#333333",
+            ),
+        },
+    )
+    presentations = list(fixture.study_presentations)
+    presentations[1] = bb_presentation
+    panel.set_study_snapshot(
+        fixture.study_projections,
+        tuple(presentations),
+        fixture.study_entries,
+    )
+    for color in ("#111111", "#222222", "#333333"):
+        assert _color_count(bb_row.values_label, color) == 1
+    assert all(token in bb_row.current_values_text for token in ("M ", "U ", "L "))
+
+    resident = interaction.resident
+    interaction.set_resident(None)
+    panel.refresh_overlays()
+    assert _semantic_text(panel.price_overlay.ohlc_label) == (
+        "O: —  H: —  L: —  C: —"
+    )
+    assert "color:" not in panel.price_overlay.ohlc_label.text()
+    interaction.set_resident(resident)
+
+
+def test_oscillator_overlay_colors_thresholds_conditionals_volume_and_missing_values(
+    panel: ResearchChartPanel,
+) -> None:
+    fixture = build_primary_chart_fixture()
+    interaction = panel.chart_widget.interaction_state
+    assert interaction is not None and interaction.resident is not None
+    projections = list(fixture.study_projections)
+    presentations = list(fixture.study_presentations)
+
+    rsi_presentation = replace(
+        presentations[2], tool_key="rsi", guide_styles=None
+    )
+    presentations[2] = rsi_presentation
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    rsi_overlay = panel.oscillator_overlays[0]
+    rsi_values = projections[2].render_series["rsi_14"]
+    below = next(index for index, value in enumerate(rsi_values) if value < 30)
+    above = next(index for index, value in enumerate(rsi_values) if value > 70)
+    neutral = next(index for index, value in enumerate(rsi_values) if 30 < value < 70)
+    for index, color in (
+        (below, "#22C55E"),
+        (neutral, "#A855F7"),
+        (above, "#EF4444"),
+    ):
+        interaction.viewport.set_crosshair(index)
+        panel.refresh_overlays()
+        assert _color_count(rsi_overlay.values_label, color) == 1
+
+    hidden_guides = {
+        key: replace(guide, visible=False)
+        for key, guide in rsi_presentation.guide_styles.items()
+    }
+    presentations[2] = replace(rsi_presentation, guide_styles=hidden_guides)
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    interaction.viewport.set_crosshair(below)
+    panel.refresh_overlays()
+    assert _color_count(rsi_overlay.values_label, "#22C55E") == 1
+
+    editable_index = next(
+        index for index, value in enumerate(rsi_values) if 30 < value < 40
+    )
+    edited_guides = dict(hidden_guides)
+    edited_guides["oversold"] = replace(
+        edited_guides["oversold"], value=40.0
+    )
+    presentations[2] = replace(
+        rsi_presentation, guide_styles=edited_guides
+    )
+    original_projection = projections[2]
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    interaction.viewport.set_crosshair(editable_index)
+    panel.refresh_overlays()
+    assert rsi_overlay._projection is original_projection
+    assert _color_count(rsi_overlay.values_label, "#22C55E") == 1
+
+    equal_values = list(rsi_values)
+    equal_values[editable_index] = 40.0
+    projections[2] = replace(
+        original_projection,
+        render_series={"rsi_14": tuple(equal_values)},
+    )
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    panel.refresh_overlays()
+    assert _color_count(rsi_overlay.values_label, "#A855F7") == 1
+
+    count = len(rsi_values)
+    projections[2] = replace(
+        original_projection,
+        render_series={
+            "arsi_14": (10.0,) * count,
+            "arsi_signal_14": (10.0,) * count,
+        },
+    )
+    presentations[2] = StudyPresentation(
+        study_id="dev-rsi",
+        visible=True,
+        pane_id="oscillator:dev-rsi",
+        signal_styles={
+            "arsi_14": StudyLineStyle("arsi_14", "#8B5CF6"),
+            "arsi_signal_14": StudyLineStyle("arsi_signal_14", "#FF5D00"),
+        },
+        fill_styles={},
+        tool_key="arsi",
+    )
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    interaction.viewport.set_crosshair(0)
+    panel.refresh_overlays()
+    assert _color_count(rsi_overlay.values_label, "#22C55E") == 1
+    assert _color_count(rsi_overlay.values_label, "#FF5D00") == 1
+
+    projections[2] = replace(
+        original_projection, render_series={"mfi_14": (90.0,) * count}
+    )
+    presentations[2] = StudyPresentation(
+        study_id="dev-rsi",
+        visible=True,
+        pane_id="oscillator:dev-rsi",
+        signal_styles={"mfi_14": StudyLineStyle("mfi_14", "#A855F7")},
+        fill_styles={},
+        tool_key="mfi",
+    )
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    panel.refresh_overlays()
+    assert _color_count(rsi_overlay.values_label, "#EF4444") == 1
+
+    driver = tuple("green" if index == 0 else "red" for index in range(count))
+    projections[0] = replace(
+        projections[0],
+        render_series={
+            "fast_vwap": (100.0,) * count,
+            "slow_vwap": (99.0,) * count,
+        },
+        style_driver_series={"vwap_color": driver},
+    )
+    conditional = {
+        "green": "#22C55E",
+        "silver": "#22C55E",
+        "red": "#EF4444",
+    }
+    presentations[0] = StudyPresentation(
+        study_id="dev-sma",
+        visible=True,
+        pane_id="price",
+        signal_styles={
+            name: StudyLineStyle(
+                name,
+                "#64748B",
+                conditional_driver_name="vwap_color",
+                conditional_colors=conditional,
+            )
+            for name in ("fast_vwap", "slow_vwap")
+        },
+        fill_styles={},
+        tool_key="hck",
+    )
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    hck_row = panel.price_overlay.study_rows[0]
+    interaction.viewport.set_crosshair(0)
+    panel.refresh_overlays()
+    assert _color_count(hck_row.values_label, "#22C55E") == 2
+    interaction.viewport.set_crosshair(1)
+    panel.refresh_overlays()
+    assert _color_count(hck_row.values_label, "#EF4444") == 2
+
+    projections = list(fixture.study_projections)
+    presentations = list(fixture.study_presentations)
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    volume_overlay = panel.oscillator_overlays[1]
+    volume_widget = panel.chart_workspace.oscillator_widget("dev-volume")
+    assert volume_widget is not None
+    assert volume_widget.render_palette is volume_widget._palette
+    resident = interaction.resident
+    bullish = next(
+        index
+        for index, (open_value, close_value) in enumerate(
+            zip(resident.open, resident.close, strict=True)
+        )
+        if close_value >= open_value
+    )
+    bearish = next(
+        index
+        for index, (open_value, close_value) in enumerate(
+            zip(resident.open, resident.close, strict=True)
+        )
+        if close_value < open_value
+    )
+    interaction.viewport.set_crosshair(bullish)
+    panel.refresh_overlays()
+    assert _color_count(
+        volume_overlay.values_label,
+        volume_widget.render_palette.bullish_volume,
+    ) == 1
+    assert _color_count(volume_overlay.values_label, "#F97316") == 1
+    interaction.viewport.set_crosshair(bearish)
+    panel.refresh_overlays()
+    assert _color_count(
+        volume_overlay.values_label,
+        volume_widget.render_palette.bearish_volume,
+    ) == 1
+
+    interaction.set_resident(None)
+    panel.refresh_overlays()
+    assert _color_count(
+        volume_overlay.values_label,
+        volume_widget.render_palette.neutral_volume,
+    ) == 1
+    interaction.set_resident(resident)
+
+    missing_index = 0
+    volume_values = list(projections[3].render_series["volume"])
+    mean_values = list(projections[3].render_series["volume_mean_20"])
+    volume_values[missing_index] = float("nan")
+    mean_values[missing_index] = float("inf")
+    projections[3] = replace(
+        projections[3],
+        render_series={
+            "volume": tuple(volume_values),
+            "volume_mean_20": tuple(mean_values),
+        },
+    )
+    panel.set_study_snapshot(
+        tuple(projections), tuple(presentations), fixture.study_entries
+    )
+    interaction.viewport.set_crosshair(missing_index)
+    panel.refresh_overlays()
+    assert volume_overlay.current_values_text == "VOL —  MEAN —"
+    assert "color:" not in volume_overlay.values_label.text()
 
 
 def test_oscillator_panes_and_overlays_use_dynamic_study_family(
@@ -321,6 +635,149 @@ def test_oscillator_panes_and_overlays_use_dynamic_study_family(
     assert volume_pane._palette.bullish_volume == "#22C55E"
     assert volume_pane._palette.bearish_volume == "#EF4444"
     assert volume_pane._palette.neutral_volume == "#94A3B8"
+
+
+def test_crosshair_time_tag_owner_and_volume_value_tag_follow_existing_panes(
+    qapp: QApplication, panel: ResearchChartPanel
+) -> None:
+    workspace = panel.chart_workspace
+    price = workspace.price_chart
+    interaction = price.interaction_state
+    assert interaction is not None
+    price_pairs = tuple(
+        zip(
+            price.study_bundle.projections,
+            price.study_bundle.presentations,
+            strict=True,
+        )
+    )
+    oscillator_pairs = tuple(
+        (
+            workspace.oscillator_widget(study_id).projection,
+            workspace.oscillator_widget(study_id).presentation,
+        )
+        for study_id in ("dev-rsi", "dev-volume")
+    )
+    assert all(projection is not None and presentation is not None for projection, presentation in oscillator_pairs)
+    all_pairs = price_pairs + oscillator_pairs
+    interaction.viewport.set_crosshair(180)
+    price.refresh_from_shared_state(refresh_price_scale=False)
+    price._crosshair_y = price._plot_rect().center().y()
+
+    workspace.apply_study_state(
+        tuple(projection for projection, _presentation in price_pairs),
+        tuple(presentation for _projection, presentation in price_pairs),
+    )
+    qapp.processEvents()
+    assert price._time_axis_visible
+    assert any(tag.background == "#E1E1E1" for tag in price._dynamic_crosshair_tags())
+
+    one_oscillator = price_pairs + oscillator_pairs[:1]
+    workspace.apply_study_state(
+        tuple(projection for projection, _presentation in one_oscillator),
+        tuple(presentation for _projection, presentation in one_oscillator),
+    )
+    qapp.processEvents()
+    rsi = workspace.oscillator_widget("dev-rsi")
+    assert rsi is not None
+    assert not price._time_axis_visible
+    assert not any(tag.background == "#E1E1E1" for tag in price._dynamic_crosshair_tags())
+    assert rsi.time_axis_visible
+    assert len(rsi._dynamic_crosshair_tags()) == 1
+
+    workspace.apply_study_state(
+        tuple(projection for projection, _presentation in all_pairs),
+        tuple(presentation for _projection, presentation in all_pairs),
+    )
+    qapp.processEvents()
+    rsi = workspace.oscillator_widget("dev-rsi")
+    bottom = workspace.oscillator_widget("dev-volume")
+    assert rsi is not None and bottom is not None
+    assert not rsi.time_axis_visible
+    assert rsi._dynamic_crosshair_tags() == ()
+    assert bottom.time_axis_visible
+    bottom_tags = bottom._dynamic_crosshair_tags()
+    assert len(bottom_tags) == 1
+    assert bottom.projection is not None
+    assert bottom_tags[0].text == _format_crosshair_time(
+        bottom.projection.ts_ms[180 - bottom.projection.base_index]
+    )
+
+    workspace.set_volume_visible(True)
+    qapp.processEvents()
+    volume = workspace.volume_chart
+    resident = interaction.resident
+    assert resident is not None
+    volume.set_projection(
+        ResidentVolumeProjection(
+            market_id=resident.market_id,
+            dataset_fingerprint=resident.dataset_fingerprint,
+            base_index=resident.base_index,
+            end_index_exclusive=resident.end_index_exclusive,
+            period=20,
+            volume=resident.volume,
+            moving_mean=tuple(None for _value in resident.volume),
+            bullish=tuple(
+                close >= open_value
+                for open_value, close in zip(resident.open, resident.close, strict=True)
+            ),
+        )
+    )
+    qapp.processEvents()
+    volume._crosshair_y = volume._plot_rect().center().y()
+    volume.grab()
+    rebuilds = volume.static_rebuild_count
+    tags = volume._dynamic_crosshair_tags()
+    assert len(tags) == 1
+    assert volume.render_contract is not None
+    volume_scene = build_volume_scene(
+        volume.render_contract,
+        width=volume.width(),
+        height=volume.height(),
+    )
+    assert tags[0].text == _format_volume(volume_scene.maximum * 0.5)
+    assert tags[0].background == "#FFA500"
+    assert tags[0].background_opacity == 0.5
+    assert tags[0].text_color == "#000000"
+    assert volume_scene.last_volume_tag is not None
+    static_rect = QRectF(
+        volume_scene.plot_rect.right + 2,
+        volume_scene.last_volume_tag.y - 9,
+        max(1.0, volume_scene.axis_rect.width - 4),
+        18,
+    )
+
+    volume._crosshair_y = volume_scene.last_volume_tag.y
+    assert volume._dynamic_crosshair_tags() == ()
+    assert volume._plot_rect().contains(
+        volume._plot_rect().center().x(), volume._crosshair_y
+    )
+    assert volume.static_rebuild_count == rebuilds
+
+    volume._crosshair_y = static_rect.bottom() + 30.0
+    separated_tags = volume._dynamic_crosshair_tags()
+    assert len(separated_tags) == 1
+    separated_tag = separated_tags[0]
+    fraction = (
+        volume._plot_rect().bottom() - volume._crosshair_y
+    ) / volume._plot_rect().height()
+    expected_value = min(
+        volume_scene.maximum,
+        max(0.0, fraction * volume_scene.maximum),
+    )
+    assert separated_tag.text == _format_volume(expected_value)
+    assert volume.static_rebuild_count == rebuilds
+
+    volume._crosshair_y = static_rect.bottom() + separated_tag.height / 2.0
+    edge_tags = volume._dynamic_crosshair_tags()
+    assert len(edge_tags) == 1
+    assert edge_tags[0].rect.top() == pytest.approx(static_rect.bottom())
+    assert volume.static_rebuild_count == rebuilds
+
+    interaction.viewport.set_crosshair(181)
+    volume.refresh_from_shared_state()
+    volume.grab()
+    assert volume.static_rebuild_count == rebuilds
 
 
 def test_oscillator_overlay_hover_retraction_and_compact_intents(

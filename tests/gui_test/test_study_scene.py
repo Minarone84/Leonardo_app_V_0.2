@@ -8,7 +8,11 @@ import pytest
 from leonardo.data import MarketId
 from leonardo.gui.chart.candlestick_scene import SceneRect
 from leonardo.gui.chart.price_scale import PriceRange, PriceScaleSnapshot
-from leonardo.gui.chart.study_scene import PriceStudyBundle, build_study_scene
+from leonardo.gui.chart.study_scene import (
+    PriceStudyBundle,
+    build_study_scene,
+    visible_price_study_values,
+)
 from leonardo.research import (
     ResidentStudyProjection,
     StudyFillStyle,
@@ -186,6 +190,113 @@ def test_conditional_segments_markers_visibility_and_manual_scale() -> None:
     assert not hidden_scene.line_strips
     assert not hidden_scene.markers
     assert not hidden_scene.autoscale_values
+
+
+def test_peaks_troughs_marker_text_offset_and_canonical_values_are_scene_only() -> None:
+    values = {
+        "peak_fractal_3": (float("nan"), 108.0, float("nan")),
+        "trough_fractal_3": (float("nan"), 94.0, float("nan")),
+        "peak_fractal_5": (float("nan"), 110.0, float("nan")),
+        "trough_fractal_5": (float("nan"), 92.0, float("nan")),
+    }
+    projection = _projection("peaks", values)
+    styles = {
+        "peak_fractal_3": StudyLineStyle(
+            "peak_fractal_3", "#22C55E", render_mode="marker",
+            marker_shape="triangle_down", marker_size=14,
+        ),
+        "trough_fractal_3": StudyLineStyle(
+            "trough_fractal_3", "#EF4444", render_mode="marker",
+            marker_shape="triangle_up", marker_size=14,
+        ),
+        "peak_fractal_5": StudyLineStyle(
+            "peak_fractal_5", "#22C55E", visible=False, render_mode="marker",
+            marker_shape="triangle_down", marker_size=14,
+        ),
+        "trough_fractal_5": StudyLineStyle(
+            "trough_fractal_5", "#EF4444", visible=False, render_mode="marker",
+            marker_shape="triangle_up", marker_size=14,
+        ),
+    }
+    presentation = StudyPresentation(
+        "peaks", True, "price", styles, {}, tool_key="peaks_troughs"
+    )
+    bundle = PriceStudyBundle((projection,), (presentation,))
+    scene = build_study_scene(
+        bundle, _viewport(), _scale(), SceneRect(0.0, 0.0, 700.0, 300.0)
+    )
+    by_name = {marker.output_name: marker for marker in scene.markers}
+    peak = by_name["peak_fractal_3"]
+    trough = by_name["trough_fractal_3"]
+    assert (peak.color, peak.marker_shape, peak.marker_size) == (
+        "#22C55E", "triangle_down", 14
+    )
+    assert (peak.display_text, peak.text_color, peak.pixel_offset) == (
+        "3", "#000000", -18
+    )
+    assert (trough.color, trough.marker_shape, trough.marker_size) == (
+        "#EF4444", "triangle_up", 14
+    )
+    assert (trough.display_text, trough.text_color, trough.pixel_offset) == (
+        "3", "#000000", 18
+    )
+    assert (peak.point.value, trough.point.value) == (108.0, 94.0)
+    assert visible_price_study_values(bundle, _viewport()) == (108.0, 94.0)
+
+    enabled = replace(
+        presentation,
+        signal_styles={
+            **styles,
+            "peak_fractal_5": replace(styles["peak_fractal_5"], visible=True),
+            "trough_fractal_5": replace(styles["trough_fractal_5"], visible=True),
+        },
+        revision=1,
+    )
+    enabled_scene = build_study_scene(
+        PriceStudyBundle((projection,), (enabled,)),
+        _viewport(),
+        _scale(),
+        SceneRect(0.0, 0.0, 700.0, 300.0),
+    )
+    five = {
+        marker.output_name: marker
+        for marker in enabled_scene.markers
+        if marker.output_name.endswith("_5")
+    }
+    assert (five["peak_fractal_5"].display_text, five["peak_fractal_5"].pixel_offset) == ("5", -18)
+    assert (five["trough_fractal_5"].display_text, five["trough_fractal_5"].pixel_offset) == ("5", 18)
+    assert visible_price_study_values(
+        PriceStudyBundle((projection,), (enabled,)), _viewport()
+    ) == (108.0, 94.0, 110.0, 92.0)
+
+
+def test_generic_utc_marker_does_not_receive_peaks_troughs_semantics() -> None:
+    projection = _projection("utc", {"uptrend_start_marker": (100.0,)})
+    presentation = StudyPresentation(
+        "utc",
+        True,
+        "price",
+        {
+            "uptrend_start_marker": StudyLineStyle(
+                "uptrend_start_marker",
+                "#22C55E",
+                render_mode="marker",
+                marker_shape="circle",
+            )
+        },
+        {},
+        tool_key="universal_trend_classifier",
+    )
+    scene = build_study_scene(
+        PriceStudyBundle((projection,), (presentation,)),
+        _viewport(),
+        _scale(),
+        SceneRect(0.0, 0.0, 700.0, 300.0),
+    )
+    marker = scene.markers[0]
+    assert marker.display_text is None
+    assert marker.text_color is None
+    assert marker.pixel_offset == 0
 
 
 def test_conditional_fills_preserve_every_adjacent_finite_interval() -> None:

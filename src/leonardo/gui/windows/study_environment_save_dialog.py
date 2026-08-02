@@ -66,6 +66,15 @@ class StudyEnvironmentSaveDialog(QDialog):
         self._studies = tuple(studies)
         self._summaries = tuple(summaries)
         self._intent: StudyEnvironmentSaveIntent | None = None
+        self.setStyleSheet(
+            "QRadioButton::indicator {"
+            " background-color: #111827; border: 1px solid #9CA3AF;"
+            " width: 13px; height: 13px; border-radius: 7px;"
+            "}"
+            "QRadioButton::indicator:checked {"
+            " background-color: #9CA3AF; border: 1px solid #D1D5DB;"
+            "}"
+        )
 
         self._create = QRadioButton("Create", self)
         self._create.setObjectName("research.environment_save_dialog.radio.create")
@@ -214,6 +223,8 @@ class StudyEnvironmentSaveDialog(QDialog):
         self._existing.setEnabled(self._update.isChecked())
         if self._update.isChecked():
             self._existing_changed()
+        else:
+            self._name.clear()
         self._validate()
 
     def _existing_changed(self, *_args) -> None:

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetricsF,
     QMouseEvent,
     QPainter,
     QPen,
@@ -32,6 +35,7 @@ from leonardo.gui.chart.candlestick_scene import (
     CandlestickScene,
     SceneRect,
     build_candlestick_scene,
+    _format_price,
 )
 from leonardo.gui.chart.interaction import CandlestickInteractionState
 from leonardo.gui.chart.price_scale import PriceRange, PriceScaleSnapshot
@@ -71,6 +75,29 @@ class CandlestickPalette:
             self.wick,
             self.crosshair,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _AxisTagPlan:
+    text: str
+    left: float
+    top: float
+    width: float
+    height: float
+    background: str
+    background_opacity: float
+    text_color: str
+    corner_radius: float
+
+    @property
+    def rect(self) -> QRectF:
+        return QRectF(self.left, self.top, self.width, self.height)
+
+
+_TIME_TAG_BACKGROUND = "#E1E1E1"
+_VALUE_TAG_BACKGROUND = "#FFA500"
+_TAG_TEXT_COLOR = "#000000"
+_TAG_FONT = QFont("Consolas", 8)
 
 
 class CandlestickChartWidget(QWidget):
@@ -146,6 +173,10 @@ class CandlestickChartWidget(QWidget):
     @property
     def annotation_scene(self) -> ResearchAnnotationScene | None:
         return self._annotation_scene
+
+    @property
+    def render_palette(self) -> CandlestickPalette:
+        return self._palette
 
     @property
     def autoscale_enabled(self) -> bool:
@@ -590,9 +621,29 @@ class CandlestickChartWidget(QWidget):
                 painter.drawLine(QPointF(first.x, first.y), QPointF(second.x, second.y))
 
         for marker in studies.markers:
+            marker_y = marker.point.y + marker.pixel_offset
             painter.setPen(QPen(QColor(marker.color)))
             painter.setBrush(QBrush(QColor(marker.color)))
-            _draw_marker(painter, marker.point.x, marker.point.y, marker.marker_shape, marker.marker_size)
+            _draw_marker(
+                painter,
+                marker.point.x,
+                marker_y,
+                marker.marker_shape,
+                marker.marker_size,
+            )
+            if marker.display_text is not None and marker.text_color is not None:
+                painter.setPen(QPen(QColor(marker.text_color)))
+                painter.setFont(QFont("Consolas", 8))
+                painter.drawText(
+                    QRectF(
+                        marker.point.x - marker.marker_size / 2.0,
+                        marker_y - marker.marker_size / 2.0,
+                        marker.marker_size,
+                        marker.marker_size,
+                    ),
+                    Qt.AlignCenter,
+                    marker.display_text,
+                )
 
         if self._annotation_scene is not None:
             for glyph in self._annotation_scene.glyphs:
@@ -699,6 +750,75 @@ class CandlestickChartWidget(QWidget):
                 round(plot.right()),
                 round(self._crosshair_y),
             )
+        for tag in self._dynamic_crosshair_tags(x):
+            _draw_axis_tag(painter, tag)
+
+    def _dynamic_crosshair_tags(
+        self, crosshair_x: float | None = None
+    ) -> tuple[_AxisTagPlan, ...]:
+        contract = self._contract
+        if contract is None or contract.viewport.crosshair_index is None:
+            return ()
+        plot = self._plot_rect()
+        index = contract.viewport.crosshair_index
+        x = crosshair_x if crosshair_x is not None else _crosshair_x(
+            index, contract.viewport.start_index, contract.viewport.visible_count, plot
+        )
+        if x < plot.left() or x > plot.right():
+            return ()
+
+        tags: list[_AxisTagPlan] = []
+        price_scale = contract.price_scale
+        if (
+            self._crosshair_y is not None
+            and plot.top() <= self._crosshair_y <= plot.bottom()
+            and price_scale is not None
+        ):
+            price_range = price_scale.price_range
+            span = price_range.span
+            fraction = (self._crosshair_y - plot.top()) / max(1.0, plot.height())
+            value = price_range.high - fraction * span
+            candidate = _plan_axis_tag(
+                _format_price(value, span),
+                self._price_axis_rect().center().x(),
+                self._crosshair_y,
+                self._price_axis_rect(),
+                background=_VALUE_TAG_BACKGROUND,
+                background_opacity=0.5,
+                corner_radius=6.0,
+            )
+            scene = build_candlestick_scene(
+                contract,
+                width=max(1, self.width()),
+                height=max(1, self.height()),
+            )
+            static_tag = scene.last_price_tag
+            if static_tag is None or not _rectangles_overlap(
+                candidate.rect,
+                QRectF(
+                    scene.plot_rect.right + 2,
+                    static_tag.y - 9,
+                    max(1.0, scene.price_axis_rect.width - 4),
+                    18,
+                )
+            ):
+                tags.append(candidate)
+
+        resident = contract.resident
+        if (
+            self._time_axis_visible
+            and resident is not None
+            and resident.base_index <= index < resident.end_index_exclusive
+        ):
+            timestamp_ms = resident.ts_ms[index - resident.base_index]
+            time_axis = QRectF(
+                plot.left(),
+                plot.bottom(),
+                plot.width(),
+                max(1.0, self.height() - plot.bottom()),
+            )
+            tags.append(_time_tag_plan(timestamp_ms, x, time_axis))
+        return tuple(tags)
 
     def _annotation_at(self, position: QPointF):
         scene = self._annotation_scene
@@ -724,6 +844,82 @@ class CandlestickChartWidget(QWidget):
 
 def _qt_rect(rect: SceneRect) -> QRectF:
     return QRectF(rect.x, rect.y, rect.width, rect.height)
+
+
+def _crosshair_x(
+    index: int, start_index: int, visible_count: int, plot: QRectF
+) -> float:
+    relative = (index - start_index + 0.5) / max(1, visible_count)
+    return plot.left() + relative * plot.width()
+
+
+def _rectangles_overlap(first: QRectF, second: QRectF) -> bool:
+    return (
+        min(first.right(), second.right()) > max(first.left(), second.left())
+        and min(first.bottom(), second.bottom()) > max(first.top(), second.top())
+    )
+
+
+def _format_crosshair_time(timestamp_ms: int) -> str:
+    moment = datetime.fromtimestamp(timestamp_ms / 1_000, tz=timezone.utc)
+    return moment.strftime("%d %b %Y %H:%M")
+
+
+def _time_tag_plan(timestamp_ms: int, x: float, bounds: QRectF) -> _AxisTagPlan:
+    return _plan_axis_tag(
+        _format_crosshair_time(timestamp_ms),
+        x,
+        bounds.center().y(),
+        bounds,
+        background=_TIME_TAG_BACKGROUND,
+        background_opacity=1.0,
+        corner_radius=4.0,
+    )
+
+
+def _plan_axis_tag(
+    text: str,
+    center_x: float,
+    center_y: float,
+    bounds: QRectF,
+    *,
+    background: str,
+    background_opacity: float,
+    corner_radius: float,
+) -> _AxisTagPlan:
+    metrics = QFontMetricsF(_TAG_FONT)
+    width = math.ceil(metrics.horizontalAdvance(text)) + 14.0
+    height = math.ceil(metrics.height()) + 6.0
+    width = min(width, max(1.0, bounds.width()))
+    height = min(height, max(1.0, bounds.height()))
+    left = min(max(center_x - width / 2.0, bounds.left()), bounds.right() - width)
+    top = min(max(center_y - height / 2.0, bounds.top()), bounds.bottom() - height)
+    return _AxisTagPlan(
+        text,
+        left,
+        top,
+        width,
+        height,
+        background,
+        background_opacity,
+        _TAG_TEXT_COLOR,
+        corner_radius,
+    )
+
+
+def _draw_axis_tag(painter: QPainter, tag: _AxisTagPlan) -> None:
+    painter.save()
+    try:
+        background = QColor(tag.background)
+        background.setAlphaF(tag.background_opacity)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(background))
+        painter.drawRoundedRect(tag.rect, tag.corner_radius, tag.corner_radius)
+        painter.setPen(QPen(QColor(tag.text_color)))
+        painter.setFont(_TAG_FONT)
+        painter.drawText(tag.rect, Qt.AlignCenter, tag.text)
+    finally:
+        painter.restore()
 
 
 def _qt_line_style(pattern: str):

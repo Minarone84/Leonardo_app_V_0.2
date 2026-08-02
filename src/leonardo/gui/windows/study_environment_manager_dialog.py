@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QTableWidget,
@@ -74,6 +75,7 @@ class StudyEnvironmentManagerDialog(QDialog):
     metadata_save_requested = Signal(object)
     apply_requested = Signal(object)
     delete_requested = Signal(str)
+    cancel_apply_requested = Signal()
 
     def __init__(
         self,
@@ -96,6 +98,8 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._summaries = tuple(summaries)
         self._environment: StudyEnvironmentV1 | None = None
         self._report: StudyEnvironmentCompatibilityReport | None = None
+        self._apply_run_id: str | None = None
+        self._apply_cancellation_requested = False
 
         self._list = QListWidget(self)
         self._list.setObjectName("research.environment_manager_dialog.list.environments")
@@ -124,6 +128,16 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._compatibility = QTextEdit(self)
         self._compatibility.setObjectName("research.environment_manager_dialog.text.compatibility")
         self._compatibility.setReadOnly(True)
+        self._apply_status = QLabel("", self)
+        self._apply_status.setObjectName(
+            "research.environment_manager_dialog.label.apply_status"
+        )
+        self._apply_progress = QProgressBar(self)
+        self._apply_progress.setObjectName(
+            "research.environment_manager_dialog.progress.apply"
+        )
+        self._apply_progress.setRange(0, 1)
+        self._apply_progress.setValue(0)
         self._refresh = QPushButton("Refresh", self)
         self._refresh.setObjectName("research.environment_manager_dialog.button.refresh")
         self._save = QPushButton("Save Changes", self)
@@ -131,6 +145,11 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._save.setVisible(mode == "manage")
         self._apply = QPushButton("Apply", self)
         self._apply.setObjectName("research.environment_manager_dialog.button.apply")
+        self._cancel_apply = QPushButton("Cancel Apply", self)
+        self._cancel_apply.setObjectName(
+            "research.environment_manager_dialog.button.cancel_apply"
+        )
+        self._cancel_apply.setEnabled(False)
         self._delete = QPushButton("Delete", self)
         self._delete.setObjectName("research.environment_manager_dialog.button.delete")
         self._close = QPushButton("Close", self)
@@ -141,7 +160,14 @@ class StudyEnvironmentManagerDialog(QDialog):
         modes.addWidget(self._append)
         modes.addWidget(self._replace)
         buttons = QHBoxLayout()
-        for button in (self._refresh, self._save, self._apply, self._delete, self._close):
+        for button in (
+            self._refresh,
+            self._save,
+            self._apply,
+            self._cancel_apply,
+            self._delete,
+            self._close,
+        ):
             buttons.addWidget(button)
         details = QVBoxLayout()
         details.addWidget(QLabel("Name", self))
@@ -151,6 +177,8 @@ class StudyEnvironmentManagerDialog(QDialog):
         details.addWidget(self._table)
         details.addLayout(modes)
         details.addWidget(self._compatibility)
+        details.addWidget(self._apply_status)
+        details.addWidget(self._apply_progress)
         details.addLayout(buttons)
         body = QHBoxLayout()
         body.addWidget(self._list, 13)
@@ -162,6 +190,7 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._refresh.clicked.connect(self.refresh_requested.emit)
         self._save.clicked.connect(self._emit_metadata_save)
         self._apply.clicked.connect(self._emit_apply)
+        self._cancel_apply.clicked.connect(self._request_cancel_apply)
         self._delete.clicked.connect(self._confirm_delete)
         self._close.clicked.connect(self.reject)
         self._table.itemChanged.connect(self._resize_study_columns)
@@ -184,6 +213,57 @@ class StudyEnvironmentManagerDialog(QDialog):
     @property
     def environment(self) -> StudyEnvironmentV1 | None:
         return self._environment
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def apply_active(self) -> bool:
+        return self._apply_run_id is not None
+
+    @property
+    def apply_run_id(self) -> str | None:
+        return self._apply_run_id
+
+    def begin_apply(self, run_id: str, total_entries: int) -> None:
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be non-empty text")
+        if type(total_entries) is not int or total_entries < 1:
+            raise ValueError("total_entries must be a positive integer")
+        if self._apply_run_id is not None:
+            raise RuntimeError("an Environment Apply is already active")
+        self._apply_run_id = run_id
+        self._apply_cancellation_requested = False
+        self._apply_progress.setRange(0, total_entries)
+        self._apply_progress.setValue(0)
+        self._apply_status.setText("Preparing Study Environment...")
+        self._cancel_apply.setEnabled(True)
+        self._sync_enabled()
+
+    def set_apply_progress(
+        self,
+        run_id: str,
+        accepted_entries: int,
+        status: str,
+    ) -> None:
+        if run_id != self._apply_run_id or self._apply_cancellation_requested:
+            return
+        self._apply_progress.setValue(accepted_entries)
+        self._apply_status.setText(status)
+
+    def finish_apply(self, run_id: str, status: str, message: str = "") -> None:
+        if run_id != self._apply_run_id:
+            return
+        if status == "success":
+            self._apply_progress.setValue(self._apply_progress.maximum())
+            self._apply_status.setText("Study Environment applied.")
+        else:
+            self._apply_status.setText(message or f"Study Environment {status}.")
+        self._apply_run_id = None
+        self._apply_cancellation_requested = False
+        self._cancel_apply.setEnabled(False)
+        self._sync_enabled()
 
     def set_summaries(self, summaries: tuple[StudyEnvironmentSummary, ...]) -> None:
         selected = self.selected_environment_id
@@ -340,6 +420,16 @@ class StudyEnvironmentManagerDialog(QDialog):
             )
         )
 
+    def _request_cancel_apply(self) -> None:
+        if self._apply_run_id is None or not self._cancel_apply.isEnabled():
+            return
+        self._apply_cancellation_requested = True
+        self._cancel_apply.setEnabled(False)
+        self._apply_status.setText(
+            "Study Environment cancellation requested..."
+        )
+        self.cancel_apply_requested.emit()
+
     def _confirm_delete(self) -> None:
         environment_id = self.selected_environment_id
         if environment_id is None:
@@ -353,6 +443,23 @@ class StudyEnvironmentManagerDialog(QDialog):
             self.delete_requested.emit(environment_id)
 
     def _sync_enabled(self) -> None:
+        if self._apply_run_id is not None:
+            for widget in (
+                self._list,
+                self._name,
+                self._description,
+                self._table,
+                self._target,
+                self._append,
+                self._replace,
+                self._refresh,
+                self._save,
+                self._apply,
+                self._delete,
+                self._close,
+            ):
+                widget.setEnabled(False)
+            return
         item = self._list.currentItem()
         valid = bool(item is not None and item.data(Qt.ItemDataRole.UserRole + 1))
         loaded = valid and self._environment is not None
@@ -364,6 +471,22 @@ class StudyEnvironmentManagerDialog(QDialog):
         self._apply.setEnabled(
             loaded and self._report is not None and self._report.compatible
         )
+        self._refresh.setEnabled(True)
+        self._close.setEnabled(True)
+        self._target.setEnabled(True)
+        self._append.setEnabled(True)
+        self._replace.setEnabled(True)
+        self._list.setEnabled(True)
+
+    def reject(self) -> None:
+        if self._apply_run_id is None:
+            super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._apply_run_id is not None:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _resize_study_columns(self, *_args) -> None:
         resize_table_columns_to_contents(

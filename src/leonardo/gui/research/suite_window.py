@@ -31,11 +31,9 @@ class ResearchSuiteWindow(QMainWindow):
     save_workspace_snapshot_requested = Signal()
     load_workspace_snapshot_requested = Signal()
     manage_workspace_snapshots_requested = Signal()
-    create_notebook_requested = Signal()
     open_notebook_requested = Signal()
     notebook_manager_requested = Signal()
-    save_notebook_requested = Signal()
-    load_notebook_requested = Signal()
+    clear_research_suite_requested = Signal()
 
     def __init__(
         self,
@@ -60,7 +58,7 @@ class ResearchSuiteWindow(QMainWindow):
         self.set_dataset_summaries(dataset_summaries)
         self.set_study_environment_actions_state(False, False, False)
         self.set_workspace_snapshot_actions_state(False, False, False)
-        self.set_notebook_actions_state(False, False, False, False)
+        self.set_notebook_actions_state(False)
         self.set_assigned_notebook_state(None)
 
     @property
@@ -109,7 +107,7 @@ class ResearchSuiteWindow(QMainWindow):
                 raise ValueError(
                     "notebook_display_name must be None or canonical non-empty text"
                 )
-        action = self._actions["Open Notebook"]
+        action = self._actions["Open Assigned Notebook"]
         if notebook_display_name is None:
             message = "No notebook assigned to the current workspace."
             action.setEnabled(False)
@@ -147,23 +145,56 @@ class ResearchSuiteWindow(QMainWindow):
 
     def set_notebook_actions_state(
         self,
-        create_enabled: bool,
         manager_enabled: bool,
-        save_enabled: bool,
-        load_enabled: bool,
     ) -> None:
-        for value in (
-            create_enabled,
-            manager_enabled,
-            save_enabled,
-            load_enabled,
-        ):
-            if type(value) is not bool:
-                raise TypeError("Research Notebook action states must be boolean")
-        self._actions["Create New Notebook"].setEnabled(create_enabled)
+        if type(manager_enabled) is not bool:
+            raise TypeError("Research Notebook action state must be boolean")
         self._actions["Notebook Manager..."].setEnabled(manager_enabled)
-        self._actions["Save Notebook"].setEnabled(save_enabled)
-        self._actions["Load Notebook"].setEnabled(load_enabled)
+
+    def set_clear_research_suite_enabled(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("Clear Research Suite action state must be boolean")
+        self._actions["Clear Research Suite"].setEnabled(enabled)
+
+    def set_pan_anchor_visual_state(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("Pan Anchor visual state must be boolean")
+        button = self._quick_buttons["Pan Anchor"]
+        if enabled:
+            background = "#86EFAC"
+            tooltip = (
+                "Pan Anchor is on. Horizontal user panning keeps ready charts "
+                "aligned by UTC timestamp."
+            )
+            accessible_name = "Pan Anchor on"
+        else:
+            background = "#FCA5A5"
+            tooltip = "Pan Anchor is off. Charts may be panned independently."
+            accessible_name = "Pan Anchor off"
+        button.setStyleSheet(
+            "QToolButton {"
+            f" background-color: {background}; color: #111827;"
+            "}"
+        )
+        button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
+        button.setAccessibleName(accessible_name)
+        action = self._actions["Pan Anchor"]
+        action.setToolTip(tooltip)
+        action.setStatusTip(tooltip)
+
+    def set_workspace_view_mode(self, label: str) -> None:
+        if label not in {"Scroll 4", "Fit 8"}:
+            raise ValueError("workspace view mode must be Scroll 4 or Fit 8")
+        self._actions[label].setChecked(True)
+        self._set_view_mode(label)
+
+    def reset_activity(self, message: str) -> None:
+        if not isinstance(message, str) or not message:
+            raise ValueError("activity reset message must be non-empty text")
+        self._activity_log.clear()
+        self._set_activity_expanded(False)
+        self._append_activity(message)
 
     def _build_menus(self) -> None:
         menu_bar = self.menuBar()
@@ -215,6 +246,19 @@ class ResearchSuiteWindow(QMainWindow):
             lambda _checked=False: self.manage_workspace_snapshots_requested.emit()
         )
         file_menu.addSeparator()
+        clear_suite_action = self._add_shell_action(
+            file_menu, "Clear Research Suite", log_request=False
+        )
+        clear_tooltip = (
+            "Close all Research charts and secondary windows and reset the "
+            "Research Suite. Persisted data is not deleted."
+        )
+        clear_suite_action.setToolTip(clear_tooltip)
+        clear_suite_action.setStatusTip(clear_tooltip)
+        clear_suite_action.triggered.connect(
+            lambda _checked=False: self.clear_research_suite_requested.emit()
+        )
+        file_menu.addSeparator()
         close_action = QAction("Close", self)
         close_action.setObjectName("research_restoration.action.close")
         close_action.triggered.connect(self.close)
@@ -248,13 +292,9 @@ class ResearchSuiteWindow(QMainWindow):
         notes_menu = menu_bar.addMenu("Notes")
         notes_menu.setObjectName("research_restoration.menu.notes")
         self.notes_menu = notes_menu
-        create_notebook_action = self._add_shell_action(
-            notes_menu, "Create New Notebook"
+        open_notebook_action = self._add_shell_action(
+            notes_menu, "Open Assigned Notebook"
         )
-        create_notebook_action.triggered.connect(
-            lambda _checked=False: self.create_notebook_requested.emit()
-        )
-        open_notebook_action = self._add_shell_action(notes_menu, "Open Notebook")
         open_notebook_action.triggered.connect(
             lambda _checked=False: self.open_notebook_requested.emit()
         )
@@ -264,14 +304,6 @@ class ResearchSuiteWindow(QMainWindow):
         notebook_manager_action.triggered.connect(
             lambda _checked=False: self.notebook_manager_requested.emit()
         )
-        save_notebook_action = self._add_shell_action(notes_menu, "Save Notebook")
-        save_notebook_action.triggered.connect(
-            lambda _checked=False: self.save_notebook_requested.emit()
-        )
-        load_notebook_action = self._add_shell_action(notes_menu, "Load Notebook")
-        load_notebook_action.triggered.connect(
-            lambda _checked=False: self.load_notebook_requested.emit()
-        )
 
     def _add_shell_action(
         self,
@@ -279,6 +311,7 @@ class ResearchSuiteWindow(QMainWindow):
         text: str,
         *,
         checkable: bool = False,
+        log_request: bool = True,
     ) -> QAction:
         action = QAction(text, self)
         action.setObjectName(
@@ -286,11 +319,12 @@ class ResearchSuiteWindow(QMainWindow):
             + text.lower().replace("...", "").replace(" ", "_")
         )
         action.setCheckable(checkable)
-        action.triggered.connect(
-            lambda _checked=False, action_text=text: self._append_activity(
-                f"{action_text} requested"
+        if log_request:
+            action.triggered.connect(
+                lambda _checked=False, action_text=text: self._append_activity(
+                    f"{action_text} requested"
+                )
             )
-        )
         self._actions[text] = action
         menu.addAction(action)
         return action
@@ -303,11 +337,12 @@ class ResearchSuiteWindow(QMainWindow):
         layout.setSpacing(4)
 
         quick_actions = (
-            ("Open Notebook", "Notebook"),
+            ("Open Assigned Notebook", "Notebook"),
             ("Save Study Environment...", "Save Environment"),
             ("Load Study Environment...", "Load Environment"),
             ("Save Workspace...", "Save Workspace"),
             ("Load Workspace...", "Load Workspace"),
+            ("Clear Research Suite", "Clear Research Suite"),
             ("Pan Anchor", "Pan Anchor"),
         )
         for action_text, label in quick_actions:
@@ -321,6 +356,13 @@ class ResearchSuiteWindow(QMainWindow):
             button.setText(label)
             layout.addWidget(button)
             self._quick_buttons[action_text] = button
+
+        clear_button = self._quick_buttons["Clear Research Suite"]
+        clear_button.setToolTip(
+            "Close all Research charts and secondary windows and reset the "
+            "Research Suite. Persisted data is not deleted."
+        )
+        self.set_pan_anchor_visual_state(False)
 
         view_label = QLabel("View: Scroll 4", corner)
         view_label.setObjectName("research_restoration.label.view_mode")

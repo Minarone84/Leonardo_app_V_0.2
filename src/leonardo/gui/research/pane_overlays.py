@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import math
 from collections.abc import Sequence
 
@@ -9,10 +10,21 @@ from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from leonardo.data import MarketId
-from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
+from leonardo.gui.chart.candlestick_widget import (
+    CandlestickChartWidget,
+    CandlestickPalette,
+)
 from leonardo.gui.chart.interaction import CandlestickInteractionState
-from leonardo.gui.chart.oscillator_widget import OscillatorStudyWidget
-from leonardo.research import ResidentStudyProjection, StudyManagerEntry
+from leonardo.gui.chart.oscillator_widget import (
+    OscillatorPalette,
+    OscillatorStudyWidget,
+)
+from leonardo.research import (
+    ResidentOHLCVSlice,
+    ResidentStudyProjection,
+    StudyManagerEntry,
+    StudyPresentation,
+)
 
 
 _OVERLAY_STYLE = """
@@ -178,8 +190,14 @@ class PriceStudyOverlayRow(QWidget):
     def current_values_visible(self) -> bool:
         return self.values_button.isChecked()
 
-    def set_current_values(self, text: str) -> None:
-        self.values_label.setText(text)
+    @property
+    def current_values_text(self) -> str:
+        return _semantic_text(self.values_label)
+
+    def set_current_values(
+        self, text: str, rich_text: str | None = None
+    ) -> None:
+        _set_label_text(self.values_label, text, rich_text)
 
     def set_display_name(
         self,
@@ -240,7 +258,9 @@ class PricePaneOverlay(_RetractableOverlay):
         self,
         market_id: MarketId,
         interaction_state: CandlestickInteractionState,
-        studies: Sequence[tuple[ResidentStudyProjection, StudyManagerEntry]],
+        studies: Sequence[
+            tuple[ResidentStudyProjection, StudyPresentation, StudyManagerEntry]
+        ],
         parent: CandlestickChartWidget,
     ) -> None:
         super().__init__(parent)
@@ -271,20 +291,33 @@ class PricePaneOverlay(_RetractableOverlay):
 
     def set_studies(
         self,
-        studies: Sequence[tuple[ResidentStudyProjection, StudyManagerEntry]],
+        studies: Sequence[
+            tuple[ResidentStudyProjection, StudyPresentation, StudyManagerEntry]
+        ],
     ) -> None:
         snapshot = tuple(studies)
-        for projection, entry in snapshot:
+        for projection, presentation, entry in snapshot:
             if not isinstance(projection, ResidentStudyProjection):
                 raise TypeError("studies must contain ResidentStudyProjection values")
+            if not isinstance(presentation, StudyPresentation):
+                raise TypeError("studies must contain StudyPresentation values")
             if not isinstance(entry, StudyManagerEntry):
                 raise TypeError("studies must contain StudyManagerEntry values")
-            if projection.study_id != entry.study_id:
-                raise ValueError("projection and manager entry study IDs must match")
-        if len({entry.study_id for _projection, entry in snapshot}) != len(snapshot):
+            if not (
+                projection.study_id == presentation.study_id == entry.study_id
+            ):
+                raise ValueError("price Study snapshot IDs must match")
+        if len(
+            {
+                entry.study_id
+                for _projection, _presentation, entry in snapshot
+            }
+        ) != len(snapshot):
             raise ValueError("price Study IDs must be unique")
 
-        retained_ids = {entry.study_id for _projection, entry in snapshot}
+        retained_ids = {
+            entry.study_id for _projection, _presentation, entry in snapshot
+        }
         for study_id in tuple(self._rows_by_study_id):
             if study_id in retained_ids:
                 continue
@@ -293,7 +326,7 @@ class PricePaneOverlay(_RetractableOverlay):
             row.deleteLater()
 
         rows: list[PriceStudyOverlayRow] = []
-        for _projection, entry in snapshot:
+        for _projection, _presentation, entry in snapshot:
             row = self._rows_by_study_id.get(entry.study_id)
             if row is None:
                 row = PriceStudyOverlayRow(
@@ -361,26 +394,46 @@ class PricePaneOverlay(_RetractableOverlay):
         resident = self._interaction_state.resident
         global_index = snapshot.crosshair_index
         if resident is None:
-            self.ohlc_label.setText("O: —  H: —  L: —  C: —")
+            _set_label_fragments(
+                self.ohlc_label,
+                (("O: —  H: —  L: —  C: —", None),),
+            )
         else:
             if global_index is None or not resident.contains_global_index(global_index):
                 global_index = resident.last_global_index
             local_index = global_index - resident.base_index
-            self.ohlc_label.setText(
-                "O: {0}  H: {1}  L: {2}  C: {3}".format(
-                    _format_number(resident.open[local_index]),
-                    _format_number(resident.high[local_index]),
-                    _format_number(resident.low[local_index]),
-                    _format_number(resident.close[local_index]),
-                )
+            open_value = resident.open[local_index]
+            close_value = resident.close[local_index]
+            candle_color = _candle_color(
+                open_value,
+                close_value,
+                self.parentWidget().render_palette,
             )
+            fragments: list[tuple[str, str | None]] = []
+            for label, value in (
+                ("O: ", open_value),
+                ("H: ", resident.high[local_index]),
+                ("L: ", resident.low[local_index]),
+                ("C: ", close_value),
+            ):
+                if fragments:
+                    fragments.append(("  ", None))
+                fragments.append((label, None))
+                formatted, finite = _formatted_number(value)
+                fragments.append((formatted, candle_color if finite else None))
+            _set_label_fragments(self.ohlc_label, tuple(fragments))
 
-        for row, (projection, _entry) in zip(
+        for row, (projection, presentation, _entry) in zip(
             self.study_rows, self._studies, strict=True
         ):
-            row.set_current_values(
-                _format_projection_values(projection, global_index)
+            plain, rich = _format_projection_values(
+                projection,
+                presentation,
+                global_index,
+                resident,
+                None,
             )
+            row.set_current_values(plain, rich)
         self.adjustSize()
         self.move(12, 12)
         self.raise_()
@@ -399,6 +452,7 @@ class OscillatorPaneOverlay(_RetractableOverlay):
     def __init__(
         self,
         projection: ResidentStudyProjection,
+        presentation: StudyPresentation,
         entry: StudyManagerEntry,
         interaction_state: CandlestickInteractionState,
         parent: OscillatorStudyWidget,
@@ -407,6 +461,7 @@ class OscillatorPaneOverlay(_RetractableOverlay):
         if not isinstance(parent, OscillatorStudyWidget):
             raise TypeError("parent must be an OscillatorStudyWidget")
         self._projection = projection
+        self._presentation = presentation
         self._interaction_state = interaction_state
         self.study_id = entry.study_id
         self._actions_available = True
@@ -473,18 +528,27 @@ class OscillatorPaneOverlay(_RetractableOverlay):
     def set_snapshot(
         self,
         projection: ResidentStudyProjection,
+        presentation: StudyPresentation,
         entry: StudyManagerEntry,
         interaction_state: CandlestickInteractionState,
     ) -> None:
         if not isinstance(projection, ResidentStudyProjection):
             raise TypeError("projection must be a ResidentStudyProjection")
+        if not isinstance(presentation, StudyPresentation):
+            raise TypeError("presentation must be a StudyPresentation")
         if not isinstance(entry, StudyManagerEntry):
             raise TypeError("entry must be a StudyManagerEntry")
         if not isinstance(interaction_state, CandlestickInteractionState):
             raise TypeError("interaction_state must be a CandlestickInteractionState")
-        if projection.study_id != self.study_id or entry.study_id != self.study_id:
+        if not (
+            projection.study_id
+            == presentation.study_id
+            == entry.study_id
+            == self.study_id
+        ):
             raise ValueError("oscillator snapshot must retain the same study ID")
         self._projection = projection
+        self._presentation = presentation
         self._interaction_state = interaction_state
         self.title_label.setText(entry.compact_label)
         self.title_label.setToolTip(_entry_detail_tooltip(entry))
@@ -543,15 +607,24 @@ class OscillatorPaneOverlay(_RetractableOverlay):
     def current_values_visible(self) -> bool:
         return self.values_button.isChecked()
 
+    @property
+    def current_values_text(self) -> str:
+        return _semantic_text(self.values_label)
+
     def _on_values_toggled(self, visible: bool) -> None:
         self.values_label.setVisible(visible)
         self.values_toggled.emit(self.study_id, visible)
 
     def refresh(self) -> None:
         snapshot = self._interaction_state.viewport.snapshot()
-        self.values_label.setText(
-            _format_projection_values(self._projection, snapshot.crosshair_index)
+        plain, rich = _format_projection_values(
+            self._projection,
+            self._presentation,
+            snapshot.crosshair_index,
+            self._interaction_state.resident,
+            self.parentWidget().render_palette,
         )
+        _set_label_text(self.values_label, plain, rich)
         self.adjustSize()
         self.move(12, 12)
         self.raise_()
@@ -591,8 +664,11 @@ def _configure_transparent_surface(widget: QWidget) -> None:
 
 def _format_projection_values(
     projection: ResidentStudyProjection,
+    presentation: StudyPresentation,
     global_index: int | None,
-) -> str:
+    resident: ResidentOHLCVSlice | None,
+    oscillator_palette: OscillatorPalette | None,
+) -> tuple[str, str]:
     if (
         global_index is None
         or global_index < projection.base_index
@@ -605,31 +681,185 @@ def _format_projection_values(
         for name, series in projection.render_series.items()
     }
     names = tuple(values)
-    if names == ("bb_middle", "bb_upper_band", "bb_lower_band"):
-        return "  ".join(
-            (
-                f"M {_format_number(values['bb_middle'])}",
-                f"U {_format_number(values['bb_upper_band'])}",
-                f"L {_format_number(values['bb_lower_band'])}",
+    fragments: list[tuple[str, str | None]] = []
+
+    def append_value(prefix: str, output_name: str) -> None:
+        if fragments:
+            fragments.append(("  ", None))
+        if prefix:
+            fragments.append((prefix, None))
+        value = values[output_name]
+        formatted, finite = _formatted_number(value)
+        color = (
+            _output_color(
+                projection,
+                presentation,
+                output_name,
+                value,
+                local_index,
+                global_index,
+                resident,
+                oscillator_palette,
             )
+            if finite
+            else None
         )
-    if names == ("volume", "volume_mean_20"):
-        return (
-            f"VOL {_format_number(values['volume'])}  "
-            f"MEAN {_format_number(values['volume_mean_20'])}"
-        )
+        fragments.append((formatted, color))
+
+    if names == ("bb_middle", "bb_upper_band", "bb_lower_band"):
+        append_value("M ", "bb_middle")
+        append_value("U ", "bb_upper_band")
+        append_value("L ", "bb_lower_band")
+        return _formatted_fragments(tuple(fragments))
+    if (
+        len(names) == 2
+        and names[0] == "volume"
+        and names[1].startswith("volume_mean_")
+    ):
+        append_value("VOL ", names[0])
+        append_value("MEAN ", names[1])
+        return _formatted_fragments(tuple(fragments))
     if len(names) == 1:
-        return _format_number(values[names[0]])
-    return "  ".join(
-        f"{_abbreviation(name)} {_format_number(values[name])}" for name in names
+        append_value("", names[0])
+        return _formatted_fragments(tuple(fragments))
+    for name in names:
+        append_value(f"{_abbreviation(name)} ", name)
+    return _formatted_fragments(tuple(fragments))
+
+
+def _output_color(
+    projection: ResidentStudyProjection,
+    presentation: StudyPresentation,
+    output_name: str,
+    value: object,
+    local_index: int,
+    global_index: int,
+    resident: ResidentOHLCVSlice | None,
+    oscillator_palette: OscillatorPalette | None,
+) -> str | None:
+    style = presentation.signal_styles.get(output_name)
+    if style is None:
+        return None
+    if output_name == "volume" and oscillator_palette is not None:
+        return _volume_color(resident, global_index, oscillator_palette)
+    if _threshold_output(presentation.tool_key, output_name):
+        levels = {
+            guide.kind: float(guide.value)
+            for guide in presentation.guide_styles.values()
+            if guide.kind in {"oversold", "overbought"}
+        }
+        if set(levels) == {"oversold", "overbought"}:
+            resolved = float(value)
+            if resolved < levels["oversold"]:
+                return "#22C55E"
+            if resolved > levels["overbought"]:
+                return "#EF4444"
+            return style.color
+    driver_name = style.conditional_driver_name
+    if driver_name is not None:
+        driver = projection.style_driver_series.get(driver_name)
+        if driver is not None and 0 <= local_index < len(driver):
+            return style.conditional_colors.get(str(driver[local_index]), style.color)
+    return style.color
+
+
+def _threshold_output(tool_key: str | None, output_name: str) -> bool:
+    if tool_key not in {"rsi", "arsi", "mfi"}:
+        return False
+    return not (
+        tool_key == "arsi"
+        and (
+            not output_name.startswith("arsi_")
+            or output_name.startswith("arsi_signal_")
+        )
     )
 
 
+def _candle_color(
+    open_value: object,
+    close_value: object,
+    palette: CandlestickPalette,
+) -> str | None:
+    if not _is_finite_number(open_value) or not _is_finite_number(close_value):
+        return None
+    return (
+        palette.up_fill
+        if float(close_value) >= float(open_value)
+        else palette.down_fill
+    )
+
+
+def _volume_color(
+    resident: ResidentOHLCVSlice | None,
+    global_index: int,
+    palette: OscillatorPalette,
+) -> str:
+    if resident is None or not resident.contains_global_index(global_index):
+        return palette.neutral_volume
+    local_index = global_index - resident.base_index
+    open_value = resident.open[local_index]
+    close_value = resident.close[local_index]
+    if not _is_finite_number(open_value) or not _is_finite_number(close_value):
+        return palette.neutral_volume
+    return (
+        palette.bullish_volume
+        if float(close_value) >= float(open_value)
+        else palette.bearish_volume
+    )
+
+
+def _set_label_fragments(
+    label: QLabel, fragments: Sequence[tuple[str, str | None]]
+) -> None:
+    plain, rich = _formatted_fragments(tuple(fragments))
+    _set_label_text(label, plain, rich)
+
+
+def _formatted_fragments(
+    fragments: Sequence[tuple[str, str | None]],
+) -> tuple[str, str]:
+    plain = "".join(text for text, _color in fragments)
+    rich_parts: list[str] = []
+    for text, color in fragments:
+        escaped = html.escape(text).replace(" ", "&nbsp;")
+        rich_parts.append(
+            escaped
+            if color is None
+            else f'<span style="color:{html.escape(color, quote=True)}">{escaped}</span>'
+        )
+    return plain, "".join(rich_parts)
+
+
+def _set_label_text(label: QLabel, plain: str, rich: str | None) -> None:
+    label.setProperty("semantic_text", plain)
+    label.setAccessibleName(plain)
+    label.setTextFormat(
+        Qt.TextFormat.RichText if rich is not None else Qt.TextFormat.PlainText
+    )
+    label.setText(plain if rich is None else rich)
+
+
+def _semantic_text(label: QLabel) -> str:
+    value = label.property("semantic_text")
+    return label.text() if value is None else str(value)
+
+
+def _formatted_number(value: object) -> tuple[str, bool]:
+    if not _is_finite_number(value):
+        return "—", False
+    return f"{float(value):.2f}", True
+
+
 def _format_number(value: object) -> str:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "—"
-    resolved = float(value)
-    return f"{resolved:.2f}" if math.isfinite(resolved) else "—"
+    return _formatted_number(value)[0]
+
+
+def _is_finite_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
 
 
 def _abbreviation(output_name: str) -> str:

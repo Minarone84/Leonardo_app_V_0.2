@@ -29,6 +29,10 @@ from tests.gui_test.test_research_gui_service_study_apply import (
 from leonardo.research.study_projection import project_study
 
 
+def _label_has_color(label, color: str) -> bool:
+    return f"color:{color}" in label.text()
+
+
 def _large_bundle():
     dataset, summary = _dataset_bundle()
     count = 6_000
@@ -237,6 +241,85 @@ def test_two_charts_do_not_share_studies_panes_or_overlays(tmp_path: Path) -> No
         window.close()
 
 
+def test_style_and_reset_refresh_existing_overlay_colors_without_recalculation(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, dataset_service, studies, setup, summary = real_presenter(
+        tmp_path
+    )
+    try:
+        slot_id = open_ready_chart(window, presenter, dataset_service, summary)
+        panel = window.workspace.chart_panel_for_slot(slot_id)
+        chart_presenter = presenter._chart_presenters[slot_id]
+        dialog = open_financial_tools(window, presenter, setup, slot_id)
+        _apply_tool(dialog, studies, setup, "SMA")
+
+        study = chart_presenter.session.studies[0]
+        result_identity = id(study.result)
+        result_values = study.result.to_frame().copy(deep=True)
+        row = panel.price_overlay.study_rows[0]
+        row_identity = id(row)
+        output_name = study.renderable_output_names[0]
+        current = chart_presenter.session.study_presentations()[0]
+        edited = replace(current.signal_styles[output_name], color="#00FFFF")
+        chart_presenter.session.replace_study_line_style(
+            study.study_id, output_name, edited
+        )
+        chart_presenter._refresh_study_state()
+        _settle_qt()
+
+        assert id(panel.price_overlay.study_rows[0]) == row_identity
+        assert panel.price_overlay._studies[0][1].signal_styles[output_name] == edited
+        assert _label_has_color(row.values_label, "#00FFFF")
+        panel.chart_widget._static_scene_pixmap()
+        assert any(
+            strip.output_name == output_name and strip.color == "#00FFFF"
+            for strip in panel.chart_widget.study_scene.line_strips
+        )
+        assert id(chart_presenter.session.studies[0].result) == result_identity
+        assert chart_presenter.session.studies[0].result.to_frame().equals(
+            result_values
+        )
+
+        chart_presenter.reset_study_style(study.study_id)
+        _settle_qt()
+        assert id(panel.price_overlay.study_rows[0]) == row_identity
+        assert _label_has_color(row.values_label, "#F59E0B")
+        panel.chart_widget._static_scene_pixmap()
+        assert any(
+            strip.output_name == output_name and strip.color == "#F59E0B"
+            for strip in panel.chart_widget.study_scene.line_strips
+        )
+        assert id(chart_presenter.session.studies[0].result) == result_identity
+
+        _apply_tool(dialog, studies, setup, "Volume")
+        volume_study = chart_presenter.session.studies[-1]
+        volume_overlay = panel.oscillator_overlays[-1]
+        overlay_identity = id(volume_overlay)
+        volume_presentation = chart_presenter.session.study_presentations()[-1]
+        mean_name = next(
+            name
+            for name in volume_presentation.signal_styles
+            if name.startswith("volume_mean_")
+        )
+        chart_presenter.session.replace_study_line_style(
+            volume_study.study_id,
+            mean_name,
+            replace(
+                volume_presentation.signal_styles[mean_name],
+                color="#13579B",
+            ),
+        )
+        chart_presenter._refresh_study_state()
+        _settle_qt()
+        assert id(panel.oscillator_overlays[-1]) == overlay_identity
+        assert _label_has_color(volume_overlay.values_label, "#13579B")
+    finally:
+        presenter.dispose()
+        window.close()
+
+
 def test_tdirsi_and_smi_styles_fill_refill_edit_and_detach_are_chart_local(
     tmp_path: Path,
 ) -> None:
@@ -368,7 +451,7 @@ def test_hck_and_strategy_embedded_hck_share_conditional_rendering_policy(
 ) -> None:
     _qapp = QApplication.instance() or QApplication([])
     window, presenter, dataset_service, studies, setup, summary = real_presenter(
-        tmp_path
+        tmp_path, bundle=_large_bundle()
     )
     try:
         slot_id = open_ready_chart(window, presenter, dataset_service, summary)
@@ -419,6 +502,42 @@ def test_hck_and_strategy_embedded_hck_share_conditional_rendering_policy(
                 "st_slow_vwap",
             }
         )
+
+        before_overlay_ids = tuple(id(row) for row in panel.price_overlay.study_rows)
+        old_base = chart_presenter.session.resident.base_index
+        chart_presenter.center_on_timestamp_ms(_large_bundle()[0].ts_ms[0])
+        refill_task = chart_presenter._active_slice_task_id
+        assert refill_task is not None
+        dataset_service.complete(refill_task)
+        _settle_qt()
+        assert chart_presenter.session.resident.base_index != old_base
+        assert tuple(id(row) for row in panel.price_overlay.study_rows) == (
+            before_overlay_ids
+        )
+        global_index = panel.chart_widget.interaction_state.viewport.snapshot().crosshair_index
+        for row, (projection, presentation, _entry) in zip(
+            panel.price_overlay.study_rows,
+            panel.price_overlay._studies,
+            strict=True,
+        ):
+            resolved_index = (
+                projection.end_index_exclusive - 1
+                if global_index is None
+                or global_index < projection.base_index
+                or global_index >= projection.end_index_exclusive
+                else global_index
+            )
+            local_index = resolved_index - projection.base_index
+            style = next(
+                style
+                for style in presentation.signal_styles.values()
+                if style.conditional_driver_name is not None
+            )
+            state = projection.style_driver_series[
+                style.conditional_driver_name
+            ][local_index]
+            expected = style.conditional_colors.get(str(state), style.color)
+            assert _label_has_color(row.values_label, expected)
     finally:
         presenter.dispose()
         window.close()
@@ -510,6 +629,121 @@ def test_utc_production_apply_projects_regions_and_preserves_existing_geometry(
             strip.study_id == utc.study_id for strip in scene.line_strips
         )
         assert not any(marker.study_id == utc.study_id for marker in scene.markers)
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_peaks_troughs_service_rendering_and_semantic_reset_defaults(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    dataset, summary = _dataset_bundle()
+    highs = [101.0] * dataset.row_count
+    lows = [99.0] * dataset.row_count
+    for index in (20, 50, 80):
+        highs[index] = 120.0
+    for index in (30, 60, 90):
+        lows[index] = 80.0
+    dataset = replace(
+        dataset,
+        open=(100.0,) * dataset.row_count,
+        high=tuple(highs),
+        low=tuple(lows),
+        close=(100.0,) * dataset.row_count,
+    )
+    window, presenter, dataset_service, studies, setup, summary = real_presenter(
+        tmp_path, bundle=(dataset, summary)
+    )
+    try:
+        slot_id = open_ready_chart(window, presenter, dataset_service, summary)
+        panel = window.workspace.chart_panel_for_slot(slot_id)
+        chart_presenter = presenter._chart_presenters[slot_id]
+        dialog = open_financial_tools(window, presenter, setup, slot_id)
+
+        _apply_tool(dialog, studies, setup, "Peaks & Troughs")
+        peaks = chart_presenter.session.studies[-1]
+        original_id = peaks.study_id
+        original_values = peaks.result.to_frame().copy(deep=True)
+        presentation = chart_presenter.session.study_presentations()[-1]
+        assert {
+            name for name, style in presentation.signal_styles.items() if style.visible
+        } == {"peak_fractal_3", "trough_fractal_3"}
+        panel.chart_widget._static_scene_pixmap()
+        scene = panel.chart_widget.study_scene
+        assert scene is not None
+        visible_markers = {
+            marker.output_name: marker
+            for marker in scene.markers
+        }
+        assert {"peak_fractal_3", "trough_fractal_3"}.issubset(visible_markers)
+        assert not any(
+            name.endswith(("_5", "_7", "_9", "_11"))
+            for name in visible_markers
+        )
+        assert visible_markers["peak_fractal_3"].display_text == "3"
+        assert visible_markers["peak_fractal_3"].pixel_offset == -18
+        assert visible_markers["trough_fractal_3"].display_text == "3"
+        assert visible_markers["trough_fractal_3"].pixel_offset == 18
+
+        for output_name in ("peak_fractal_5", "trough_fractal_5"):
+            style = presentation.signal_styles[output_name]
+            chart_presenter.session.replace_study_line_style(
+                peaks.study_id, output_name, replace(style, visible=True)
+            )
+        chart_presenter._refresh_study_state()
+        _settle_qt()
+        panel.chart_widget._static_scene_pixmap()
+        scene = panel.chart_widget.study_scene
+        assert scene is not None
+        five = {
+            marker.output_name: marker
+            for marker in scene.markers
+            if marker.output_name.endswith("_5")
+        }
+        assert five["peak_fractal_5"].display_text == "5"
+        assert five["peak_fractal_5"].pixel_offset == -18
+        assert five["trough_fractal_5"].display_text == "5"
+        assert five["trough_fractal_5"].pixel_offset == 18
+        assert peaks.study_id == original_id
+        assert peaks.result.to_frame().equals(original_values)
+
+        semantic_cases = (
+            ("SMA", "#F59E0B"),
+            ("RSI", "#A855F7"),
+            ("Derivatives", "#FF9F1C"),
+        )
+        for title, expected_color in semantic_cases:
+            if title == "Derivatives":
+                _select_tool(dialog, title)
+                close_source = next(
+                    item
+                    for item in dialog._catalog.ohlcv_sources
+                    if item.column_name == "close"
+                )
+                dialog.source_selector.select_option("source", close_source)
+                assert dialog.apply_button.isEnabled()
+                dialog.apply_button.click()
+                studies.complete(next(reversed(studies.pending)))
+                _settle_qt()
+                _complete_catalog_refresh(setup)
+            else:
+                _apply_tool(dialog, studies, setup, title)
+            study = chart_presenter.session.studies[-1]
+            current = chart_presenter.session.study_presentations()[-1]
+            output_name = next(iter(current.signal_styles))
+            chart_presenter.session.replace_study_line_style(
+                study.study_id,
+                output_name,
+                replace(current.signal_styles[output_name], color="#FFFFFF"),
+            )
+            chart_presenter.reset_study_style(study.study_id)
+            restored = next(
+                item
+                for item in chart_presenter.session.study_presentations()
+                if item.study_id == study.study_id
+            )
+            assert restored.signal_styles[output_name].color == expected_color
     finally:
         presenter.dispose()
         window.close()

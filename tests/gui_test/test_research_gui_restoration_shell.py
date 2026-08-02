@@ -51,6 +51,8 @@ def test_restored_shell_menu_actions_and_quick_action_identity(qapp) -> None:
             "Load Workspace...",
             "Manage Workspaces...",
             "",
+            "Clear Research Suite",
+            "",
             "Close",
         ]
         assert _menu_labels(window.window_menu) == [
@@ -60,12 +62,18 @@ def test_restored_shell_menu_actions_and_quick_action_identity(qapp) -> None:
             "Fit 8",
         ]
         assert _menu_labels(window.notes_menu) == [
+            "Open Assigned Notebook",
+            "Notebook Manager...",
+        ]
+        for removed in (
             "Create New Notebook",
             "Open Notebook",
-            "Notebook Manager...",
             "Save Notebook",
             "Load Notebook",
-        ]
+        ):
+            assert removed not in _menu_labels(window.notes_menu)
+        with pytest.raises(KeyError):
+            window.quick_button_for_action("Open Notebook")
 
         pan_anchor = window.action_for_text("Pan Anchor")
         scroll_4 = window.action_for_text("Scroll 4")
@@ -79,11 +87,12 @@ def test_restored_shell_menu_actions_and_quick_action_identity(qapp) -> None:
         corner = window.menuBar().cornerWidget(Qt.Corner.TopRightCorner)
         assert corner is not None
         expected_quick_actions = {
-            "Open Notebook",
+            "Open Assigned Notebook",
             "Save Study Environment...",
             "Load Study Environment...",
             "Save Workspace...",
             "Load Workspace...",
+            "Clear Research Suite",
             "Pan Anchor",
         }
         for action_text in expected_quick_actions:

@@ -202,6 +202,7 @@ def test_apply_is_transient_and_manager_save_persists_without_recalculation(
         panel = window.workspace.chart_panel_for_slot(slot_id)
         session = presenter._workspace_state.session_for(slot_id)
         assert not hasattr(dialog, "save_artifact_button")
+        assert dialog.save_button.text() == "Save"
         _select_tool(dialog, "SMA")
         dialog.parameter_controls["period"].setValue(20)
         dialog.apply_button.click()
@@ -244,18 +245,156 @@ def test_apply_is_transient_and_manager_save_persists_without_recalculation(
             for option in dialog._catalog.artifact_options
         )
         saved_row = next(
-            row
-            for row in range(dialog.saved_artifact_table.rowCount())
-            if dialog.saved_artifact_table.item(row, 0).text()
-            == study.display_name
-        )
+                row
+                for row in range(dialog.saved_artifact_table.rowCount())
+                if dialog.saved_artifact_table.item(row, 1).text()
+                == study.display_name
+            )
         assert tuple(
             dialog.saved_artifact_table.item(saved_row, column).text()
-            for column in range(3)
-        ) == (study.display_name, "period=20", "sma_20")
+            for column in range(4)
+        ) == ("", study.display_name, "period=20", "sma_20")
         assert manager.entries[0].saved
         assert not manager.manager_widget._save.isEnabled()
         assert presenter._financial_tools_dialogs[slot_id] is dialog
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_financial_tools_save_applies_once_then_uses_canonical_save(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _datasets, studies, setup, _summary, slot_id, dialog = (
+        _ready_save_dialog(tmp_path)
+    )
+    try:
+        session = presenter._workspace_state.session_for(slot_id)
+        _select_tool(dialog, "SMA")
+        dialog.parameter_controls["period"].setValue(20)
+        dialog.save_button.click()
+        assert tuple(kind for kind, _request in studies.submissions) == (
+            "calculation",
+        )
+        studies.complete(next(reversed(studies.pending)))
+        _settle_qt()
+        assert session.study_count == 1
+        study_id = session.studies[0].study_id
+        assert tuple(kind for kind, _request in studies.submissions) == (
+            "calculation",
+            "save",
+        )
+        studies.complete(next(reversed(studies.pending)))
+        _settle_qt()
+        assert session.studies[0].study_id == study_id
+        assert session.studies[0].saved_link is not None
+        assert len(setup.pending) == 1
+        _complete_latest_setup(setup)
+        assert any(
+            option.artifact_id == session.studies[0].saved_link.artifact_id
+            for option in dialog._catalog.artifact_options
+        )
+        assert dialog.tool_list.currentItem().text() == "SMA"
+        assert dialog.parameter_controls["period"].value() == 20
+        assert dialog.status_label.text() == "Study saved."
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_financial_tools_rsi_save_applies_guides_before_persistence(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _datasets, studies, setup, _summary, slot_id, dialog = (
+        _ready_save_dialog(tmp_path)
+    )
+    try:
+        _select_tool(dialog, "RSI")
+        dialog.guide_controls["oversold"].setValue(25.0)
+        dialog.save_button.click()
+        request = studies.submissions[-1][1]
+        assert dict(request.parameters) == {"period": 14}
+        assert "oversold" not in request.parameters
+        studies.complete(next(reversed(studies.pending)))
+        _settle_qt()
+        session = presenter._workspace_state.session_for(slot_id)
+        study_id = session.studies[0].study_id
+        assert (
+            session.study_presentations()[0]
+            .guide_styles["oversold"]
+            .value
+            == 25.0
+        )
+        assert studies.submissions[-1][0] == "save"
+        assert sum(
+            kind == "calculation" for kind, _request in studies.submissions
+        ) == 1
+        studies.complete(next(reversed(studies.pending)))
+        _settle_qt()
+        assert session.studies[0].study_id == study_id
+        assert session.studies[0].saved_link is not None
+        _complete_latest_setup(setup)
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_financial_tools_save_failures_preserve_applied_unsaved_study(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _datasets, studies, _setup, _summary, slot_id, dialog = (
+        _ready_save_dialog(tmp_path)
+    )
+    try:
+        _select_tool(dialog, "SMA")
+        dialog.save_button.click()
+        studies.complete(next(reversed(studies.pending)))
+        _settle_qt()
+        studies.complete(
+            next(reversed(studies.pending)),
+            status="failed",
+            error_message="save failed",
+        )
+        _settle_qt()
+        session = presenter._workspace_state.session_for(slot_id)
+        assert session.study_count == 1
+        assert session.studies[0].saved_link is None
+        assert sum(
+            kind == "calculation" for kind, _request in studies.submissions
+        ) == 1
+        _complete_latest_setup(_setup)
+        assert dialog.status_label.text().startswith(
+            "Study applied but Save failed:"
+        )
+
+        presenter.dispose()
+        window.close()
+        (
+            window,
+            presenter,
+            _datasets,
+            studies,
+            _setup,
+            _summary,
+            slot_id,
+            dialog,
+        ) = _ready_save_dialog(tmp_path / "calculation_failure")
+        _select_tool(dialog, "SMA")
+        dialog.save_button.click()
+        studies.complete(
+            next(reversed(studies.pending)),
+            status="failed",
+            error_message="calculation failed",
+        )
+        _settle_qt()
+        assert presenter._workspace_state.session_for(slot_id).study_count == 0
+        assert all(kind != "save" for kind, _request in studies.submissions)
+        assert dialog.status_label.text().startswith(
+            "Study Save stopped before persistence:"
+        )
     finally:
         presenter.dispose()
         window.close()

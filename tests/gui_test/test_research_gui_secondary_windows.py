@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
     QApplication,
+    QLineEdit,
     QListWidget,
     QMessageBox,
     QPushButton,
@@ -79,11 +80,8 @@ def secondary_bundles():
         ("Save Workspace...", "save_workspace_snapshot_requested"),
         ("Load Workspace...", "load_workspace_snapshot_requested"),
         ("Manage Workspaces...", "manage_workspace_snapshots_requested"),
-        ("Create New Notebook", "create_notebook_requested"),
-        ("Open Notebook", "open_notebook_requested"),
+        ("Open Assigned Notebook", "open_notebook_requested"),
         ("Notebook Manager...", "notebook_manager_requested"),
-        ("Save Notebook", "save_notebook_requested"),
-        ("Load Notebook", "load_notebook_requested"),
     ),
 )
 def test_existing_actions_emit_secondary_window_intents_and_log_activity(
@@ -96,15 +94,15 @@ def test_existing_actions_emit_secondary_window_intents_and_log_activity(
         if "Workspace" in action_text:
             window.set_workspace_snapshot_actions_state(True, True, True)
         if "Notebook" in action_text:
-            window.set_notebook_actions_state(True, True, True, True)
-        if action_text == "Open Notebook":
+            window.set_notebook_actions_state(True)
+        if action_text == "Open Assigned Notebook":
             window.set_assigned_notebook_state("BTC Market Review")
         action = window.action_for_text(action_text)
         quick = (
             window.quick_button_for_action(action_text)
             if action_text
             in {
-                "Open Notebook",
+                "Open Assigned Notebook",
                 "Save Study Environment...",
                 "Load Study Environment...",
                 "Save Workspace...",
@@ -132,8 +130,14 @@ def test_open_notebook_action_tracks_assignment_presentation(
 ) -> None:
     window = ResearchSuiteWindow(())
     try:
-        action = window.action_for_text("Open Notebook")
-        quick = window.quick_button_for_action("Open Notebook")
+        assert not hasattr(window, "create_notebook_requested")
+        assert not hasattr(window, "save_notebook_requested")
+        assert not hasattr(window, "load_notebook_requested")
+        action = window.action_for_text("Open Assigned Notebook")
+        quick = window.quick_button_for_action("Open Assigned Notebook")
+        assert action.objectName() == (
+            "research_restoration.action.open_assigned_notebook"
+        )
         assert not action.isEnabled()
         assert action.toolTip() == (
             "No notebook assigned to the current workspace."
@@ -146,11 +150,16 @@ def test_open_notebook_action_tracks_assignment_presentation(
         assert action.toolTip() == "Open assigned notebook: BTC Market Review"
         assert action.statusTip() == action.toolTip()
         assert quick.isEnabled()
+        window.set_notebook_actions_state(False)
+        assert action.isEnabled()
+        assert not window.action_for_text("Notebook Manager...").isEnabled()
 
         with pytest.raises(ValueError):
             window.set_assigned_notebook_state("")
         with pytest.raises(ValueError):
             window.set_assigned_notebook_state(" padded ")
+        with pytest.raises(TypeError):
+            window.set_notebook_actions_state(1)
     finally:
         window.close()
 
@@ -262,7 +271,9 @@ def test_notebook_manager_constructor_remains_backward_compatible(
 
 
 def test_notebook_manager_assignment_projection_and_intents(
-    qapp: QApplication, secondary_bundles
+    qapp: QApplication,
+    secondary_bundles,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle = secondary_bundles[4]
     dialog = ResearchNotebookManagerDialog(
@@ -275,28 +286,53 @@ def test_notebook_manager_assignment_projection_and_intents(
         notebook_list = dialog.findChild(
             QListWidget, "research.notebook_manager_dialog.list.notebooks"
         )
-        assign = dialog.findChild(
-            QPushButton, "research.notebook_manager_dialog.button.assign"
+        assignment_action = dialog.findChild(
+            QPushButton,
+            "research.notebook_manager_dialog.button.assignment_action",
         )
-        unassign = dialog.findChild(
-            QPushButton, "research.notebook_manager_dialog.button.unassign"
+        selected_notebook = dialog.findChild(
+            QLineEdit,
+            "research.notebook_manager_dialog.assignment.selected_notebook",
+        )
+        target_workspace = dialog.findChild(
+            QLineEdit,
+            "research.notebook_manager_dialog.assignment.target_workspace",
+        )
+        current_assignment = dialog.findChild(
+            QLineEdit,
+            "research.notebook_manager_dialog.assignment.current_assignment",
         )
         assert table.columnCount() == 2
         assert tuple(
             table.horizontalHeaderItem(index).text() for index in range(2)
-        ) == ("Workspace", "Assigned Notebook")
+        ) == ("Workspace Snapshot", "Current Notebook")
         assert table.rowCount() == 2
         assert table.item(0, 0).text() == "Morning Research Workspace"
         assert table.item(0, 1).text() == "BTC Market Review"
         assert table.item(1, 0).text() == "Secondary Research Workspace"
         assert table.item(1, 1).text() == "Unassigned"
+        assert table.currentRow() == -1
+        assert table.item(0, 0).data(Qt.ItemDataRole.UserRole) == (
+            "dev_snapshot_primary"
+        )
+        assert table.item(0, 1).data(Qt.ItemDataRole.UserRole) == (
+            "dev_snapshot_primary"
+        )
+        assert selected_notebook.text() == "BTC Market Review"
+        assert target_workspace.text() == "None selected"
+        assert current_assignment.text() == "None selected"
+        assert assignment_action.text() == "Assign Notebook"
+        assert not assignment_action.isEnabled()
 
         notebook_list.setCurrentRow(1)
         table.setCurrentCell(1, 0)
         assign_spy = QSignalSpy(dialog.assign_requested)
-        assert assign.isEnabled()
-        assert not unassign.isEnabled()
-        assign.click()
+        assert selected_notebook.text() == "ETH Research Notes"
+        assert target_workspace.text() == "Secondary Research Workspace"
+        assert current_assignment.text() == "Unassigned"
+        assert assignment_action.text() == "Assign Notebook"
+        assert assignment_action.isEnabled()
+        assignment_action.click()
         assert assign_spy.count() == 1
         assert assign_spy.at(0) == [
             "dev_notebook_eth_notes",
@@ -314,13 +350,37 @@ def test_notebook_manager_assignment_projection_and_intents(
         dialog.set_assignments(updated)
         assert table.currentRow() == 1
         assert table.item(1, 1).text() == "ETH Research Notes"
-        assert not assign.isEnabled()
-        assert unassign.isEnabled()
+        assert current_assignment.text() == "ETH Research Notes"
+        assert assignment_action.text() == "Unassign Notebook"
+        assert assignment_action.isEnabled()
         unassign_spy = QSignalSpy(dialog.unassign_requested)
-        unassign.click()
+        answers = iter((QMessageBox.No, QMessageBox.Yes))
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *_args, **_kwargs: next(answers),
+        )
+        assignment_action.click()
+        assert unassign_spy.count() == 0
+        assignment_action.click()
         assert unassign_spy.at(0) == [
             "dev_notebook_eth_notes",
             "dev_snapshot_secondary",
+        ]
+
+        table.setCurrentCell(0, 0)
+        assert current_assignment.text() == "BTC Market Review"
+        assert assignment_action.text() == "Replace Assignment"
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *_args, **_kwargs: QMessageBox.Yes,
+        )
+        assignment_action.click()
+        assert assign_spy.count() == 2
+        assert assign_spy.at(1) == [
+            "dev_notebook_eth_notes",
+            "dev_snapshot_primary",
         ]
     finally:
         dialog.close()
@@ -388,7 +448,7 @@ def test_existing_secondary_window_families_are_reused(
         assert save_snapshot.windowTitle() == "Save Workspace"
         assert manage_snapshot.windowTitle() == "Manage Workspaces"
         assert preflight.windowTitle() == "Load Workspace"
-        assert manager.windowTitle() == "Research Notebooks"
+        assert manager.windowTitle() == "Notebook Manager"
         assert editor.windowTitle() == "Research Notebook"
         assert primary.market_id.as_key() in {
             page.market_id.as_key()
@@ -429,14 +489,19 @@ def test_launcher_wires_fixture_only_secondary_workflows() -> None:
         "save_workspace_snapshot_requested.connect",
         "load_workspace_snapshot_requested.connect",
         "manage_workspace_snapshots_requested.connect",
-        "create_notebook_requested.connect",
         "open_notebook_requested.connect",
         "notebook_manager_requested.connect",
-        "save_notebook_requested.connect",
-        "load_notebook_requested.connect",
+        "dialog.create_requested.connect(create_notebook)",
         '"Save requested (dev GUI)."',
     ):
         assert required in source
+    for removed in (
+        "create_notebook_requested.connect",
+        "save_notebook_requested.connect",
+        "load_notebook_requested.connect",
+        "load_title",
+    ):
+        assert removed not in source
     for forbidden in (
         "CoreRunner",
         "StudyEnvironmentStore",

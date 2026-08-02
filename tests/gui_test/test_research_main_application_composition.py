@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QProgressBar
 
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
@@ -118,16 +118,21 @@ def test_main_application_owns_tracks_retires_and_reopens_restored_research(
             "Save Workspace...": False,
             "Load Workspace...": True,
             "Manage Workspaces...": True,
-            "Create New Notebook": True,
-            "Open Notebook": False,
+            "Open Assigned Notebook": False,
             "Notebook Manager...": True,
-            "Save Notebook": False,
-            "Load Notebook": True,
         }
         assert {
             action_text: window.action_for_text(action_text).isEnabled()
             for action_text in expected_action_state
         } == expected_action_state
+        for removed_action in (
+            "Create New Notebook",
+            "Open Notebook",
+            "Save Notebook",
+            "Load Notebook",
+        ):
+            with pytest.raises(KeyError):
+                window.action_for_text(removed_action)
 
         main.action_for_id("main_window.open_research_suite").trigger()
         assert composition.research_suite_window is window
@@ -239,7 +244,34 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         )
         presenter._on_chart_state_changed(slot_id)
 
-        window.action_for_text("Save Study Environment...").trigger()
+        save_environment_action = window.action_for_text(
+            "Save Study Environment..."
+        )
+        save_environment_quick = window.quick_button_for_action(
+            "Save Study Environment..."
+        )
+        assert save_environment_action.isEnabled()
+        save_environment_action.trigger()
+        _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
+        cancelled_dialog = presenter._environment_save_dialogs[slot_id]
+        cancelled_dialog.reject()
+        _wait_until(
+            lambda: slot_id not in presenter._environment_save_dialogs
+            and not presenter._setup_task_ids
+            and save_environment_action.isEnabled()
+        )
+        assert save_environment_quick.isEnabled()
+        save_environment_action.trigger()
+        _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
+        closed_dialog = presenter._environment_save_dialogs[slot_id]
+        assert closed_dialog is not cancelled_dialog
+        closed_dialog.close()
+        _wait_until(
+            lambda: slot_id not in presenter._environment_save_dialogs
+            and not presenter._setup_task_ids
+            and save_environment_action.isEnabled()
+        )
+        save_environment_action.trigger()
         _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
         environment_dialog = presenter._environment_save_dialogs[slot_id]
         environment_dialog._name.setText("Threshold Environment")
@@ -271,12 +303,44 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         _wait_until(lambda: environment_manager._report is not None)
         study_count = chart.session.study_count
         environment_manager._apply.click()
+        apply_progress = environment_manager.findChild(
+            QProgressBar,
+            "research.environment_manager_dialog.progress.apply",
+        )
+        apply_status = environment_manager.findChild(
+            QLabel,
+            "research.environment_manager_dialog.label.apply_status",
+        )
+        assert environment_manager.apply_active
+        assert environment_manager.isVisible()
+        assert (apply_progress.minimum(), apply_progress.maximum()) == (
+            0,
+            len(environment.entries),
+        )
+        assert apply_progress.value() == 0
+        assert apply_status.text() in {
+            "Preparing Study Environment...",
+            f"Applying Study 1 of {len(environment.entries)}: "
+            f"{environment.entries[0].display_name}",
+        }
+        assert not environment_manager._list.isEnabled()
+        assert not environment_manager._target.isEnabled()
+        assert not environment_manager._apply.isEnabled()
+        environment_manager.reject()
+        assert environment_manager.isVisible()
         _wait_until(
             lambda: chart.session.study_count == study_count + 1
             and not chart.environment_apply_active
         )
+        _wait_until(lambda: slot_id not in presenter._environment_managers)
+        assert not environment_manager.isVisible()
         window.action_for_text("Load Study Environment...").trigger()
-        assert presenter._environment_managers[slot_id] is environment_manager
+        _wait_until(
+            lambda: slot_id in presenter._environment_managers
+            and presenter._environment_managers[slot_id] is not environment_manager
+            and not presenter._setup_task_ids
+        )
+        reopened_load_manager = presenter._environment_managers[slot_id]
         with pytest.raises(ValueError, match="mode must be 'load' or 'manage'"):
             presenter._open_environment_manager("invalid")
 
@@ -284,7 +348,7 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         window.action_for_text("Manage Study Environments...").trigger()
         _wait_until(
             lambda: presenter._environment_manager_modes.get(slot_id) == "manage"
-            and presenter._environment_managers[slot_id] is not environment_manager
+            and presenter._environment_managers[slot_id] is not reopened_load_manager
             and not presenter._setup_task_ids
         )
         manage_manager = presenter._environment_managers[slot_id]
@@ -370,6 +434,105 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         window.action_for_text("Load Workspace...").trigger()
         assert presenter._snapshot_manager is load_manager
         _wait_until(lambda: not presenter._snapshot_task_ids)
+        load_manager.snapshot_list.setCurrentRow(0)
+        _wait_until(
+            lambda: load_manager.snapshot is not None
+            and load_manager.compatibility_report is not None
+            and not presenter._snapshot_task_ids
+        )
+        load_manager.replace_radio.setChecked(True)
+        _wait_until(
+            lambda: load_manager.compatibility_report is not None
+            and load_manager.compatibility_report.mode == "replace"
+            and load_manager.compatibility_report.compatible
+            and not presenter._snapshot_task_ids
+        )
+        load_manager.load_button.click()
+        _wait_until(lambda: presenter._snapshot_preflight_dialog is not None)
+        preflight = presenter._snapshot_preflight_dialog
+
+        presenter._open_financial_tools(slot_id)
+        _wait_until(
+            lambda: slot_id in presenter._financial_tools_dialogs
+            and slot_id not in presenter._active_study_setup_catalog_tasks
+        )
+        financial_tools = presenter._financial_tools_dialogs[slot_id]
+        presenter._open_studies_manager(slot_id)
+        studies_manager = presenter._studies_manager_dialogs[slot_id]
+        presenter._open_go_to(slot_id)
+        go_to = presenter._go_to_dialogs[slot_id]
+        window.action_for_text("Notebook Manager...").trigger()
+        _wait_until(lambda: presenter._notebook_manager is not None)
+        old_notebook_manager = presenter._notebook_manager
+        window.action_for_text("New Chart...").trigger()
+        new_chart_dialog = presenter._new_chart_dialog
+
+        assert financial_tools.isVisible()
+        assert studies_manager.isVisible()
+        assert go_to.isVisible()
+        assert replacement_load_manager.isVisible()
+        assert load_manager.isVisible()
+        assert old_notebook_manager.isVisible()
+        assert new_chart_dialog.isVisible()
+
+        restore_load_entered = Event()
+        release_restore_load = Event()
+        loader = app.research_dataset_service._loader
+        original_load = loader.load
+
+        def blocked_restore_load(market_id, *, progress=None, cancellation_requested=None):
+            if progress is not None:
+                progress(1, 2)
+            restore_load_entered.set()
+            assert release_restore_load.wait(5.0)
+            return original_load(
+                market_id,
+                progress=progress,
+                cancellation_requested=cancellation_requested,
+            )
+
+        monkeypatch.setattr(loader, "load", blocked_restore_load)
+        preflight.load_button.click()
+        assert restore_load_entered.wait(5.0)
+        qapp.processEvents()
+        assert presenter._snapshot_preflight_dialog is preflight
+        assert preflight.isVisible()
+        assert preflight.restore_active
+        assert preflight.progress.value() == 0
+        assert preflight.current_progress.maximum() == 2
+        assert preflight.current_progress.value() == 1
+        release_restore_load.set()
+        _wait_until(
+            lambda: presenter._snapshot_restore is None
+            and presenter._snapshot_preflight_dialog is None
+        )
+        assert preflight.progress.value() == len(snapshot.charts)
+        assert preflight.restore_status.text() == "Workspace restored."
+        assert not preflight.isVisible()
+        assert presenter._snapshot_manager is None
+        assert not load_manager.isVisible()
+        assert not financial_tools.isVisible()
+        assert not studies_manager.isVisible()
+        assert not go_to.isVisible()
+        assert not replacement_load_manager.isVisible()
+        assert presenter._notebook_manager is None
+        assert not old_notebook_manager.isVisible()
+        assert presenter._new_chart_dialog is new_chart_dialog
+        assert not new_chart_dialog.isVisible()
+        assert presenter._financial_tools_dialogs == {}
+        assert presenter._studies_manager_dialogs == {}
+        assert presenter._go_to_dialogs == {}
+        assert presenter._environment_managers == {}
+        assert presenter._environment_manager_modes == {}
+        assert presenter._workspace_state.chart_count == len(snapshot.charts)
+        restored_slot = presenter._workspace_state.active_slot_id
+        assert restored_slot is not None
+        restored_chart = presenter._chart_presenters[restored_slot]
+        assert restored_chart.session.selected_market_id == snapshot.charts[0].market_id
+        assert restored_chart.session.study_count == len(
+            snapshot.charts[0].study_environment.entries
+        )
+        assert presenter._current_workspace_snapshot_id == snapshot.snapshot_id
         window.action_for_text("Manage Workspaces...").trigger()
         _wait_until(
             lambda: presenter._snapshot_manager is not None
@@ -377,12 +540,14 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         )
         assert presenter._snapshot_manager is not load_manager
 
-        window.action_for_text("Create New Notebook").trigger()
+        window.action_for_text("Notebook Manager...").trigger()
+        _wait_until(lambda: presenter._notebook_manager is not None)
+        notebook_manager = presenter._notebook_manager
+        notebook_manager._create.click()
         editor = presenter._notebook_editor
         assert editor is not None
         assert editor.is_current_valid
-        assert window.action_for_text("Save Notebook").isEnabled()
-        window.action_for_text("Save Notebook").trigger()
+        editor._save.click()
         _wait_until(
             lambda: presenter._notebook_task_id is None
             and editor.notebook_id is not None
@@ -391,9 +556,6 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         assert app.research_notebook_store.load(notebook_id).notebook_id == notebook_id
 
         window.action_for_text("Notebook Manager...").trigger()
-        _wait_until(lambda: presenter._notebook_manager is not None)
-        notebook_manager = presenter._notebook_manager
-        window.action_for_text("Notebook Manager...").trigger()
         assert presenter._notebook_manager is notebook_manager
         _wait_until(
             lambda: bool(notebook_manager.summaries)
@@ -401,6 +563,14 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
             and presenter._notebook_task_id is None
             and not presenter._snapshot_task_ids
         )
+        presenter._close_notebook_editor()
+        notebook_manager._open.click()
+        _wait_until(
+            lambda: presenter._notebook_editor is not None
+            and presenter._notebook_editor.notebook_id == notebook_id
+        )
+        assert presenter._notebook_manager is notebook_manager
+        presenter._close_notebook_editor()
         assert notebook_manager.assignments[0].snapshot_id == snapshot.snapshot_id
         assert notebook_manager.assignments[0].notebook_id is None
         assignment_entered = Event()
@@ -419,7 +589,12 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
             "assign_notebook",
             blocked_assign,
         )
-        notebook_manager._assign.click()
+        notebook_manager._assignment_table.setCurrentCell(0, 0)
+        assert notebook_manager._selected_notebook.text() == "Untitled Notebook"
+        assert notebook_manager._target_workspace.text() == "Threshold Workspace"
+        assert notebook_manager._current_assignment.text() == "Unassigned"
+        assert notebook_manager._assignment_action.text() == "Assign Notebook"
+        notebook_manager._assignment_action.click()
         assert assignment_entered.wait(5.0)
         notebook_manager.close()
         qapp.processEvents()
@@ -436,8 +611,8 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         assert presenter._assigned_notebook_id == notebook_id
         assert presenter._current_workspace_snapshot_id == snapshot.snapshot_id
         presenter._close_notebook_editor()
-        assert window.action_for_text("Open Notebook").isEnabled()
-        window.action_for_text("Open Notebook").trigger()
+        assert window.action_for_text("Open Assigned Notebook").isEnabled()
+        window.action_for_text("Open Assigned Notebook").trigger()
         _wait_until(
             lambda: presenter._notebook_editor is not None
             and presenter._notebook_editor.notebook_id == notebook_id
@@ -494,7 +669,7 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         )
         assert presenter._assigned_notebook_id is None
         assert presenter._current_workspace_snapshot_id == snapshot.snapshot_id
-        assert not window.action_for_text("Open Notebook").isEnabled()
+        assert not window.action_for_text("Open Assigned Notebook").isEnabled()
     finally:
         main.close()
         app.shutdown()

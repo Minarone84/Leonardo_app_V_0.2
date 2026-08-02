@@ -7,6 +7,7 @@ from PySide6.QtGui import QShowEvent
 from collections.abc import Mapping, Sequence
 
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
+from shiboken6 import isValid as is_qt_object_valid
 
 from leonardo.gui.chart.candlestick_widget import CandlestickChartWidget
 from leonardo.gui.chart.annotation_scene import ResearchChartAnnotationBundle
@@ -16,6 +17,10 @@ from leonardo.gui.chart.study_scene import PriceStudyBundle
 from leonardo.gui.chart.volume_widget import VolumeChartWidget
 from leonardo.research import ResidentStudyProjection, StudyPresentation
 from leonardo.research.volume import ResidentVolumeProjection
+
+
+ANCHOR_SCALE = 1000
+ANCHOR_STEP = 10
 
 
 class ChartPaneWorkspaceWidget(QWidget):
@@ -167,9 +172,7 @@ class ChartPaneWorkspaceWidget(QWidget):
         if visible == self._volume_visible:
             return False
         if not visible and self.isVisible():
-            sizes = self._splitter.sizes()
-            if len(sizes) == 2 and sizes[0] > 0 and sizes[1] > 0:
-                self._last_visible_sizes = (int(sizes[0]), int(sizes[1]))
+            self._remember_current_sizes()
         self._volume_visible = visible
         self._volume.setVisible(visible)
         if visible:
@@ -286,10 +289,11 @@ class ChartPaneWorkspaceWidget(QWidget):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
-        if self._volume_visible:
-            QTimer.singleShot(0, self._apply_visible_sizes)
+        QTimer.singleShot(0, self._apply_visible_sizes)
 
     def _apply_visible_sizes(self) -> None:
+        if not is_qt_object_valid(self) or not is_qt_object_valid(self._splitter):
+            return
         self._apply_pane_sizes()
 
     def _pane_ids_in_splitter_order(self) -> tuple[str, ...]:
@@ -315,11 +319,56 @@ class ChartPaneWorkspaceWidget(QWidget):
             else:
                 sizes.append(self._pane_size_by_id.get(pane_id, 180))
         if sizes:
-            self._splitter.setSizes(sizes)
+            self._set_splitter_sizes(sizes)
+            self._normalize_visible_layout()
 
     def _remember_sizes(self, _position: int, _index: int) -> None:
         if not self.isVisible():
             return
+        self._normalize_visible_layout()
+
+    def _normalize_visible_layout(self) -> None:
+        if not self.isVisible():
+            return
+        sizes = self._splitter.sizes()
+        pane_ids = self._pane_ids_in_splitter_order()
+        if len(sizes) != len(pane_ids):
+            return
+        visible = tuple(
+            (index, pane_id, self._splitter.widget(index))
+            for index, pane_id in enumerate(pane_ids)
+            if not self._splitter.widget(index).isHidden()
+        )
+        if not visible:
+            return
+        raw_sizes = tuple(int(sizes[index]) for index, _pane_id, _widget in visible)
+        if any(size <= 0 for size in raw_sizes):
+            raw_sizes = tuple(
+                self._pane_size_by_id.get(pane_id, 180)
+                for _index, pane_id, _widget in visible
+            )
+        minimums = tuple(
+            max(1, int(widget.minimumHeight()))
+            for _index, _pane_id, widget in visible
+        )
+        snapped = _anchored_sizes(raw_sizes, minimums)
+        if snapped is not None:
+            applied = [0] * len(sizes)
+            for (index, _pane_id, _widget), size in zip(
+                visible, snapped, strict=True
+            ):
+                applied[index] = size
+            self._set_splitter_sizes(applied)
+        self._remember_current_sizes()
+
+    def _set_splitter_sizes(self, sizes: Sequence[int]) -> None:
+        blocked = self._splitter.blockSignals(True)
+        try:
+            self._splitter.setSizes(tuple(int(size) for size in sizes))
+        finally:
+            self._splitter.blockSignals(blocked)
+
+    def _remember_current_sizes(self) -> None:
         sizes = self._splitter.sizes()
         pane_ids = self._pane_ids_in_splitter_order()
         if len(sizes) != len(pane_ids):
@@ -327,8 +376,14 @@ class ChartPaneWorkspaceWidget(QWidget):
         for pane_id, size in zip(pane_ids, sizes, strict=True):
             if size > 0:
                 self._pane_size_by_id[pane_id] = int(size)
-        if self._volume_visible and sizes[0] > 0 and sizes[1] > 0:
-            self._last_visible_sizes = (int(sizes[0]), int(sizes[1]))
+        if self._volume_visible:
+            price_index = pane_ids.index("price")
+            volume_index = pane_ids.index("volume")
+            if sizes[price_index] > 0 and sizes[volume_index] > 0:
+                self._last_visible_sizes = (
+                    int(sizes[price_index]),
+                    int(sizes[volume_index]),
+                )
 
     def _on_price_viewport_changed(self, snapshot: object) -> None:
         self._refresh_non_price_panes()
@@ -373,3 +428,69 @@ class ChartPaneWorkspaceWidget(QWidget):
         self._price.set_time_axis_visible(not visible)
         for widget in self._oscillators.values():
             widget.set_time_axis_visible(bool(visible) and widget is visible[-1])
+
+
+def _anchored_sizes(
+    raw_sizes: Sequence[int], minimums: Sequence[int]
+) -> tuple[int, ...] | None:
+    """Quantize cumulative visible-pane boundaries to the nearest legal grid."""
+
+    sizes = tuple(int(size) for size in raw_sizes)
+    resolved_minimums = tuple(int(value) for value in minimums)
+    if len(sizes) != len(resolved_minimums) or not sizes:
+        return None
+    total = sum(sizes)
+    if total <= 0 or sum(resolved_minimums) > total:
+        return None
+    if len(sizes) == 1:
+        return (total,)
+
+    target_boundaries: list[int] = []
+    cumulative = 0
+    for size in sizes[:-1]:
+        cumulative += size
+        target_boundaries.append(round(cumulative * ANCHOR_SCALE / total))
+
+    pixel_positions = {
+        anchor: round(anchor * total / ANCHOR_SCALE)
+        for anchor in range(0, ANCHOR_SCALE + 1, ANCHOR_STEP)
+    }
+    states: dict[int, tuple[int, tuple[int, ...]]] = {0: (0, ())}
+    for pane_index, target in enumerate(target_boundaries):
+        next_states: dict[int, tuple[int, tuple[int, ...]]] = {}
+        remaining_minimum = sum(resolved_minimums[pane_index + 1 :])
+        for previous, (cost, path) in states.items():
+            for anchor in range(
+                previous + ANCHOR_STEP, ANCHOR_SCALE, ANCHOR_STEP
+            ):
+                if (
+                    pixel_positions[anchor] - pixel_positions[previous]
+                    < resolved_minimums[pane_index]
+                ):
+                    continue
+                if total - pixel_positions[anchor] < remaining_minimum:
+                    continue
+                candidate = (cost + (anchor - target) ** 2, path + (anchor,))
+                current = next_states.get(anchor)
+                if current is None or candidate < current:
+                    next_states[anchor] = candidate
+        states = next_states
+        if not states:
+            return None
+
+    valid = tuple(
+        value
+        for anchor, value in states.items()
+        if total - pixel_positions[anchor] >= resolved_minimums[-1]
+    )
+    if not valid:
+        return None
+    _cost, boundaries = min(valid)
+    pixels = tuple(pixel_positions[anchor] for anchor in boundaries)
+    cumulative_pixels = (0, *pixels, total)
+    return tuple(
+        right - left
+        for left, right in zip(
+            cumulative_pixels, cumulative_pixels[1:]
+        )
+    )

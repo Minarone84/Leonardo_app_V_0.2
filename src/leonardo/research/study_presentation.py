@@ -25,6 +25,24 @@ _PALETTES = {
     "oscillator": ("#A855F7", "#22D3EE", "#F97316", "#84CC16", "#EC4899", "#60A5FA"),
     "construct": ("#06B6D4", "#E879F9", "#FACC15", "#4ADE80", "#FB7185", "#60A5FA"),
 }
+_SEMANTIC_LINE_COLORS = MappingProxyType(
+    {
+        "sma": "#F59E0B",
+        "ema": "#22C55E",
+        "tema": "#A855F7",
+        "hma": "#06B6D4",
+        "kama": "#EF4444",
+        "obv": "#E5E7EB",
+        "derivative": "#FF9F1C",
+        "angle": "#00E5FF",
+        "braids": "#B967FF",
+        "braid_instability": "#FF3DCE",
+        "delta": "#FFF200",
+        "trap_area": "#FF6B35",
+        "percent_span_angle": "#39FF14",
+        "angle_momentum": "#4DA3FF",
+    }
+)
 _STATE_COLORS = MappingProxyType(
     {"green": "#22C55E", "red": "#EF4444", "silver": "#22C55E"}
 )
@@ -645,6 +663,7 @@ def _line_style(
     line_pattern: str = "solid",
     render_mode: str = "line",
     marker_shape: str = "none",
+    marker_size: int = 8,
     conditional_driver_name: str | None = None,
     conditional_colors: Mapping[str, str] = MappingProxyType({}),
 ) -> StudyLineStyle:
@@ -655,6 +674,7 @@ def _line_style(
         visible=visible,
         render_mode=render_mode,
         marker_shape=marker_shape,
+        marker_size=marker_size,
         conditional_driver_name=conditional_driver_name,
         conditional_colors=conditional_colors,
     )
@@ -690,12 +710,13 @@ def build_default_study_presentation(study: ChartStudy) -> StudyPresentation:
     )
     signal_by_name = {signal.name: signal for signal in resolved}
     palette = _PALETTES[study.result.kind]
+    semantic_color = _SEMANTIC_LINE_COLORS.get(spec.key)
     styles: dict[str, StudyLineStyle] = {}
     for index, output_name in enumerate(study.renderable_output_names):
         signal = signal_by_name[output_name]
         styles[output_name] = _line_style(
             output_name,
-            palette[index % len(palette)],
+            semantic_color or palette[index % len(palette)],
             visible=signal.default_visible,
         )
 
@@ -760,6 +781,7 @@ def build_default_study_presentation(study: ChartStudy) -> StudyPresentation:
                 visible=signal_by_name[output_name].default_visible,
                 render_mode="marker",
                 marker_shape="triangle_down" if peak else "triangle_up",
+                marker_size=14,
             )
     elif spec.key == "rsi":
         output_name = study.renderable_output_names[0]
@@ -810,6 +832,18 @@ def build_default_study_presentation(study: ChartStudy) -> StudyPresentation:
             styles[output_name] = _line_style(
                 output_name,
                 "#F59E0B" if output_name.startswith("smi_signal_") else "#06B6D4",
+                visible=styles[output_name].visible,
+            )
+    elif spec.key == "obv":
+        output_name = study.renderable_output_names[0]
+        styles[output_name] = _line_style(
+            output_name, "#E5E7EB", visible=styles[output_name].visible
+        )
+    elif spec.key == "volume":
+        for output_name in study.renderable_output_names:
+            styles[output_name] = _line_style(
+                output_name,
+                "#06B6D4" if output_name.startswith("volume_mean_") else "#94A3B8",
                 visible=styles[output_name].visible,
             )
     elif spec.key == "universal_trend_classifier":

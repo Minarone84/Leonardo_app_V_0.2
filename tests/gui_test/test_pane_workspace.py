@@ -8,6 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 from leonardo.data import MarketId
@@ -19,6 +20,7 @@ from leonardo.research import (
     ResidentOHLCVSlice,
     build_resident_volume_projection,
 )
+from tools.research_gui_dev_fixtures import build_primary_chart_fixture
 
 
 def _state_and_projection():
@@ -82,3 +84,137 @@ def test_workspace_owns_optional_volume_pane_and_shared_state() -> None:
     assert workspace.pane_sizes()[1] > 0
     workspace.close()
     app.processEvents()
+
+
+def _visible_sizes(workspace: ChartPaneWorkspaceWidget) -> tuple[int, ...]:
+    return tuple(
+        size
+        for index, size in enumerate(workspace._splitter.sizes())
+        if not workspace._splitter.widget(index).isHidden()
+    )
+
+
+def _normalized_boundaries(workspace: ChartPaneWorkspaceWidget) -> tuple[int, ...]:
+    sizes = _visible_sizes(workspace)
+    total = sum(sizes)
+    cumulative = 0
+    boundaries: list[int] = []
+    for size in sizes[:-1]:
+        cumulative += size
+        boundaries.append(round(cumulative * 1000 / total))
+    return tuple(boundaries)
+
+
+def _on_anchor(boundary: int) -> bool:
+    return abs(boundary - round(boundary / 10) * 10) <= 1
+
+
+def _show_workspace(
+    app: QApplication, height: int
+) -> ChartPaneWorkspaceWidget:
+    state, projection = _state_and_projection()
+    workspace = ChartPaneWorkspaceWidget()
+    workspace.set_interaction_state(state)
+    workspace.set_volume_projection(projection)
+    workspace.set_volume_visible(True)
+    workspace.resize(800, height)
+    workspace.show()
+    app.processEvents()
+    return workspace
+
+
+def test_user_splitter_drag_snaps_reproducibly_without_recursive_emission() -> None:
+    app = QApplication.instance() or QApplication([])
+    workspace = _show_workspace(app, 700)
+    try:
+        splitter = workspace._splitter
+        assert splitter.handle(1).isVisible()
+        assert not splitter.childrenCollapsible()
+        emitted = QSignalSpy(splitter.splitterMoved)
+        total = sum(_visible_sizes(workspace))
+
+        splitter.moveSplitter(round(total * 0.633), 1)
+        app.processEvents()
+        first_sizes = _visible_sizes(workspace)
+        first_boundaries = _normalized_boundaries(workspace)
+        assert all(_on_anchor(boundary) for boundary in first_boundaries)
+        assert all(
+            size >= splitter.widget(index).minimumHeight()
+            for index, size in enumerate(splitter.sizes())
+            if not splitter.widget(index).isHidden()
+        )
+
+        splitter.moveSplitter(round(total * 0.633), 1)
+        app.processEvents()
+        assert _visible_sizes(workspace) == first_sizes
+        assert _normalized_boundaries(workspace) == first_boundaries
+        assert emitted.count() == 2
+    finally:
+        workspace.close()
+        app.processEvents()
+
+
+def test_normalized_splitter_anchors_are_height_independent_and_chart_local() -> None:
+    app = QApplication.instance() or QApplication([])
+    first = _show_workspace(app, 650)
+    second = _show_workspace(app, 950)
+    try:
+        second_before = _normalized_boundaries(second)
+        for workspace in (first, second):
+            workspace._splitter.moveSplitter(
+                round(workspace._splitter.height() * 0.65), 1
+            )
+            app.processEvents()
+        assert _normalized_boundaries(first)[0] == pytest.approx(650, abs=1)
+        assert _normalized_boundaries(second)[0] == pytest.approx(650, abs=1)
+
+        first._splitter.moveSplitter(round(first._splitter.height() * 0.72), 1)
+        app.processEvents()
+        assert _normalized_boundaries(first)[0] == pytest.approx(720, abs=1)
+        assert _normalized_boundaries(second)[0] == pytest.approx(650, abs=1)
+        assert second_before != _normalized_boundaries(first)
+    finally:
+        first.close()
+        second.close()
+        app.processEvents()
+
+
+def test_visible_topology_changes_remain_anchored_and_exclude_hidden_panes() -> None:
+    app = QApplication.instance() or QApplication([])
+    fixture = build_primary_chart_fixture()
+    workspace = ChartPaneWorkspaceWidget()
+    workspace.set_interaction_state(fixture.interaction_state)
+    workspace.set_volume_visible(True)
+    workspace.resize(900, 900)
+    workspace.show()
+    app.processEvents()
+    try:
+        workspace.apply_study_state(
+            fixture.study_projections[2:], fixture.study_presentations[2:]
+        )
+        app.processEvents()
+        assert all(
+            _on_anchor(boundary)
+            for boundary in _normalized_boundaries(workspace)
+        )
+
+        workspace.set_volume_visible(False)
+        app.processEvents()
+        assert workspace._splitter.sizes()[1] == 0
+        assert all(
+            _on_anchor(boundary)
+            for boundary in _normalized_boundaries(workspace)
+        )
+
+        workspace.apply_study_state(
+            fixture.study_projections[2:3], fixture.study_presentations[2:3]
+        )
+        app.processEvents()
+        assert workspace.oscillator_widget("dev-volume") is None
+        assert all(
+            _on_anchor(boundary)
+            for boundary in _normalized_boundaries(workspace)
+        )
+    finally:
+        workspace.close()
+        app.processEvents()

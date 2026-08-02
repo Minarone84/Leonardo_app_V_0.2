@@ -9,6 +9,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
+from leonardo.core.core_runner import TaskProgress
 from leonardo.gui.research import ResearchChartPanel
 from leonardo.research import DatasetCatalogReport
 from tests.gui_test.test_research_gui_service_catalog import (
@@ -108,6 +109,71 @@ def test_duplicate_charts_have_independent_sessions_viewports_and_task_ids() -> 
         assert second_presenter.session.selected_market_id == summary.market_id
         assert first_presenter.viewport is not second_presenter.viewport
         assert first_presenter.interaction is not second_presenter.interaction
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_dataset_progress_observer_receives_only_current_load_progress() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    first_progress: list[TaskProgress] = []
+    second_progress: list[TaskProgress] = []
+    completions = []
+    try:
+        slot_id, chart = presenter._create_restored_chart(summary.market_id)
+        first = chart.open_dataset(
+            summary.market_id,
+            progress_callback=first_progress.append,
+            completion_callback=completions.append,
+        )
+        accepted = TaskProgress(first.task_id, "Loading", 25, 100)
+        chart._on_load_progress(accepted)
+        assert first_progress == [accepted]
+        assert window.workspace.chart_panel_for_slot(slot_id)._progress == (25, 100)
+
+        second = chart.open_dataset(
+            summary.market_id,
+            progress_callback=second_progress.append,
+            completion_callback=completions.append,
+        )
+        _settle_qt()
+        chart._on_load_progress(TaskProgress(first.task_id, "stale", 50, 100))
+        assert first_progress == [accepted]
+        assert second_progress == []
+        assert completions[0].status == "cancellation"
+
+        current = TaskProgress(second.task_id, "Loading", 75, 100)
+        chart._on_load_progress(current)
+        assert second_progress == [current]
+        service.complete(second.task_id)
+        resident_id = service.pending_ids("resident")[-1]
+        chart._on_slice_progress(
+            TaskProgress(resident_id, "Resident", 10, 10)
+        )
+        assert second_progress == [current]
+        service.complete(resident_id)
+        _settle_qt()
+        assert chart._dataset_progress is None
+        assert completions[-1].status == "success"
+        chart._on_load_progress(TaskProgress(second.task_id, "late", 100, 100))
+        assert second_progress == [current]
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_dataset_progress_observer_is_cleared_by_supersession_and_disposal() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    try:
+        _slot_id, chart = presenter._create_restored_chart(summary.market_id)
+        chart.open_dataset(summary.market_id, progress_callback=lambda _item: None)
+        chart.open_dataset(summary.market_id)
+        assert chart._dataset_progress is None
+        chart.open_dataset(summary.market_id, progress_callback=lambda _item: None)
+        chart.dispose()
+        assert chart._dataset_progress is None
     finally:
         presenter.dispose()
         window.close()

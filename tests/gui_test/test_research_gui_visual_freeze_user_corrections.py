@@ -676,8 +676,6 @@ def test_dev_composition_reuses_and_tracks_logical_windows(
             (window.load_workspace_snapshot_requested, "research_restoration.workspace.load"),
             (window.manage_workspace_snapshots_requested, "research_restoration.workspace.manage"),
             (window.notebook_manager_requested, "research_restoration.notebook.manager"),
-            (window.load_notebook_requested, "research_restoration.notebook.load"),
-            (window.create_notebook_requested, "research_restoration.notebook.editor"),
         )
         for signal, window_id in emitters:
             signal.emit()
@@ -686,6 +684,17 @@ def test_dev_composition_reuses_and_tracks_logical_windows(
             signal.emit()
             qapp.processEvents()
             assert tracked[window_id] is first
+
+        notebook_manager = tracked["research_restoration.notebook.manager"]
+        new_notebook = notebook_manager.findChild(
+            QPushButton, "research.notebook_manager_dialog.button.new"
+        )
+        new_notebook.click()
+        qapp.processEvents()
+        notebook_editor = tracked["research_restoration.notebook.editor"]
+        new_notebook.click()
+        qapp.processEvents()
+        assert tracked["research_restoration.notebook.editor"] is notebook_editor
 
         first_panel = window.workspace.chart_panel_for_slot(1)
         second_panel = window.workspace.chart_panel_for_slot(2)

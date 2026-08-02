@@ -9,6 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from leonardo.artifacts import ArtifactService
@@ -301,7 +302,7 @@ def test_real_catalog_availability_tracking_reuse_and_phase_gates(tmp_path: Path
     def tracker(widget, window_id, title, window_type):
         tracked.append((widget, window_id, title, window_type, widget.isVisible()))
 
-    window, presenter, dataset_service, _study, setup, summary = real_presenter(
+    window, presenter, dataset_service, study, setup, summary = real_presenter(
         tmp_path, tracker
     )
     try:
@@ -339,6 +340,15 @@ def test_real_catalog_availability_tracking_reuse_and_phase_gates(tmp_path: Path
         )
         dialog.family_combo.setCurrentText("All")
         assert not hasattr(dialog, "save_artifact_button")
+        dialog.saved_artifact_table.item(0, 0).setCheckState(
+            Qt.CheckState.Checked
+        )
+        for row in range(dialog.tool_list.count()):
+            if dialog.tool_list.item(row).text() == "RSI":
+                dialog.tool_list.setCurrentRow(row)
+                break
+        dialog.parameter_controls["period"].setValue(21)
+        dialog.guide_controls["oversold"].setValue(24.0)
         assert tracked[-1] == (
             dialog,
             "research_restoration.financial_tools.1",
@@ -349,7 +359,22 @@ def test_real_catalog_availability_tracking_reuse_and_phase_gates(tmp_path: Path
         panel.financial_tools_button.click()
         _settle_qt()
         assert presenter._financial_tools_dialogs[slot_id] is dialog
+        assert dialog.tool_list.currentItem().text() == "RSI"
+        assert dialog.parameter_controls["period"].value() == 21
+        assert dialog.guide_controls["oversold"].value() == 24.0
+        assert "a" * 64 in dialog._checked_artifact_ids
         assert setup._sequence == 1
+
+        dialog.apply_button.click()
+        study.complete(next(reversed(study.pending)))
+        _settle_qt()
+        setup.complete(next(reversed(setup.pending)))
+        _settle_qt()
+        assert presenter._financial_tools_dialogs[slot_id] is dialog
+        assert dialog.tool_list.currentItem().text() == "RSI"
+        assert dialog.parameter_controls["period"].value() == 21
+        assert dialog.guide_controls["oversold"].value() == 24.0
+        assert "a" * 64 in dialog._checked_artifact_ids
         assert "research_gui_dev_fixtures" not in Path(
             "src/leonardo/gui/research/lifecycle_presenter.py"
         ).read_text(encoding="utf-8")

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -52,6 +53,7 @@ class ResearchNotebookManagerDialog(QDialog):
     """Display notebook summaries and emit immutable selection intent."""
 
     refresh_requested = Signal()
+    create_requested = Signal()
     open_requested = Signal(str)
     delete_requested = Signal(str)
     assign_requested = Signal(str, str)
@@ -66,7 +68,7 @@ class ResearchNotebookManagerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("research.notebook_manager_dialog")
-        self.setWindowTitle("Research Notebooks")
+        self.setWindowTitle("Notebook Manager")
         self._summaries: tuple[ResearchNotebookSummary, ...] = ()
         self._assignments: tuple[ResearchNotebookSnapshotAssignment, ...] = ()
         self._list = QListWidget(self)
@@ -88,13 +90,39 @@ class ResearchNotebookManagerDialog(QDialog):
         self._pages.setHorizontalHeaderLabels(
             ("Exchange", "Market Type", "Asset", "Timeframe")
         )
+        self._pages.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._assignment_table = QTableWidget(0, 2, self)
         self._assignment_table.setObjectName(
             "research.notebook_manager_dialog.table.assignments"
         )
         self._assignment_table.setHorizontalHeaderLabels(
-            ("Workspace", "Assigned Notebook")
+            ("Workspace Snapshot", "Current Notebook")
         )
+        self._assignment_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._assignment_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self._assignment_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self._assignment_table.verticalHeader().setVisible(False)
+        self._selected_notebook = QLineEdit(self)
+        self._selected_notebook.setObjectName(
+            "research.notebook_manager_dialog.assignment.selected_notebook"
+        )
+        self._selected_notebook.setReadOnly(True)
+        self._target_workspace = QLineEdit(self)
+        self._target_workspace.setObjectName(
+            "research.notebook_manager_dialog.assignment.target_workspace"
+        )
+        self._target_workspace.setReadOnly(True)
+        self._current_assignment = QLineEdit(self)
+        self._current_assignment.setObjectName(
+            "research.notebook_manager_dialog.assignment.current_assignment"
+        )
+        self._current_assignment.setReadOnly(True)
         self._validation = QLabel("", self)
         self._validation.setObjectName(
             "research.notebook_manager_dialog.label.validation"
@@ -102,6 +130,10 @@ class ResearchNotebookManagerDialog(QDialog):
         self._refresh = QPushButton("Refresh", self)
         self._refresh.setObjectName(
             "research.notebook_manager_dialog.button.refresh"
+        )
+        self._create = QPushButton("New Notebook", self)
+        self._create.setObjectName(
+            "research.notebook_manager_dialog.button.new"
         )
         self._open = QPushButton("Open", self)
         self._open.setObjectName(
@@ -111,13 +143,9 @@ class ResearchNotebookManagerDialog(QDialog):
         self._delete.setObjectName(
             "research.notebook_manager_dialog.button.delete"
         )
-        self._assign = QPushButton("Assign...", self)
-        self._assign.setObjectName(
-            "research.notebook_manager_dialog.button.assign"
-        )
-        self._unassign = QPushButton("Unassign...", self)
-        self._unassign.setObjectName(
-            "research.notebook_manager_dialog.button.unassign"
+        self._assignment_action = QPushButton("Assign Notebook", self)
+        self._assignment_action.setObjectName(
+            "research.notebook_manager_dialog.button.assignment_action"
         )
         self._close = QPushButton("Close", self)
         self._close.setObjectName(
@@ -126,12 +154,22 @@ class ResearchNotebookManagerDialog(QDialog):
         form = QFormLayout()
         form.addRow("Name", self._name)
         form.addRow("Description", self._description)
+        assignment_context = QFormLayout()
+        assignment_context.addRow(
+            "Selected Notebook", self._selected_notebook
+        )
+        assignment_context.addRow(
+            "Target Workspace Snapshot", self._target_workspace
+        )
+        assignment_context.addRow(
+            "Current Assignment", self._current_assignment
+        )
         actions = QHBoxLayout()
         actions.addWidget(self._validation, stretch=1)
         actions.addWidget(self._refresh)
+        actions.addWidget(self._create)
         actions.addWidget(self._open)
-        actions.addWidget(self._assign)
-        actions.addWidget(self._unassign)
+        actions.addWidget(self._assignment_action)
         actions.addWidget(self._delete)
         actions.addWidget(self._close)
         layout = QVBoxLayout(self)
@@ -139,15 +177,16 @@ class ResearchNotebookManagerDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self._pages)
         layout.addWidget(self._assignment_table)
+        layout.addLayout(assignment_context)
         layout.addLayout(actions)
         self._list.currentRowChanged.connect(self._selection_changed)
         self._assignment_table.currentCellChanged.connect(
-            lambda *_args: self._sync_assignment_buttons()
+            lambda *_args: self._sync_assignment_state()
         )
         self._refresh.clicked.connect(self.refresh_requested.emit)
+        self._create.clicked.connect(self.create_requested.emit)
         self._open.clicked.connect(self._emit_open)
-        self._assign.clicked.connect(self._emit_assign)
-        self._unassign.clicked.connect(self._emit_unassign)
+        self._assignment_action.clicked.connect(self._activate_assignment_action)
         self._delete.clicked.connect(self._confirm_delete)
         self._close.clicked.connect(self.close)
         apply_initial_window_size(self, parent=parent)
@@ -200,6 +239,7 @@ class ResearchNotebookManagerDialog(QDialog):
         self,
         assignments: tuple[ResearchNotebookSnapshotAssignment, ...],
     ) -> None:
+        selected_snapshot_id = self._selected_snapshot_id()
         values = tuple(assignments)
         if not all(
             isinstance(item, ResearchNotebookSnapshotAssignment) for item in values
@@ -208,7 +248,7 @@ class ResearchNotebookManagerDialog(QDialog):
                 "assignments must contain ResearchNotebookSnapshotAssignment values"
             )
         self._assignments = values
-        self._rebuild_assignment_table()
+        self._rebuild_assignment_table(selected_snapshot_id)
 
     def _selected(self) -> ResearchNotebookSummary | None:
         row = self._list.currentRow()
@@ -223,7 +263,7 @@ class ResearchNotebookManagerDialog(QDialog):
             self._validation.clear()
             self._open.setEnabled(False)
             self._delete.setEnabled(False)
-            self._sync_assignment_buttons()
+            self._sync_assignment_state()
             return
         self._name.setText(summary.display_name)
         self._description.setText(summary.description)
@@ -248,11 +288,14 @@ class ResearchNotebookManagerDialog(QDialog):
         )
         self._open.setEnabled(summary.valid)
         self._delete.setEnabled(True)
-        self._sync_assignment_buttons()
+        self._sync_assignment_state()
         resize_table_columns_to_contents(self._assignment_table)
 
-    def _rebuild_assignment_table(self) -> None:
-        selected_snapshot_id = self._selected_snapshot_id()
+    def _rebuild_assignment_table(
+        self, selected_snapshot_id: str | None = None
+    ) -> None:
+        if selected_snapshot_id is None:
+            selected_snapshot_id = self._selected_snapshot_id()
         notebook_names = {
             summary.notebook_id: summary.display_name for summary in self._summaries
         }
@@ -267,14 +310,17 @@ class ResearchNotebookManagerDialog(QDialog):
                 if assignment.notebook_id is None
                 else notebook_names.get(assignment.notebook_id, assignment.notebook_id)
             )
-            self._assignment_table.setItem(row, 1, QTableWidgetItem(assigned_name))
+            assigned_item = QTableWidgetItem(assigned_name)
+            assigned_item.setData(Qt.ItemDataRole.UserRole, assignment.snapshot_id)
+            self._assignment_table.setItem(row, 1, assigned_item)
             if assignment.snapshot_id == selected_snapshot_id:
                 selected_row = row
         if selected_row >= 0:
             self._assignment_table.setCurrentCell(selected_row, 0)
-        elif self._assignments:
-            self._assignment_table.setCurrentCell(0, 0)
-        self._sync_assignment_buttons()
+        else:
+            self._assignment_table.clearSelection()
+            self._assignment_table.setCurrentCell(-1, -1)
+        self._sync_assignment_state()
 
     def _selected_snapshot_id(self) -> str | None:
         row = self._assignment_table.currentRow()
@@ -297,38 +343,85 @@ class ResearchNotebookManagerDialog(QDialog):
             None,
         )
 
-    def _sync_assignment_buttons(self) -> None:
+    def _notebook_display_name(self, notebook_id: str) -> str:
+        summary = next(
+            (
+                item
+                for item in self._summaries
+                if item.notebook_id == notebook_id
+            ),
+            None,
+        )
+        if summary is None:
+            return notebook_id
+        return summary.display_name or summary.notebook_id
+
+    def _sync_assignment_state(self) -> None:
         summary = self._selected()
         assignment = self._selected_assignment()
+        self._selected_notebook.setText(
+            "None selected"
+            if summary is None
+            else summary.display_name or summary.notebook_id
+        )
+        self._target_workspace.setText(
+            "None selected"
+            if assignment is None
+            else assignment.snapshot_display_name
+        )
+        self._current_assignment.setText(
+            "None selected"
+            if assignment is None
+            else (
+                "Unassigned"
+                if assignment.notebook_id is None
+                else self._notebook_display_name(assignment.notebook_id)
+            )
+        )
         valid = summary is not None and summary.valid and assignment is not None
-        self._assign.setEnabled(
-            valid and assignment.notebook_id != summary.notebook_id
-        )
-        self._unassign.setEnabled(
-            valid and assignment.notebook_id == summary.notebook_id
-        )
+        if not valid or assignment.notebook_id is None:
+            text = "Assign Notebook"
+        elif assignment.notebook_id == summary.notebook_id:
+            text = "Unassign Notebook"
+        else:
+            text = "Replace Assignment"
+        self._assignment_action.setText(text)
+        self._assignment_action.setEnabled(valid)
 
-    def _emit_assign(self) -> None:
+    def _activate_assignment_action(self) -> None:
         summary = self._selected()
         assignment = self._selected_assignment()
-        if (
-            summary is not None
-            and summary.valid
-            and assignment is not None
-            and assignment.notebook_id != summary.notebook_id
-        ):
+        if summary is None or not summary.valid or assignment is None:
+            return
+        if assignment.notebook_id is None:
             self.assign_requested.emit(summary.notebook_id, assignment.snapshot_id)
-
-    def _emit_unassign(self) -> None:
-        summary = self._selected()
-        assignment = self._selected_assignment()
-        if (
-            summary is not None
-            and summary.valid
-            and assignment is not None
-            and assignment.notebook_id == summary.notebook_id
-        ):
+            return
+        notebook_name = summary.display_name or summary.notebook_id
+        if assignment.notebook_id == summary.notebook_id:
+            if QMessageBox.question(
+                self,
+                "Unassign Notebook",
+                "Remove this Notebook assignment from the Workspace Snapshot?\n\n"
+                f"Notebook: {notebook_name}\n"
+                f"Workspace Snapshot: {assignment.snapshot_display_name}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
             self.unassign_requested.emit(summary.notebook_id, assignment.snapshot_id)
+            return
+        current_name = self._notebook_display_name(assignment.notebook_id)
+        if QMessageBox.question(
+            self,
+            "Replace Notebook Assignment",
+            "Replace the existing Notebook assignment?\n\n"
+            f"Workspace Snapshot: {assignment.snapshot_display_name}\n"
+            f"Current Notebook: {current_name}\n"
+            f"New Notebook: {notebook_name}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) == QMessageBox.Yes:
+            self.assign_requested.emit(summary.notebook_id, assignment.snapshot_id)
 
     def _emit_open(self) -> None:
         summary = self._selected()

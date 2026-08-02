@@ -348,6 +348,51 @@ def test_custom_rsi_thresholds_drive_guides_segments_and_cache_identity() -> Non
     assert scene.cache_identity != default_scene.cache_identity
 
 
+def test_hidden_threshold_guides_still_color_from_current_edited_values() -> None:
+    presentation = _with_guide_values(
+        _styled_presentation(
+            "rsi-hidden-guides",
+            "rsi",
+            (StudyLineStyle("rsi_3", "#A855F7"),),
+        ),
+        oversold=25.0,
+        overbought=75.0,
+    )
+    presentation = replace(
+        presentation,
+        guide_styles={
+            name: replace(guide, visible=False)
+            if guide.kind in {"oversold", "overbought"}
+            else guide
+            for name, guide in presentation.guide_styles.items()
+        },
+        revision=presentation.revision + 1,
+    )
+    scene = build_oscillator_scene(
+        _projection(
+            "rsi-hidden-guides",
+            "rsi_3",
+            (24.9, 25.0, 50.0, 75.0, 75.1),
+        ),
+        presentation,
+        _viewport(),
+        SceneRect(0.0, 0.0, 100.0, 100.0),
+    )
+    assert {guide.kind for guide in scene.guides} == {"center"}
+    assert tuple(strip.color for strip in scene.line_strips) == (
+        "#22C55E",
+        "#A855F7",
+        "#EF4444",
+    )
+    crossings = {
+        point.value
+        for strip in scene.line_strips
+        for point in strip.points
+        if point.value in {25.0, 75.0}
+    }
+    assert crossings == {25.0, 75.0}
+
+
 @pytest.mark.parametrize(
     ("tool_key", "series", "primary_name", "secondary_name"),
     (

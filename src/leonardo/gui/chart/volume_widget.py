@@ -23,10 +23,19 @@ from leonardo.gui.chart.candlestick_scene import (
     DEFAULT_TOP_MARGIN,
 )
 from leonardo.gui.chart.interaction import CandlestickInteractionState
+from leonardo.gui.chart.candlestick_widget import (
+    _AxisTagPlan,
+    _VALUE_TAG_BACKGROUND,
+    _crosshair_x,
+    _draw_axis_tag,
+    _plan_axis_tag,
+    _rectangles_overlap,
+)
 from leonardo.gui.chart.volume_scene import (
     DEFAULT_BOTTOM_MARGIN,
     VolumeRenderContract,
     VolumeScene,
+    _format_volume,
     build_volume_scene,
 )
 from leonardo.research.volume import ResidentVolumeProjection
@@ -414,6 +423,58 @@ class VolumeChartWidget(QWidget):
                 round(plot.right()),
                 round(self._crosshair_y),
             )
+        for tag in self._dynamic_crosshair_tags(x):
+            _draw_axis_tag(painter, tag)
+
+    def _dynamic_crosshair_tags(
+        self, crosshair_x: float | None = None
+    ) -> tuple[_AxisTagPlan, ...]:
+        contract = self._contract
+        if contract is None or contract.viewport.crosshair_index is None:
+            return ()
+        plot = self._plot_rect()
+        index = contract.viewport.crosshair_index
+        x = crosshair_x if crosshair_x is not None else _crosshair_x(
+            index, contract.viewport.start_index, contract.viewport.visible_count, plot
+        )
+        if (
+            x < plot.left()
+            or x > plot.right()
+            or self._crosshair_y is None
+            or not plot.top() <= self._crosshair_y <= plot.bottom()
+        ):
+            return ()
+        scene = build_volume_scene(
+            contract,
+            width=max(1, self.width()),
+            height=max(1, self.height()),
+        )
+        if scene.maximum <= 0:
+            return ()
+        fraction = (plot.bottom() - self._crosshair_y) / max(1.0, plot.height())
+        value = min(scene.maximum, max(0.0, fraction * scene.maximum))
+        axis = _qt_rect(scene.axis_rect)
+        candidate = _plan_axis_tag(
+            _format_volume(value),
+            axis.center().x(),
+            self._crosshair_y,
+            axis,
+            background=_VALUE_TAG_BACKGROUND,
+            background_opacity=0.5,
+            corner_radius=6.0,
+        )
+        static_tag = scene.last_volume_tag
+        if static_tag is not None and _rectangles_overlap(
+            candidate.rect,
+            QRectF(
+                scene.plot_rect.right + 2,
+                static_tag.y - 9,
+                max(1.0, scene.axis_rect.width - 4),
+                18,
+            ),
+        ):
+            return ()
+        return (candidate,)
 
     def _draw_message(self, painter: QPainter, rect: QRectF, text: str) -> None:
         painter.save()

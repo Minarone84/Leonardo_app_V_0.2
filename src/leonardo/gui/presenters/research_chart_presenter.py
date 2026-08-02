@@ -120,6 +120,19 @@ class StudyOperationOutcome:
             raise ValueError("study_id must be non-empty text or None")
 
 
+@dataclass(frozen=True, slots=True)
+class EnvironmentApplyProgress:
+    slot_id: int
+    session_id: str
+    environment_id: str
+    run_id: str
+    phase: str
+    entry_number: int
+    accepted_entries: int
+    total_entries: int
+    display_name: str
+
+
 @dataclass(slots=True)
 class _EnvironmentRun:
     run_id: str
@@ -128,11 +141,13 @@ class _EnvironmentRun:
     session_id: str
     generation: int
     existing_study_ids: tuple[str, ...]
+    entries: tuple[EnvironmentEntryV1, ...]
     entry_index: int = 0
     current_task_id: str | None = None
     entry_to_study: dict[str, str] | None = None
     added_study_ids: list[str] | None = None
     completion_callback: Callable[[ChartOperationOutcome], None] | None = None
+    progress_callback: Callable[[EnvironmentApplyProgress], None] | None = None
 
     def __post_init__(self) -> None:
         self.entry_to_study = {}
@@ -195,6 +210,7 @@ class ResearchChartPresenter:
         ] = {}
         self._environment_report: EnvironmentCompatibilityReport | None = None
         self._environment_run: _EnvironmentRun | None = None
+        self._dataset_progress: Callable[[TaskProgress], None] | None = None
         self._dataset_completion: Callable[[ChartOperationOutcome], None] | None = None
         self._last_environment_entry_map: dict[str, str] = {}
         self._disposed = False
@@ -256,11 +272,20 @@ class ResearchChartPresenter:
         self._environment_report = report
         self._changed()
 
-    def open_dataset(self, market_id, *, completion_callback=None):
+    def open_dataset(
+        self,
+        market_id,
+        *,
+        progress_callback=None,
+        completion_callback=None,
+    ):
         self._require_current()
+        if progress_callback is not None and not callable(progress_callback):
+            raise TypeError("progress_callback must be callable or None")
         if completion_callback is not None and not callable(completion_callback):
             raise TypeError("completion_callback must be callable or None")
         self._cancel_dataset_tasks()
+        self._dataset_progress = progress_callback
         self._dataset_completion = completion_callback
         attempt = self._session.begin_dataset_open(market_id)
         self._open_attempt = attempt
@@ -356,8 +381,15 @@ class ResearchChartPresenter:
         self._changed()
         return submission
 
-    def submit_artifact_apply(self, request: StudyArtifactRequest):
+    def submit_artifact_apply(
+        self,
+        request: StudyArtifactRequest,
+        *,
+        completion_callback: Callable[[StudyOperationOutcome], None] | None = None,
+    ):
         self._require_current()
+        if completion_callback is not None and not callable(completion_callback):
+            raise TypeError("completion_callback must be callable or None")
         if self.environment_apply_active:
             raise RuntimeError("an environment Apply run is active for this chart")
         if not isinstance(request, StudyArtifactRequest):
@@ -382,6 +414,8 @@ class ResearchChartPresenter:
             self._set_busy(False)
             raise
         self._active_study_tasks[submission.task_id] = ("apply", attempt)
+        if completion_callback is not None:
+            self._study_completion_callbacks[submission.task_id] = completion_callback
         self._changed()
         return submission
 
@@ -696,11 +730,23 @@ class ResearchChartPresenter:
         )
 
     def apply_environment(
-        self, environment: EnvironmentV1, mode: str, *, completion_callback=None
-    ) -> None:
+        self,
+        environment: EnvironmentV1,
+        mode: str,
+        *,
+        completion_callback=None,
+        progress_callback=None,
+        run_id: str | None = None,
+    ) -> str:
         self._require_current()
         if completion_callback is not None and not callable(completion_callback):
             raise TypeError("completion_callback must be callable or None")
+        if progress_callback is not None and not callable(progress_callback):
+            raise TypeError("progress_callback must be callable or None")
+        if run_id is not None and (
+            not isinstance(run_id, str) or not run_id
+        ):
+            raise ValueError("run_id must be non-empty text or None")
         if not isinstance(environment, EnvironmentV1):
             raise TypeError("environment must use the version 1 schema")
         if mode not in {"append", "replace"}:
@@ -718,18 +764,23 @@ class ResearchChartPresenter:
             or not report.compatible
         ):
             raise RuntimeError("a current blocker-free compatibility report is required")
+        ordered_entries = _stable_environment_entry_order(environment.entries)
+        resolved_run_id = run_id or uuid4().hex
         self._environment_run = _EnvironmentRun(
-            run_id=uuid4().hex,
+            run_id=resolved_run_id,
             environment=environment,
             mode=mode,
             session_id=self._session.session_id,
             generation=self._session.generation,
             existing_study_ids=tuple(study.study_id for study in self._session.studies),
+            entries=ordered_entries,
             completion_callback=completion_callback,
+            progress_callback=progress_callback,
         )
         self._set_busy(True)
         self._set_status("Applying Study Environment")
         self._submit_environment_entry()
+        return resolved_run_id
 
     def cancel_environment_apply(self) -> bool:
         run = self._environment_run
@@ -776,6 +827,8 @@ class ResearchChartPresenter:
             return
         self._set_status(progress.message)
         self._view.set_progress(progress.current, progress.total)
+        if self._dataset_progress is not None:
+            self._dataset_progress(progress)
 
     def _on_load_result(self, result: TaskResult) -> None:
         if not self._accept_task_callback(result.task_id, self._active_load_task_id):
@@ -789,8 +842,8 @@ class ResearchChartPresenter:
             self._session.settle_dataset_open_failure(attempt)
             self._view.set_go_to_enabled(False)
             self._set_busy(False)
-            self._handle_terminal_failure("Dataset load", result)
             self._complete_dataset(result.status, result.error_message or result.error_type or "")
+            self._handle_terminal_failure("Dataset load", result)
             return
         dataset = result.value
         if not self._session.accept_dataset_open(attempt, dataset):
@@ -1102,10 +1155,11 @@ class ResearchChartPresenter:
                 "Environment Apply target is stale", status="stale"
             )
             return
-        if run.entry_index >= len(run.environment.entries):
+        if run.entry_index >= len(run.entries):
             self._complete_environment_run()
             return
-        entry = run.environment.entries[run.entry_index]
+        entry = run.entries[run.entry_index]
+        self._emit_environment_progress(run, "applying", entry)
         request = self._environment_request(entry, run.entry_to_study or {})
         attempt = self._session.begin_study_apply()
         try:
@@ -1186,6 +1240,7 @@ class ResearchChartPresenter:
             )
             return
         run.entry_index += 1
+        self._emit_environment_progress(run, "complete", entry)
         self._refresh_study_state()
         self._submit_environment_entry()
 
@@ -1301,6 +1356,28 @@ class ResearchChartPresenter:
         self._log(f"Chart {self._slot_id} Study Environment applied: {name}.")
         self._dispatch_completion(run.completion_callback, "success")
 
+    def _emit_environment_progress(
+        self,
+        run: _EnvironmentRun,
+        phase: str,
+        entry: EnvironmentEntryV1,
+    ) -> None:
+        callback = run.progress_callback
+        if callback is None:
+            return
+        progress = EnvironmentApplyProgress(
+            slot_id=self._slot_id,
+            session_id=run.session_id,
+            environment_id=run.environment.environment_id,
+            run_id=run.run_id,
+            phase=phase,
+            entry_number=run.entry_index + (1 if phase == "applying" else 0),
+            accepted_entries=run.entry_index,
+            total_entries=len(run.entries),
+            display_name=entry.display_name,
+        )
+        self._dispatch(lambda: callback(progress))
+
     def _rollback_environment(self, message: str, *, status: str = "failure") -> None:
         run = self._environment_run
         if run is None:
@@ -1397,6 +1474,7 @@ class ResearchChartPresenter:
             self._programmatic_navigation = False
 
     def _complete_dataset(self, status: str, message: str = "") -> None:
+        self._dataset_progress = None
         callback = self._dataset_completion
         self._dataset_completion = None
         self._dispatch_completion(callback, status, message)
@@ -1527,3 +1605,53 @@ class ResearchChartPresenter:
     def _require_current(self) -> None:
         if not self._runtime_is_current():
             raise RuntimeError("Research chart runtime is no longer current")
+
+
+def _stable_environment_entry_order(
+    entries: tuple[EnvironmentEntryV1, ...],
+) -> tuple[EnvironmentEntryV1, ...]:
+    by_id = {entry.entry_id: entry for entry in entries}
+    if len(by_id) != len(entries):
+        raise StudyValidationError("Environment entry identities must be unique")
+    dependencies: dict[str, set[str]] = {}
+    for entry in entries:
+        required: set[str] = set()
+        for source in entry.sources:
+            if source.source_kind != "environment":
+                continue
+            dependency_id = source.source_entry_id or ""
+            dependency = by_id.get(dependency_id)
+            if dependency is None:
+                raise StudyValidationError(
+                    "Environment dependency is missing: "
+                    f"{dependency_id or '<empty>'}"
+                )
+            if source.output_name not in dependency.expected_output_names:
+                raise StudyValidationError(
+                    "Environment dependency output is missing: "
+                    f"{dependency_id}/{source.output_name or '<empty>'}"
+                )
+            required.add(dependency_id)
+        dependencies[entry.entry_id] = required
+
+    ordered: list[EnvironmentEntryV1] = []
+    accepted: set[str] = set()
+    remaining = list(entries)
+    while remaining:
+        ready = next(
+            (
+                entry
+                for entry in remaining
+                if dependencies[entry.entry_id].issubset(accepted)
+            ),
+            None,
+        )
+        if ready is None:
+            cycle = ", ".join(entry.entry_id for entry in remaining)
+            raise StudyValidationError(
+                f"Environment dependency cycle detected: {cycle}"
+            )
+        ordered.append(ready)
+        accepted.add(ready.entry_id)
+        remaining.remove(ready)
+    return tuple(ordered)

@@ -160,6 +160,65 @@ class ResearchStudyApplyIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class _StudyEditorDraft:
+    parameters: Mapping[str, object]
+    source_selections: tuple[StudySetupSourceSelection, ...]
+    source_roles: tuple[str, ...]
+    guide_values: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parameters, Mapping):
+            raise TypeError("parameters must be a mapping")
+        if not isinstance(self.source_selections, tuple) or not all(
+            isinstance(item, StudySetupSourceSelection)
+            for item in self.source_selections
+        ):
+            raise TypeError(
+                "source_selections must contain StudySetupSourceSelection values"
+            )
+        if not isinstance(self.source_roles, tuple):
+            raise TypeError("source_roles must be a tuple")
+        if any(
+            not isinstance(role, str)
+            or not role
+            or role != role.strip()
+            for role in self.source_roles
+        ):
+            raise ValueError("source_roles must contain canonical non-empty text")
+        if len(set(self.source_roles)) != len(self.source_roles):
+            raise ValueError("source_roles must not contain duplicates")
+        if not isinstance(self.guide_values, Mapping):
+            raise TypeError("guide_values must be a mapping")
+        object.__setattr__(
+            self, "parameters", MappingProxyType(dict(self.parameters))
+        )
+        object.__setattr__(
+            self, "source_selections", tuple(self.source_selections)
+        )
+        object.__setattr__(self, "source_roles", tuple(self.source_roles))
+        object.__setattr__(
+            self, "guide_values", MappingProxyType(dict(self.guide_values))
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSavedArtifactBatchIntent:
+    requests: tuple[StudyArtifactRequest, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.requests, tuple) or not self.requests:
+            raise ValueError("requests must be a non-empty tuple")
+        if not all(
+            isinstance(request, StudyArtifactRequest)
+            for request in self.requests
+        ):
+            raise TypeError("requests must contain StudyArtifactRequest values")
+        artifact_ids = tuple(request.artifact_id for request in self.requests)
+        if len(set(artifact_ids)) != len(artifact_ids):
+            raise ValueError("saved Artifact requests must have unique IDs")
+
+
+@dataclass(frozen=True, slots=True)
 class _UtcPeaksTroughsOwner:
     source_kind: str
     identity: str
@@ -295,14 +354,33 @@ class _UtcPeaksTroughsOwnerSelector(QWidget):
         raise ValueError("Peaks & Troughs owner is unavailable")
 
     def restore(self, request: StudyExecutionRequest) -> None:
-        if tuple(source.role for source in request.input_sources) != _UTC_SOURCE_ROLES:
+        self.restore_selections(
+            tuple(
+                StudySetupSourceSelection(
+                    role=source.role,
+                    source_kind=source.source_kind,
+                    column_name=source.column_name,
+                    study_id=source.study_id,
+                    artifact_kind=source.artifact_kind,
+                    artifact_tool_key=source.artifact_tool_key,
+                    artifact_id=source.artifact_id,
+                    output_name=source.output_name,
+                )
+                for source in request.input_sources
+            )
+        )
+
+    def restore_selections(
+        self, selections: tuple[StudySetupSourceSelection, ...]
+    ) -> None:
+        if tuple(source.role for source in selections) != _UTC_SOURCE_ROLES:
             raise ValueError("UTC requires four ordered Peaks & Troughs sources")
-        keys = {_utc_selection_owner_key(source) for source in request.input_sources}
+        keys = {_utc_selection_owner_key(source) for source in selections}
         if None in keys or len(keys) != 1:
             raise ValueError("UTC sources must come from one Peaks & Troughs owner")
         key = next(iter(keys))
         expected_outputs = self._output_names()
-        if tuple(source.output_name for source in request.input_sources) != expected_outputs:
+        if tuple(source.output_name for source in selections) != expected_outputs:
             raise ValueError("UTC source outputs do not match the selected fractal windows")
         self.select_owner(*key)
 
@@ -352,6 +430,7 @@ class _StudyParameterEditor(QWidget):
         *,
         request: StudyExecutionRequest | None = None,
         current_guide_values: Mapping[str, float] | None = None,
+        draft: _StudyEditorDraft | None = None,
         validation_changed=None,
         parent: QWidget | None = None,
     ) -> None:
@@ -367,6 +446,10 @@ class _StudyParameterEditor(QWidget):
             or request.tool_key != spec.key
         ):
             raise ValueError("request must match the fixed Financial Tool")
+        if draft is not None and not isinstance(draft, _StudyEditorDraft):
+            raise TypeError("draft must be a _StudyEditorDraft or None")
+        if request is not None and draft is not None:
+            raise ValueError("request and draft cannot both be supplied")
         if validation_changed is not None and not callable(validation_changed):
             raise TypeError("validation_changed must be callable or None")
 
@@ -402,6 +485,8 @@ class _StudyParameterEditor(QWidget):
             )
             if request is not None and parameter.name in request.parameters:
                 _set_control_value(control, request.parameters[parameter.name])
+            elif draft is not None and parameter.name in draft.parameters:
+                _set_control_value(control, draft.parameters[parameter.name])
 
         if spec.key == "universal_trend_classifier":
             self.source_selector = _UtcPeaksTroughsOwnerSelector(
@@ -424,6 +509,29 @@ class _StudyParameterEditor(QWidget):
                 self.source_selector.restore(request)
             else:
                 _restore_sources(self.source_selector, catalog, request)
+        elif draft is not None:
+            if isinstance(
+                self.source_selector, _UtcPeaksTroughsOwnerSelector
+            ):
+                if draft.source_selections:
+                    try:
+                        self.source_selector.restore_selections(
+                            draft.source_selections
+                        )
+                    except ValueError:
+                        pass
+            else:
+                _restore_source_role_layout(
+                    self.source_selector,
+                    draft.source_roles,
+                )
+                if draft.source_selections:
+                    _restore_source_selections(
+                        self.source_selector,
+                        catalog,
+                        draft.source_selections,
+                        require_available=False,
+                    )
 
         visual = spec.oscillator_visual
         guide_specs = () if visual is None else visual.guide_levels
@@ -458,6 +566,11 @@ class _StudyParameterEditor(QWidget):
                     guide.label or _guide_label(guide.kind),
                     control,
                 )
+            if draft is not None:
+                for guide_id, value in draft.guide_values.items():
+                    control = self._guide_controls.get(guide_id)
+                    if control is not None:
+                        control.setValue(float(value))
             root.addWidget(guide_group)
         self._initializing = False
 
@@ -500,12 +613,50 @@ class _StudyParameterEditor(QWidget):
             },
         )
 
+    def _capture_draft(self) -> _StudyEditorDraft:
+        try:
+            selections = self.source_selector.selections()
+        except ValueError:
+            selections = ()
+        if isinstance(self.source_selector, StudySourceSelectorWidget):
+            source_roles = tuple(
+                row.role for row in self.source_selector._rows
+            )
+        else:
+            source_roles = tuple(selection.role for selection in selections)
+        return _StudyEditorDraft(
+            parameters={
+                name: _control_value(control)
+                for name, control in self._parameter_controls.items()
+            },
+            source_selections=selections,
+            source_roles=source_roles,
+            guide_values={
+                guide_id: control.value()
+                for guide_id, control in self._guide_controls.items()
+            },
+        )
+
     def _changed(self, *_args) -> None:
-        if isinstance(self.source_selector, _UtcPeaksTroughsOwnerSelector):
+        if hasattr(self, "source_selector") and isinstance(
+            self.source_selector, _UtcPeaksTroughsOwnerSelector
+        ):
             self.source_selector.set_windows(
                 self._utc_window("trend_fractal_window"),
                 self._utc_window("range_fractal_window"),
             )
+        elif hasattr(self, "source_selector") and isinstance(
+            self.source_selector, StudySourceSelectorWidget
+        ):
+            roles = tuple(row.role for row in self.source_selector._rows)
+            if (
+                self.source_selector.schema == ("fast", "mid?", "slow")
+                and roles == ("fast", "slow", "mid")
+            ):
+                _restore_source_role_layout(
+                    self.source_selector,
+                    ("fast", "mid", "slow"),
+                )
         if not self._initializing and self._validation_changed is not None:
             self._validation_changed()
 
@@ -517,6 +668,7 @@ class ResearchFinancialToolsDialog(QDialog):
     """Collect one canonical Financial Tool or saved Artifact intent."""
 
     apply_requested = Signal(object)
+    save_requested = Signal(object)
     edit_requested = Signal(str, object)
     apply_saved_artifact_requested = Signal(object)
 
@@ -547,6 +699,11 @@ class ResearchFinancialToolsDialog(QDialog):
         self._mode = "ordinary"
         self._edit_study_id: str | None = None
         self._edit_template: StudyExecutionRequest | None = None
+        self._tool_drafts: dict[str, _StudyEditorDraft] = {}
+        self._ordinary_family: str | None = None
+        self._ordinary_tool_key: str | None = None
+        self._checked_artifact_ids: set[str] = set()
+        self._idle_status_message = ""
 
         self.setObjectName("research_restoration.financial_tools")
         self.setWindowTitle(
@@ -611,22 +768,24 @@ class ResearchFinancialToolsDialog(QDialog):
             "research_restoration.financial_tools.apply"
         )
         calculation_actions.addWidget(self.apply_button)
+        self.save_button = QPushButton("Save", self)
+        self.save_button.setObjectName(
+            "research_restoration.financial_tools.save"
+        )
+        calculation_actions.addWidget(self.save_button)
         left.addLayout(calculation_actions)
 
         saved_group = QGroupBox("Saved Artifacts", self)
         saved_layout = QVBoxLayout(saved_group)
-        self.saved_artifact_table = QTableWidget(0, 3, saved_group)
+        self.saved_artifact_table = QTableWidget(0, 4, saved_group)
         self.saved_artifact_table.setObjectName(
             "research_restoration.financial_tools.saved_artifacts"
         )
         self.saved_artifact_table.setHorizontalHeaderLabels(
-            ("Artifact", "Parameters", "Outputs")
-        )
-        self.saved_artifact_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
+            ("Apply", "Artifact", "Parameters", "Outputs")
         )
         self.saved_artifact_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.NoSelection
         )
         self.saved_artifact_table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
@@ -637,7 +796,7 @@ class ResearchFinancialToolsDialog(QDialog):
         self.saved_artifact_table.setWordWrap(False)
         saved_layout.addWidget(self.saved_artifact_table, 1)
         self.apply_saved_artifact_button = QPushButton(
-            "Apply Saved Artifact", saved_group
+            "Apply Checked Artifacts", saved_group
         )
         self.apply_saved_artifact_button.setObjectName(
             "research_restoration.financial_tools.apply_saved_artifact"
@@ -653,10 +812,11 @@ class ResearchFinancialToolsDialog(QDialog):
 
         self.family_combo.currentIndexChanged.connect(self._family_changed)
         self.tool_list.currentItemChanged.connect(self._tool_changed)
-        self.saved_artifact_table.itemSelectionChanged.connect(
-            self._saved_artifact_selection_changed
+        self.saved_artifact_table.itemChanged.connect(
+            self._saved_artifact_check_changed
         )
         self.apply_button.clicked.connect(self._request_apply)
+        self.save_button.clicked.connect(self._request_save)
         self.apply_saved_artifact_button.clicked.connect(
             self._request_apply_saved_artifact
         )
@@ -686,10 +846,23 @@ class ResearchFinancialToolsDialog(QDialog):
             raise TypeError("catalog must be a StudySetupCatalog")
         if catalog.market_id != self._market_id:
             raise ValueError("catalog MarketId must match the dialog MarketId")
+        self._capture_current_draft()
+        family = self._ordinary_family
+        selected_key = self._ordinary_tool_key
         self._catalog = catalog
-        self.prepare_for_open()
+        available_artifact_ids = {
+            option.artifact_id for option in catalog.artifact_options
+        }
+        self._checked_artifact_ids.intersection_update(
+            available_artifact_ids
+        )
+        if self._mode == "ordinary":
+            self._restore_ordinary_state(family, selected_key)
+        else:
+            self._populate_saved_artifacts()
 
     def prepare_for_open(self) -> None:
+        self._capture_current_draft()
         self._mode = "ordinary"
         self._edit_study_id = None
         self._edit_template = None
@@ -697,20 +870,10 @@ class ResearchFinancialToolsDialog(QDialog):
         self.tool_list.setEnabled(True)
         self.saved_artifact_table.setEnabled(True)
         self.apply_button.setText("Apply")
-        self.family_combo.blockSignals(True)
-        self.family_combo.setCurrentIndex(0)
-        self.family_combo.blockSignals(False)
-        self._current_spec = None
-        self._clear_parameter_form()
-        self.tool_list.clearSelection()
-        self.tool_list.setCurrentRow(-1)
-        self.saved_artifact_table.clearSelection()
-        self.description_label.setText("Select a Financial Tool.")
-        self.status_label.setText("Select a Financial Tool.")
-        self._populate_tools()
-        self._populate_saved_artifacts()
-        self._set_calculation_actions_enabled(False)
-        self.apply_saved_artifact_button.setEnabled(False)
+        self.save_button.setVisible(True)
+        self._restore_ordinary_state(
+            self._ordinary_family, self._ordinary_tool_key
+        )
 
     def prepare_for_edit(
         self, study_id: str, request: StudyExecutionRequest
@@ -756,6 +919,8 @@ class ResearchFinancialToolsDialog(QDialog):
         self.tool_list.setEnabled(False)
         self.saved_artifact_table.setEnabled(False)
         self.apply_saved_artifact_button.setEnabled(False)
+        self.save_button.setVisible(False)
+        self.save_button.setEnabled(False)
         self.apply_button.setText("Apply Edit")
         self.status_label.setText(f"Ready to edit {request.display_name}.")
 
@@ -770,13 +935,23 @@ class ResearchFinancialToolsDialog(QDialog):
         )
         if busy:
             self.apply_button.setEnabled(False)
+            self.save_button.setEnabled(False)
             self.apply_saved_artifact_button.setEnabled(False)
             self.status_label.setText(message or "Working...")
             return
-        self._validate_request()
-        self._saved_artifact_selection_changed()
+        if message:
+            self._idle_status_message = message
+        self._validate_request(_preserve_idle_message=True)
+        self._update_saved_artifact_action()
+        if self._idle_status_message:
+            self.status_label.setText(self._idle_status_message)
 
     def _family_changed(self) -> None:
+        self._idle_status_message = ""
+        self._capture_current_draft()
+        if self._mode == "ordinary":
+            self._ordinary_family = self.family_combo.currentData()
+            self._ordinary_tool_key = None
         self._current_spec = None
         self._clear_parameter_form()
         self.description_label.setText("Select a Financial Tool.")
@@ -799,8 +974,13 @@ class ResearchFinancialToolsDialog(QDialog):
         self.tool_list.blockSignals(False)
 
     def _tool_changed(self, current: QListWidgetItem | None, _previous) -> None:
+        self._capture_current_draft()
         value = None if current is None else current.data(Qt.ItemDataRole.UserRole)
         self._current_spec = value if isinstance(value, FinancialToolSpec) else None
+        if self._mode == "ordinary":
+            self._ordinary_tool_key = (
+                None if self._current_spec is None else self._current_spec.key
+            )
         self._clear_parameter_form()
         if self._current_spec is None:
             self.description_label.setText("Select a Financial Tool.")
@@ -821,6 +1001,11 @@ class ResearchFinancialToolsDialog(QDialog):
                 self._current_spec,
                 "research_restoration.financial_tools",
                 request=request,
+                draft=(
+                    None
+                    if request is not None
+                    else self._tool_drafts.get(self._current_spec.key)
+                ),
                 validation_changed=self._validate_request,
                 parent=self._editor_host,
             )
@@ -857,7 +1042,11 @@ class ResearchFinancialToolsDialog(QDialog):
             self._editor.guide_values(),
         )
 
-    def _validate_request(self, *_args) -> None:
+    def _validate_request(
+        self, *_args, _preserve_idle_message: bool = False
+    ) -> None:
+        if not _preserve_idle_message:
+            self._idle_status_message = ""
         if self._current_spec is None:
             self.status_label.setText("Select a Financial Tool.")
             self._set_calculation_actions_enabled(False)
@@ -873,6 +1062,11 @@ class ResearchFinancialToolsDialog(QDialog):
 
     def _set_calculation_actions_enabled(self, enabled: bool) -> None:
         self.apply_button.setEnabled(enabled and not self._busy)
+        self.save_button.setEnabled(
+            enabled
+            and not self._busy
+            and self._mode == "ordinary"
+        )
 
     def _request_apply(self) -> None:
         if self._busy:
@@ -891,13 +1085,23 @@ class ResearchFinancialToolsDialog(QDialog):
             self.apply_requested.emit(intent)
             self.status_label.setText("Apply requested.")
 
+    def _request_save(self) -> None:
+        if self._busy or self._mode != "ordinary":
+            return
+        try:
+            intent = self._build_apply_intent()
+        except (TypeError, ValueError):
+            self._validate_request()
+            return
+        self.save_requested.emit(intent)
+        self.status_label.setText("Save requested.")
+
     def _populate_saved_artifacts(self) -> None:
         family = self.family_combo.currentData()
         selected_key = (
             None if self._current_spec is None else self._current_spec.key
         )
         self.saved_artifact_table.blockSignals(True)
-        self.saved_artifact_table.clearSelection()
         self.saved_artifact_table.setRowCount(0)
         for option in self._catalog.artifact_options:
             if family is not None and option.kind != family:
@@ -917,47 +1121,104 @@ class ResearchFinancialToolsDialog(QDialog):
                 f"Parameters: {full_parameters}\n"
                 f"Outputs: {full_outputs}"
             )
+            check_item = QTableWidgetItem("")
+            check_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            check_item.setCheckState(
+                Qt.CheckState.Checked
+                if option.artifact_id in self._checked_artifact_ids
+                else Qt.CheckState.Unchecked
+            )
+            check_item.setData(Qt.ItemDataRole.UserRole, option)
+            check_item.setToolTip(tooltip)
+            self.saved_artifact_table.setItem(row, 0, check_item)
             values = (
                 option.display_name,
                 _compact_entries(parameter_entries, 4, "; "),
                 _compact_entries(option.output_names, 3, ", "),
             )
-            for column, text in enumerate(values):
+            for column, text in enumerate(values, start=1):
                 item = QTableWidgetItem(text)
                 item.setFlags(
-                    Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                    Qt.ItemFlag.ItemIsEnabled
                 )
                 item.setToolTip(tooltip)
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, option)
                 self.saved_artifact_table.setItem(row, column, item)
         self.saved_artifact_table.blockSignals(False)
         resize_table_columns_to_contents(self.saved_artifact_table)
-        self.apply_saved_artifact_button.setEnabled(False)
+        self._update_saved_artifact_action()
 
-    def _selected_saved_artifact(self) -> StudyArtifactOption | None:
-        selected = self.saved_artifact_table.selectionModel().selectedRows()
-        if len(selected) != 1:
-            return None
-        item = self.saved_artifact_table.item(selected[0].row(), 0)
-        option = None if item is None else item.data(Qt.ItemDataRole.UserRole)
-        return option if isinstance(option, StudyArtifactOption) else None
+    def _saved_artifact_check_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0:
+            return
+        option = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(option, StudyArtifactOption):
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._checked_artifact_ids.add(option.artifact_id)
+        else:
+            self._checked_artifact_ids.discard(option.artifact_id)
+        self._update_saved_artifact_action()
 
-    def _saved_artifact_selection_changed(self) -> None:
-        option = self._selected_saved_artifact()
+    def _visible_checked_artifact_options(
+        self,
+    ) -> tuple[StudyArtifactOption, ...]:
+        values: list[StudyArtifactOption] = []
+        for row in range(self.saved_artifact_table.rowCount()):
+            item = self.saved_artifact_table.item(row, 0)
+            option = None if item is None else item.data(
+                Qt.ItemDataRole.UserRole
+            )
+            if (
+                isinstance(option, StudyArtifactOption)
+                and item.checkState() == Qt.CheckState.Checked
+            ):
+                values.append(option)
+        return tuple(values)
+
+    def _update_saved_artifact_action(self) -> None:
         self.apply_saved_artifact_button.setEnabled(
             self._mode == "ordinary"
-            and isinstance(option, StudyArtifactOption)
             and not self._busy
+            and bool(self._visible_checked_artifact_options())
         )
 
     def _request_apply_saved_artifact(self) -> None:
         if self._busy:
             return
-        option = self._selected_saved_artifact()
-        if not isinstance(option, StudyArtifactOption):
+        options = self._visible_checked_artifact_options()
+        if not options:
             self.apply_saved_artifact_button.setEnabled(False)
             return
+        requests = tuple(
+            self._build_saved_artifact_request(option)
+            for option in options
+        )
+        self.apply_saved_artifact_requested.emit(
+            ResearchSavedArtifactBatchIntent(requests)
+        )
+        self.status_label.setText("Saved Artifact batch requested.")
+
+    def settle_saved_artifact_success(self, artifact_id: str) -> None:
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_id must be non-empty text")
+        self._checked_artifact_ids.discard(artifact_id)
+        for row in range(self.saved_artifact_table.rowCount()):
+            item = self.saved_artifact_table.item(row, 0)
+            option = None if item is None else item.data(
+                Qt.ItemDataRole.UserRole
+            )
+            if (
+                isinstance(option, StudyArtifactOption)
+                and option.artifact_id == artifact_id
+            ):
+                item.setCheckState(Qt.CheckState.Unchecked)
+        self._update_saved_artifact_action()
+
+    def _build_saved_artifact_request(
+        self, option: StudyArtifactOption
+    ) -> StudyArtifactRequest:
         request = build_study_request(
             StudySetupDraft(
                 mode="artifact",
@@ -970,8 +1231,50 @@ class ResearchFinancialToolsDialog(QDialog):
         )
         if not isinstance(request, StudyArtifactRequest):
             raise TypeError("artifact request must be StudyArtifactRequest")
-        self.apply_saved_artifact_requested.emit(request)
-        self.status_label.setText("Saved Artifact apply requested.")
+        return request
+
+    def _capture_current_draft(self) -> None:
+        if (
+            self._mode == "ordinary"
+            and self._current_spec is not None
+            and self._editor is not None
+        ):
+            self._tool_drafts[self._current_spec.key] = (
+                self._editor._capture_draft()
+            )
+
+    def _restore_ordinary_state(
+        self, family: str | None, selected_key: str | None
+    ) -> None:
+        family_index = self.family_combo.findData(family)
+        if family_index < 0:
+            family_index = 0
+            family = None
+        self._ordinary_family = family
+        self.family_combo.blockSignals(True)
+        self.family_combo.setCurrentIndex(family_index)
+        self.family_combo.blockSignals(False)
+        self._current_spec = None
+        self._clear_parameter_form()
+        self._populate_tools()
+        tool_row = next(
+            (
+                row
+                for row in range(self.tool_list.count())
+                if self.tool_list.item(row).data(
+                    Qt.ItemDataRole.UserRole
+                ).key == selected_key
+            ),
+            -1,
+        )
+        self.tool_list.setCurrentRow(tool_row)
+        if tool_row < 0:
+            self._ordinary_tool_key = None
+            self.description_label.setText("Select a Financial Tool.")
+            self.status_label.setText("Select a Financial Tool.")
+            self._set_calculation_actions_enabled(False)
+            self._populate_saved_artifacts()
+
 
     def _clear_parameter_form(self) -> None:
         if self._editor is not None:
@@ -1378,7 +1681,35 @@ def _restore_sources(
     catalog: StudySetupCatalog,
     request: StudyExecutionRequest,
 ) -> None:
-    for selection in request.input_sources:
+    selections = tuple(
+        StudySetupSourceSelection(
+            role=source.role,
+            source_kind=source.source_kind,
+            column_name=source.column_name,
+            study_id=source.study_id,
+            artifact_kind=source.artifact_kind,
+            artifact_tool_key=source.artifact_tool_key,
+            artifact_id=source.artifact_id,
+            output_name=source.output_name,
+        )
+        for source in request.input_sources
+    )
+    _restore_source_selections(
+        selector,
+        catalog,
+        selections,
+        require_available=True,
+    )
+
+
+def _restore_source_selections(
+    selector: StudySourceSelectorWidget,
+    catalog: StudySetupCatalog,
+    selections: tuple[StudySetupSourceSelection, ...],
+    *,
+    require_available: bool,
+) -> None:
+    for selection in selections:
         option = next(
             (
                 item
@@ -1394,11 +1725,14 @@ def _restore_sources(
             None,
         )
         if option is None:
-            raise ValueError(
-                f"Required source is not available for role {selection.role}"
-            )
+            if require_available:
+                raise ValueError(
+                    f"Required source is not available for role {selection.role}"
+                )
+            _ensure_source_role(selector, selection.role, len(selections))
+            continue
         restored = False
-        for _attempt in range(len(request.input_sources) + 1):
+        for _attempt in range(len(selections) + 1):
             try:
                 selector.select_option(selection.role, option)
             except KeyError:
@@ -1410,6 +1744,64 @@ def _restore_sources(
             raise ValueError(
                 f"Required source role cannot be restored: {selection.role}"
             )
+
+
+def _restore_source_role_layout(
+    selector: StudySourceSelectorWidget,
+    source_roles: tuple[str, ...],
+) -> None:
+    schema = selector.schema
+    if schema == ("source_1", "..."):
+        expected = tuple(
+            f"source_{index}" for index in range(1, len(source_roles) + 1)
+        )
+        if not source_roles or source_roles != expected:
+            raise ValueError("invalid dynamic source role layout")
+        while len(selector._rows) < len(source_roles):
+            selector._add.click()
+    elif schema == ("fast", "mid?", "slow"):
+        if source_roles not in (
+            ("fast", "slow"),
+            ("fast", "mid", "slow"),
+        ):
+            raise ValueError("invalid fast/mid/slow source role layout")
+        if source_roles == ("fast", "mid", "slow") and not any(
+            row.role == "mid" for row in selector._rows
+        ):
+            selector._add.click()
+        current_roles = tuple(row.role for row in selector._rows)
+        if current_roles == ("fast", "slow", "mid"):
+            mid = selector._rows.pop()
+            selector._rows.insert(1, mid)
+            selector._layout.removeWidget(mid.container)
+            selector._layout.insertWidget(1, mid.container)
+    elif schema == ("peak+trough?",):
+        if source_roles not in ((), ("peak", "trough")):
+            raise ValueError("invalid peak/trough source role layout")
+        if source_roles and not selector._rows:
+            selector._add.click()
+    else:
+        canonical_roles = tuple(
+            role.removesuffix("?")
+            for role in schema
+            if not role.endswith("?")
+        )
+        if source_roles != canonical_roles:
+            raise ValueError("invalid fixed source role layout")
+
+    if tuple(row.role for row in selector._rows) != source_roles:
+        raise ValueError("source role layout could not be restored")
+
+
+def _ensure_source_role(
+    selector: StudySourceSelectorWidget,
+    role: str,
+    limit: int,
+) -> None:
+    for _attempt in range(limit + 1):
+        if any(row.role == role for row in selector._rows):
+            return
+        selector._add.click()
 
 
 def _guide_label(kind: str) -> str:

@@ -607,23 +607,8 @@ def main() -> int:
             editor.set_dirty(False)
             editor.set_status("Save requested (dev GUI).")
 
-    def save_notebook() -> None:
-        editor = tracked_windows.get("research_restoration.notebook.editor")
-        if editor is None:
-            QMessageBox.information(
-                window,
-                "Save Notebook",
-                "No Research Notebook is open.",
-            )
-            return
-        if editor.is_current_valid:
-            handle_notebook_save(
-                ResearchNotebookSaveIntent(editor.current_draft(), False)
-            )
-
-    def open_notebook_manager(*, load_title: bool) -> None:
-        role = "load" if load_title else "manager"
-        window_id = f"research_restoration.notebook.{role}"
+    def open_notebook_manager() -> None:
+        window_id = "research_restoration.notebook.manager"
         dialog = tracked_windows.get(window_id)
         if dialog is not None:
             dialog.set_summaries(tuple(notebook_summaries))
@@ -635,9 +620,6 @@ def main() -> int:
             window,
             assignments=tuple(notebook_assignments),
         )
-        if load_title:
-            dialog.setWindowTitle("Load Notebook")
-
         def refresh_manager() -> None:
             dialog.set_summaries(tuple(notebook_summaries))
             dialog.set_assignments(tuple(notebook_assignments))
@@ -689,6 +671,7 @@ def main() -> int:
             sync_assigned_notebook_action()
 
         dialog.open_requested.connect(show_notebook)
+        dialog.create_requested.connect(create_notebook)
         dialog.refresh_requested.connect(refresh_manager)
         dialog.assign_requested.connect(assign_notebook)
         dialog.unassign_requested.connect(unassign_notebook)
@@ -710,15 +693,8 @@ def main() -> int:
     window.manage_workspace_snapshots_requested.connect(
         lambda: open_snapshot_manager(mode="manage")
     )
-    window.create_notebook_requested.connect(create_notebook)
     window.open_notebook_requested.connect(open_assigned_notebook)
-    window.notebook_manager_requested.connect(
-        lambda: open_notebook_manager(load_title=False)
-    )
-    window.save_notebook_requested.connect(save_notebook)
-    window.load_notebook_requested.connect(
-        lambda: open_notebook_manager(load_title=True)
-    )
+    window.notebook_manager_requested.connect(open_notebook_manager)
     window.action_for_text("Scroll 4").triggered.connect(
         lambda checked: checked
         and window.workspace.set_visualization_mode("scroll_4")

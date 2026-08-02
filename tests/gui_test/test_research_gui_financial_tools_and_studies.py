@@ -32,6 +32,7 @@ from leonardo.gui.research import (
     ResearchWorkspaceWidget,
 )
 from leonardo.gui.research.financial_tools_dialog import (
+    ResearchSavedArtifactBatchIntent,
     ResearchStudyApplyIntent,
     ResearchStudyEditDialog,
     _UtcPeaksTroughsOwnerSelector,
@@ -93,9 +94,29 @@ def _tool_specs(dialog: ResearchFinancialToolsDialog) -> tuple[FinancialToolSpec
     )
 
 
-def _table_rows(table: QTableWidget) -> tuple[tuple[str, str, str], ...]:
+def _ordinary_source_selector(
+    dialog: ResearchFinancialToolsDialog,
+) -> StudySourceSelectorWidget:
+    selector = dialog.source_selector
+    assert isinstance(selector, StudySourceSelectorWidget)
+    return selector
+
+
+def _source_roles(
+    selector: StudySourceSelectorWidget,
+) -> tuple[str, ...]:
+    return tuple(row.role for row in selector._rows)
+
+
+def _source_row(selector: StudySourceSelectorWidget, role: str):
+    return next(row for row in selector._rows if row.role == role)
+
+
+def _table_rows(
+    table: QTableWidget,
+) -> tuple[tuple[str, str, str, str], ...]:
     return tuple(
-        tuple(table.item(row, column).text() for column in range(3))
+        tuple(table.item(row, column).text() for column in range(4))
         for row in range(table.rowCount())
     )
 
@@ -187,6 +208,11 @@ def test_financial_tools_structure_and_initial_state(qapp: QApplication) -> None
         assert dialog.description_label.text() == "Select a Financial Tool."
         assert dialog.status_label.text() == "Select a Financial Tool."
         assert not dialog.apply_button.isEnabled()
+        assert dialog.save_button.text() == "Save"
+        assert dialog.save_button.objectName() == (
+            "research_restoration.financial_tools.save"
+        )
+        assert not dialog.save_button.isEnabled()
         assert dialog.findChild(
             QPushButton, "research_restoration.financial_tools.save_artifact"
         ) is None
@@ -196,16 +222,13 @@ def test_financial_tools_structure_and_initial_state(qapp: QApplication) -> None
         assert dialog.saved_artifact_table.objectName() == (
             "research_restoration.financial_tools.saved_artifacts"
         )
-        assert dialog.saved_artifact_table.columnCount() == 3
+        assert dialog.saved_artifact_table.columnCount() == 4
         assert tuple(
             dialog.saved_artifact_table.horizontalHeaderItem(column).text()
-            for column in range(3)
-        ) == ("Artifact", "Parameters", "Outputs")
-        assert dialog.saved_artifact_table.selectionBehavior() == (
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+            for column in range(4)
+        ) == ("Apply", "Artifact", "Parameters", "Outputs")
         assert dialog.saved_artifact_table.selectionMode() == (
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.NoSelection
         )
         assert dialog.saved_artifact_table.editTriggers() == (
             QAbstractItemView.EditTrigger.NoEditTriggers
@@ -215,8 +238,8 @@ def test_financial_tools_structure_and_initial_state(qapp: QApplication) -> None
         assert not dialog.saved_artifact_table.horizontalHeader().isHidden()
         assert not dialog.saved_artifact_table.wordWrap()
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("Saved SMA 20", "period=20", "sma_20"),
-            ("Saved RSI 14", "period=14", "rsi_14"),
+            ("", "Saved SMA 20", "period=20", "sma_20"),
+            ("", "Saved RSI 14", "period=14", "rsi_14"),
         )
         button_texts = {
             button.text()
@@ -226,7 +249,7 @@ def test_financial_tools_structure_and_initial_state(qapp: QApplication) -> None
             )
             if button.isVisibleTo(dialog)
         }
-        assert {"Apply", "Apply Saved Artifact", "Close"} <= button_texts
+        assert {"Apply", "Save", "Apply Checked Artifacts", "Close"} <= button_texts
         assert "Save Artifact" not in button_texts
         assert all("Recipe" not in text for text in button_texts)
     finally:
@@ -246,12 +269,22 @@ def test_parameters_and_canonical_calculation_intents(qapp: QApplication) -> Non
         assert dialog.apply_button.isEnabled()
 
         apply_spy = QSignalSpy(dialog.apply_requested)
+        save_spy = QSignalSpy(dialog.save_requested)
         dialog.apply_button.click()
         assert apply_spy.count() == 1
+        assert save_spy.count() == 0
         apply_intent = apply_spy.at(0)[0]
         assert isinstance(apply_intent, ResearchStudyApplyIntent)
         assert apply_intent.request.tool_key == "sma"
         assert dict(apply_intent.guide_values) == {}
+        dialog.save_button.click()
+        assert apply_spy.count() == 1
+        assert save_spy.count() == 1
+        save_intent = save_spy.at(0)[0]
+        assert save_intent.request == apply_intent.request
+        assert dict(save_intent.guide_values) == dict(
+            apply_intent.guide_values
+        )
         assert dialog.isVisible() or not dialog.testAttribute(Qt.WA_DeleteOnClose)
 
         _select_tool(dialog, "Bollinger Bands")
@@ -423,12 +456,277 @@ def test_creation_guide_validation_intent_purity_and_reset(
         assert dict(dialog._build_apply_intent().guide_values) == {}
 
         _select_tool(dialog, "RSI")
-        assert dialog.guide_controls["oversold"].value() == 30.0
+        assert dialog.guide_controls["oversold"].value() == 25.0
         dialog.guide_controls["oversold"].setValue(25.0)
         dialog.close()
         dialog.prepare_for_open()
         _select_tool(dialog, "RSI")
-        assert dialog.guide_controls["oversold"].value() == 30.0
+        assert dialog.guide_controls["oversold"].value() == 25.0
+    finally:
+        dialog.close()
+
+
+def test_per_tool_form_state_survives_switch_reopen_and_catalog_refresh(
+    qapp: QApplication,
+) -> None:
+    dialog = _dialog()
+    try:
+        _select_tool(dialog, "RSI")
+        dialog.parameter_controls["period"].setValue(21)
+        dialog.guide_controls["oversold"].setValue(24.0)
+        _select_tool(dialog, "SMA")
+        dialog.parameter_controls["period"].setValue(55)
+        _select_tool(dialog, "RSI")
+        assert dialog.parameter_controls["period"].value() == 21
+        assert dialog.guide_controls["oversold"].value() == 24.0
+        _select_tool(dialog, "SMA")
+        assert dialog.parameter_controls["period"].value() == 55
+
+        _select_tool(dialog, "Derivatives")
+        option = next(
+            item
+            for item in dialog._catalog.ohlcv_sources
+            if item.column_name == "close"
+        )
+        dialog.source_selector.select_option("source", option)
+        selected = dialog.source_selector.selections()
+        _select_tool(dialog, "SMA")
+        _select_tool(dialog, "Derivatives")
+        assert dialog.source_selector.selections() == selected
+
+        dialog.close()
+        dialog.prepare_for_open()
+        assert dialog.tool_list.currentItem().text() == "Derivatives"
+        assert dialog.source_selector.selections() == selected
+        dialog.set_catalog(dialog._catalog)
+        assert dialog.tool_list.currentItem().text() == "Derivatives"
+        assert dialog.source_selector.selections() == selected
+    finally:
+        dialog.close()
+
+
+def test_multi_source_empty_rows_survive_switch_reopen_catalog_and_filter(
+    qapp: QApplication,
+) -> None:
+    dialog = _dialog()
+    try:
+        _select_tool(dialog, "Percent Span Angle")
+        selector = _ordinary_source_selector(dialog)
+        assert _source_roles(selector) == ("source_1",)
+        selector._add.click()
+        selector._add.click()
+        assert _source_roles(selector) == (
+            "source_1",
+            "source_2",
+            "source_3",
+        )
+        source_1_option = next(
+            option
+            for option in dialog._catalog.study_sources
+            if option.study_id == "dev-sma"
+        )
+        selector.select_option("source_1", source_1_option)
+        selected_source_1 = selector.selections()[0]
+
+        def assert_preserved() -> None:
+            current = _ordinary_source_selector(dialog)
+            assert _source_roles(current) == (
+                "source_1",
+                "source_2",
+                "source_3",
+            )
+            assert current.selections() == (selected_source_1,)
+            assert _source_row(current, "source_2").item.currentData() is None
+            assert _source_row(current, "source_3").item.currentData() is None
+
+        _select_tool(dialog, "SMA")
+        _select_tool(dialog, "Percent Span Angle")
+        assert_preserved()
+
+        dialog.close()
+        dialog.prepare_for_open()
+        assert dialog.tool_list.currentItem().text() == "Percent Span Angle"
+        assert_preserved()
+
+        dialog.set_catalog(dialog._catalog)
+        assert dialog.tool_list.currentItem().text() == "Percent Span Angle"
+        assert_preserved()
+
+        dialog.family_combo.setCurrentText("Indicator")
+        dialog.family_combo.setCurrentText("Construct")
+        _select_tool(dialog, "Percent Span Angle")
+        assert_preserved()
+    finally:
+        dialog.close()
+
+
+def test_optional_empty_mid_survives_switch_and_equivalent_catalog(
+    qapp: QApplication,
+) -> None:
+    dialog = _dialog()
+    try:
+        _select_tool(dialog, "Trap Area")
+        selector = _ordinary_source_selector(dialog)
+        selector._add.click()
+        assert _source_roles(selector) == ("fast", "mid", "slow")
+        close_option = next(
+            option
+            for option in dialog._catalog.ohlcv_sources
+            if option.column_name == "close"
+        )
+        open_option = next(
+            option
+            for option in dialog._catalog.ohlcv_sources
+            if option.column_name == "open"
+        )
+        selector.select_option("fast", close_option)
+        selector.select_option("slow", open_option)
+        selected = selector.selections()
+
+        def assert_preserved() -> None:
+            current = _ordinary_source_selector(dialog)
+            assert _source_roles(current) == ("fast", "mid", "slow")
+            assert current.selections() == selected
+            assert _source_row(current, "mid").item.currentData() is None
+
+        _select_tool(dialog, "SMA")
+        _select_tool(dialog, "Trap Area")
+        assert_preserved()
+
+        dialog.set_catalog(dialog._catalog)
+        assert dialog.tool_list.currentItem().text() == "Trap Area"
+        assert_preserved()
+    finally:
+        dialog.close()
+
+
+def test_multi_source_loss_preserves_empty_layout_without_substitution(
+    qapp: QApplication,
+) -> None:
+    dialog = _dialog()
+    try:
+        _select_tool(dialog, "Percent Span Angle")
+        selector = _ordinary_source_selector(dialog)
+        selector._add.click()
+        selector._add.click()
+        source_1_option = next(
+            option
+            for option in dialog._catalog.study_sources
+            if option.study_id == "dev-sma"
+        )
+        source_3_option = next(
+            option
+            for option in dialog._catalog.study_sources
+            if option.output_name == "bb_middle"
+        )
+        selector.select_option("source_1", source_1_option)
+        selector.select_option("source_3", source_3_option)
+        assert not dialog.apply_button.isEnabled()
+        assert not dialog.save_button.isEnabled()
+
+        replacement = replace(
+            dialog._catalog,
+            study_sources=tuple(
+                option
+                for option in dialog._catalog.study_sources
+                if option != source_3_option
+            ),
+        )
+        dialog.set_catalog(replacement)
+
+        current = _ordinary_source_selector(dialog)
+        assert _source_roles(current) == (
+            "source_1",
+            "source_2",
+            "source_3",
+        )
+        assert tuple(
+            selection.role for selection in current.selections()
+        ) == ("source_1",)
+        assert current.selections()[0].study_id == "dev-sma"
+        assert _source_row(current, "source_2").item.currentData() is None
+        assert _source_row(current, "source_3").item.currentData() is None
+        assert dialog.apply_button.isEnabled()
+        assert dialog.save_button.isEnabled()
+        assert dialog.status_label.text() == "Ready"
+    finally:
+        dialog.close()
+
+
+def test_catalog_source_loss_preserves_values_without_substitution(
+    qapp: QApplication,
+) -> None:
+    dialog = _dialog()
+    try:
+        _select_tool(dialog, "Derivatives")
+        dialog.parameter_controls["order"].setValue(2)
+        close_option = next(
+            item
+            for item in dialog._catalog.ohlcv_sources
+            if item.column_name == "close"
+        )
+        dialog.source_selector.select_option("source", close_option)
+        replacement = replace(
+            dialog._catalog,
+            ohlcv_sources=tuple(
+                item
+                for item in dialog._catalog.ohlcv_sources
+                if item != close_option
+            ),
+        )
+        dialog.set_catalog(replacement)
+        assert dialog.parameter_controls["order"].value() == 2
+        assert dialog.source_selector.selections() == ()
+        assert not dialog.apply_button.isEnabled()
+        assert not dialog.save_button.isEnabled()
+        assert dialog.status_label.text()
+    finally:
+        dialog.close()
+
+
+def test_checked_artifacts_preserve_hidden_state_and_emit_visible_order(
+    qapp: QApplication,
+) -> None:
+    dialog = _dialog()
+    try:
+        for row in range(dialog.saved_artifact_table.rowCount()):
+            dialog.saved_artifact_table.item(row, 0).setCheckState(
+                Qt.CheckState.Checked
+            )
+        assert dialog._checked_artifact_ids == {
+            SMA_ARTIFACT_ID,
+            RSI_ARTIFACT_ID,
+        }
+        dialog.family_combo.setCurrentText("Indicator")
+        spy = QSignalSpy(dialog.apply_saved_artifact_requested)
+        dialog.apply_saved_artifact_button.click()
+        batch = spy.at(0)[0]
+        assert tuple(
+            request.artifact_id for request in batch.requests
+        ) == (SMA_ARTIFACT_ID,)
+
+        dialog.family_combo.setCurrentText("All")
+        assert tuple(
+            dialog.saved_artifact_table.item(row, 0).checkState()
+            for row in range(dialog.saved_artifact_table.rowCount())
+        ) == (Qt.CheckState.Checked, Qt.CheckState.Checked)
+        dialog.prepare_for_open()
+        dialog.set_catalog(dialog._catalog)
+        assert dialog._checked_artifact_ids == {
+            SMA_ARTIFACT_ID,
+            RSI_ARTIFACT_ID,
+        }
+        dialog.set_catalog(
+            replace(
+                dialog._catalog,
+                artifact_options=tuple(
+                    option
+                    for option in dialog._catalog.artifact_options
+                    if option.artifact_id != RSI_ARTIFACT_ID
+                ),
+            )
+        )
+        assert dialog._checked_artifact_ids == {SMA_ARTIFACT_ID}
     finally:
         dialog.close()
 
@@ -694,20 +992,24 @@ def test_saved_artifact_filtering_and_canonical_apply(qapp: QApplication) -> Non
     dialog = _dialog()
     try:
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("Saved SMA 20", "period=20", "sma_20"),
-            ("Saved RSI 14", "period=14", "rsi_14"),
+            ("", "Saved SMA 20", "period=20", "sma_20"),
+            ("", "Saved RSI 14", "period=14", "rsi_14"),
         )
         _select_tool(dialog, "SMA")
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("Saved SMA 20", "period=20", "sma_20"),
+            ("", "Saved SMA 20", "period=20", "sma_20"),
         )
-        dialog.saved_artifact_table.selectRow(0)
+        dialog.saved_artifact_table.item(0, 0).setCheckState(
+            Qt.CheckState.Checked
+        )
         assert dialog.apply_saved_artifact_button.isEnabled()
         spy = QSignalSpy(dialog.apply_saved_artifact_requested)
         dialog.apply_saved_artifact_button.click()
         assert spy.count() == 1
-        request = spy.at(0)[0]
-        assert isinstance(request, StudyArtifactRequest)
+        batch = spy.at(0)[0]
+        assert isinstance(batch, ResearchSavedArtifactBatchIntent)
+        assert len(batch.requests) == 1
+        request = batch.requests[0]
         assert request.tool_key == "sma"
         assert request.artifact_id == SMA_ARTIFACT_ID
         assert dialog.isVisible() or not dialog.testAttribute(Qt.WA_DeleteOnClose)
@@ -722,30 +1024,30 @@ def test_saved_artifact_filtering_and_canonical_apply(qapp: QApplication) -> Non
         )
         assert all(
             SMA_ARTIFACT_ID not in dialog.saved_artifact_table.item(0, column).text()
-            for column in range(3)
+            for column in range(4)
         )
         assert all(
             dialog.saved_artifact_table.item(0, column).toolTip() == tooltip
-            for column in range(3)
+            for column in range(4)
         )
 
         dialog.family_combo.setCurrentText("All")
         _select_tool(dialog, "RSI")
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("Saved RSI 14", "period=14", "rsi_14"),
+            ("", "Saved RSI 14", "period=14", "rsi_14"),
         )
         option = dialog.saved_artifact_table.item(0, 0).data(Qt.UserRole)
         assert option.artifact_id == RSI_ARTIFACT_ID
 
         dialog.family_combo.setCurrentText("Indicator")
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("Saved SMA 20", "period=20", "sma_20"),
+            ("", "Saved SMA 20", "period=20", "sma_20"),
         )
         assert not dialog.saved_artifact_table.selectedItems()
-        assert not dialog.apply_saved_artifact_button.isEnabled()
+        assert dialog.apply_saved_artifact_button.isEnabled()
         dialog.family_combo.setCurrentText("Oscillator")
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("Saved RSI 14", "period=14", "rsi_14"),
+            ("", "Saved RSI 14", "period=14", "rsi_14"),
         )
         dialog.family_combo.setCurrentText("Construct")
         assert _table_rows(dialog.saved_artifact_table) == ()
@@ -784,8 +1086,8 @@ def test_saved_artifact_duplicate_names_are_distinguished_by_recipe_truth(
     dialog = ResearchFinancialToolsDialog(fixture.market_id, catalog)
     try:
         assert _table_rows(dialog.saved_artifact_table) == (
-            ("SMA", "period=20", "sma_20"),
-            ("SMA", "period=200", "sma_200"),
+            ("", "SMA", "period=20", "sma_20"),
+            ("", "SMA", "period=200", "sma_200"),
         )
     finally:
         dialog.close()
@@ -822,6 +1124,7 @@ def test_saved_artifact_summaries_compact_without_truncating_tooltip(
     try:
         assert _table_rows(dialog.saved_artifact_table) == (
             (
+                "",
                 "UTC",
                 "source=close; trend_fractal_window=5; "
                 "range_fractal_window=3; trend_peak=peak_fractal_5; ... (+3)",

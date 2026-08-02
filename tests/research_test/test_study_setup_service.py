@@ -67,6 +67,208 @@ def test_service_projects_catalog_and_constructs_environment_without_values(tmp_
     assert draft.entries[0].parameters["period"] == 20
 
 
+def test_environment_capture_uses_stable_dependency_order_for_three_levels(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    runtime = ResearchStudyService(artifacts)
+    sma = prepare(runtime, dataset, "sma", parameters={"period": 3})
+    derivative = prepare(
+        runtime,
+        dataset,
+        "derivative",
+        parameters={"order": 1},
+        sources=(
+            StudyInputSource(
+                "source", "study", study_id=sma.study_id, output_name="sma_3"
+            ),
+        ),
+        studies=(sma,),
+    )
+    angle = prepare(
+        runtime,
+        dataset,
+        "angle",
+        sources=(
+            StudyInputSource(
+                "source",
+                "study",
+                study_id=derivative.study_id,
+                output_name=derivative.result.output_names[0],
+            ),
+        ),
+        studies=(sma, derivative),
+    )
+    rsi = prepare(runtime, dataset, "rsi", parameters={"period": 14})
+    supplied = (angle, rsi, derivative, sma)
+    presentations = StudyPresentationRegistry()
+    presentation_values = tuple(
+        presentations.register(study) for study in supplied
+    )
+    service = ResearchStudySetupService(
+        artifacts, StudyEnvironmentStore(tmp_path / "study_environments")
+    )
+
+    draft = service.build_environment(
+        dataset,
+        supplied,
+        presentation_values,
+        display_name="Three levels",
+    )
+
+    assert tuple(entry.tool_key for entry in draft.entries) == (
+        "rsi",
+        "sma",
+        "derivative",
+        "angle",
+    )
+    assert tuple(entry.entry_id for entry in draft.entries) == (
+        "entry_001",
+        "entry_002",
+        "entry_003",
+        "entry_004",
+    )
+    assert draft.entries[2].sources[0].source_entry_id == "entry_002"
+    assert draft.entries[3].sources[0].source_entry_id == "entry_003"
+
+
+def test_environment_capture_orders_peaks_before_utc_and_rebinds_entry_sources(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    runtime = ResearchStudyService(artifacts)
+    peaks = prepare(runtime, dataset, "peaks_troughs")
+    utc = prepare(
+        runtime,
+        dataset,
+        "universal_trend_classifier",
+        sources=tuple(
+            StudyInputSource(
+                role,
+                "study",
+                study_id=peaks.study_id,
+                output_name=output,
+            )
+            for role, output in (
+                ("trend_peak", "peak_fractal_5"),
+                ("trend_trough", "trough_fractal_5"),
+                ("range_peak", "peak_fractal_3"),
+                ("range_trough", "trough_fractal_3"),
+            )
+        ),
+        studies=(peaks,),
+    )
+    presentations = StudyPresentationRegistry()
+    utc_presentation = presentations.register(utc)
+    peaks_presentation = presentations.register(peaks)
+    service = ResearchStudySetupService(
+        artifacts, StudyEnvironmentStore(tmp_path / "study_environments")
+    )
+
+    draft = service.build_environment(
+        dataset,
+        (utc, peaks),
+        (utc_presentation, peaks_presentation),
+        display_name="P&T to UTC",
+    )
+
+    assert tuple(entry.tool_key for entry in draft.entries) == (
+        "peaks_troughs",
+        "universal_trend_classifier",
+    )
+    assert {source.source_entry_id for source in draft.entries[1].sources} == {
+        "entry_001"
+    }
+
+
+def test_environment_capture_rejects_missing_dependency_and_cycle(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    runtime = ResearchStudyService(artifacts)
+    first = prepare(runtime, dataset, "sma", parameters={"period": 3})
+    second = prepare(runtime, dataset, "rsi", parameters={"period": 14})
+    presentations = StudyPresentationRegistry()
+    first_presentation = presentations.register(first)
+    second_presentation = presentations.register(second)
+    service = ResearchStudySetupService(
+        artifacts, StudyEnvironmentStore(tmp_path / "study_environments")
+    )
+    original_first = first.setup_request
+    original_second = second.setup_request
+    object.__setattr__(
+        first,
+        "setup_request",
+        StudyExecutionRequest(
+            "sma",
+            {"period": 3},
+            (
+                StudyInputSource(
+                    "source",
+                    "study",
+                    study_id="missing-study",
+                    output_name="missing",
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(
+        StudyEnvironmentValidationError,
+        match="Study dependency is missing: missing-study",
+    ):
+        service.build_environment(
+            dataset,
+            (first, second),
+            (first_presentation, second_presentation),
+            display_name="Missing",
+        )
+
+    object.__setattr__(
+        first,
+        "setup_request",
+        StudyExecutionRequest(
+            "sma",
+            {"period": 3},
+            (
+                StudyInputSource(
+                    "source",
+                    "study",
+                    study_id=second.study_id,
+                    output_name=second.analysis_usable_output_names[0],
+                ),
+            ),
+        ),
+    )
+    object.__setattr__(
+        second,
+        "setup_request",
+        StudyExecutionRequest(
+            "rsi",
+            {"period": 14},
+            (
+                StudyInputSource(
+                    "source",
+                    "study",
+                    study_id=first.study_id,
+                    output_name=first.analysis_usable_output_names[0],
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(
+        StudyEnvironmentValidationError,
+        match="Study dependency cycle detected",
+    ):
+        service.build_environment(
+            dataset,
+            (first, second),
+            (first_presentation, second_presentation),
+            display_name="Cycle",
+        )
+    object.__setattr__(first, "setup_request", original_first)
+    object.__setattr__(second, "setup_request", original_second)
+
+
 def test_pure_environment_is_cross_market_compatible(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
     runtime = ResearchStudyService(artifacts)

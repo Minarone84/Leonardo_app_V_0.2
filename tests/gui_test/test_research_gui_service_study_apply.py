@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,22 @@ def _apply_tool(dialog, study_service, setup, title: str):
     _settle_qt()
     _complete_catalog_refresh(setup)
     return task_id
+
+
+def _three_artifact_catalog(dialog):
+    options = tuple(
+        StudyArtifactOption(
+            dialog._catalog.market_id,
+            character * 64,
+            "indicator",
+            "sma",
+            f"Saved SMA {index}",
+            (f"sma_{index}",),
+            parameters={"period": index},
+        )
+        for character, index in (("a", 10), ("b", 20), ("c", 30))
+    )
+    return replace(dialog._catalog, artifact_options=options)
 
 
 def test_calculation_and_saved_artifact_apply_use_canonical_service(tmp_path: Path) -> None:
@@ -104,7 +121,7 @@ def test_calculation_and_saved_artifact_apply_use_canonical_service(tmp_path: Pa
         _select_tool(dialog, "SMA")
         saved = dialog.saved_artifact_table.item(0, 0)
         assert saved.data(Qt.ItemDataRole.UserRole).artifact_id == "a" * 64
-        dialog.saved_artifact_table.selectRow(0)
+        saved.setCheckState(Qt.CheckState.Checked)
         dialog.apply_saved_artifact_button.click()
         kind, request = studies.submissions[-1]
         assert kind == "artifact"
@@ -115,7 +132,10 @@ def test_calculation_and_saved_artifact_apply_use_canonical_service(tmp_path: Pa
         _settle_qt()
         assert session.study_count == 4
         _complete_catalog_refresh(setup)
-        assert not dialog.saved_artifact_table.selectedItems()
+        assert (
+            dialog.saved_artifact_table.item(0, 0).checkState()
+            == Qt.CheckState.Unchecked
+        )
         assert not dialog.apply_saved_artifact_button.isEnabled()
     finally:
         presenter.dispose()
@@ -168,6 +188,112 @@ def test_custom_rsi_creation_applies_guides_after_one_calculation(
             for guide in oscillator.scene_plan.guides
         )
         _complete_catalog_refresh(setup)
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_checked_saved_artifacts_apply_sequentially_in_visible_order(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, datasets, studies, setup, summary = real_presenter(
+        tmp_path
+    )
+    try:
+        slot_id = open_ready_chart(window, presenter, datasets, summary)
+        dialog = open_financial_tools(window, presenter, setup, slot_id)
+        dialog.set_catalog(_three_artifact_catalog(dialog))
+        for row in range(3):
+            dialog.saved_artifact_table.item(row, 0).setCheckState(
+                Qt.CheckState.Checked
+            )
+        dialog.apply_saved_artifact_button.click()
+        assert tuple(studies.pending) == ("study-1",)
+        maximum_pending = len(studies.pending)
+        expected_ids = ("a" * 64, "b" * 64, "c" * 64)
+        for expected_count in range(1, 4):
+            task_id = next(iter(studies.pending))
+            studies.complete(task_id)
+            _settle_qt()
+            maximum_pending = max(maximum_pending, len(studies.pending))
+            assert (
+                presenter._workspace_state.session_for(slot_id).study_count
+                == expected_count
+            )
+            if expected_count < 3:
+                assert len(studies.pending) == 1
+        assert maximum_pending == 1
+        assert tuple(
+            request.artifact_id
+            for kind, request in studies.submissions
+            if kind == "artifact"
+        ) == expected_ids
+        assert all(
+            dialog.saved_artifact_table.item(row, 0).checkState()
+            == Qt.CheckState.Unchecked
+            for row in range(3)
+        )
+        setup.complete(
+            next(reversed(setup.pending)),
+            catalog=_three_artifact_catalog(dialog),
+        )
+        _settle_qt()
+        assert dialog.status_label.text() == "Applied 3 saved Artifacts."
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_checked_saved_artifact_failure_stops_batch_and_retains_checks(
+    tmp_path: Path,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, datasets, studies, setup, summary = real_presenter(
+        tmp_path
+    )
+    try:
+        slot_id = open_ready_chart(window, presenter, datasets, summary)
+        dialog = open_financial_tools(window, presenter, setup, slot_id)
+        dialog.set_catalog(_three_artifact_catalog(dialog))
+        for row in range(3):
+            dialog.saved_artifact_table.item(row, 0).setCheckState(
+                Qt.CheckState.Checked
+            )
+        dialog.apply_saved_artifact_button.click()
+        studies.complete(next(iter(studies.pending)))
+        _settle_qt()
+        studies.complete(
+            next(iter(studies.pending)),
+            status="failed",
+            error_message="artifact failed",
+        )
+        _settle_qt()
+        assert tuple(
+            request.artifact_id
+            for kind, request in studies.submissions
+            if kind == "artifact"
+        ) == ("a" * 64, "b" * 64)
+        assert tuple(
+            dialog.saved_artifact_table.item(row, 0).checkState()
+            for row in range(3)
+        ) == (
+            Qt.CheckState.Unchecked,
+            Qt.CheckState.Checked,
+            Qt.CheckState.Checked,
+        )
+        setup.complete(
+            next(reversed(setup.pending)),
+            catalog=_three_artifact_catalog(dialog),
+        )
+        _settle_qt()
+        assert dialog.apply_saved_artifact_button.isEnabled()
+        assert (
+            presenter._workspace_state.session_for(slot_id).study_count == 1
+        )
+        assert dialog.status_label.text().startswith(
+            "Saved Artifact batch stopped at 2 of 3:"
+        )
     finally:
         presenter.dispose()
         window.close()

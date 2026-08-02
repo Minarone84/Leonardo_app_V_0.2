@@ -74,6 +74,9 @@ class StudyMarkerGlyph:
     marker_shape: str
     marker_size: int
     point: StudyScenePoint
+    display_text: str | None = None
+    text_color: str | None = None
+    pixel_offset: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +220,15 @@ def build_study_scene(
                 continue
             if style.render_mode == "marker":
                 markers.extend(
-                    _markers(projection, style, indices, viewport, price_scale, plot_rect)
+                    _markers(
+                        projection,
+                        presentation.tool_key,
+                        style,
+                        indices,
+                        viewport,
+                        price_scale,
+                        plot_rect,
+                    )
                 )
             else:
                 lines.extend(
@@ -303,8 +314,23 @@ def _finish_line(output, study_id, style, color, points) -> None:
         )
 
 
-def _markers(projection, style, indices, viewport, scale, plot):
+def _markers(projection, tool_key, style, indices, viewport, scale, plot):
     values = projection.render_series[style.output_name]
+    display_text = None
+    text_color = None
+    pixel_offset = 0
+    if tool_key == "peaks_troughs":
+        prefix, separator, period = style.output_name.partition("_fractal_")
+        if separator and prefix in {"peak", "trough"} and period in {
+            "3",
+            "5",
+            "7",
+            "9",
+            "11",
+        }:
+            display_text = period
+            text_color = "#000000"
+            pixel_offset = -18 if prefix == "peak" else 18
     return [
         StudyMarkerGlyph(
             projection.study_id,
@@ -313,6 +339,9 @@ def _markers(projection, style, indices, viewport, scale, plot):
             style.marker_shape,
             style.marker_size,
             _point(global_index, float(values[global_index - projection.base_index]), viewport, scale, plot),
+            display_text,
+            text_color,
+            pixel_offset,
         )
         for global_index in indices
         if _is_finite(values[global_index - projection.base_index])

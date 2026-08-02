@@ -24,6 +24,12 @@ from leonardo.gui.chart.candlestick_scene import (
     SceneRect,
 )
 from leonardo.gui.chart.interaction import CandlestickInteractionState
+from leonardo.gui.chart.candlestick_widget import (
+    _AxisTagPlan,
+    _crosshair_x,
+    _draw_axis_tag,
+    _time_tag_plan,
+)
 from leonardo.gui.chart.oscillator_scene import OscillatorScene, build_oscillator_scene
 from leonardo.research import ResidentStudyProjection, StudyPresentation
 
@@ -81,6 +87,10 @@ class OscillatorStudyWidget(QWidget):
     @property
     def presentation(self) -> StudyPresentation | None:
         return self._presentation
+
+    @property
+    def render_palette(self) -> OscillatorPalette:
+        return self._palette
 
     @property
     def time_axis_visible(self) -> bool:
@@ -328,3 +338,37 @@ class OscillatorStudyWidget(QWidget):
         pen.setStyle(Qt.DashLine)
         painter.setPen(pen)
         painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+        for tag in self._dynamic_crosshair_tags(x):
+            _draw_axis_tag(painter, tag)
+
+    def _dynamic_crosshair_tags(
+        self, crosshair_x: float | None = None
+    ) -> tuple[_AxisTagPlan, ...]:
+        if (
+            not self._show_time_axis
+            or self._interaction is None
+            or self._projection is None
+        ):
+            return ()
+        viewport = self._interaction.viewport.snapshot()
+        index = viewport.crosshair_index
+        if index is None or not (
+            self._projection.base_index
+            <= index
+            < self._projection.end_index_exclusive
+        ):
+            return ()
+        plot = self._plot_rect()
+        x = crosshair_x if crosshair_x is not None else _crosshair_x(
+            index, viewport.start_index, viewport.visible_count, plot
+        )
+        if x < plot.left() or x > plot.right():
+            return ()
+        timestamp_ms = self._projection.ts_ms[index - self._projection.base_index]
+        time_axis = QRectF(
+            plot.left(),
+            plot.bottom(),
+            plot.width(),
+            max(1.0, self.height() - plot.bottom()),
+        )
+        return (_time_tag_plan(timestamp_ms, x, time_axis),)

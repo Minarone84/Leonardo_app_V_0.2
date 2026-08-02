@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,12 +13,18 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from leonardo.core.core_runner import TaskResult, TaskSubmission
+from leonardo.core.core_runner import TaskProgress, TaskResult, TaskSubmission
+from leonardo.gui.windows.workspace_snapshot_preflight_dialog import (
+    WorkspaceSnapshotPreflightDialog,
+)
 from leonardo.gui.windows.research_notebook_manager_dialog import (
     ResearchNotebookManagerDialog,
 )
 from leonardo.research import DatasetCatalogReport
-from leonardo.research.workspace_snapshot import ResearchWorkspaceSnapshotV1
+from leonardo.research.workspace_snapshot import (
+    ResearchWorkspaceSnapshotCompatibilityReport,
+    ResearchWorkspaceSnapshotV1,
+)
 from tests.gui_test.test_research_gui_service_catalog import (
     _complete_catalog,
     _presenter,
@@ -27,6 +34,7 @@ from tests.gui_test.test_research_gui_service_chart_lifecycle import (
     _open_catalog,
     _open_pending,
 )
+from tools.research_gui_dev_fixtures import build_notebook_gui_fixtures
 
 
 class _ControlledSnapshotLinkService:
@@ -89,13 +97,17 @@ class _ControlledSnapshotLinkService:
 
 class _ControlledNotebookLinkService:
     def __init__(self) -> None:
-        self.pending: dict[str, Callable[[TaskResult], None]] = {}
+        self.pending: dict[
+            str, tuple[Callable[[TaskResult], None], object | None]
+        ] = {}
         self._sequence = 0
+        self.list_value: object = ()
+        self.load_values: dict[str, object] = {}
 
-    def _submit(self, callback) -> TaskSubmission:
+    def _submit(self, callback, value=None) -> TaskSubmission:
         self._sequence += 1
         task_id = f"notebook-link-{self._sequence}"
-        self.pending[task_id] = callback
+        self.pending[task_id] = (callback, value)
         return TaskSubmission(task_id, "notebook-link")
 
     def submit_delete_notebook(
@@ -106,7 +118,12 @@ class _ControlledNotebookLinkService:
     def submit_list_notebooks(
         self, *, result_callback=None, **_kwargs
     ) -> TaskSubmission:
-        return self._submit(result_callback)
+        return self._submit(result_callback, self.list_value)
+
+    def submit_load_notebook(
+        self, notebook_id, *, result_callback=None, **_kwargs
+    ) -> TaskSubmission:
+        return self._submit(result_callback, self.load_values[notebook_id])
 
     def complete(
         self,
@@ -115,11 +132,12 @@ class _ControlledNotebookLinkService:
         status: str = "completed",
         error_message: str | None = None,
     ) -> None:
-        callback = self.pending.pop(task_id)
+        callback, value = self.pending.pop(task_id)
         callback(
             TaskResult(
                 task_id,
                 status,
+                value=value if status == "completed" else None,
                 error_message=error_message,
             )
         )
@@ -164,6 +182,313 @@ def _ready_chart(presenter, service) -> int:
     service.complete(service.pending_ids("resident")[-1])
     _settle_qt()
     return slot_id
+
+
+def _restore_snapshot(summary, *, count: int = 2) -> ResearchWorkspaceSnapshotV1:
+    source = _workspace_snapshot("snapshot_restore", None)
+    center = 1_700_000_000_000 + 50 * 14_400_000
+    charts = tuple(
+        replace(
+            source.charts[index % len(source.charts)],
+            chart_ref=f"chart_{index + 1}",
+            market_id=summary.market_id,
+            workspace_position=index + 1,
+            detached=False,
+            study_environment=None,
+            pane_sizes=tuple(
+                pane
+                for pane in source.charts[index % len(source.charts)].pane_sizes
+                if not pane.pane_ref.startswith("study:")
+            ),
+            viewport=replace(
+                source.charts[index % len(source.charts)].viewport,
+                center_timestamp_ms=center,
+            ),
+        )
+        for index in range(count)
+    )
+    return replace(
+        source,
+        charts=charts,
+        workspace=replace(
+            source.workspace,
+            active_chart_ref=charts[0].chart_ref,
+            visualization_mode="scroll_4",
+            pan_anchor_enabled=False,
+        ),
+    )
+
+
+def _restore_dialog(window, presenter, snapshot, mode="append", *, start=True):
+    report = ResearchWorkspaceSnapshotCompatibilityReport(
+        snapshot.snapshot_id,
+        mode,
+        True,
+        (),
+        append_positions=(
+            tuple(
+                (chart.chart_ref, chart.workspace_position)
+                for chart in snapshot.charts
+            )
+            if mode == "append"
+            else ()
+        ),
+    )
+    dialog = WorkspaceSnapshotPreflightDialog(report, window)
+    presenter._snapshot_preflight_dialog = dialog
+    dialog.load_requested.connect(
+        lambda _report: presenter._restore_snapshot_workspace(snapshot, report)
+    )
+    dialog.finished.connect(
+        lambda _code: presenter._forget_snapshot_preflight(dialog)
+    )
+    dialog.show()
+    if start:
+        dialog.load_button.click()
+    return dialog, report
+
+
+def _settle_restore_chart(service) -> None:
+    service.complete(service.pending_ids("load")[-1])
+    service.complete(service.pending_ids("resident")[-1])
+    _settle_qt()
+
+
+def test_workspace_restore_emits_once_and_publishes_chart_creation_stage(
+    monkeypatch,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, summary = _presenter()
+    snapshot = _restore_snapshot(summary, count=1)
+    try:
+        dialog, _report = _restore_dialog(
+            window, presenter, snapshot, start=False
+        )
+        original = presenter._create_restored_chart
+        creation_statuses = []
+
+        def observed_creation(*args, **kwargs):
+            creation_statuses.append(dialog.restore_status.text())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            presenter, "_create_restored_chart", observed_creation
+        )
+        dialog.load_button.click()
+        dialog.load_button.click()
+        assert creation_statuses == ["Creating Chart 1 of 1..."]
+        presenter._fail_snapshot_restore("test cleanup")
+        dialog.close()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_workspace_restore_reports_real_progress_and_closes_on_success() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshot = _restore_snapshot(summary)
+    try:
+        dialog, _report = _restore_dialog(window, presenter, snapshot)
+        assert dialog.isVisible()
+        assert presenter._snapshot_preflight_dialog is dialog
+        assert dialog.restore_active
+        assert (dialog.progress.minimum(), dialog.progress.maximum()) == (0, 2)
+        assert dialog.progress.value() == 0
+        assert dialog.restore_status.text() == (
+            "Chart 1 of 2: Loading historical dataset..."
+        )
+        run = presenter._snapshot_restore
+        assert run is not None
+        slot_id = run.current_slot_id
+        assert slot_id is not None
+        chart = presenter._chart_presenters[slot_id]
+        load_id = service.pending_ids("load")[-1]
+        chart._on_load_progress(TaskProgress(load_id, "Loading", 40, 100))
+        assert (
+            dialog.current_progress.minimum(),
+            dialog.current_progress.maximum(),
+            dialog.current_progress.value(),
+        ) == (0, 100, 40)
+
+        before = dialog.current_progress.value()
+        presenter._snapshot_dataset_progress(
+            "old-run",
+            snapshot.charts[0].chart_ref,
+            slot_id,
+            chart.session.session_id,
+            dialog,
+            TaskProgress(load_id, "stale", 90, 100),
+        )
+        presenter._snapshot_dataset_progress(
+            run.run_id,
+            "old-chart",
+            slot_id,
+            chart.session.session_id,
+            dialog,
+            TaskProgress(load_id, "stale", 90, 100),
+        )
+        presenter._snapshot_dataset_progress(
+            run.run_id,
+            snapshot.charts[0].chart_ref,
+            slot_id,
+            "old-session",
+            dialog,
+            TaskProgress(load_id, "stale", 90, 100),
+        )
+        other_dialog = WorkspaceSnapshotPreflightDialog(_report, window)
+        other_dialog.begin_restore(2)
+        presenter._snapshot_dataset_progress(
+            run.run_id,
+            snapshot.charts[0].chart_ref,
+            slot_id,
+            chart.session.session_id,
+            other_dialog,
+            TaskProgress(load_id, "stale", 90, 100),
+        )
+        assert dialog.current_progress.value() == before
+        other_dialog.show_failure("test cleanup")
+        other_dialog.close()
+
+        _settle_restore_chart(service)
+        assert dialog.progress.value() == 1
+        assert dialog.restore_status.text() == (
+            "Chart 2 of 2: Loading historical dataset..."
+        )
+        assert (dialog.current_progress.minimum(), dialog.current_progress.maximum()) == (
+            0,
+            0,
+        )
+        _settle_restore_chart(service)
+        assert dialog.progress.value() == 2
+        assert dialog.restore_status.text() == "Workspace restored."
+        assert not dialog.isVisible()
+        assert presenter._snapshot_preflight_dialog is None
+        assert "Workspace Snapshot restored." in window._activity_log.toPlainText()
+        assert presenter._workspace_state.chart_count == 2
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_workspace_restore_environment_stage_is_indeterminate(
+    monkeypatch,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshot = _restore_snapshot(summary, count=1)
+    source = _workspace_snapshot("source", None)
+    environment = next(
+        chart.study_environment
+        for chart in source.charts
+        if chart.study_environment is not None
+    )
+    snapshot = replace(
+        snapshot,
+        charts=(replace(snapshot.charts[0], study_environment=environment),),
+    )
+    try:
+        dialog, _report = _restore_dialog(window, presenter, snapshot)
+        run = presenter._snapshot_restore
+        assert run is not None and run.current_slot_id is not None
+        chart = presenter._chart_presenters[run.current_slot_id]
+        monkeypatch.setattr(chart, "apply_environment", lambda *_args, **_kwargs: None)
+        _settle_restore_chart(service)
+        assert dialog.restore_status.text() == (
+            "Chart 1 of 1: Applying Study Environment..."
+        )
+        assert (dialog.current_progress.minimum(), dialog.current_progress.maximum()) == (
+            0,
+            0,
+        )
+        presenter._fail_snapshot_restore("test cleanup")
+        dialog.close()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_workspace_append_failure_stays_visible_after_cleanup() -> None:
+    app = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshot = _restore_snapshot(summary, count=1)
+    try:
+        dialog, _report = _restore_dialog(window, presenter, snapshot)
+        service.complete(
+            service.pending_ids("load")[-1],
+            status="failed",
+            error_message="load rejected",
+        )
+        app.processEvents()
+        assert presenter._workspace_state.chart_count == 0
+        assert presenter._snapshot_restore is None
+        assert dialog.isVisible()
+        assert dialog.restore_status.text() == (
+            "Workspace restore failed: chart_1 dataset failed: load rejected"
+        )
+        assert dialog.cancel_button.text() == "Close"
+        assert dialog.cancel_button.isEnabled()
+        dialog.cancel_button.click()
+        app.processEvents()
+        assert not dialog.isVisible()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+@pytest.mark.parametrize("rollback_status", ("success", "failure"))
+def test_workspace_replace_failure_reports_rollback_terminal_state(
+    monkeypatch,
+    rollback_status: str,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshot = _restore_snapshot(summary, count=1)
+    rollback = replace(snapshot, snapshot_id="snapshot_rollback")
+    monkeypatch.setattr(presenter, "_capture_rollback_snapshot", lambda: rollback)
+    try:
+        dialog, _report = _restore_dialog(window, presenter, snapshot, "replace")
+        service.complete(
+            service.pending_ids("load")[-1],
+            status="failed",
+            error_message="replacement failed",
+        )
+        app.processEvents()
+        run = presenter._snapshot_restore
+        assert run is not None and run.rollback
+        assert dialog.restore_active
+        assert dialog._state == "rollback"
+        assert dialog.progress.value() == 0
+        dialog.close()
+        app.processEvents()
+        assert dialog.isVisible()
+
+        if rollback_status == "success":
+            _settle_restore_chart(service)
+            assert presenter._workspace_state.chart_count == 1
+            assert dialog.restore_status.text() == (
+                "Workspace restore failed: chart_1 dataset failed: replacement failed\n"
+                "Previous workspace restored."
+            )
+        else:
+            service.complete(
+                service.pending_ids("load")[-1],
+                status="failed",
+                error_message="rollback failed",
+            )
+            app.processEvents()
+            assert presenter._snapshot_restore is None
+            assert dialog.restore_status.text() == (
+                "Workspace restore failed: chart_1 dataset failed: replacement failed\n"
+                "Rollback failed: chart_1 dataset failed: rollback failed"
+            )
+        assert dialog.isVisible()
+        assert dialog.cancel_button.text() == "Close"
+        assert dialog.cancel_button.isEnabled()
+        dialog.cancel_button.click()
+    finally:
+        presenter.dispose()
+        window.close()
 
 
 def test_real_actions_change_workspace_modes_and_position_preserves_identity() -> None:
@@ -356,7 +681,7 @@ def test_link_assignment_and_unassignment_settle_after_manager_closes() -> None:
         snapshots.complete(assignment_task)
         assert presenter._notebook_link_operation_token is None
         assert presenter._assigned_notebook_id == notebook_id
-        assert window.action_for_text("Open Notebook").isEnabled()
+        assert window.action_for_text("Open Assigned Notebook").isEnabled()
 
         manager = object()
         presenter._notebook_manager = manager
@@ -366,7 +691,60 @@ def test_link_assignment_and_unassignment_settle_after_manager_closes() -> None:
         snapshots.complete(unassignment_task)
         assert presenter._notebook_link_operation_token is None
         assert presenter._assigned_notebook_id is None
-        assert not window.action_for_text("Open Notebook").isEnabled()
+        assert not window.action_for_text("Open Assigned Notebook").isEnabled()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_notebook_manager_new_uses_existing_editor_transition() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshots, notebooks = _link_services(presenter)
+    try:
+        _open_catalog(presenter, service, summary)
+        _ready_chart(presenter, service)
+        presenter._open_notebook_manager()
+        notebooks.complete(next(iter(notebooks.pending)))
+        snapshots.complete(next(iter(snapshots.pending)))
+        manager = presenter._notebook_manager
+        assert manager is not None
+
+        manager._create.click()
+
+        editor = presenter._notebook_editor
+        assert editor is not None
+        assert presenter._notebook_manager is manager
+        assert editor.current_draft().display_name == "Untitled Notebook"
+        assert tuple(page.market_id for page in editor.current_draft().pages) == (
+            summary.market_id,
+        )
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_notebook_manager_open_uses_existing_async_transition() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshots, notebooks = _link_services(presenter)
+    bundle = build_notebook_gui_fixtures(summary.market_id, summary.market_id)
+    notebook = bundle.notebooks[0]
+    notebooks.list_value = (bundle.summaries[0],)
+    notebooks.load_values[notebook.notebook_id] = notebook
+    try:
+        presenter._open_notebook_manager()
+        notebooks.complete(next(iter(notebooks.pending)))
+        snapshots.complete(next(iter(snapshots.pending)))
+        manager = presenter._notebook_manager
+        assert manager is not None
+
+        manager._open.click()
+        notebooks.complete(next(iter(notebooks.pending)))
+
+        assert presenter._notebook_manager is manager
+        assert presenter._notebook_editor is not None
+        assert presenter._notebook_editor.notebook_id == notebook.notebook_id
     finally:
         presenter.dispose()
         window.close()
@@ -386,7 +764,7 @@ def test_link_assignment_settles_with_manager_open() -> None:
         snapshots.complete(next(iter(snapshots.pending)))
         assert presenter._notebook_link_operation_token is None
         assert presenter._assigned_notebook_id == notebook_id
-        assert window.action_for_text("Open Notebook").isEnabled()
+        assert window.action_for_text("Open Assigned Notebook").isEnabled()
     finally:
         presenter.dispose()
         window.close()
@@ -411,7 +789,7 @@ def test_link_deletion_settles_after_manager_closes() -> None:
         assert presenter._notebook_link_operation_token is None
         assert presenter._current_workspace_snapshot_id == snapshot_id
         assert presenter._assigned_notebook_id is None
-        assert not window.action_for_text("Open Notebook").isEnabled()
+        assert not window.action_for_text("Open Assigned Notebook").isEnabled()
     finally:
         presenter.dispose()
         window.close()
