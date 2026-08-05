@@ -29,12 +29,14 @@ TEST_FILES = {
     "test_artifact_models.py",
     "test_artifact_serialization.py",
     "test_artifact_service_roundtrip.py",
+    "test_managed_artifact_versions.py",
 }
 PUBLIC_API = {
     "ArtifactAlreadyExistsError",
     "ArtifactError",
     "ArtifactIdentityCollisionError",
     "ArtifactLineageError",
+    "ArtifactHeadV1",
     "ArtifactMetadataV1",
     "ArtifactNotFoundError",
     "ArtifactRecipeV1",
@@ -43,11 +45,17 @@ PUBLIC_API = {
     "ArtifactSourceRefV1",
     "ArtifactSummary",
     "ArtifactValidationError",
+    "ArtifactVersionRecordV1",
     "LoadedArtifact",
+    "ManagedArtifactGraphPublicationResult",
+    "ManagedArtifactSummary",
+    "ManagedArtifactVersionKey",
     "OHLCVSourceFingerprintV1",
+    "PreparedManagedArtifact",
     "RecipeInUseError",
     "RecipeSaveResult",
     "RecipeSummary",
+    "compute_logical_artifact_id",
 }
 
 
@@ -74,10 +82,19 @@ def test_artifact_service_is_the_only_public_write_owner() -> None:
     } == {
         "delete_artifact",
         "delete_recipe",
+        "capture_accepted_source",
         "list_artifacts",
+        "list_artifact_versions",
+        "list_managed_artifacts",
+        "list_managed_markets",
         "list_recipes",
         "load_artifact",
+        "load_artifact_by_id",
+        "load_artifact_head",
+        "load_artifact_version",
         "load_recipe",
+        "prepare_managed_calculation",
+        "publish_managed_artifact_graph",
         "save_calculation",
         "save_recipe_from_result",
         "validate_artifact_current",
@@ -159,14 +176,15 @@ def test_no_arbitrary_path_public_operation() -> None:
 def test_recipe_publication_is_create_if_absent() -> None:
     stores = (PACKAGE / "_stores.py").read_text(encoding="utf-8")
     assert "os.link(temporary, path)" in stores
-    assert "os.replace(" not in stores
+    assert "def _replace_mutable_file" in stores
+    assert stores.count("os.replace(") == 2
 
 
 def test_artifact_publication_is_native_no_replace() -> None:
     stores = (PACKAGE / "_stores.py").read_text(encoding="utf-8")
     assert "_publish_directory_no_replace(staging, final_dir)" in stores
     assert "renameat2" in stores
-    assert "os.replace(" not in stores
+    assert "_replace_mutable_file(path, payload" in stores
 
 
 def test_artifact_serialization_uses_task_1015_runtime_authority() -> None:

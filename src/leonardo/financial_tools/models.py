@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal
 
 
@@ -34,6 +36,59 @@ SourceFamily = Literal["ohlc", "indicator", "oscillator", "construct"]
 SourceCompatibility = Literal["mixed_numeric", "same_family", "same_oscillator_type"]
 OutputCardinality = Literal["single", "matches_inputs", "one_or_more"]
 ConstructOutputRole = Literal["plotted_line", "state_series", "analysis_only"]
+
+
+class UpdateStrategy(StrEnum):
+    OVERLAP_RECALCULATION = "OVERLAP_RECALCULATION"
+    STATEFUL_INCREMENTAL = "STATEFUL_INCREMENTAL"
+    FULL_RECALCULATION = "FULL_RECALCULATION"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolUpdatePolicy:
+    strategy: UpdateStrategy
+    parameter_name: str | None = None
+    fixed_context_rows: int = 0
+    context_extra_rows: int = 0
+    revisable_tail_rows: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.strategy, UpdateStrategy):
+            raise ValueError("strategy must be an UpdateStrategy")
+        for name in (
+            "fixed_context_rows",
+            "context_extra_rows",
+            "revisable_tail_rows",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.parameter_name is not None:
+            _require_text(self.parameter_name, "ToolUpdatePolicy.parameter_name")
+            if self.strategy is not UpdateStrategy.OVERLAP_RECALCULATION:
+                raise ValueError(
+                    "parameter_name is allowed only for OVERLAP_RECALCULATION"
+                )
+        if self.strategy is UpdateStrategy.FULL_RECALCULATION and (
+            self.fixed_context_rows
+            or self.context_extra_rows
+            or self.revisable_tail_rows
+        ):
+            raise ValueError(
+                "FULL_RECALCULATION must not declare overlap configuration"
+            )
+
+    def effective_context_rows(self, parameters: Mapping[str, object]) -> int:
+        if not isinstance(parameters, Mapping):
+            raise TypeError("parameters must be a mapping")
+        if self.parameter_name is None:
+            return self.fixed_context_rows + self.context_extra_rows
+        value = parameters.get(self.parameter_name)
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"parameters[{self.parameter_name!r}] must be a non-negative integer"
+            )
+        return value + self.context_extra_rows
 
 
 _TOOL_KINDS = {"indicator", "oscillator", "construct"}
@@ -236,6 +291,9 @@ class FinancialToolSpec:
     edit_capabilities: ToolEditCapabilities = ToolEditCapabilities()
     oscillator_visual: OscillatorVisualSpec | None = None
     construct_io: ConstructIOSpec | None = None
+    update_policy: ToolUpdatePolicy = ToolUpdatePolicy(
+        UpdateStrategy.FULL_RECALCULATION
+    )
 
     def __post_init__(self) -> None:
         _require_text(self.key, "FinancialToolSpec.key")

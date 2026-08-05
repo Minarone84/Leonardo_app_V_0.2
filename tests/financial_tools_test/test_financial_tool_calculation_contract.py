@@ -56,7 +56,8 @@ def test_public_api_and_alias_are_exact() -> None:
         "FinancialToolCalculationResult", "INDICATOR_SPECS", "OSCILLATOR_SPECS",
         "OscillatorGuideLevelSpec", "OscillatorVisualSpec", "OutputSignalSpec",
         "ParameterSpec", "ToolBehaviorSpec", "ToolEditCapabilities", "ToolOutputSpec",
-        "ToolStyleCapabilities", "build_source_token", "calculate_financial_tool",
+        "ToolStyleCapabilities", "ToolUpdatePolicy", "UpdateStrategy",
+        "build_source_token", "calculate_financial_tool",
         "canonicalize_tool_key", "get_financial_tool_spec", "list_financial_tool_specs",
         "resolve_output_names", "resolve_output_signals", "resolve_parameters", "validate_catalog",
     )

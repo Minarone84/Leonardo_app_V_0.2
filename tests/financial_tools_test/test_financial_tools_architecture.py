@@ -19,6 +19,7 @@ def test_public_package_exports_only_frozen_task_api() -> None:
         "INDICATOR_SPECS", "OSCILLATOR_SPECS",
         "OscillatorGuideLevelSpec", "OscillatorVisualSpec", "OutputSignalSpec", "ParameterSpec",
         "ToolBehaviorSpec", "ToolEditCapabilities", "ToolOutputSpec", "ToolStyleCapabilities",
+        "ToolUpdatePolicy", "UpdateStrategy",
         "build_source_token", "calculate_financial_tool", "canonicalize_tool_key", "get_financial_tool_spec",
         "list_financial_tool_specs", "resolve_output_names", "resolve_output_signals",
         "resolve_parameters", "validate_catalog",
@@ -43,18 +44,29 @@ def test_financial_tools_do_not_import_gui_core_compute_or_persistence() -> None
         "ToolContract", "ft_naming", "ft_specs", "specs_runtime", "naming_runtime", "tool_contracts",
         "CoreBridge", "DataManager",
     )
+    base_allowed_imports = {
+        "__future__",
+        "collections",
+        "dataclasses",
+        "re",
+        "types",
+        "typing",
+    }
     for path in (PACKAGE / name for name in ("models.py", "naming.py", "specifications.py")):
         source = path.read_text(encoding="utf-8")
         assert not any(term in source for term in forbidden), path
         tree = ast.parse(source)
+        allowed_imports = set(base_allowed_imports)
+        if path.name == "models.py":
+            allowed_imports.add("enum")
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                assert all(alias.name.split(".")[0] in {"collections", "dataclasses", "re", "types", "typing"}
-                           for alias in node.names)
+                assert all(
+                    alias.name.split(".")[0] in allowed_imports
+                    for alias in node.names
+                )
             elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                assert (node.module or "").split(".")[0] in {
-                    "__future__", "collections", "dataclasses", "re", "types", "typing"
-                }
+                assert (node.module or "").split(".")[0] in allowed_imports
 
 
 def test_models_do_not_store_callable_resolvers_or_use_contract_names() -> None:

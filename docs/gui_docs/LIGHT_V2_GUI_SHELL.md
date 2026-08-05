@@ -21,6 +21,7 @@ Implemented production workflows are:
 - Historical Download;
 - OHLCV Maintenance;
 - Research Suite;
+- Data Manager Suite;
 - Runtime Manager;
 - Research persistence workflows.
 
@@ -37,6 +38,21 @@ Current shell-only or incomplete workflows are:
 An incomplete shell must remain honest about unavailable behavior. Current
 Research architecture and workflow details are documented in the
 [Research Suite manual](../research_docs/RESEARCH_SUITE.md).
+
+## Data Manager Suite
+
+`data_manager_suite.window` is a tracked single-instance window composed by the
+real application root. Repeated open commands focus the existing window.
+Research handoff carries only a canonical `MarketId`; the Data Manager reloads
+its own canonical persisted truth and focuses the matching OHLCV row.
+
+The Suite has three top-level tabs: Catalogs, Create Database, and Update &
+Reconcile. Catalogs exposes all eight persisted product families. Creation uses
+nine explicit stages; update uses six explicit stages. One common operation
+surface displays the Core task identity, progress, cancellation availability,
+structured plan or report details, and terminal state. The window owns only
+selection and presentation state; every read, write, plan, validation, and
+reconciliation operation delegates through `DataManagerApplicationService`.
 
 ## Window tracking
 

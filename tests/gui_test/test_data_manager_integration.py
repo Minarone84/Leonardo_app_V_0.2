@@ -15,6 +15,9 @@ from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.data_manager import DataManagerApplicationService
 from leonardo.gui.composition import GuiCompositionRoot
+from leonardo.gui.windows.data_manager_dataset_selector_dialog import (
+    DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID,
+)
 
 
 def test_app_composes_one_functional_data_manager_service_and_window(tmp_path) -> None:
@@ -27,12 +30,49 @@ def test_app_composes_one_functional_data_manager_service_and_window(tmp_path) -
     main = composition.create_main_window()
     try:
         assert isinstance(app.context.data_manager_service, DataManagerApplicationService)
+        assert app.data_manager_creation_store is app.data_manager_domain.creation_store
+        assert app.data_manager_creation_store.root_dir == config.paths.data_manager_dir
+        assert not config.paths.data_manager_dir.exists()
         main.action_for_id("main_window.open_data_manager_suite").trigger()
         QCoreApplication.processEvents()
-        assert composition.data_manager_suite_window is not None
+        window = composition.data_manager_suite_window
+        assert window is not None
         assert composition.data_manager_suite_presenter is not None
-        assert composition.data_manager_suite_window.isVisible()
+        assert window.isVisible()
+
+        select_button = window.button_for_id("data_manager.button.select_dataset")
+        select_button.click()
+        QCoreApplication.processEvents()
+        first = window.dataset_selector_dialog()
+        assert first is not None
+        assert first.isVisible()
+        assert composition.tracker_for(DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID) is not None
+        matching = tuple(
+            item
+            for item in app.context.window_registry.list_windows()
+            if item.window_id == DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID
+        )
+        assert len(matching) == 1
+        assert matching[0].status == "open"
+
+        select_button.click()
+        QCoreApplication.processEvents()
+        assert window.dataset_selector_dialog() is first
+        assert len(
+            tuple(
+                item
+                for item in app.context.window_registry.list_windows()
+                if item.window_id == DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID
+            )
+        ) == 1
     finally:
         main.close()
         QCoreApplication.processEvents()
+        matching = tuple(
+            item
+            for item in app.context.window_registry.list_windows()
+            if item.window_id == DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID
+        )
+        if matching:
+            assert matching[0].status == "closed"
         app.shutdown()

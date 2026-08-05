@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+import shutil
 import subprocess
+from threading import Event, Thread
 
 import pytest
 
 from leonardo.artifacts import (
     ArtifactIdentityCollisionError,
+    ArtifactLineageError,
     ArtifactNotFoundError,
     ArtifactService,
     ArtifactSourceRefV1,
@@ -116,6 +119,289 @@ def test_delete_is_exact_without_cascade_and_recipe_is_protected(tmp_path: Path)
     assert source.metadata.recipe.recipe_id in {
         item.recipe_id for item in service.list_recipes(market)
     }
+
+
+def test_source_artifact_cannot_be_deleted_while_dependent_persists(
+    tmp_path: Path,
+) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    source = service.save_calculation(
+        market, calculate_financial_tool("sma", data, {"period": 3})
+    )
+    ref = ArtifactSourceRefV1("trend", source.metadata.artifact_id, "sma_3")
+    dependent = service.save_calculation(
+        market,
+        calculate_financial_tool("ema", data, {"period": 3}),
+        source_artifacts=(ref,),
+    )
+
+    with pytest.raises(
+        ArtifactLineageError,
+        match="artifact is referenced by dependent artifact",
+    ):
+        service.delete_artifact(
+            market, "indicator", "sma", source.metadata.artifact_id
+        )
+    assert source.path.is_dir()
+    assert dependent.path.is_dir()
+    assert len(service.list_recipes(market)) == 2
+
+    service.delete_artifact(
+        market, "indicator", "ema", dependent.metadata.artifact_id
+    )
+    deleted = service.delete_artifact(
+        market, "indicator", "sma", source.metadata.artifact_id
+    )
+    assert deleted.artifact_id == source.metadata.artifact_id
+
+
+def test_source_deletion_wins_before_dependent_publication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    source = service.save_calculation(
+        market, calculate_financial_tool("sma", data, {"period": 3})
+    )
+    ref = ArtifactSourceRefV1("trend", source.metadata.artifact_id, "sma_3")
+    validated = Event()
+    release = Event()
+    errors: list[BaseException] = []
+    original_validate = service._validate_source_refs
+
+    def block_after_initial_validation(*args, **kwargs):
+        original_validate(*args, **kwargs)
+        validated.set()
+        assert release.wait(timeout=5)
+
+    monkeypatch.setattr(
+        service, "_validate_source_refs", block_after_initial_validation
+    )
+
+    def publish() -> None:
+        try:
+            service.save_calculation(
+                market,
+                calculate_financial_tool("ema", data, {"period": 3}),
+                source_artifacts=(ref,),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = Thread(target=publish)
+    thread.start()
+    assert validated.wait(timeout=5)
+    service.delete_artifact(
+        market, "indicator", "sma", source.metadata.artifact_id
+    )
+    release.set()
+    thread.join(timeout=5)
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], ArtifactLineageError)
+    assert service.list_artifacts(market) == ()
+    assert tuple(
+        item.recipe_id for item in service.list_recipes(market)
+    ) == (source.metadata.recipe.recipe_id,)
+
+
+def test_recursive_source_removal_after_initial_validation_blocks_legacy_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    first = service.save_calculation(
+        market, calculate_financial_tool("sma", data, {"period": 3})
+    )
+    first_ref = ArtifactSourceRefV1(
+        "first", first.metadata.artifact_id, "sma_3"
+    )
+    second = service.save_calculation(
+        market,
+        calculate_financial_tool("ema", data, {"period": 3}),
+        source_artifacts=(first_ref,),
+    )
+    second_ref = ArtifactSourceRefV1(
+        "second", second.metadata.artifact_id, "ema_3"
+    )
+    recipe_ids_before = {item.recipe_id for item in service.list_recipes(market)}
+    original_validate = service._validate_source_refs
+
+    def remove_first_after_initial_validation(*args, **kwargs):
+        original_validate(*args, **kwargs)
+        shutil.rmtree(first.path)
+
+    monkeypatch.setattr(
+        service,
+        "_validate_source_refs",
+        remove_first_after_initial_validation,
+    )
+
+    with pytest.raises(ArtifactLineageError, match="source artifact not found"):
+        service.save_calculation(
+            market,
+            calculate_financial_tool("rsi", data, {"period": 3}),
+            source_artifacts=(second_ref,),
+        )
+
+    assert {item.recipe_id for item in service.list_recipes(market)} == recipe_ids_before
+    assert {
+        item.artifact_id for item in service.list_artifacts(market) if item.valid
+    } == {second.metadata.artifact_id}
+
+
+def test_dependent_publication_wins_before_source_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    source = service.save_calculation(
+        market, calculate_financial_tool("sma", data, {"period": 3})
+    )
+    ref = ArtifactSourceRefV1("trend", source.metadata.artifact_id, "sma_3")
+    publication_entered = Event()
+    publication_release = Event()
+    deletion_attempted = Event()
+    deletion_finished = Event()
+    published = []
+    publication_errors: list[BaseException] = []
+    deletion_errors: list[BaseException] = []
+    original_validate = service._validate_exact_source_refs_locked
+
+    def block_after_final_validation(*args, **kwargs):
+        original_validate(*args, **kwargs)
+        publication_entered.set()
+        assert publication_release.wait(timeout=5)
+
+    monkeypatch.setattr(
+        service,
+        "_validate_exact_source_refs_locked",
+        block_after_final_validation,
+    )
+
+    def publish() -> None:
+        try:
+            published.append(
+                service.save_calculation(
+                    market,
+                    calculate_financial_tool("ema", data, {"period": 3}),
+                    source_artifacts=(ref,),
+                )
+            )
+        except BaseException as exc:
+            publication_errors.append(exc)
+
+    def delete() -> None:
+        deletion_attempted.set()
+        try:
+            service.delete_artifact(
+                market, "indicator", "sma", source.metadata.artifact_id
+            )
+        except BaseException as exc:
+            deletion_errors.append(exc)
+        finally:
+            deletion_finished.set()
+
+    publication_thread = Thread(target=publish)
+    publication_thread.start()
+    assert publication_entered.wait(timeout=5)
+    deletion_thread = Thread(target=delete)
+    deletion_thread.start()
+    assert deletion_attempted.wait(timeout=5)
+    assert not deletion_finished.is_set()
+    publication_release.set()
+    publication_thread.join(timeout=5)
+    deletion_thread.join(timeout=5)
+
+    assert not publication_errors
+    assert len(published) == 1
+    assert len(deletion_errors) == 1
+    assert isinstance(deletion_errors[0], ArtifactLineageError)
+    assert "artifact is referenced by dependent artifact" in str(
+        deletion_errors[0]
+    )
+
+
+def test_recipe_delete_waits_for_atomic_artifact_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    result = calculate_financial_tool("sma", data, {"period": 3})
+    publication_entered = Event()
+    publication_release = Event()
+    delete_started = Event()
+    delete_finished = Event()
+    saved = []
+    save_errors: list[BaseException] = []
+    delete_errors: list[BaseException] = []
+    original_write = service._store.write_artifact
+
+    def blocked_write(*args, **kwargs):
+        publication_entered.set()
+        assert publication_release.wait(timeout=5)
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(service._store, "write_artifact", blocked_write)
+
+    def save() -> None:
+        try:
+            saved.append(service.save_calculation(market, result))
+        except BaseException as exc:
+            save_errors.append(exc)
+
+    save_thread = Thread(target=save)
+    save_thread.start()
+    assert publication_entered.wait(timeout=5)
+    recipe = service.list_recipes(market)[0]
+
+    def delete() -> None:
+        delete_started.set()
+        try:
+            service.delete_recipe(
+                market, recipe.kind, recipe.tool_key, recipe.recipe_id
+            )
+        except BaseException as exc:
+            delete_errors.append(exc)
+        finally:
+            delete_finished.set()
+
+    delete_thread = Thread(target=delete)
+    delete_thread.start()
+    assert delete_started.wait(timeout=5)
+    assert not delete_finished.wait(timeout=0.1)
+    publication_release.set()
+    save_thread.join(timeout=5)
+    delete_thread.join(timeout=5)
+
+    assert not save_errors
+    assert len(saved) == 1
+    assert len(delete_errors) == 1
+    assert isinstance(delete_errors[0], RecipeInUseError)
+    assert service.load_recipe(
+        market, recipe.kind, recipe.tool_key, recipe.recipe_id
+    ) == saved[0].metadata.recipe
+    assert service.load_artifact_by_id(
+        market, saved[0].metadata.artifact_id
+    ).metadata == saved[0].metadata
+
+
+def test_artifact_publication_recreates_recipe_deleted_first(tmp_path: Path) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    result = calculate_financial_tool("sma", data, {"period": 3})
+    recipe = service.save_recipe_from_result(market, result).recipe
+
+    service.delete_recipe(market, recipe.kind, recipe.tool_key, recipe.recipe_id)
+    saved = service.save_calculation(market, result)
+
+    assert service.load_recipe(
+        market, recipe.kind, recipe.tool_key, recipe.recipe_id
+    ) == saved.metadata.recipe
+    assert service.load_artifact_by_id(
+        market, saved.metadata.artifact_id
+    ).metadata == saved.metadata
 
 
 @pytest.mark.parametrize(

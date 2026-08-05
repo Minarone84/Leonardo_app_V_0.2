@@ -335,6 +335,7 @@ class GuiCompositionRoot:
         ):
             window = DataManagerSuiteWindow(
                 action_observer=self._action_observer,
+                floating_window_tracker=self._install_tracker,
                 parent=parent,
             )
             presenter = DataManagerSuitePresenter(

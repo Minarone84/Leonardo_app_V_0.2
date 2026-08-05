@@ -1,16 +1,9 @@
-"""Qt windows retained by the Leonardo Light V2 reset baseline."""
+"""Deterministic lazy exports for Leonardo Light V2 Qt windows."""
 
-from leonardo.gui.windows.analysis_suite_window import AnalysisSuiteWindow
-from leonardo.gui.windows.connection_suite_window import ConnectionSuiteWindow
-from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
-from leonardo.gui.windows.historical_download_manager_window import HistoricalDownloadManagerWindow
-from leonardo.gui.windows.main_window import LeonardoMainWindow
-from leonardo.gui.windows.ohlcv_download_preflight_window import OhlcvDownloadPreflightWindow
-from leonardo.gui.windows.ohlcv_download_task_window import OhlcvDownloadTaskWindow
-from leonardo.gui.windows.ohlcv_maintenance_window import OhlcvMaintenanceWindow
-from leonardo.gui.windows.research_suite_window import ResearchSuiteWindow
-from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
-from leonardo.gui.windows.trading_suite_window import TradingSuiteWindow
+from __future__ import annotations
+
+from importlib import import_module
+
 
 __all__ = [
     "AnalysisSuiteWindow",
@@ -25,3 +18,29 @@ __all__ = [
     "RuntimeManagerWindow",
     "TradingSuiteWindow",
 ]
+
+_LAZY_EXPORTS = {
+    "AnalysisSuiteWindow": "analysis_suite_window",
+    "ConnectionSuiteWindow": "connection_suite_window",
+    "DataManagerSuiteWindow": "data_manager_suite_window",
+    "HistoricalDownloadManagerWindow": "historical_download_manager_window",
+    "LeonardoMainWindow": "main_window",
+    "OhlcvDownloadPreflightWindow": "ohlcv_download_preflight_window",
+    "OhlcvDownloadTaskWindow": "ohlcv_download_task_window",
+    "OhlcvMaintenanceWindow": "ohlcv_maintenance_window",
+    "ResearchSuiteWindow": "research_suite_window",
+    "RuntimeManagerWindow": "runtime_manager_window",
+    "TradingSuiteWindow": "trading_suite_window",
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name = _LAZY_EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(
+        import_module(f"leonardo.gui.windows.{module_name}"), name
+    )
+    globals()[name] = value
+    return value

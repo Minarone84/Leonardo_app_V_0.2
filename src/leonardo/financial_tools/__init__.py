@@ -10,6 +10,8 @@ from .models import (
     ToolEditCapabilities,
     ToolOutputSpec,
     ToolStyleCapabilities,
+    ToolUpdatePolicy,
+    UpdateStrategy,
 )
 from .calculation import calculate_financial_tool
 from .calculation_models import FinancialToolCalculationResult
@@ -49,6 +51,8 @@ __all__ = (
     "ToolEditCapabilities",
     "ToolOutputSpec",
     "ToolStyleCapabilities",
+    "ToolUpdatePolicy",
+    "UpdateStrategy",
     "build_source_token",
     "calculate_financial_tool",
     "canonicalize_tool_key",

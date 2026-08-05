@@ -61,6 +61,7 @@ class LeonardoGuiRunner:
             composition = self._composition_factory(app.context)
             main_window = composition.create_main_window()
             main_window.show()
+            _schedule_post_show_reconciliation(app.context)
             return int(self._event_loop_runner(qapplication))
         except Exception as exc:
             primary_error = exc
@@ -130,3 +131,11 @@ def _default_theme_applier(application: object) -> None:
     from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 
     apply_theme_stylesheet(application, load_default_theme())
+
+
+def _schedule_post_show_reconciliation(context: object) -> bool:
+    from leonardo.gui.data_manager.reconciliation import (
+        schedule_post_show_reconciliation,
+    )
+
+    return schedule_post_show_reconciliation(context)

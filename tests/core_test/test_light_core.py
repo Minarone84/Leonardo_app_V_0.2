@@ -34,6 +34,13 @@ def test_app_starts_runs_background_job_and_shuts_down(tmp_path: Path) -> None:
 
     app.startup()
     app.start_core_runtime()
+    app.start_core_runtime()
+    assert app.core_runner.is_running
+    reconciliation_tasks = tuple(
+        item.metadata.get("operation") == "data_manager.reconcile_status"
+        for item in app.task_manager.snapshots()
+    )
+    assert sum(reconciliation_tasks) == 0
     submission = app.core_runner.submit_coroutine(
         work(),
         task_name="smoke-job",
@@ -132,10 +139,15 @@ def test_audit_event_jsonl_round_trip(tmp_path: Path) -> None:
 
 def test_default_audit_does_not_create_runs_directory(tmp_path: Path) -> None:
     config = load_default_config(tmp_path)
+    assert config.paths.data_manager_dir == tmp_path / "data_manager"
+    assert not config.paths.data_manager_dir.exists()
     app = LeonardoApp(config)
+    assert app.data_manager_domain._study_environments is app.study_environment_store
+    assert app.data_manager_domain._portable_recipes is app.portable_recipe_store
     app.startup()
     app.shutdown()
     assert not config.paths.runs_dir.exists()
+    assert not config.paths.data_manager_dir.exists()
 
 
 def test_explicit_jsonl_audit_creates_file(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ subject; do not infer authority from a document's age or filename.
 - [Core Runtime](core_docs/LIGHT_V2_RUNTIME.md)
 - [Connection Suite](connection_docs/CONNECTION_SUITE.md)
 - [Research Suite](research_docs/RESEARCH_SUITE.md)
+- [Data Manager](data_manager_docs/DATA_MANAGER.md)
 - [GUI Shell](gui_docs/LIGHT_V2_GUI_SHELL.md)
 - [GUI Theme System](gui_docs/GUI_THEME_SYSTEM.md)
 - [Application GUI Smoke](gui_docs/LIGHT_V2_APPLICATION_SMOKE.md)

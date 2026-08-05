@@ -449,9 +449,36 @@ GUI operations.
 
 ### Data Manager
 
-Data Manager application operations also use the shared CoreRunner and canonical
-OHLCV/Artifact authorities. Its final user acceptance is tracked separately
-from the Research Suite freeze.
+Data Manager application operations use the shared CoreRunner and canonical
+OHLCV, Portable Recipe, Artifact, creation, and update authorities. TaskManager
+records operation IDs including:
+
+```text
+data_manager.scan_product_catalogs
+data_manager.inspect_study_environment
+data_manager.inspect_portable_recipe
+data_manager.list_recipe_collection_revisions
+data_manager.scan_managed_artifacts
+data_manager.reconcile_status
+data_manager.plan_artifact_collection_update
+data_manager.execute_artifact_collection_update
+data_manager.plan_database_update
+data_manager.execute_database_append
+data_manager.execute_database_rebuild
+```
+
+After the main window is shown, one zero-delay Qt callback submits forced
+reconciliation without creating the Data Manager window. Opening the Suite
+submits non-forced reconciliation and starts one GUI-owned 60-second timer.
+Manual Refresh forces reconciliation. Timer ticks use non-forced
+reconciliation, skip active work, do not overlap, and stop when the presenter
+is disposed. Successful Data Manager publications trigger one follow-up
+reconciliation and catalog refresh while preserving the terminal publication
+report.
+
+Closing the Suite requests cancellation of its active task. Application
+shutdown remains the final authority for cancelling and settling pending Data
+Manager work; no Data Manager worker owns an independent runtime.
 
 ## 15. Current limitations and deliberate non-features
 

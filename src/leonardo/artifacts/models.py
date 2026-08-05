@@ -71,6 +71,33 @@ def _sha256(value: object, field_name: str) -> str:
     return value
 
 
+def _require_unique(values: tuple[object, ...], field_name: str) -> None:
+    if len(values) != len(set(values)):
+        raise ArtifactValidationError(f"{field_name} must be unique")
+
+
+def _validated_sha_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, tuple):
+        raise ArtifactValidationError(f"{field_name} must be a tuple")
+    values = tuple(_sha256(item, field_name) for item in value)
+    _require_unique(values, field_name)
+    return values
+
+
+def _validated_version_keys(
+    value: object, field_name: str
+) -> tuple[ManagedArtifactVersionKey, ...]:
+    if not isinstance(value, tuple) or not all(
+        isinstance(item, ManagedArtifactVersionKey) for item in value
+    ):
+        raise ArtifactValidationError(
+            f"{field_name} must contain ManagedArtifactVersionKey values"
+        )
+    values = tuple(value)
+    _require_unique(values, field_name)
+    return values
+
+
 def _text(value: object, field_name: str, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str):
         raise ArtifactValidationError(f"{field_name} must be a string")
@@ -176,6 +203,22 @@ def _market_from_dict(value: object) -> MarketId:
         timeframe=_text(value["timeframe"], "market_id.timeframe"),
     )
     return _canonical_market(market)
+
+
+def _canonical_persisted_json_bytes(value: Mapping[str, object]) -> bytes:
+    try:
+        return (
+            json.dumps(
+                value,
+                sort_keys=True,
+                indent=2,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ArtifactValidationError("payload must be canonical JSON") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,6 +524,258 @@ class ArtifactMetadataV1:
             analysis_sha256=None if analysis_sha256 is None else _text(analysis_sha256, "analysis_sha256"),
             created_at_utc=_parse_utc(data["created_at_utc"], "created_at_utc"),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactVersionRecordV1:
+    logical_artifact_id: str
+    artifact_id: str
+    portable_recipe_id: str
+    market_id: MarketId
+    previous_artifact_id: str | None
+    created_at_utc: datetime
+    schema_version: str = "1.0"
+    object_type: str = "artifact_version_record"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1.0":
+            raise ArtifactValidationError("unsupported Artifact version schema_version")
+        if self.object_type != "artifact_version_record":
+            raise ArtifactValidationError("object_type must be artifact_version_record")
+        logical_id = _sha256(self.logical_artifact_id, "logical_artifact_id")
+        artifact_id = _sha256(self.artifact_id, "artifact_id")
+        portable_id = _sha256(self.portable_recipe_id, "portable_recipe_id")
+        market = _canonical_market(self.market_id)
+        previous = self.previous_artifact_id
+        if previous is not None:
+            previous = _sha256(previous, "previous_artifact_id")
+            if previous == artifact_id:
+                raise ArtifactValidationError(
+                    "previous_artifact_id must not equal artifact_id"
+                )
+        from .identity import compute_logical_artifact_id
+
+        if compute_logical_artifact_id(market, portable_id) != logical_id:
+            raise ArtifactValidationError(
+                "logical_artifact_id does not match MarketId and portable Recipe"
+            )
+        object.__setattr__(self, "logical_artifact_id", logical_id)
+        object.__setattr__(self, "artifact_id", artifact_id)
+        object.__setattr__(self, "portable_recipe_id", portable_id)
+        object.__setattr__(self, "market_id", market)
+        object.__setattr__(self, "previous_artifact_id", previous)
+        object.__setattr__(
+            self, "created_at_utc", _utc(self.created_at_utc, "created_at_utc")
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "object_type": self.object_type,
+            "logical_artifact_id": self.logical_artifact_id,
+            "artifact_id": self.artifact_id,
+            "portable_recipe_id": self.portable_recipe_id,
+            "market_id": _market_to_dict(self.market_id),
+            "previous_artifact_id": self.previous_artifact_id,
+            "created_at_utc": _utc_text(self.created_at_utc),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "ArtifactVersionRecordV1":
+        expected = {
+            "schema_version",
+            "object_type",
+            "logical_artifact_id",
+            "artifact_id",
+            "portable_recipe_id",
+            "market_id",
+            "previous_artifact_id",
+            "created_at_utc",
+        }
+        _exact_keys(data, expected, "ArtifactVersionRecordV1")
+        previous = data["previous_artifact_id"]
+        return cls(
+            schema_version=_text(data["schema_version"], "schema_version"),
+            object_type=_text(data["object_type"], "object_type"),
+            logical_artifact_id=_text(
+                data["logical_artifact_id"], "logical_artifact_id"
+            ),
+            artifact_id=_text(data["artifact_id"], "artifact_id"),
+            portable_recipe_id=_text(
+                data["portable_recipe_id"], "portable_recipe_id"
+            ),
+            market_id=_market_from_dict(data["market_id"]),
+            previous_artifact_id=(
+                None
+                if previous is None
+                else _text(previous, "previous_artifact_id")
+            ),
+            created_at_utc=_parse_utc(data["created_at_utc"], "created_at_utc"),
+        )
+
+    def canonical_json_bytes(self) -> bytes:
+        return _canonical_persisted_json_bytes(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactHeadV1:
+    logical_artifact_id: str
+    artifact_id: str
+    updated_at_utc: datetime
+    schema_version: str = "1.0"
+    object_type: str = "artifact_head"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1.0":
+            raise ArtifactValidationError("unsupported Artifact head schema_version")
+        if self.object_type != "artifact_head":
+            raise ArtifactValidationError("object_type must be artifact_head")
+        object.__setattr__(
+            self,
+            "logical_artifact_id",
+            _sha256(self.logical_artifact_id, "logical_artifact_id"),
+        )
+        object.__setattr__(self, "artifact_id", _sha256(self.artifact_id, "artifact_id"))
+        object.__setattr__(
+            self, "updated_at_utc", _utc(self.updated_at_utc, "updated_at_utc")
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "object_type": self.object_type,
+            "logical_artifact_id": self.logical_artifact_id,
+            "artifact_id": self.artifact_id,
+            "updated_at_utc": _utc_text(self.updated_at_utc),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "ArtifactHeadV1":
+        expected = {
+            "schema_version",
+            "object_type",
+            "logical_artifact_id",
+            "artifact_id",
+            "updated_at_utc",
+        }
+        _exact_keys(data, expected, "ArtifactHeadV1")
+        return cls(
+            schema_version=_text(data["schema_version"], "schema_version"),
+            object_type=_text(data["object_type"], "object_type"),
+            logical_artifact_id=_text(
+                data["logical_artifact_id"], "logical_artifact_id"
+            ),
+            artifact_id=_text(data["artifact_id"], "artifact_id"),
+            updated_at_utc=_parse_utc(data["updated_at_utc"], "updated_at_utc"),
+        )
+
+    def canonical_json_bytes(self) -> bytes:
+        return _canonical_persisted_json_bytes(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedArtifactSummary:
+    logical_artifact_id: str
+    portable_recipe_id: str
+    market_id: MarketId
+    artifact_id: str
+    previous_artifact_id: str | None
+    tool_key: str
+    kind: str
+    output_names: tuple[str, ...]
+    row_count: int
+    first_timestamp_ms: int
+    last_timestamp_ms: int
+    created_at_utc: datetime | None
+    valid: bool = True
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedArtifactVersionKey:
+    logical_artifact_id: str
+    artifact_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "logical_artifact_id",
+            _sha256(self.logical_artifact_id, "logical_artifact_id"),
+        )
+        object.__setattr__(
+            self, "artifact_id", _sha256(self.artifact_id, "artifact_id")
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedArtifactGraphPublicationResult:
+    managed_artifacts: tuple[ManagedArtifactSummary, ...]
+    created_artifact_ids: tuple[str, ...]
+    reused_artifact_ids: tuple[str, ...]
+    created_version_keys: tuple[ManagedArtifactVersionKey, ...]
+    reused_version_keys: tuple[ManagedArtifactVersionKey, ...]
+    advanced_logical_artifact_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        managed = tuple(self.managed_artifacts)
+        if not all(isinstance(item, ManagedArtifactSummary) for item in managed):
+            raise ArtifactValidationError(
+                "managed_artifacts must contain ManagedArtifactSummary values"
+            )
+        managed_logical_ids = tuple(item.logical_artifact_id for item in managed)
+        _require_unique(managed_logical_ids, "managed Artifact logical IDs")
+        for logical_id in managed_logical_ids:
+            _sha256(logical_id, "managed logical_artifact_id")
+        managed_logical_set = set(managed_logical_ids)
+        managed_artifact_ids = {item.artifact_id for item in managed}
+        managed_version_keys = {
+            ManagedArtifactVersionKey(item.logical_artifact_id, item.artifact_id)
+            for item in managed
+        }
+
+        created_ids = _validated_sha_tuple(
+            self.created_artifact_ids, "created_artifact_ids"
+        )
+        reused_ids = _validated_sha_tuple(
+            self.reused_artifact_ids, "reused_artifact_ids"
+        )
+        if set(created_ids) & set(reused_ids):
+            raise ArtifactValidationError(
+                "created and reused Artifact IDs must be disjoint"
+            )
+        if set(created_ids) | set(reused_ids) != managed_artifact_ids:
+            raise ArtifactValidationError(
+                "created and reused Artifact evidence must exactly match managed_artifacts"
+            )
+
+        created_keys = _validated_version_keys(
+            self.created_version_keys, "created_version_keys"
+        )
+        reused_keys = _validated_version_keys(
+            self.reused_version_keys, "reused_version_keys"
+        )
+        if set(created_keys) & set(reused_keys):
+            raise ArtifactValidationError(
+                "created and reused version keys must be disjoint"
+            )
+        if set(created_keys) | set(reused_keys) != managed_version_keys:
+            raise ArtifactValidationError(
+                "created and reused version-key evidence must exactly match managed_artifacts"
+            )
+        advanced = _validated_sha_tuple(
+            self.advanced_logical_artifact_ids,
+            "advanced_logical_artifact_ids",
+        )
+        if not set(advanced).issubset(managed_logical_set):
+            raise ArtifactValidationError(
+                "advanced logical Artifact IDs must belong to managed_artifacts"
+            )
+        object.__setattr__(self, "managed_artifacts", managed)
+        object.__setattr__(self, "created_artifact_ids", created_ids)
+        object.__setattr__(self, "reused_artifact_ids", reused_ids)
+        object.__setattr__(self, "created_version_keys", created_keys)
+        object.__setattr__(self, "reused_version_keys", reused_keys)
+        object.__setattr__(self, "advanced_logical_artifact_ids", advanced)
 
 
 @dataclass(frozen=True, slots=True)

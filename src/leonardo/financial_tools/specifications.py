@@ -16,6 +16,8 @@ from .models import (
     ToolKind,
     ToolOutputSpec,
     ToolStyleCapabilities,
+    ToolUpdatePolicy,
+    UpdateStrategy,
 )
 from .naming import CANONICAL_TOOL_ALIASES, canonicalize_tool_key, resolve_output_names
 
@@ -93,6 +95,64 @@ _UTILITY_MULTI_STYLE = ToolStyleCapabilities(
 _PER_SIGNAL_STYLE = ToolStyleCapabilities(("per_signal_line_style",), supports_per_signal_styling=True)
 _NO_STYLE = ToolStyleCapabilities()
 
+_FULL_UPDATE = ToolUpdatePolicy(UpdateStrategy.FULL_RECALCULATION)
+_UPDATE_POLICIES = {
+    "sma": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="period",
+        context_extra_rows=1,
+    ),
+    "bb": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="period",
+        context_extra_rows=1,
+    ),
+    "peaks_troughs": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        fixed_context_rows=12,
+        revisable_tail_rows=5,
+    ),
+    "mfi": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="period",
+        context_extra_rows=1,
+    ),
+    "volume": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="period",
+        context_extra_rows=1,
+    ),
+    "derivative": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        fixed_context_rows=3,
+        revisable_tail_rows=1,
+    ),
+    "angle": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        fixed_context_rows=3,
+        revisable_tail_rows=1,
+    ),
+    "braid_instability": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="n",
+        context_extra_rows=2,
+    ),
+    "delta": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        fixed_context_rows=2,
+    ),
+    "percent_span_angle": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="window",
+        context_extra_rows=1,
+    ),
+    "angle_momentum": ToolUpdatePolicy(
+        UpdateStrategy.OVERLAP_RECALCULATION,
+        parameter_name="n",
+        context_extra_rows=1,
+    ),
+}
+
 
 def _outputs(names: tuple[str, ...], structure: str, *, accepts_empty: bool = False,
              signals: tuple[OutputSignalSpec, ...] | None = None) -> ToolOutputSpec:
@@ -138,6 +198,7 @@ def _spec(
         edit_capabilities=ToolEditCapabilities(edit),
         oscillator_visual=oscillator_visual,
         construct_io=construct_io,
+        update_policy=_UPDATE_POLICIES.get(key, _FULL_UPDATE),
     )
 
 

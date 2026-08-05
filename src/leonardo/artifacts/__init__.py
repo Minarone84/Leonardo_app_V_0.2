@@ -3,6 +3,7 @@ from .models import (
     ArtifactError,
     ArtifactIdentityCollisionError,
     ArtifactLineageError,
+    ArtifactHeadV1,
     ArtifactMetadataV1,
     ArtifactNotFoundError,
     ArtifactRecipeV1,
@@ -10,13 +11,18 @@ from .models import (
     ArtifactSourceRefV1,
     ArtifactSummary,
     ArtifactValidationError,
+    ArtifactVersionRecordV1,
     LoadedArtifact,
     OHLCVSourceFingerprintV1,
+    ManagedArtifactGraphPublicationResult,
+    ManagedArtifactSummary,
+    ManagedArtifactVersionKey,
     RecipeInUseError,
     RecipeSaveResult,
     RecipeSummary,
 )
-from .service import ArtifactService
+from .service import ArtifactService, PreparedManagedArtifact
+from .identity import compute_logical_artifact_id
 
 
 __all__ = (
@@ -24,6 +30,7 @@ __all__ = (
     "ArtifactError",
     "ArtifactIdentityCollisionError",
     "ArtifactLineageError",
+    "ArtifactHeadV1",
     "ArtifactMetadataV1",
     "ArtifactNotFoundError",
     "ArtifactRecipeV1",
@@ -32,9 +39,15 @@ __all__ = (
     "ArtifactSourceRefV1",
     "ArtifactSummary",
     "ArtifactValidationError",
+    "ArtifactVersionRecordV1",
     "LoadedArtifact",
     "OHLCVSourceFingerprintV1",
+    "PreparedManagedArtifact",
+    "ManagedArtifactGraphPublicationResult",
+    "ManagedArtifactSummary",
+    "ManagedArtifactVersionKey",
     "RecipeInUseError",
     "RecipeSaveResult",
     "RecipeSummary",
+    "compute_logical_artifact_id",
 )

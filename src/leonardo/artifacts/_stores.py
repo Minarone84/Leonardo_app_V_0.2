@@ -8,7 +8,12 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from uuid import uuid4
 
-from leonardo.data import MarketId, timeframe_to_storage_segment
+from leonardo.data import (
+    MarketId,
+    canonicalize_market_id,
+    storage_segment_to_timeframe,
+    timeframe_to_storage_segment,
+)
 from leonardo.financial_tools import canonicalize_tool_key, get_financial_tool_spec
 
 from .models import (
@@ -84,6 +89,183 @@ class _CanonicalArtifactStore:
             / tool_key
             / f"{recipe_id}.json"
         )
+
+    def version_record_path(
+        self,
+        market_id: MarketId,
+        logical_artifact_id: str,
+        artifact_id: str,
+    ) -> Path:
+        _validate_id(logical_artifact_id, "logical_artifact_id")
+        _validate_id(artifact_id, "artifact_id")
+        return self._assert_safe(
+            _market_root(self._root, market_id)
+            / "artifact_versions"
+            / logical_artifact_id
+            / "versions"
+            / f"{artifact_id}.json"
+        )
+
+    def head_path(self, market_id: MarketId, logical_artifact_id: str) -> Path:
+        _validate_id(logical_artifact_id, "logical_artifact_id")
+        return self._assert_safe(
+            _market_root(self._root, market_id)
+            / "artifact_versions"
+            / logical_artifact_id
+            / "head.json"
+        )
+
+    def read_optional_bytes(self, path: Path) -> bytes | None:
+        path = self._assert_safe(path)
+        io_path = _io_path(path)
+        if not io_path.exists():
+            return None
+        if not io_path.is_file():
+            raise ArtifactValidationError("managed Artifact path must be a file")
+        return io_path.read_bytes()
+
+    def write_version_record(self, path: Path, payload: bytes) -> bool:
+        path = self._assert_safe(path)
+        self._assert_safe(path.parent)
+        _io_path(path.parent).mkdir(parents=True, exist_ok=True)
+        existing = self.read_optional_bytes(path)
+        if existing is not None:
+            if existing == payload:
+                return False
+            raise ArtifactIdentityCollisionError(
+                f"version record identity collision: {path.stem}"
+            )
+        self._fail("during_version_record_publication")
+        return _write_immutable_file(path, payload, self._assert_safe)
+
+    def replace_head(self, path: Path, payload: bytes) -> None:
+        path = self._assert_safe(path)
+        self._assert_safe(path.parent)
+        _io_path(path.parent).mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".staging-{uuid4().hex}.json")
+        try:
+            self._fail("before_head_publication")
+            _write_bytes(self._assert_safe(temporary), payload)
+            self._fail("during_head_publication")
+            self._assert_safe(path)
+            os.replace(_io_path(temporary), _io_path(path))
+            self._fail("after_head_publication")
+        finally:
+            self._assert_safe(temporary)
+            _io_path(temporary).unlink(missing_ok=True)
+
+    def delete_version_record(self, path: Path) -> None:
+        path = self._assert_safe(path)
+        io_path = _io_path(path)
+        if io_path.exists() and not io_path.is_file():
+            raise ArtifactValidationError("version record path must be a file")
+        io_path.unlink(missing_ok=True)
+
+    def delete_head(self, path: Path) -> None:
+        path = self._assert_safe(path)
+        io_path = _io_path(path)
+        if io_path.exists() and not io_path.is_file():
+            raise ArtifactValidationError("head path must be a file")
+        io_path.unlink(missing_ok=True)
+
+    def restore_head(self, path: Path, payload: bytes) -> None:
+        path = self._assert_safe(path)
+        self._assert_safe(path.parent)
+        _io_path(path.parent).mkdir(parents=True, exist_ok=True)
+        _replace_mutable_file(path, payload, self._assert_safe)
+
+    def managed_rollback_stage(self) -> None:
+        self._fail("during_managed_rollback")
+
+    def iter_logical_artifact_dirs(self, market_id: MarketId) -> Iterator[Path]:
+        root = self._assert_safe(
+            _market_root(self._root, market_id) / "artifact_versions"
+        )
+        io_root = _io_path(root)
+        if not io_root.is_dir():
+            return
+        directories: list[Path] = []
+        for entry in io_root.iterdir():
+            path = root / entry.name
+            self._assert_safe(path)
+            if entry.is_dir():
+                directories.append(path)
+        yield from sorted(directories)
+
+    def iter_managed_market_ids(self) -> Iterator[MarketId]:
+        root = self._assert_safe(self._root)
+        io_root = _io_path(root)
+        if not io_root.is_dir():
+            return
+        markets: set[MarketId] = set()
+        for exchange_dir in _child_directories(root, self._assert_safe):
+            for market_type_dir in _child_directories(
+                exchange_dir, self._assert_safe
+            ):
+                for symbol_dir in _child_directories(
+                    market_type_dir, self._assert_safe
+                ):
+                    for timeframe_dir in _child_directories(
+                        symbol_dir, self._assert_safe
+                    ):
+                        managed_root = self._assert_safe(
+                            timeframe_dir / "artifact_versions"
+                        )
+                        if not _io_path(managed_root).is_dir():
+                            continue
+                        logical_dirs = _child_directories(
+                            managed_root, self._assert_safe
+                        )
+                        if not logical_dirs:
+                            continue
+                        for logical_dir in logical_dirs:
+                            _validate_id(logical_dir.name, "logical_artifact_id")
+                        try:
+                            market = canonicalize_market_id(
+                                exchange_dir.name,
+                                market_type_dir.name,
+                                symbol_dir.name,
+                                storage_segment_to_timeframe(timeframe_dir.name),
+                            )
+                        except ValueError as exc:
+                            raise ArtifactValidationError(
+                                "managed Artifact path has an invalid MarketId"
+                            ) from exc
+                        if _market_root(root, market) != timeframe_dir:
+                            raise ArtifactValidationError(
+                                "managed Artifact path is not canonical"
+                            )
+                        markets.add(market)
+        yield from sorted(markets, key=lambda item: item.as_key())
+
+    def iter_version_record_paths(
+        self, market_id: MarketId, logical_artifact_id: str
+    ) -> Iterator[Path]:
+        root = self.version_record_path(
+            market_id, logical_artifact_id, "0" * 64
+        ).parent
+        io_root = _io_path(root)
+        if not io_root.is_dir():
+            return
+        paths: list[Path] = []
+        for entry in io_root.iterdir():
+            path = root / entry.name
+            self._assert_safe(path)
+            if entry.is_file() and path.suffix == ".json":
+                paths.append(path)
+        yield from sorted(paths)
+
+    def remove_empty_managed_directories(
+        self, market_id: MarketId, logical_artifact_id: str
+    ) -> None:
+        logical_dir = self.head_path(market_id, logical_artifact_id).parent
+        versions_dir = self._assert_safe(logical_dir / "versions")
+        managed_root = self._assert_safe(logical_dir.parent)
+        for directory in (versions_dir, logical_dir, managed_root):
+            self._assert_safe(directory)
+            io_directory = _io_path(directory)
+            if io_directory.is_dir() and not any(io_directory.iterdir()):
+                io_directory.rmdir()
 
     def write_artifact(
         self,
@@ -282,6 +464,19 @@ def _selected_kind_dirs(
     return tuple(sorted(paths))
 
 
+def _child_directories(root: Path, safety: _SafetyCheck) -> tuple[Path, ...]:
+    root = safety(root)
+    io_root = _io_path(root)
+    if not io_root.is_dir():
+        return ()
+    paths: list[Path] = []
+    for entry in io_root.iterdir():
+        path = safety(root / entry.name)
+        if entry.is_dir():
+            paths.append(path)
+    return tuple(sorted(paths))
+
+
 def _validate_catalog_filters(kind: str | None, tool_key: str | None) -> None:
     if kind is not None:
         if not isinstance(kind, str):
@@ -323,10 +518,51 @@ def _selected_tool_dirs(
 
 
 def _write_bytes(path: Path, payload: bytes) -> None:
-    with path.open("xb") as handle:
+    with _io_path(path).open("xb") as handle:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _write_immutable_file(path: Path, payload: bytes, safety: _SafetyCheck) -> bool:
+    temporary = path.with_name(f".staging-{uuid4().hex}{path.suffix}")
+    try:
+        _write_bytes(safety(temporary), payload)
+        try:
+            os.link(_io_path(temporary), _io_path(path))
+        except FileExistsError:
+            existing = _io_path(safety(path))
+            if not existing.is_file() or existing.read_bytes() != payload:
+                raise ArtifactIdentityCollisionError(
+                    f"managed identity collision: {path.stem}"
+                )
+            return False
+        return True
+    finally:
+        safety(temporary)
+        _io_path(temporary).unlink(missing_ok=True)
+
+
+def _replace_mutable_file(path: Path, payload: bytes, safety: _SafetyCheck) -> None:
+    temporary = path.with_name(f".staging-{uuid4().hex}{path.suffix}")
+    try:
+        _write_bytes(safety(temporary), payload)
+        safety(path)
+        os.replace(_io_path(temporary), _io_path(path))
+    finally:
+        safety(temporary)
+        _io_path(temporary).unlink(missing_ok=True)
+
+
+def _io_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    value = str(path)
+    if value.startswith("\\\\?\\"):
+        return path
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
 
 
 def _remove_exact_staging_dir(directory: Path, safety: _SafetyCheck) -> None:

@@ -113,10 +113,35 @@ def compute_artifact_id(metadata: ArtifactMetadataV1) -> str:
     return hashlib.sha256(canonical_json_identity_bytes(payload)).hexdigest()
 
 
+def compute_logical_artifact_id(
+    market_id: MarketId,
+    portable_recipe_id: str,
+    *,
+    schema_version: str = "1.0",
+    object_type: str = "logical_artifact",
+) -> str:
+    if schema_version != "1.0":
+        raise ValueError("schema_version must equal '1.0'")
+    if object_type != "logical_artifact":
+        raise ValueError("object_type must equal 'logical_artifact'")
+    if (
+        not isinstance(portable_recipe_id, str)
+        or len(portable_recipe_id) != 64
+        or any(character not in "0123456789abcdef" for character in portable_recipe_id)
+    ):
+        raise ValueError("portable_recipe_id must be a lowercase SHA-256")
+    payload = {
+        "schema_version": schema_version,
+        "object_type": object_type,
+        "market_id": market_id_to_dict(market_id),
+        "portable_recipe_id": portable_recipe_id,
+    }
+    return hashlib.sha256(canonical_json_identity_bytes(payload)).hexdigest()
+
+
 def _plain(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_plain(item) for item in value]
     return value
-

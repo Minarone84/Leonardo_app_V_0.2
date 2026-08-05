@@ -19,7 +19,11 @@ from leonardo.core.process_manager import ProcessManager
 from leonardo.core.runtime_manager import RuntimeManagerBackend
 from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
-from leonardo.data_manager import DataManagerApplicationService, DataManagerService
+from leonardo.data_manager import (
+    DataManagerApplicationService,
+    DataManagerCreationStore,
+    DataManagerService,
+)
 from leonardo.ohlcv import (
     CanonicalOHLCVValidator,
     HistoricalDownloadApplicationService,
@@ -29,6 +33,7 @@ from leonardo.ohlcv import (
     OHLCVMaintenanceService,
     OHLCVStore,
 )
+from leonardo.recipes import PortableRecipeGraphPlanner, PortableRecipeStore
 from leonardo.research import (
     AcceptedDatasetCatalog,
     HistoricalDatasetLoader,
@@ -143,10 +148,26 @@ class LeonardoApp:
         self.artifact_service = ArtifactService(
             self.config.paths.historical_data_dir
         )
+        self.study_environment_store = StudyEnvironmentStore(
+            self.config.paths.study_environments_dir
+        )
+        self.portable_recipe_store = PortableRecipeStore(
+            self.config.paths.data_manager_dir
+        )
+        self.portable_recipe_planner = PortableRecipeGraphPlanner(
+            self.portable_recipe_store
+        )
+        self.data_manager_creation_store = DataManagerCreationStore(
+            self.config.paths.data_manager_dir
+        )
         self.data_manager_domain = DataManagerService(
             self.accepted_dataset_catalog,
             self.historical_dataset_loader,
             self.artifact_service,
+            self.study_environment_store,
+            self.portable_recipe_store,
+            self.portable_recipe_planner,
+            self.data_manager_creation_store,
         )
         self.data_manager_service = DataManagerApplicationService(
             self.core_runner,
@@ -156,9 +177,6 @@ class LeonardoApp:
         self.research_study_service = ResearchStudyApplicationService(
             self.core_runner,
             self.research_study_domain,
-        )
-        self.study_environment_store = StudyEnvironmentStore(
-            self.config.paths.study_environments_dir
         )
         self.research_study_setup_domain = ResearchStudySetupService(
             self.artifact_service,
@@ -296,6 +314,7 @@ class LeonardoApp:
 
     def stop_core_runtime(self, *, timeout: float = 5.0) -> None:
         self.logger.info("Core runtime shutdown requested")
+        self.data_manager_service.cancel_all_pending()
         self.core_runner.shutdown(timeout=timeout)
         self.logger.info("Core runtime shutdown completed")
 
@@ -315,6 +334,7 @@ class LeonardoApp:
                 self._status = "stopping"
         self.logger.info("Application shutdown requested")
         try:
+            self.data_manager_service.cancel_all_pending()
             self.core_runner.shutdown(timeout=float(timeout))
             self.process_manager.shutdown(timeout=float(timeout))
             self.connection_registry.shutdown_tracking()

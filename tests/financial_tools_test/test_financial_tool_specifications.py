@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields
+from enum import StrEnum
 from types import MappingProxyType
 
 import pytest
@@ -11,6 +12,8 @@ from leonardo.financial_tools import (
     INDICATOR_SPECS,
     OSCILLATOR_SPECS,
     FinancialToolSpec,
+    ToolUpdatePolicy,
+    UpdateStrategy,
     get_financial_tool_spec,
     list_financial_tool_specs,
     resolve_output_signals,
@@ -307,8 +310,58 @@ def test_financial_tool_spec_has_exact_required_field_names() -> None:
     assert tuple(field.name for field in fields(FinancialToolSpec)) == (
         "key", "title", "kind", "data_inputs", "parameters", "output_names", "description",
         "behavior", "output", "form_variant", "style_capabilities", "edit_capabilities",
-        "oscillator_visual", "construct_io",
+        "oscillator_visual", "construct_io", "update_policy",
     )
+
+
+def test_financial_tool_update_policy_matrix_is_exact() -> None:
+    overlap = {
+        "sma": ("period", 0, 1, 0),
+        "bb": ("period", 0, 1, 0),
+        "peaks_troughs": (None, 12, 0, 5),
+        "mfi": ("period", 0, 1, 0),
+        "volume": ("period", 0, 1, 0),
+        "derivative": (None, 3, 0, 1),
+        "angle": (None, 3, 0, 1),
+        "braid_instability": ("n", 0, 2, 0),
+        "delta": (None, 2, 0, 0),
+        "percent_span_angle": ("window", 0, 1, 0),
+        "angle_momentum": ("n", 0, 1, 0),
+    }
+    assert len(ALL_FINANCIAL_TOOL_SPECS) == 26
+    for key, spec in ALL_FINANCIAL_TOOL_SPECS.items():
+        policy = spec.update_policy
+        assert isinstance(policy, ToolUpdatePolicy)
+        if key in overlap:
+            assert policy.strategy is UpdateStrategy.OVERLAP_RECALCULATION
+            assert (
+                policy.parameter_name,
+                policy.fixed_context_rows,
+                policy.context_extra_rows,
+                policy.revisable_tail_rows,
+            ) == overlap[key]
+        else:
+            assert policy == ToolUpdatePolicy(UpdateStrategy.FULL_RECALCULATION)
+        assert policy.strategy is not UpdateStrategy.STATEFUL_INCREMENTAL
+
+
+def test_financial_tool_update_policy_context_resolution_and_validation() -> None:
+    assert issubclass(UpdateStrategy, StrEnum)
+    assert UpdateStrategy("FULL_RECALCULATION") is UpdateStrategy.FULL_RECALCULATION
+    assert get_financial_tool_spec("sma").update_policy.effective_context_rows(
+        {"period": 20}
+    ) == 21
+    assert get_financial_tool_spec(
+        "peaks_troughs"
+    ).update_policy.effective_context_rows({}) == 12
+    with pytest.raises(ValueError):
+        ToolUpdatePolicy(UpdateStrategy("FULL_RECALCULATION"), fixed_context_rows=1)
+    with pytest.raises(ValueError):
+        ToolUpdatePolicy(UpdateStrategy.STATEFUL_INCREMENTAL, parameter_name="period")
+    with pytest.raises(ValueError):
+        ToolUpdatePolicy(UpdateStrategy.OVERLAP_RECALCULATION, fixed_context_rows=-1)
+    with pytest.raises(ValueError):
+        UpdateStrategy("UNKNOWN")
 
 
 def test_lookup_listing_and_aliases_use_canonical_specs() -> None:

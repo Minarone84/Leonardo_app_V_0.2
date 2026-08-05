@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -243,3 +243,72 @@ def test_postpublication_source_race_removes_exact_published_artifact(
     assert service.list_artifacts(market) == ()
     assert len(service.list_recipes(market)) == 1
     assert not tuple(tmp_path.rglob(".staging-*"))
+
+
+def test_managed_rollback_preserves_reconciled_recipe_and_artifact(
+    tmp_path: Path,
+) -> None:
+    market, data = _accepted_dataset(tmp_path)
+    service = ArtifactService(tmp_path)
+    source = service.capture_accepted_source(market)
+    created = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
+    sma_result = calculate_financial_tool("sma", data, {"period": 3})
+    saved = service.save_calculation(
+        market, sma_result, created_at_utc=created
+    )
+    recipe_path = service._store.recipe_path(
+        market,
+        saved.metadata.recipe.kind,
+        saved.metadata.recipe.tool_key,
+        saved.metadata.recipe.recipe_id,
+    )
+    recipe_before = recipe_path.read_bytes()
+    artifact_before = service._store.read_artifact_bytes(saved.path)
+    reused = service.prepare_managed_calculation(
+        market,
+        "a" * 64,
+        sma_result,
+        expected_source=source,
+        created_at_utc=datetime(2026, 8, 3, 12, 1, tzinfo=UTC),
+    )
+    created_candidate = service.prepare_managed_calculation(
+        market,
+        "b" * 64,
+        calculate_financial_tool("ema", data, {"period": 3}),
+        expected_source=source,
+        created_at_utc=datetime(2026, 8, 3, 12, 2, tzinfo=UTC),
+    )
+    head_calls = 0
+
+    def fail_second_head(stage: str) -> None:
+        nonlocal head_calls
+        if stage == "during_head_publication":
+            head_calls += 1
+            if head_calls == 2:
+                raise OSError("injected later head failure")
+
+    service._store._failure_hook = fail_second_head
+    with pytest.raises(ArtifactLineageError, match="injected later head failure"):
+        service.publish_managed_artifact_graph(
+            (reused, created_candidate), expected_source=source
+        )
+    service._store._failure_hook = None
+
+    assert recipe_path.read_bytes() == recipe_before
+    assert service._store.read_artifact_bytes(saved.path) == artifact_before
+    assert service.load_artifact_by_id(
+        market, saved.metadata.artifact_id
+    ).metadata == saved.metadata
+    assert service.list_managed_artifacts(market) == ()
+    assert service.list_artifact_versions(
+        market, reused.logical_artifact_id
+    ) == ()
+    assert service.list_artifact_versions(
+        market, created_candidate.logical_artifact_id
+    ) == ()
+    assert not service._store.artifact_dir(
+        market,
+        created_candidate.metadata.recipe.kind,
+        created_candidate.metadata.recipe.tool_key,
+        created_candidate.metadata.artifact_id,
+    ).exists()

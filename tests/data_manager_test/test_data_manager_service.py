@@ -15,14 +15,25 @@ from leonardo.artifacts import (
     RecipeSummary,
 )
 from leonardo.data import MarketId
-from leonardo.data_manager import DataManagerOperationError, DataManagerService
+from leonardo.data_manager import (
+    DataManagerCatalogSnapshot,
+    DataManagerManagedArtifactCatalog,
+    DataManagerOperationError,
+    DataManagerPortableRecipeCatalog,
+    DataManagerRecipeCollectionCatalog,
+    DataManagerReconciliationSnapshot,
+    DataManagerService,
+    DataManagerStudyEnvironmentCatalog,
+)
 from leonardo.data_manager.models import DataManagerDeletionResult
 from leonardo.data_manager.service import DataManagerMarketUnavailableError
+from leonardo.recipes import PortableRecipeGraphPlanner, PortableRecipeStore
 from leonardo.research import (
     AcceptedDatasetSummary,
     DatasetCatalogReport,
     DatasetRejection,
     HistoricalDataset,
+    StudyEnvironmentStore,
 )
 
 
@@ -159,7 +170,71 @@ class _Artifacts:
 
 
 def _service(catalog=None, loader=None, artifacts=None):
-    return DataManagerService(catalog or _Catalog(), loader or _Loader(), artifacts or _Artifacts())
+    recipes = PortableRecipeStore(Path("__unused_data_manager_recipes_test__"))
+    return DataManagerService(
+        catalog or _Catalog(),
+        loader or _Loader(),
+        artifacts or _Artifacts(),
+        StudyEnvironmentStore(Path("__unused_study_environments_test__")),
+        recipes,
+        PortableRecipeGraphPlanner(recipes),
+    )
+
+
+def test_product_catalog_scan_aggregates_each_family_once(monkeypatch) -> None:
+    service = _service()
+    reconciliation = DataManagerReconciliationSnapshot(
+        datetime(2026, 8, 4, tzinfo=UTC), (), (), (), (), (), "0" * 64
+    )
+    calls: list[str] = []
+
+    def value(name, result):
+        def read(*_args, **_kwargs):
+            calls.append(name)
+            return result
+
+        return read
+
+    monkeypatch.setattr(service, "latest_update_status", value("reconcile", reconciliation))
+    monkeypatch.setattr(service, "list_database_ids", value("database_ids", ()))
+    monkeypatch.setattr(service, "scan_catalog", value("ohlcv", DataManagerCatalogSnapshot(())))
+    monkeypatch.setattr(
+        service,
+        "scan_study_environments",
+        value("environments", DataManagerStudyEnvironmentCatalog(())),
+    )
+    monkeypatch.setattr(
+        service,
+        "scan_portable_recipes",
+        value("recipes", DataManagerPortableRecipeCatalog(())),
+    )
+    monkeypatch.setattr(
+        service,
+        "list_recipe_collections",
+        value("recipe_collections", DataManagerRecipeCollectionCatalog(())),
+    )
+    monkeypatch.setattr(
+        service,
+        "scan_managed_artifacts",
+        value("managed_artifacts", DataManagerManagedArtifactCatalog(())),
+    )
+    monkeypatch.setattr(service, "list_artifact_collections", value("collections", ()))
+    monkeypatch.setattr(service, "list_database_seeds", value("seeds", ()))
+
+    snapshot = service.scan_product_catalogs()
+
+    assert snapshot.latest_reconciliation is reconciliation
+    assert calls == [
+        "reconcile",
+        "database_ids",
+        "ohlcv",
+        "environments",
+        "recipes",
+        "recipe_collections",
+        "managed_artifacts",
+        "collections",
+        "seeds",
+    ]
 
 
 def test_catalog_projects_accepted_and_rejected_without_paths() -> None:
