@@ -1,0 +1,59 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "25d3f2d7f1b9ae44ebd04899d42f8f10ba00191f90e2e0859e6658b67eea25d2",
+  "created_at_utc": "2026-08-16T17:01:28.495607Z",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-08-16T17:01:28.495607Z",
+    "description": "",
+    "display_name": "angle_momentum",
+    "kind": "construct",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "research_source_1_ang_mtm_3"
+    ],
+    "parameters": {
+      "n": 3,
+      "source_columns": "__research_source_1"
+    },
+    "recipe_id": "fc75a504966257c17cab58190a91dea42e276556e9a240ffbaa2183ed7602337",
+    "schema_version": "1.0",
+    "source_artifacts": [
+      {
+        "artifact_id": "f801cfd30b0079150b6bbe00ddf3ab359130ef8e8a9cc50c93444e9f63baa7b1",
+        "output_name": "research_source_1_ang_mtm_3",
+        "role": "source_1"
+      }
+    ],
+    "tool_key": "angle_momentum"
+  },
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "ad3d7196123ba9178d774d9af6668ab58a9c26337b19bca98190d651b5fff59b"
+}

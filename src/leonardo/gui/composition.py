@@ -328,6 +328,7 @@ class GuiCompositionRoot:
     def _open_data_manager_suite(
         self, parent: LeonardoMainWindow, market_id: MarketId | None = None
     ) -> str:
+        created = False
         if (
             self._data_manager_suite_window is None
             or self._data_manager_suite_presenter is None
@@ -351,7 +352,13 @@ class GuiCompositionRoot:
                 "Data Manager Suite",
                 "suite",
             )
-        self._show_window(self._data_manager_suite_window)
+            created = True
+        if created:
+            self._data_manager_suite_window.showMaximized()
+            self._data_manager_suite_window.raise_()
+            self._data_manager_suite_window.activateWindow()
+        else:
+            self._show_window(self._data_manager_suite_window)
         if market_id is not None:
             self._data_manager_suite_presenter.focus_market(
                 market_id, source="research"

@@ -10,7 +10,13 @@ from leonardo.data import MarketId
 from leonardo.data_manager import DataManagerOperationError, DataManagerService
 from leonardo.data_manager.models import DataManagerPortableRecipeEntry
 from leonardo.financial_tools import resolve_output_names, resolve_parameters
-from leonardo.recipes import PortableRecipeGraphPlanner, PortableRecipeStore
+from leonardo.recipes import (
+    PortableRecipeDependencyV1,
+    PortableRecipeGraphPlanner,
+    PortableRecipeOHLCVInputV1,
+    PortableRecipeStore,
+    build_portable_recipe,
+)
 from leonardo.research import (
     StudyEnvironmentDraft,
     StudyEnvironmentSourceV1,
@@ -139,6 +145,71 @@ def test_derivation_includes_support_excludes_presentation_and_persists_once(
     )
     assert len(library.recipes) == 3
     assert service.scan_portable_recipes(display_name_text="EMA 20").recipes[0].tool_key == "ema"
+    assert {item.recipe_id for item in library.recipes} == {
+        item.recipe_id for item in plan.recipes
+    }
+
+
+def test_recipe_read_projection_preserves_canonical_input_binding_order(
+    tmp_path: Path,
+) -> None:
+    service, environments, _recipes = _domain(tmp_path)
+    source = fixture_environment()
+    delta_output = resolve_output_names(
+        "delta",
+        {**source.entries[2].parameters, "fast": "close", "slow": "research_slow"},
+    )[0]
+    delta = replace(
+        source.entries[2],
+        sources=(
+            StudyEnvironmentSourceV1(
+                "fast", "ohlcv", column_name="close"
+            ),
+            StudyEnvironmentSourceV1(
+                "slow",
+                "environment",
+                source_entry_id="entry_002",
+                output_name="rsi_14",
+            ),
+        ),
+        expected_output_names=(delta_output,),
+        presentation=replace(
+            source.entries[2].presentation,
+            line_styles=(
+                replace(
+                    source.entries[2].presentation.line_styles[0],
+                    output_name=delta_output,
+                ),
+            ),
+        ),
+    )
+    environment = _save_environment(
+        environments,
+        environment_id="env_bindings",
+        entries=(source.entries[0], source.entries[1], delta, source.entries[3]),
+    )
+    plan = service.plan_recipe_derivation(
+        environment.environment_id, ("entry_003",)
+    )
+    assert plan.support_entry_ids == ("entry_002",)
+    service.persist_recipe_derivation(
+        environment.environment_id,
+        ("entry_003",),
+        create_collection=False,
+    )
+
+    planned_by_tool = {item.tool_key: item for item in plan.recipes}
+    projected_by_tool = {
+        item.tool_key: item for item in service.scan_portable_recipes().recipes
+    }
+    dependency_id = planned_by_tool["rsi"].recipe_id
+    assert projected_by_tool["delta"].input_bindings == (
+        "fast=OHLCV.close",
+        f"slow=Recipe[{dependency_id}].rsi_14",
+    )
+    assert {item.recipe_id for item in projected_by_tool.values()} == {
+        item.recipe_id for item in plan.recipes
+    }
 
 
 @pytest.mark.parametrize(
@@ -172,6 +243,7 @@ def test_portable_recipe_read_model_parameters_are_recursively_immutable() -> No
         "indicator",
         parameters,
         ("sma_20",),
+        ("source=OHLCV.close",),
         0,
         1,
         (),
@@ -182,6 +254,7 @@ def test_portable_recipe_read_model_parameters_are_recursively_immutable() -> No
 
     parameters["nested"]["values"][0] = 99
     assert entry.parameters["nested"]["values"][0] == 1
+    assert entry.input_bindings == ("source=OHLCV.close",)
     with pytest.raises(TypeError):
         entry.parameters["nested"]["new"] = "value"
     with pytest.raises(TypeError):
@@ -401,17 +474,160 @@ def test_collection_operations_use_graph_members_and_keep_revisions(tmp_path: Pa
     persisted = service.persist_recipe_derivation(
         environment.environment_id, ("entry_003",), create_collection=False
     )
+    expected = PortableRecipeGraphPlanner(recipes).plan(persisted.root_recipe_ids)
+    plan = service.plan_recipe_collection(persisted.root_recipe_ids)
+    assert plan == expected
+    assert plan.root_recipe_ids == persisted.root_recipe_ids
+    assert plan.member_recipe_ids == tuple(
+        recipe_id for stage in plan.execution_stages for recipe_id in stage
+    )
+    assert plan.dependency_edges == expected.dependency_edges
+    assert plan.execution_stages == expected.execution_stages
     created = service.create_recipe_collection(
         "Structure", "", persisted.root_recipe_ids
     )
     assert created.collection.root_count == 1
     assert created.collection.member_count == 3
+    first_revision = recipes.load_collection(created.collection.collection_id)
+    assert first_revision.root_recipe_ids == plan.root_recipe_ids
+    assert first_revision.member_recipe_ids == plan.member_recipe_ids
+    first_path = (
+        recipes.root_dir
+        / "recipe_collections"
+        / first_revision.collection_id
+        / "revisions"
+        / f"{first_revision.revision_id}.json"
+    )
+    first_bytes = first_path.read_bytes()
+    next_roots = (persisted.support_recipe_ids[0],)
+    next_plan = service.plan_recipe_collection(next_roots)
     updated = service.update_recipe_collection(
         created.collection.collection_id,
         "Structure Updated",
         "",
-        (persisted.support_recipe_ids[0],),
+        next_roots,
+        expected_revision_id=created.collection.revision_id,
     )
     assert updated.collection.revision_id != created.collection.revision_id
-    assert len(recipes.list_collection_revisions(created.collection.collection_id)) == 2
+    second_revision = recipes.load_collection(created.collection.collection_id)
+    assert second_revision.previous_revision_id == first_revision.revision_id
+    assert second_revision.root_recipe_ids == next_plan.root_recipe_ids
+    assert second_revision.member_recipe_ids == next_plan.member_recipe_ids
+    revisions = recipes.list_collection_revisions(created.collection.collection_id)
+    assert revisions == (first_revision, second_revision)
+    assert first_path.read_bytes() == first_bytes
+    revision_bytes = {
+        revision.revision_id: (
+            recipes.root_dir
+            / "recipe_collections"
+            / revision.collection_id
+            / "revisions"
+            / f"{revision.revision_id}.json"
+        ).read_bytes()
+        for revision in revisions
+    }
+    with pytest.raises(
+        DataManagerOperationError, match="changed since it was selected"
+    ):
+        service.update_recipe_collection(
+            created.collection.collection_id,
+            "Stale",
+            "",
+            persisted.root_recipe_ids,
+            expected_revision_id=created.collection.revision_id,
+        )
+    assert recipes.load_collection(created.collection.collection_id) == second_revision
+    assert recipes.list_collection_revisions(created.collection.collection_id) == revisions
+    for revision_id, expected_bytes in revision_bytes.items():
+        path = (
+            recipes.root_dir
+            / "recipe_collections"
+            / created.collection.collection_id
+            / "revisions"
+            / f"{revision_id}.json"
+        )
+        assert path.read_bytes() == expected_bytes
+
+    restarted_recipes = PortableRecipeStore(recipes.root_dir)
+    restarted = DataManagerService(
+        _Catalog(),
+        _Loader(),
+        _Artifacts(),
+        environments,
+        restarted_recipes,
+        PortableRecipeGraphPlanner(restarted_recipes),
+    )
+    assert restarted.inspect_recipe_collection(
+        created.collection.collection_id
+    ).collection.revision_id == second_revision.revision_id
+    assert restarted.inspect_recipe_collection(
+        created.collection.collection_id, first_revision.revision_id
+    ).member_recipe_ids == first_revision.member_recipe_ids
     assert service.list_recipe_collections().collections[0].display_name == "Structure Updated"
+
+
+def test_collection_plan_rejects_invalid_member_and_catalog_inspection_agree(
+    tmp_path: Path,
+) -> None:
+    service, _environments, recipes = _domain(tmp_path)
+    sma_parameters = dict(resolve_parameters("sma", {"period": 14}))
+    sma = build_portable_recipe(
+        tool_key="sma",
+        kind="indicator",
+        parameters=sma_parameters,
+        output_names=resolve_output_names("sma", sma_parameters),
+        ohlcv_inputs=(PortableRecipeOHLCVInputV1("close", "close"),),
+    )
+    derivative_parameters = dict(resolve_parameters("derivative", {}))
+    derivative = build_portable_recipe(
+        tool_key="derivative",
+        kind="construct",
+        parameters=derivative_parameters,
+        output_names=resolve_output_names(
+            "derivative", {**derivative_parameters, "source": sma.output_names[0]}
+        ),
+        dependencies=(
+            PortableRecipeDependencyV1("fast", sma.recipe_id, sma.output_names[0]),
+        ),
+    )
+    recipes.save_recipe(sma)
+    recipes.save_recipe(derivative)
+
+    with pytest.raises(DataManagerOperationError, match="roles"):
+        service.plan_recipe_collection((derivative.recipe_id,))
+    assert not (recipes.root_dir / "recipe_collections").exists()
+
+    graph = PortableRecipeGraphPlanner(recipes).plan((derivative.recipe_id,))
+    revision = recipes.create_collection(
+        "Invalid", "", graph.root_recipe_ids, graph.member_recipe_ids
+    )
+    catalog_entry = service.list_recipe_collections().collections[0]
+    assert catalog_entry.collection_id == revision.collection_id
+    assert not catalog_entry.valid
+    assert "roles" in catalog_entry.rejection_reason
+    with pytest.raises(DataManagerOperationError, match="roles"):
+        service.inspect_recipe_collection(revision.collection_id)
+
+
+def test_collection_plan_rejects_recipe_braid_with_raw_ohlc_sources(
+    tmp_path: Path,
+) -> None:
+    service, _environments, recipes = _domain(tmp_path)
+    parameters = dict(resolve_parameters("braids", {"tie_policy": "carry"}))
+    naming = {**parameters, "fast": "high", "mid": "close", "slow": "low"}
+    braid = build_portable_recipe(
+        tool_key="braids",
+        kind="construct",
+        parameters=parameters,
+        output_names=resolve_output_names("braids", naming),
+        ohlcv_inputs=(
+            PortableRecipeOHLCVInputV1("fast", "high"),
+            PortableRecipeOHLCVInputV1("mid", "close"),
+            PortableRecipeOHLCVInputV1("slow", "low"),
+        ),
+    )
+    recipes.save_recipe(braid)
+
+    with pytest.raises(DataManagerOperationError, match="source-family"):
+        service.plan_recipe_collection((braid.recipe_id,))
+    assert not (recipes.root_dir / "recipe_collections").exists()

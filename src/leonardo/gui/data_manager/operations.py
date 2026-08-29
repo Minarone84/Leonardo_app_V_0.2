@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
@@ -12,11 +12,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from leonardo.gui.data_manager.table_presentation import resize_data_manager_table
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
@@ -32,13 +32,27 @@ class DataManagerOperationSurface(QGroupBox):
         self._name = QLabel("None", self)
         self._task_id = QLabel("", self)
         self._state = QLabel("idle", self)
+        self._context = QLabel("", self)
+        self._status = QLabel("", self)
         self._message = QLabel("", self)
+        self._notes = QLabel("", self)
+        self._context.setWordWrap(True)
+        self._status.setWordWrap(True)
         self._message.setWordWrap(True)
+        self._notes.setWordWrap(True)
+        self._notes.setTextInteractionFlags(
+            self._notes.textInteractionFlags()
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._notes.hide()
         for widget, object_id in (
             (self._name, "data_manager.operation.name"),
             (self._task_id, "data_manager.operation.task_id"),
             (self._state, "data_manager.operation.state"),
+            (self._context, "data_manager.operation.context"),
+            (self._status, "data_manager.operation.status"),
             (self._message, "data_manager.operation.message"),
+            (self._notes, "data_manager.operation.notes"),
         ):
             apply_identity(widget, object_id, object_type="label")
 
@@ -56,10 +70,6 @@ class DataManagerOperationSurface(QGroupBox):
             labels=("Field", "Value"),
         )
         self.details.setMaximumHeight(130)
-        self.log = QTextEdit(self)
-        self.log.setReadOnly(True)
-        self.log.setMaximumHeight(90)
-        apply_identity(self.log, "data_manager.operation.log", object_type="log")
 
         self.cancel_button = QPushButton("Cancel", self)
         apply_identity(
@@ -82,6 +92,8 @@ class DataManagerOperationSurface(QGroupBox):
         form.addRow("Operation", self._name)
         form.addRow("Task ID", self._task_id)
         form.addRow("State", self._state)
+        form.addRow("Context", self._context)
+        form.addRow("Status", self._status)
         form.addRow("Message", self._message)
         buttons = QHBoxLayout()
         buttons.addWidget(self.cancel_button)
@@ -91,13 +103,28 @@ class DataManagerOperationSurface(QGroupBox):
         layout.addLayout(form)
         layout.addWidget(self.progress)
         layout.addWidget(self.details)
-        layout.addWidget(self.log)
+        layout.addWidget(self._notes)
         layout.addLayout(buttons)
         self.cancel_button.setEnabled(False)
 
     @property
     def state(self) -> str:
         return self._state.text()
+
+    def set_context(self, message: str) -> None:
+        self._context.setText(message)
+
+    def set_status(self, message: str) -> None:
+        self._status.setText(message)
+
+    def context_text(self) -> str:
+        return self._context.text()
+
+    def status_text(self) -> str:
+        return self._status.text()
+
+    def notes_text(self) -> str:
+        return self._notes.text()
 
     def begin(self, operation: str) -> None:
         self._name.setText(operation)
@@ -137,9 +164,12 @@ class DataManagerOperationSurface(QGroupBox):
         for row, (name, value) in enumerate(details):
             self.details.setItem(row, 0, QTableWidgetItem(name))
             self.details.setItem(row, 1, QTableWidgetItem(value))
+        resize_data_manager_table(self.details)
 
     def append(self, message: str) -> None:
-        self.log.append(message)
+        current = self._notes.text()
+        self._notes.setText(f"{current}\n{message}" if current else message)
+        self._notes.setVisible(bool(self._notes.text()))
 
     def clear(self) -> None:
         self._name.setText("None")
@@ -149,6 +179,7 @@ class DataManagerOperationSurface(QGroupBox):
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.details.setRowCount(0)
-        self.log.clear()
+        self._notes.clear()
+        self._notes.hide()
         self.cancel_button.setEnabled(False)
         self.clear_requested.emit()

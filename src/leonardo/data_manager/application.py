@@ -22,8 +22,12 @@ from .models import (
     DataManagerArtifactMaterializationRequest,
     DataManagerArtifactMaterializationResult,
 )
+from .direct_artifact import (
+    DataManagerDirectArtifactRequest,
+)
 from .creation_models import (
     ArtifactCollectionOutputV1,
+    ArtifactCollectionSelectionPlan,
     BatchArtifactPlan,
     BatchArtifactRequest,
 )
@@ -255,6 +259,98 @@ class DataManagerApplicationService:
             callback_dispatcher=callback_dispatcher,
         )
 
+    def submit_delete_portable_recipe(
+        self,
+        recipe_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.delete_portable_recipe",
+            task_name=f"Data Manager portable Recipe deletion {recipe_id}",
+            start_message=f"Proving portable Recipe {recipe_id} is unreferenced",
+            completed_message="Portable Recipe deleted",
+            work=lambda _reporter, gate: self._service._delete_portable_recipe(
+                recipe_id, before_delete=gate.begin_destructive
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"recipe_id": recipe_id},
+        )
+
+    def submit_delete_recipe_collection(
+        self,
+        collection_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.delete_recipe_collection",
+            task_name=f"Data Manager Recipe Collection deletion {collection_id}",
+            start_message=f"Proving Recipe Collection {collection_id} is unreferenced",
+            completed_message="Recipe Collection deleted",
+            work=lambda _reporter, gate: self._service._delete_recipe_collection(
+                collection_id, before_delete=gate.begin_destructive
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"collection_id": collection_id},
+        )
+
+    def submit_delete_managed_artifact(
+        self,
+        market_id: MarketId,
+        logical_artifact_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            market_id,
+            operation="data_manager.delete_managed_artifact",
+            task_name=f"Data Manager managed Artifact deletion {logical_artifact_id}",
+            start_message=f"Proving managed Artifact {logical_artifact_id} is unreferenced",
+            completed_message="Managed Artifact deleted",
+            work=lambda _reporter, gate: self._service._delete_managed_artifact(
+                market_id,
+                logical_artifact_id,
+                before_delete=gate.begin_destructive,
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"logical_artifact_id": logical_artifact_id},
+        )
+
+    def submit_delete_artifact_collection(
+        self,
+        collection_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.delete_artifact_collection",
+            task_name=f"Data Manager Artifact Collection deletion {collection_id}",
+            start_message=f"Proving Artifact Collection {collection_id} is unreferenced",
+            completed_message="Artifact Collection deleted",
+            work=lambda _reporter, gate: self._service._delete_artifact_collection(
+                collection_id, before_delete=gate.begin_destructive
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"collection_id": collection_id},
+        )
+
     def submit_scan_study_environments(
         self,
         *,
@@ -439,6 +535,27 @@ class DataManagerApplicationService:
             callback_dispatcher=callback_dispatcher,
         )
 
+    def submit_plan_recipe_collection(
+        self,
+        root_recipe_ids: tuple[str, ...],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.plan_recipe_collection",
+            task_name="Data Manager Recipe Collection planning",
+            start_message="Planning portable Recipe Collection",
+            completed_message="Portable Recipe Collection plan ready",
+            work=lambda _reporter, _gate: self._service.plan_recipe_collection(
+                root_recipe_ids
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
     def submit_update_recipe_collection(
         self,
         collection_id: str,
@@ -446,6 +563,7 @@ class DataManagerApplicationService:
         description: str,
         root_recipe_ids: tuple[str, ...],
         *,
+        expected_revision_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
         result_callback: ResultCallback | None = None,
         callback_dispatcher: CallbackDispatcher | None = None,
@@ -461,6 +579,7 @@ class DataManagerApplicationService:
                 description,
                 root_recipe_ids,
                 before_publish=gate.begin_destructive,
+                expected_revision_id=expected_revision_id,
             ),
             progress_callback=progress_callback,
             result_callback=result_callback,
@@ -551,6 +670,61 @@ class DataManagerApplicationService:
             work=lambda _reporter, _gate: self._service.plan_artifact_materialization(
                 request
             ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_build_direct_artifact_catalog(
+        self,
+        market_id: MarketId,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            market_id,
+            operation="data_manager.build_direct_artifact_catalog",
+            task_name="Data Manager direct Artifact source catalog",
+            start_message="Building direct Artifact source catalog",
+            completed_message="Direct Artifact source catalog ready",
+            work=lambda _reporter, _gate: self._service.build_direct_artifact_catalog(
+                market_id
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_create_direct_artifact(
+        self,
+        request: DataManagerDirectArtifactRequest,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(request, DataManagerDirectArtifactRequest):
+            raise TypeError("request must be a DataManagerDirectArtifactRequest")
+
+        def create(reporter: ProgressReporter, gate: _CancellationGate):
+            return self._service._create_direct_artifact(
+                request,
+                progress=lambda current, total, message: reporter.report(
+                    message, current=current, total=total
+                ),
+                cancellation_requested=gate.is_cancelled,
+                before_publish=gate.begin_destructive,
+            )
+
+        return self._market_submit(
+            request.market_id,
+            operation="data_manager.create_direct_artifact",
+            task_name="Data Manager direct Artifact creation",
+            start_message="Creating direct managed Artifact",
+            completed_message="Direct managed Artifact creation complete",
+            work=create,
             progress_callback=progress_callback,
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
@@ -862,6 +1036,100 @@ class DataManagerApplicationService:
             progress_callback=progress_callback,
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_plan_artifact_collection_selection(
+        self,
+        market_id: MarketId,
+        root_logical_artifact_ids: Sequence[str],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            market_id,
+            operation="data_manager.plan_artifact_collection_selection",
+            task_name="Data Manager Artifact Collection selection planning",
+            start_message="Planning Artifact Collection selection",
+            completed_message="Artifact Collection selection plan ready",
+            work=lambda _reporter, _gate: (
+                self._service.plan_artifact_collection_selection(
+                    market_id, root_logical_artifact_ids
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_create_artifact_collection_from_selection(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        display_name: str,
+        *,
+        description: str = "",
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            plan.market_id,
+            operation="data_manager.create_artifact_collection_from_selection",
+            task_name=f"Data Manager Artifact Collection {display_name}",
+            start_message="Creating Artifact Collection from selection",
+            completed_message="Artifact Collection created",
+            work=lambda _reporter, gate: (
+                self._service._create_artifact_collection_from_selection(
+                    plan,
+                    display_name,
+                    description=description,
+                    selected_outputs=selected_outputs,
+                    before_publish=gate.begin_destructive,
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_edit_artifact_collection_from_selection(
+        self,
+        collection_id: str,
+        plan: ArtifactCollectionSelectionPlan,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+        presentation_order: Sequence[str] | None = None,
+        expected_revision_id: str,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            plan.market_id,
+            operation="data_manager.edit_artifact_collection_from_selection",
+            task_name=f"Data Manager Artifact Collection edit {collection_id}",
+            start_message=f"Editing Artifact Collection {collection_id}",
+            completed_message="Artifact Collection edited",
+            work=lambda _reporter, gate: (
+                self._service._edit_artifact_collection_from_selection(
+                    collection_id,
+                    plan,
+                    display_name=display_name,
+                    description=description,
+                    selected_outputs=selected_outputs,
+                    presentation_order=presentation_order,
+                    expected_revision_id=expected_revision_id,
+                    before_publish=gate.begin_destructive,
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"collection_id": collection_id},
         )
 
     def submit_list_artifact_collection_revisions(

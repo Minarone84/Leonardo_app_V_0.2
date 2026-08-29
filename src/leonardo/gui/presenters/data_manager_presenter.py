@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Qt, Signal
 
+from leonardo.artifacts import ManagedArtifactSummary
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.data import MarketId
 from leonardo.data_manager import (
@@ -22,12 +23,19 @@ from leonardo.data_manager import (
     DataManagerCatalogSnapshot,
     DataManagerFocusRequest,
     DataManagerMarketSnapshot,
+    DataManagerManagedArtifactEntry,
+    DataManagerPortableRecipeEntry,
     DataManagerPreview,
     DataManagerProductCatalogSnapshot,
+    DataManagerReconciliationSnapshot,
     DataManagerRecipeDerivationPlan,
     DataManagerRecipePersistenceResult,
+    DataManagerStudyEnvironmentEntry,
     DataManagerStudyEnvironmentInspection,
     DataManagerRecipeEntry,
+    DataManagerRecipeCollectionEntry,
+    DataManagerRecipeCollectionInspection,
+    ArtifactCollectionRevisionV1,
     ArtifactCollectionUpdatePlan,
     ArtifactCollectionUpdateResult,
     ArtifactCollectionOutputV1,
@@ -35,7 +43,27 @@ from leonardo.data_manager import (
     DatabaseUpdateResult,
     DatabaseReadiness,
 )
+from leonardo.recipes import (
+    PortableRecipeCollectionRevisionV1,
+    PortableRecipeGraphPlan,
+    PortableRecipeV1,
+)
+from leonardo.data_manager.creation_models import ArtifactCollectionSelectionPlan
 from leonardo.data_manager.models import DataManagerDeletionResult
+from leonardo.data_manager.direct_artifact import (
+    DataManagerDirectArtifactCatalog,
+    DataManagerDirectArtifactRequest,
+    DataManagerDirectArtifactResult,
+    DataManagerDirectArtifactSource,
+)
+from leonardo.data_manager.construct_batch import (
+    ConstructBatchExpansionRequest,
+    expand_construct_batch,
+)
+from leonardo.gui.data_manager.table_presentation import (
+    format_data_manager_value,
+    format_utc_timestamp_ms,
+)
 from leonardo.gui.windows.data_manager_preview_dialog import DataManagerPreviewDialog
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
 from leonardo.gui.data_manager.reconciliation import (
@@ -120,20 +148,36 @@ class DataManagerSuitePresenter(QObject):
         self._batch_plan_context: _BatchPlanContext | None = None
         self._pending_batch_plan_context: _BatchPlanContext | None = None
         self._batch_materialization: DataManagerArtifactMaterializationResult | None = None
+        self._construct_batch_plan: BatchArtifactPlan | None = None
+        self._pending_construct_batch_request: BatchArtifactRequest | None = None
         self._creation_collection = None
         self._database_readiness: DatabaseReadiness | None = None
         self._readiness_context: _ReadinessContext | None = None
         self._pending_readiness_context: _ReadinessContext | None = None
         self._product_catalogs: DataManagerProductCatalogSnapshot | None = None
+        self._background_refresh_task_id: str | None = None
+        self._background_refresh_stage: str | None = None
+        self._background_refresh_generation = 0
+        self._background_refresh_pending = False
+        self._background_refresh_pending_force = False
+        self._background_evidence_signature: str | None = None
+        self._initial_warmup_complete = False
+        self._background_deferred_catalogs: (
+            DataManagerProductCatalogSnapshot | None
+        ) = None
+        self._background_selected_market_refresh_pending: MarketId | None = None
         self._artifact_update_plan: ArtifactCollectionUpdatePlan | None = None
         self._database_update_plan: DatabaseUpdatePlan | None = None
         self._derivation_plan = None
         self._recipe_persistence = None
+        self._catalog_derivation_plan: DataManagerRecipeDerivationPlan | None = None
         self._wire()
         self._reconciliation = DataManagerReconciliationCoordinator(
             refresh_when_opened=self._refresh_when_opened,
             refresh_on_timer=self._refresh_on_timer,
-            is_busy=lambda: self._active_task_id is not None or self._disposed,
+            is_busy=lambda: (
+                self._background_refresh_task_id is not None or self._disposed
+            ),
             parent=self,
         )
         self._reconciliation.start()
@@ -144,7 +188,7 @@ class DataManagerSuitePresenter(QObject):
 
     @property
     def active_task_id(self) -> str | None:
-        return self._active_task_id
+        return self._active_task_id or self._background_refresh_task_id
 
     @property
     def selected_market_id(self) -> MarketId | None:
@@ -155,10 +199,15 @@ class DataManagerSuitePresenter(QObject):
         return self._pending_focus
 
     def refresh(self) -> None:
-        if self._disposed or self._active_task_id is not None:
+        if self._disposed:
             return
         if self._supports_product_catalogs():
-            self._reconcile_then_catalog(force=True)
+            if self._initial_warmup_complete:
+                self._request_background_refresh(force=True)
+            else:
+                self._start_initial_warmup(force=True)
+            return
+        if self._active_task_id is not None:
             return
         self._refresh_legacy_catalog()
 
@@ -178,13 +227,16 @@ class DataManagerSuitePresenter(QObject):
 
     def _refresh_when_opened(self) -> None:
         if self._supports_product_catalogs():
-            self._reconcile_then_catalog(force=False)
+            if self._initial_warmup_complete:
+                self._request_background_refresh(force=False)
+            else:
+                self._start_initial_warmup(force=False)
         else:
             self._refresh_legacy_catalog()
 
     def _refresh_on_timer(self) -> None:
-        if self._supports_product_catalogs():
-            self._reconcile_then_catalog(force=False)
+        if self._supports_product_catalogs() and self._initial_warmup_complete:
+            self._request_background_refresh(force=False)
 
     def _supports_product_catalogs(self) -> bool:
         return (
@@ -193,9 +245,353 @@ class DataManagerSuitePresenter(QObject):
             and callable(getattr(self._service, "submit_scan_product_catalogs", None))
         )
 
-    def _reconcile_then_catalog(
-        self, *, force: bool, preserve_report: bool = False
+    def _request_background_refresh(self, *, force: bool) -> None:
+        if self._disposed:
+            return
+        if self._background_refresh_task_id is not None:
+            self._background_refresh_pending = True
+            self._background_refresh_pending_force |= force
+            return
+        self._start_background_reconciliation(force=force)
+
+    def _start_background_reconciliation(self, *, force: bool) -> None:
+        self._background_refresh_generation += 1
+        generation = self._background_refresh_generation
+        self._submit_background_task(
+            "reconcile",
+            generation,
+            lambda result: self._settle_background_reconciliation(
+                result, generation
+            ),
+            lambda result: self._service.submit_reconcile_status(
+                force=force,
+                progress_callback=lambda _progress: None,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+        )
+
+    def _settle_background_reconciliation(
+        self, result: TaskResult, generation: int
     ) -> None:
+        if not self._background_result_is_current(
+            result, generation, "reconcile"
+        ):
+            return
+        if result.status != "completed" or not isinstance(
+            result.value, DataManagerReconciliationSnapshot
+        ):
+            self._finish_background_refresh()
+            return
+        evidence_signature = result.value.evidence_signature
+        if (
+            self._product_catalogs is not None
+            and evidence_signature == self._background_evidence_signature
+        ):
+            self._finish_background_refresh()
+            return
+        self._start_background_product_scan(generation, evidence_signature)
+
+    def _start_background_product_scan(
+        self, generation: int, evidence_signature: str
+    ) -> None:
+        self._submit_background_task(
+            "product_scan",
+            generation,
+            lambda result: self._settle_background_product_scan(
+                result, generation, evidence_signature
+            ),
+            lambda result: self._service.submit_scan_product_catalogs(
+                progress_callback=lambda _progress: None,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+        )
+
+    def _settle_background_product_scan(
+        self,
+        result: TaskResult,
+        generation: int,
+        evidence_signature: str,
+    ) -> None:
+        if not self._background_result_is_current(
+            result, generation, "product_scan"
+        ):
+            return
+        if result.status != "completed" or not isinstance(
+            result.value, DataManagerProductCatalogSnapshot
+        ):
+            self._finish_background_refresh()
+            return
+        if (
+            result.value.latest_reconciliation.evidence_signature
+            != evidence_signature
+        ):
+            self._finish_background_refresh()
+            return
+        self._apply_or_defer_background_catalogs(result.value)
+
+    def _submit_background_task(
+        self,
+        stage: str,
+        generation: int,
+        settle: Callable[[TaskResult], None],
+        submit: Callable[[Callable[[TaskResult], None]], object],
+    ) -> None:
+        if self._disposed or generation != self._background_refresh_generation:
+            return
+        self._background_refresh_stage = stage
+        task_ref: list[str] = []
+        settled = [False]
+
+        def on_result(result: TaskResult) -> None:
+            settled[0] = True
+            if not task_ref:
+                self._background_refresh_task_id = result.task_id
+            settle(result)
+
+        try:
+            submission = submit(on_result)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            self._finish_background_refresh()
+            return
+        task_ref.append(submission.task_id)
+        if not settled[0]:
+            self._background_refresh_task_id = submission.task_id
+
+    def _background_result_is_current(
+        self, result: TaskResult, generation: int, stage: str
+    ) -> bool:
+        return (
+            not self._disposed
+            and generation == self._background_refresh_generation
+            and stage == self._background_refresh_stage
+            and result.task_id == self._background_refresh_task_id
+        )
+
+    def _apply_or_defer_background_catalogs(
+        self, snapshot: DataManagerProductCatalogSnapshot
+    ) -> None:
+        if self._active_task_id is not None:
+            self._background_deferred_catalogs = snapshot
+            self._finish_background_refresh()
+            return
+        old = self._product_catalogs
+        market = self._selected_market
+        old_slice = (
+            self._selected_market_product_slice(old, market)
+            if old is not None and market is not None
+            else None
+        )
+        new_slice = (
+            self._selected_market_product_slice(snapshot, market)
+            if market is not None
+            else None
+        )
+        self._product_catalogs = snapshot
+        self._catalog = snapshot.catalog
+        self._background_evidence_signature = (
+            snapshot.latest_reconciliation.evidence_signature
+        )
+        self._view.set_product_catalogs(snapshot)
+        self._revalidate_plan_contexts()
+        if (
+            market is None
+            or old_slice == new_slice
+            or snapshot.catalog.accepted_market(market) is None
+        ):
+            self._finish_background_refresh()
+            return
+        self._start_background_market_inspection(
+            self._background_refresh_generation, market
+        )
+
+    def _apply_deferred_background_catalogs(self) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or self._background_refresh_task_id is not None
+        ):
+            return
+        snapshot = self._background_deferred_catalogs
+        if snapshot is not None:
+            self._background_deferred_catalogs = None
+            self._apply_or_defer_background_catalogs(snapshot)
+            if self._background_refresh_task_id is not None:
+                return
+        market = self._background_selected_market_refresh_pending
+        if market is None:
+            return
+        if (
+            market != self._selected_market
+            or self._product_catalogs is None
+            or self._product_catalogs.catalog.accepted_market(market) is None
+        ):
+            self._background_selected_market_refresh_pending = None
+            return
+        self._background_selected_market_refresh_pending = None
+        self._start_background_market_inspection(
+            self._background_refresh_generation, market
+        )
+
+    @staticmethod
+    def _selected_market_product_slice(
+        snapshot: DataManagerProductCatalogSnapshot,
+        market: MarketId,
+    ) -> tuple:
+        return (
+            snapshot.catalog.accepted_market(market),
+            tuple(
+                item
+                for item in snapshot.managed_artifacts.artifacts
+                if item.market_id == market
+            ),
+            tuple(
+                item
+                for item in snapshot.artifact_collections
+                if item.market_id == market
+            ),
+        )
+
+    def _start_background_market_inspection(
+        self, generation: int, market: MarketId
+    ) -> None:
+        if self._background_selected_market_refresh_pending == market:
+            self._background_selected_market_refresh_pending = None
+        self._submit_background_task(
+            "market",
+            generation,
+            lambda result: self._settle_background_market_inspection(
+                result, generation, market
+            ),
+            lambda result: self._service.submit_inspect_market(
+                market,
+                progress_callback=lambda _progress: None,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+        )
+
+    def _settle_background_market_inspection(
+        self, result: TaskResult, generation: int, market: MarketId
+    ) -> None:
+        if not self._background_result_is_current(result, generation, "market"):
+            return
+        if self._active_task_id is not None:
+            if self._selected_market == market:
+                self._background_selected_market_refresh_pending = market
+            self._finish_background_refresh()
+            return
+        if (
+            result.status != "completed"
+            or not isinstance(result.value, DataManagerMarketSnapshot)
+            or result.value.market_id != market
+            or self._selected_market != market
+        ):
+            self._finish_background_refresh()
+            return
+        self._market_snapshot = result.value
+        self._view.set_market_snapshot(result.value)
+        direct = self._view.artifact_creation_dialog()
+        batch = self._view.construct_batch_dialog()
+        if not (
+            (direct is not None and direct.isVisible())
+            or (batch is not None and batch.isVisible())
+        ):
+            self._finish_background_refresh()
+            return
+        self._start_background_creation_catalog(generation, market)
+
+    def _start_background_creation_catalog(
+        self, generation: int, market: MarketId
+    ) -> None:
+        self._submit_background_task(
+            "creation_catalog",
+            generation,
+            lambda result: self._settle_background_creation_catalog(
+                result, generation, market
+            ),
+            lambda result: self._service.submit_build_direct_artifact_catalog(
+                market,
+                progress_callback=lambda _progress: None,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+        )
+
+    def _settle_background_creation_catalog(
+        self, result: TaskResult, generation: int, market: MarketId
+    ) -> None:
+        if not self._background_result_is_current(
+            result, generation, "creation_catalog"
+        ):
+            return
+        if self._active_task_id is not None:
+            if self._selected_market == market:
+                self._background_selected_market_refresh_pending = market
+            self._finish_background_refresh()
+            return
+        direct = self._view.artifact_creation_dialog()
+        batch = self._view.construct_batch_dialog()
+        direct_visible = direct is not None and direct.isVisible()
+        batch_visible = batch is not None and batch.isVisible()
+        if not direct_visible and not batch_visible:
+            self._finish_background_refresh()
+            return
+        if (
+            result.status != "completed"
+            or not isinstance(result.value, DataManagerDirectArtifactCatalog)
+            or result.value.market_id != market
+            or self._selected_market != market
+        ):
+            self._finish_background_refresh()
+            return
+        catalog = result.value
+        if direct_visible:
+            old_catalog = getattr(direct, "_catalog", None)
+            self._view.show_artifact_creation_dialog(
+                catalog,
+                preserve_configuration=(
+                    old_catalog is not None
+                    and old_catalog.source_ohlcv == catalog.source_ohlcv
+                ),
+            )
+        if batch_visible:
+            old_catalog = getattr(batch, "_catalog", None)
+            collections = ()
+            if self._product_catalogs is not None:
+                collections = tuple(
+                    (item.collection_id, item.display_name)
+                    for item in self._product_catalogs.artifact_collections
+                    if item.market_id == market
+                    and item.source_ohlcv == catalog.source_ohlcv
+                )
+            self._view.show_construct_batch_dialog(
+                catalog,
+                collections=collections,
+                preserve_configuration=(
+                    old_catalog is not None
+                    and old_catalog.source_ohlcv == catalog.source_ohlcv
+                ),
+            )
+            self._construct_batch_plan = None
+            self._pending_construct_batch_request = None
+        self._finish_background_refresh()
+
+    def _finish_background_refresh(self) -> None:
+        self._background_refresh_task_id = None
+        self._background_refresh_stage = None
+        if self._disposed:
+            return
+        if self._background_refresh_pending:
+            force = self._background_refresh_pending_force
+            self._background_refresh_pending = False
+            self._background_refresh_pending_force = False
+            self._start_background_reconciliation(force=force)
+            return
+        self._apply_deferred_background_catalogs()
+
+    def _start_initial_warmup(self, *, force: bool) -> None:
         if self._disposed or self._active_task_id is not None:
             return
         self._catalog_generation += 1
@@ -209,17 +605,17 @@ class DataManagerSuitePresenter(QObject):
                 result_callback=result,
                 callback_dispatcher=self._dispatcher.dispatch,
             ),
-            lambda result: self._settle_reconciliation(
-                result, generation, preserve_report
+            lambda result: self._settle_initial_reconciliation(
+                result, generation
             ),
-            preserve_report=preserve_report,
+            display_operation="Loading Data Manager",
         )
 
-    def _settle_reconciliation(
-        self, result: TaskResult, generation: int, preserve_report: bool
+    def _settle_initial_reconciliation(
+        self, result: TaskResult, generation: int
     ) -> None:
         if result.status != "completed":
-            self._report_failure("Reconciliation", result)
+            self._report_failure("Data Manager loading/reconciliation", result)
             return
         self._submit(
             "scan_product_catalogs",
@@ -229,9 +625,21 @@ class DataManagerSuitePresenter(QObject):
                 result_callback=callback,
                 callback_dispatcher=self._dispatcher.dispatch,
             ),
-            self._settle_product_catalogs,
-            preserve_report=preserve_report,
+            self._settle_initial_product_catalogs,
+            display_operation="Loading Data Manager",
         )
+
+    def _settle_initial_product_catalogs(self, result: TaskResult) -> None:
+        if result.status == "completed" and isinstance(
+            result.value, DataManagerProductCatalogSnapshot
+        ):
+            self._settle_product_catalogs(result)
+            self._initial_warmup_complete = True
+            self._background_evidence_signature = (
+                result.value.latest_reconciliation.evidence_signature
+            )
+            return
+        self._report_failure("Data Manager catalog loading", result)
 
     def _settle_product_catalogs(self, result: TaskResult) -> None:
         if result.status == "completed" and isinstance(
@@ -270,10 +678,20 @@ class DataManagerSuitePresenter(QObject):
         self._disposed = True
         self._reconciliation.stop()
         task_id = self._active_task_id
+        background_task_id = self._background_refresh_task_id
         self._active_task_id = None
         self._active_operation = None
+        self._background_refresh_task_id = None
+        self._background_refresh_stage = None
+        self._background_refresh_pending = False
+        self._background_refresh_pending_force = False
+        self._background_deferred_catalogs = None
+        self._background_selected_market_refresh_pending = None
+        self._background_refresh_generation += 1
         if task_id is not None:
             self._service.cancel(task_id)
+        if background_task_id is not None:
+            self._service.cancel(background_task_id)
         for dialog in tuple(self._preview_dialogs):
             dialog.close()
         self._preview_dialogs.clear()
@@ -295,12 +713,916 @@ class DataManagerSuitePresenter(QObject):
             self._on_catalog_history_selected
         )
         self._view.creation_cancel_requested.connect(self._cancel_active_operation)
+        self._view.create_artifact_requested.connect(
+            self._open_direct_artifact_creation
+        )
+        self._view.calculate_artifact_requested.connect(
+            self._calculate_direct_artifact
+        )
+        self._view.batch_constructs_requested.connect(
+            self._open_construct_batch
+        )
+        self._view.batch_construct_preview_requested.connect(
+            self._preview_construct_batch
+        )
+        self._view.batch_construct_execute_requested.connect(
+            self._execute_construct_batch
+        )
+        self._view.derive_recipes_requested.connect(
+            self._open_recipe_derivation
+        )
+        self._view.create_recipe_collection_requested.connect(
+            self._open_recipe_collection_create
+        )
+        self._view.edit_recipe_collection_requested.connect(
+            self._open_recipe_collection_edit
+        )
+        self._view.create_artifact_collection_requested.connect(
+            self._open_artifact_collection_create
+        )
+        self._view.edit_artifact_collection_requested.connect(
+            self._open_artifact_collection_edit
+        )
+        self._view.recipe_collection_preview_requested.connect(
+            self._preview_recipe_collection
+        )
+        self._view.recipe_collection_create_requested.connect(
+            self._create_recipe_collection
+        )
+        self._view.recipe_collection_update_requested.connect(
+            self._update_recipe_collection
+        )
+        self._view.artifact_collection_preview_requested.connect(
+            self._preview_artifact_collection
+        )
+        self._view.artifact_collection_create_requested.connect(
+            self._create_artifact_collection_from_selection
+        )
+        self._view.artifact_collection_edit_requested.connect(
+            self._edit_artifact_collection_from_selection
+        )
+        self._view.catalog_delete_recipe_requested.connect(
+            self._delete_catalog_recipe
+        )
+        self._view.catalog_delete_artifact_requested.connect(
+            self._delete_catalog_artifact
+        )
+        self._view.catalog_delete_recipe_collection_requested.connect(
+            self._delete_catalog_recipe_collection
+        )
+        self._view.catalog_delete_artifact_collection_requested.connect(
+            self._delete_catalog_artifact_collection
+        )
+        self._view.recipe_derivation_preview_requested.connect(
+            self._preview_recipe_derivation
+        )
+        self._view.recipe_derivation_create_requested.connect(
+            self._create_recipe_derivation
+        )
         self._view.closing.connect(self.dispose)
+
+    def _open_recipe_collection_create(self) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or not any(item.valid for item in snapshot.portable_recipes.recipes)
+        ):
+            return
+        self._view.show_recipe_collection_dialog(snapshot)
+
+    def _open_recipe_collection_edit(self, value: object) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or not isinstance(value, DataManagerRecipeCollectionEntry)
+            or not value.valid
+        ):
+            return
+        collection_id = value.collection_id
+        revision_id = value.revision_id
+        self._submit(
+            "inspect_recipe_collection_for_edit",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_inspect_recipe_collection(
+                collection_id,
+                revision_id,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_collection_edit_inspection(
+                result, collection_id, revision_id
+            ),
+        )
+
+    def _settle_recipe_collection_edit_inspection(
+        self,
+        result: TaskResult,
+        collection_id: str,
+        revision_id: str,
+    ) -> None:
+        snapshot = self._product_catalogs
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerRecipeCollectionInspection)
+            and result.value.collection.collection_id == collection_id
+            and result.value.collection.revision_id == revision_id
+            and result.value.collection.valid
+            and snapshot is not None
+        ):
+            self._view.show_recipe_collection_dialog(
+                snapshot, inspection=result.value
+            )
+            return
+        self._report_failure("Recipe Collection inspection", result)
+
+    def _preview_recipe_collection(self, root_recipe_ids: object) -> None:
+        dialog = self._view.recipe_collection_dialog()
+        roots = tuple(root_recipe_ids) if isinstance(root_recipe_ids, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or not roots
+            or roots != dialog.selected_root_recipe_ids()
+        ):
+            return
+        self._submit(
+            "plan_recipe_collection",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_plan_recipe_collection(
+                roots,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_collection_plan(
+                result, dialog, roots
+            ),
+        )
+
+    def _settle_recipe_collection_plan(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        expected_roots: tuple[str, ...],
+    ) -> None:
+        dialog = self._view.recipe_collection_dialog()
+        if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, PortableRecipeGraphPlan)
+            and result.value.root_recipe_ids == expected_roots
+            and dialog.set_plan(result.value)
+        ):
+            return
+        self._report_failure("Recipe Collection Preview", result)
+
+    def _create_recipe_collection(
+        self,
+        display_name: str,
+        description: str,
+        root_recipe_ids: object,
+    ) -> None:
+        dialog = self._view.recipe_collection_dialog()
+        roots = tuple(root_recipe_ids) if isinstance(root_recipe_ids, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.collection_id is not None
+            or not dialog.reviewed_plan_matches(roots)
+        ):
+            return
+        self._submit(
+            "create_recipe_collection_from_catalog",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_create_recipe_collection(
+                display_name,
+                description,
+                roots,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_collection_publish(
+                result, dialog
+            ),
+        )
+
+    def _update_recipe_collection(
+        self,
+        collection_id: str,
+        display_name: str,
+        description: str,
+        root_recipe_ids: object,
+        expected_revision_id: str,
+    ) -> None:
+        dialog = self._view.recipe_collection_dialog()
+        roots = tuple(root_recipe_ids) if isinstance(root_recipe_ids, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.collection_id != collection_id
+            or dialog.expected_revision_id != expected_revision_id
+            or not dialog.reviewed_plan_matches(roots)
+        ):
+            return
+        self._submit(
+            "update_recipe_collection_from_catalog",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_update_recipe_collection(
+                collection_id,
+                display_name,
+                description,
+                roots,
+                expected_revision_id=expected_revision_id,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_collection_publish(
+                result, dialog
+            ),
+        )
+
+    def _settle_recipe_collection_publish(
+        self, result: TaskResult, expected_dialog: object
+    ) -> None:
+        dialog = self._view.recipe_collection_dialog()
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerRecipeCollectionInspection)
+        ):
+            if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+                dialog.settle_success(result.value)
+            self._after_write_refresh()
+            return
+        if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+            self._report_failure("Recipe Collection publication", result)
+
+    def _open_artifact_collection_create(self) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or not any(item.valid for item in snapshot.managed_artifacts.artifacts)
+        ):
+            return
+        self._view.show_artifact_collection_dialog(snapshot)
+
+    def _open_artifact_collection_edit(self, value: object) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or not isinstance(value, ArtifactCollectionRevisionV1)
+            or value.validation_state != "valid"
+        ):
+            return
+        self._view.show_artifact_collection_dialog(snapshot, revision=value)
+
+    def _preview_artifact_collection(
+        self, market_id: object, root_logical_artifact_ids: object
+    ) -> None:
+        dialog = self._view.artifact_collection_dialog()
+        roots = (
+            tuple(root_logical_artifact_ids)
+            if isinstance(root_logical_artifact_ids, tuple)
+            else ()
+        )
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or not isinstance(market_id, MarketId)
+            or market_id != dialog.selection_market_id
+            or roots != dialog.selected_root_logical_artifact_ids()
+        ):
+            return
+        self._submit(
+            "plan_artifact_collection_selection",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_plan_artifact_collection_selection(
+                market_id,
+                roots,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_artifact_collection_plan(
+                result, dialog, market_id, roots
+            ),
+        )
+
+    def _settle_artifact_collection_plan(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        expected_market: MarketId,
+        expected_roots: tuple[str, ...],
+    ) -> None:
+        dialog = self._view.artifact_collection_dialog()
+        if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, ArtifactCollectionSelectionPlan)
+            and result.value.market_id == expected_market
+            and result.value.root_logical_artifact_ids == expected_roots
+            and dialog.set_plan(result.value)
+        ):
+            return
+        self._report_failure("Artifact Collection Preview", result)
+
+    def _create_artifact_collection_from_selection(
+        self,
+        plan: object,
+        display_name: str,
+        description: str,
+        selected_outputs: object,
+    ) -> None:
+        dialog = self._view.artifact_collection_dialog()
+        outputs = tuple(selected_outputs) if isinstance(selected_outputs, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.collection_id is not None
+            or not isinstance(plan, ArtifactCollectionSelectionPlan)
+            or not dialog.reviewed_plan_matches(plan)
+            or outputs != dialog.selected_outputs()
+        ):
+            return
+        self._submit(
+            "create_artifact_collection_from_selection",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_create_artifact_collection_from_selection(
+                plan,
+                display_name,
+                description=description,
+                selected_outputs=outputs,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_artifact_collection_publish(
+                result, dialog
+            ),
+        )
+
+    def _edit_artifact_collection_from_selection(
+        self,
+        collection_id: str,
+        plan: object,
+        display_name: str,
+        description: str,
+        selected_outputs: object,
+        presentation_order: object,
+        expected_revision_id: str,
+    ) -> None:
+        dialog = self._view.artifact_collection_dialog()
+        outputs = tuple(selected_outputs) if isinstance(selected_outputs, tuple) else ()
+        order = tuple(presentation_order) if isinstance(presentation_order, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.collection_id != collection_id
+            or dialog.expected_revision_id != expected_revision_id
+            or not isinstance(plan, ArtifactCollectionSelectionPlan)
+            or not dialog.reviewed_plan_matches(plan)
+            or outputs != dialog.selected_outputs()
+            or order != dialog.presentation_order()
+        ):
+            return
+        self._submit(
+            "edit_artifact_collection_from_selection",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_edit_artifact_collection_from_selection(
+                collection_id,
+                plan,
+                display_name=display_name,
+                description=description,
+                selected_outputs=outputs,
+                presentation_order=order,
+                expected_revision_id=expected_revision_id,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_artifact_collection_publish(
+                result, dialog
+            ),
+        )
+
+    def _settle_artifact_collection_publish(
+        self, result: TaskResult, expected_dialog: object
+    ) -> None:
+        dialog = self._view.artifact_collection_dialog()
+        if (
+            result.status == "completed"
+            and isinstance(result.value, ArtifactCollectionRevisionV1)
+        ):
+            if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+                dialog.settle_success(result.value)
+            self._after_write_refresh()
+            return
+        if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+            self._report_failure("Artifact Collection publication", result)
+
+    def _open_recipe_derivation(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerStudyEnvironmentEntry)
+            or not value.valid
+        ):
+            return
+        self._catalog_derivation_plan = None
+        environment_id = value.environment_id
+        generation = self._catalog_generation
+        self._submit(
+            "inspect_recipe_derivation_environment",
+            generation,
+            lambda progress, result: self._service.submit_inspect_study_environment(
+                environment_id,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=environment_id: self._settle_recipe_derivation_environment(
+                result, expected
+            ),
+        )
+
+    def _settle_recipe_derivation_environment(
+        self, result: TaskResult, expected_environment_id: str
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerStudyEnvironmentInspection)
+            and result.value.environment.environment_id == expected_environment_id
+            and result.value.environment.valid
+        ):
+            self._view.show_recipe_derivation_dialog(result.value)
+            return
+        self._report_failure("Recipe derivation Environment inspection", result)
+
+    def _preview_recipe_derivation(
+        self, environment_id: str, root_entry_ids: object
+    ) -> None:
+        dialog = self._view.recipe_derivation_dialog()
+        roots = tuple(root_entry_ids) if isinstance(root_entry_ids, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.environment_id != environment_id
+            or not roots
+            or roots != dialog.selected_root_entry_ids()
+        ):
+            return
+        self._catalog_derivation_plan = None
+        generation = self._catalog_generation
+        self._submit(
+            "plan_recipe_derivation",
+            generation,
+            lambda progress, result: self._service.submit_plan_recipe_derivation(
+                environment_id,
+                roots,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected_dialog=dialog, expected_environment=environment_id, expected_roots=roots: self._settle_catalog_recipe_derivation(
+                result,
+                expected_dialog,
+                expected_environment,
+                expected_roots,
+            ),
+        )
+
+    def _settle_catalog_recipe_derivation(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        expected_environment_id: str,
+        expected_root_entry_ids: tuple[str, ...],
+    ) -> None:
+        dialog = self._view.recipe_derivation_dialog()
+        if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerRecipeDerivationPlan)
+            and result.value.environment_id == expected_environment_id
+            and result.value.root_entry_ids == expected_root_entry_ids
+            and dialog.set_plan(result.value)
+        ):
+            self._catalog_derivation_plan = result.value
+            return
+        self._catalog_derivation_plan = None
+        self._report_failure("Recipe derivation Preview", result)
+
+    def _create_recipe_derivation(
+        self,
+        environment_id: str,
+        root_entry_ids: object,
+        create_collection: bool,
+        collection_name: str,
+        collection_description: str,
+    ) -> None:
+        dialog = self._view.recipe_derivation_dialog()
+        roots = tuple(root_entry_ids) if isinstance(root_entry_ids, tuple) else ()
+        plan = self._catalog_derivation_plan
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.environment_id != environment_id
+            or roots != dialog.selected_root_entry_ids()
+            or plan is None
+            or plan.blocked
+            or plan.environment_id != environment_id
+            or plan.root_entry_ids != roots
+        ):
+            return
+        generation = self._catalog_generation
+        self._submit(
+            "persist_recipe_derivation",
+            generation,
+            lambda progress, result: self._service.submit_persist_recipe_derivation(
+                environment_id,
+                roots,
+                create_collection=create_collection,
+                collection_display_name=collection_name,
+                collection_description=collection_description,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected_dialog=dialog, expected_environment=environment_id: self._settle_catalog_recipe_persistence(
+                result, expected_dialog, expected_environment
+            ),
+        )
+
+    def _settle_catalog_recipe_persistence(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        expected_environment_id: str,
+    ) -> None:
+        dialog = self._view.recipe_derivation_dialog()
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerRecipePersistenceResult)
+            and result.value.environment_id == expected_environment_id
+        ):
+            self._catalog_derivation_plan = None
+            if (
+                dialog is expected_dialog
+                and dialog is not None
+                and dialog.isVisible()
+            ):
+                dialog.settle_success(result.value)
+            self._after_write_refresh()
+            return
+        if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
+            return
+        self._report_failure("Recipe derivation persistence", result)
+
+    def _open_direct_artifact_creation(self) -> None:
+        market = self._selected_market
+        if self._disposed or self._active_task_id is not None or market is None:
+            return
+        self._submit_direct_artifact_catalog(
+            market, preserve_configuration=False, preserve_report=False
+        )
+
+    def _submit_direct_artifact_catalog(
+        self,
+        market: MarketId,
+        *,
+        preserve_configuration: bool,
+        preserve_report: bool,
+    ) -> None:
+        generation = self._market_generation
+        self._submit(
+            "build_direct_artifact_catalog",
+            generation,
+            lambda progress, result: self._service.submit_build_direct_artifact_catalog(
+                market,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=market: self._settle_direct_artifact_catalog(
+                result,
+                expected_market=expected,
+                preserve_configuration=preserve_configuration,
+            ),
+            preserve_report=preserve_report,
+        )
+
+    def _settle_direct_artifact_catalog(
+        self,
+        result: TaskResult,
+        *,
+        expected_market: MarketId,
+        preserve_configuration: bool,
+    ) -> None:
+        if self._settle_market_unavailable(result, expected_market):
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerDirectArtifactCatalog)
+            and result.value.market_id == self._selected_market
+        ):
+            if preserve_configuration:
+                dialog = self._view.artifact_creation_dialog()
+                if dialog is not None and dialog.isVisible():
+                    self._view.show_artifact_creation_dialog(
+                        result.value,
+                        preserve_configuration=True,
+                    )
+                self._after_write_refresh()
+            else:
+                self._view.show_artifact_creation_dialog(
+                    result.value,
+                    preserve_configuration=False,
+                )
+            return
+        self._report_failure("Direct Artifact source catalog", result)
+
+    def _calculate_direct_artifact(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerDirectArtifactRequest)
+            or value.market_id != self._selected_market
+        ):
+            return
+        generation = self._market_generation
+        self._submit(
+            "create_direct_artifact",
+            generation,
+            lambda progress, result: self._service.submit_create_direct_artifact(
+                value,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=value.market_id: self._settle_direct_artifact(
+                result, expected
+            ),
+        )
+
+    def _settle_direct_artifact(
+        self, result: TaskResult, expected_market: MarketId
+    ) -> None:
+        if self._settle_market_unavailable(result, expected_market):
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerDirectArtifactResult)
+            and result.value.materialization.target_market_id
+            == self._selected_market
+        ):
+            dialog = self._view.artifact_creation_dialog()
+            if dialog is not None:
+                dialog.settle_success(result.value)
+            self._submit_direct_artifact_catalog(
+                expected_market,
+                preserve_configuration=True,
+                preserve_report=True,
+            )
+            return
+        self._report_failure("Direct Artifact creation", result)
 
     def _cancel_active_operation(self) -> None:
         task_id = self._active_task_id
         if task_id is not None and self._service.cancel(task_id):
             self._view.set_status("Cancellation requested")
+
+    def _open_construct_batch(self) -> None:
+        market = self._selected_market
+        if self._disposed or self._active_task_id is not None or market is None:
+            return
+        self._submit_construct_batch_catalog(market)
+
+    def _submit_construct_batch_catalog(
+        self,
+        market: MarketId,
+        *,
+        expected_dialog: object | None = None,
+    ) -> None:
+        generation = self._market_generation
+        self._submit(
+            "build_construct_batch_catalog",
+            generation,
+            lambda progress, result: self._service.submit_build_direct_artifact_catalog(
+                market,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=market, dialog=expected_dialog: self._settle_construct_batch_catalog(
+                result, expected, expected_dialog=dialog
+            ),
+        )
+
+    def _settle_construct_batch_catalog(
+        self,
+        result: TaskResult,
+        expected_market: MarketId,
+        *,
+        expected_dialog: object | None = None,
+    ) -> None:
+        if self._settle_market_unavailable(result, expected_market):
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerDirectArtifactCatalog)
+            and result.value.market_id == self._selected_market
+        ):
+            direct_dialog = self._view.artifact_creation_dialog()
+            if (
+                direct_dialog is not None
+                and direct_dialog.isVisible()
+                and direct_dialog.market_id != result.value.market_id
+            ):
+                self._view.show_artifact_creation_dialog(
+                    result.value,
+                    preserve_configuration=False,
+                )
+            if expected_dialog is not None:
+                current_dialog = self._view.construct_batch_dialog()
+                if (
+                    current_dialog is not expected_dialog
+                    or not current_dialog.isVisible()
+                ):
+                    return
+            collections = ()
+            if self._product_catalogs is not None:
+                collections = tuple(
+                    (item.collection_id, item.display_name)
+                    for item in self._product_catalogs.artifact_collections
+                    if item.market_id == expected_market
+                    and item.source_ohlcv == result.value.source_ohlcv
+                )
+            self._view.show_construct_batch_dialog(
+                result.value,
+                collections=collections,
+                preserve_configuration=False,
+            )
+            self._construct_batch_plan = None
+            self._pending_construct_batch_request = None
+            return
+        self._report_failure("Construct Batch source catalog", result)
+
+    def _preview_construct_batch(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, ConstructBatchExpansionRequest)
+            or value.catalog.market_id != self._selected_market
+        ):
+            return
+        try:
+            request = expand_construct_batch(value)
+        except (TypeError, ValueError) as exc:
+            self._view.set_status(f"Construct Batch Preview failed: {exc}")
+            return
+        self._pending_construct_batch_request = request
+        self._construct_batch_plan = None
+        generation = self._market_generation
+        self._submit(
+            "plan_construct_batch",
+            generation,
+            lambda progress, result: self._service.submit_plan_batch_artifacts(
+                request,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=request: self._settle_construct_batch_plan(
+                result, expected
+            ),
+        )
+
+    def _settle_construct_batch_plan(
+        self, result: TaskResult, expected_request: BatchArtifactRequest
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, BatchArtifactPlan)
+            and result.value.request == expected_request
+            and expected_request == self._pending_construct_batch_request
+            and expected_request.market_id == self._selected_market
+            and result.value.blocked
+        ):
+            reasons = tuple(
+                dict.fromkeys(
+                    (
+                        *result.value.naming_collisions,
+                        *result.value.unsupported_combinations,
+                        *result.value.blockers,
+                    )
+                )
+            )
+            self._construct_batch_plan = None
+            self._pending_construct_batch_request = None
+            self._view.set_status("Construct Batch planning failed")
+            self._view.append_status("; ".join(reasons))
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, BatchArtifactPlan)
+            and result.value.request == expected_request
+            and expected_request == self._pending_construct_batch_request
+            and expected_request.market_id == self._selected_market
+            and not result.value.blocked
+        ):
+            self._construct_batch_plan = result.value
+            dialog = self._view.construct_batch_dialog()
+            if dialog is not None and dialog.isVisible():
+                dialog.set_plan(result.value)
+            return
+        self._construct_batch_plan = None
+        self._pending_construct_batch_request = None
+        self._report_failure("Construct Batch planning", result)
+
+    def _execute_construct_batch(self) -> None:
+        plan = self._construct_batch_plan
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or plan is None
+            or plan.request.market_id != self._selected_market
+        ):
+            return
+        generation = self._market_generation
+        self._submit(
+            "execute_construct_batch",
+            generation,
+            lambda progress, result: self._service.submit_execute_batch_artifacts(
+                plan,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=plan: self._settle_construct_batch_execution(
+                result, expected
+            ),
+        )
+
+    def _settle_construct_batch_execution(
+        self, result: TaskResult, expected_plan: BatchArtifactPlan
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, tuple)
+            and len(result.value) == 2
+            and expected_plan is self._construct_batch_plan
+            and expected_plan.request.market_id == self._selected_market
+        ):
+            total_branches = len(expected_plan.request.branches)
+            reused_branches = sum(expected_plan.branch_reuse_current)
+            new_branches = total_branches - reused_branches
+            self._construct_batch_plan = None
+            self._pending_construct_batch_request = None
+            dialog = self._view.construct_batch_dialog()
+            if dialog is not None and dialog.isVisible():
+                dialog.settle_success(
+                    total_branches=total_branches,
+                    new_branches=new_branches,
+                    reused_branches=reused_branches,
+                )
+            self._view.set_status("Construct Batch execution complete")
+            self._after_write_refresh()
+            return
+        dialog = self._view.construct_batch_dialog()
+        if dialog is not None and dialog.isVisible():
+            message = result.error_message or result.error_type or result.status
+            dialog.settle_failure(result.status, str(message))
+        self._report_failure("Construct Batch execution", result)
 
     def _on_catalog_history_selected(
         self, family: str, logical_identity: str, value: object
@@ -310,6 +1632,146 @@ class DataManagerSuitePresenter(QObject):
         if not family or not logical_identity:
             return
         self._view.set_historical_catalog_inspection(value)
+
+    def _delete_catalog_recipe(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerPortableRecipeEntry)
+            or not value.valid
+        ):
+            return
+        expected = value.recipe_id
+        self._submit(
+            "delete_portable_recipe",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_delete_portable_recipe(
+                expected,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_catalog_recipe_deletion(result, expected),
+        )
+
+    def _delete_catalog_recipe_collection(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerRecipeCollectionEntry)
+            or not value.valid
+        ):
+            return
+        expected = value.collection_id
+        self._submit(
+            "delete_recipe_collection",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_delete_recipe_collection(
+                expected,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_catalog_recipe_collection_deletion(
+                result, expected
+            ),
+        )
+
+    def _delete_catalog_artifact(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerManagedArtifactEntry)
+            or not value.valid
+        ):
+            return
+        expected = (value.market_id, value.logical_artifact_id)
+        self._submit(
+            "delete_managed_artifact",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_delete_managed_artifact(
+                *expected,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_catalog_artifact_deletion(result, expected),
+        )
+
+    def _delete_catalog_artifact_collection(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, ArtifactCollectionRevisionV1)
+            or value.validation_state != "valid"
+        ):
+            return
+        expected = value.collection_id
+        self._submit(
+            "delete_artifact_collection",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_delete_artifact_collection(
+                expected,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_catalog_artifact_collection_deletion(
+                result, expected
+            ),
+        )
+
+    def _settle_catalog_recipe_deletion(
+        self, result: TaskResult, expected_recipe_id: str
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, PortableRecipeV1)
+            and result.value.recipe_id == expected_recipe_id
+        ):
+            self._view.set_status("Recipe deletion completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Recipe deletion", result)
+
+    def _settle_catalog_recipe_collection_deletion(
+        self, result: TaskResult, expected_collection_id: str
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, PortableRecipeCollectionRevisionV1)
+            and result.value.collection_id == expected_collection_id
+        ):
+            self._view.set_status("Recipe Collection deletion completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Recipe Collection deletion", result)
+
+    def _settle_catalog_artifact_deletion(
+        self, result: TaskResult, expected: tuple[MarketId, str]
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, ManagedArtifactSummary)
+            and (result.value.market_id, result.value.logical_artifact_id) == expected
+        ):
+            self._view.set_status("Artifact deletion completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Artifact deletion", result)
+
+    def _settle_catalog_artifact_collection_deletion(
+        self, result: TaskResult, expected_collection_id: str
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, ArtifactCollectionRevisionV1)
+            and result.value.collection_id == expected_collection_id
+        ):
+            self._view.set_status("Artifact Collection deletion completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Artifact Collection deletion", result)
 
     def _on_catalog_row_selected(self, family: str, value: object) -> None:
         if self._disposed or self._active_task_id is not None or value is None:
@@ -327,7 +1789,7 @@ class DataManagerSuitePresenter(QObject):
                 ),
                 self._settle_catalog_inspection,
             )
-        elif family == "Portable Recipes":
+        elif family == "Recipes":
             self._submit(
                 "inspect_portable_recipe",
                 generation,
@@ -351,7 +1813,7 @@ class DataManagerSuitePresenter(QObject):
                 ),
                 self._settle_revision_history,
             )
-        elif family == "Managed Artifacts":
+        elif family == "Artifacts":
             self._submit(
                 "inspect_managed_artifact",
                 generation,
@@ -417,7 +1879,7 @@ class DataManagerSuitePresenter(QObject):
                 versions,
             )
             return
-        self._report_failure("Managed Artifact history", result)
+        self._report_failure("Artifact history", result)
 
     def _on_update_action(self, action: str, payload: object) -> None:
         if self._disposed or self._active_task_id is not None or not isinstance(payload, dict):
@@ -441,7 +1903,7 @@ class DataManagerSuitePresenter(QObject):
                     )
             return
         if action == "refresh_reconciliation":
-            self._reconcile_then_catalog(force=True)
+            self._request_background_refresh(force=True)
             return
         if action == "plan_artifact_update":
             collection_id = str(payload.get("collection_id") or "")
@@ -575,7 +2037,7 @@ class DataManagerSuitePresenter(QObject):
             self._artifact_update_plan = None
             self._view.clear_update_artifact_plan()
             self._view.set_status("Update publication completed; refreshing reconciliation")
-            self._reconcile_then_catalog(force=False, preserve_report=True)
+            self._request_background_refresh(force=False)
             return
         if result.status == "completed" and isinstance(
             result.value, DatabaseUpdateResult
@@ -584,7 +2046,7 @@ class DataManagerSuitePresenter(QObject):
             self._database_update_plan = None
             self._view.clear_update_database_plan()
             self._view.set_status("Update publication completed; refreshing reconciliation")
-            self._reconcile_then_catalog(force=False, preserve_report=True)
+            self._request_background_refresh(force=False)
             return
         self._report_failure("Update publication", result)
 
@@ -968,18 +2430,55 @@ class DataManagerSuitePresenter(QObject):
             )
             return None
         try:
-            branches = tuple(
-                BatchArtifactBranchRequest(
-                    source_logical_artifact_id=str(
-                        value.get("source_logical_artifact_id") or ""
-                    ),
-                    source_output=str(value.get("source_output") or ""),
-                    tool_key=str(value.get("tool_key") or ""),
-                    parameters=value.get("parameters"),
-                    requested_outputs=tuple(value.get("requested_outputs") or ()),
+            managed = {
+                item.logical_artifact_id: item
+                for item in materialization.managed_artifacts
+            }
+            branches = []
+            for value in branch_values:
+                logical_id = str(value.get("source_logical_artifact_id") or "")
+                entry = managed.get(logical_id)
+                if entry is None:
+                    raise ValueError("staged batch source is unavailable")
+                tool_key = str(value.get("tool_key") or "")
+                parameters = dict(value.get("parameters") or {})
+                first_output = str(value.get("source_output") or "")
+                if tool_key in {"derivative", "angle"}:
+                    roles = (("source", first_output),)
+                elif tool_key in {"percent_span_angle", "angle_momentum"}:
+                    roles = (("source_1", first_output),)
+                elif tool_key == "delta":
+                    roles = (
+                        ("fast", first_output),
+                        ("slow", str(parameters.pop("slow_output", ""))),
+                    )
+                elif tool_key == "trap_area":
+                    mid = parameters.pop("mid_output", None)
+                    roles = [("fast", first_output)]
+                    if mid is not None:
+                        roles.append(("mid", str(mid)))
+                    roles.append(("slow", str(parameters.pop("slow_output", ""))))
+                    roles = tuple(roles)
+                else:
+                    raise ValueError("staged batch Construct is unsupported")
+                branches.append(
+                    BatchArtifactBranchRequest(
+                        tool_key=tool_key,
+                        parameters=parameters,
+                        sources=tuple(
+                            DataManagerDirectArtifactSource(
+                                role,
+                                logical_id,
+                                entry.artifact_id,
+                                output,
+                            )
+                            for role, output in roles
+                        ),
+                        requested_outputs=tuple(
+                            value.get("requested_outputs") or ()
+                        ),
+                    )
                 )
-                for value in branch_values
-            )
             destination_value = str(
                 payload.get("batch_destination") or "individual"
             )
@@ -994,10 +2493,11 @@ class DataManagerSuitePresenter(QObject):
                 else None
             )
             request = BatchArtifactRequest(
-                materialization.target_market_id,
-                branches,
-                destination,
-                collection_id,
+                market_id=materialization.target_market_id,
+                expected_source_ohlcv=materialization.source_ohlcv,
+                branches=tuple(branches),
+                destination=destination,
+                collection_id=collection_id,
             )
         except (TypeError, ValueError) as error:
             self._view.set_creation_summary(f"Invalid batch branch: {error}")
@@ -1058,6 +2558,8 @@ class DataManagerSuitePresenter(QObject):
         self._batch_plan_context = None
         self._pending_batch_plan_context = None
         self._batch_materialization = None
+        self._construct_batch_plan = None
+        self._pending_construct_batch_request = None
         self._database_readiness = None
         self._readiness_context = None
         self._pending_readiness_context = None
@@ -1087,7 +2589,7 @@ class DataManagerSuitePresenter(QObject):
             settle = self._settle_seed_deletion
         self._submit(
             action,
-            self._catalog_generation,
+            self._market_generation,
             lambda progress, result: submit(
                 seed_id,
                 progress_callback=progress,
@@ -1103,7 +2605,7 @@ class DataManagerSuitePresenter(QObject):
             self._view.set_creation_summary("Select an Artifact Collection explicitly.")
             return
         revision_id = str(payload.get("collection_revision_id") or "") or None
-        generation = self._catalog_generation
+        generation = self._market_generation
         if action == "load_collection":
             submit = lambda progress, result: self._service.submit_load_artifact_collection(
                 collection_id,
@@ -1310,7 +2812,7 @@ class DataManagerSuitePresenter(QObject):
             )
         self._submit(
             action,
-            self._catalog_generation,
+            self._market_generation,
             submit,
             self._settle_recipe_collection_write,
         )
@@ -1321,12 +2823,12 @@ class DataManagerSuitePresenter(QObject):
         ):
             self._view.set_creation_environment_rows(tuple(
                 (
-                    item.entry_id,
                     item.tool_key,
                     item.mode,
                     item.status,
                     ", ".join(item.dependency_entry_ids),
                     item.reason,
+                    item.entry_id,
                 )
                 for item in result.value.entries
             ))
@@ -1343,12 +2845,12 @@ class DataManagerSuitePresenter(QObject):
             self._derivation_plan = result.value
             self._view.set_creation_recipe_rows(tuple(
                 (
-                    item.recipe_id,
                     item.tool_key,
                     item.kind,
                     ", ".join(item.output_names),
                     str(len(item.dependencies)),
                     "blocked" if result.value.blocked else "planned",
+                    item.recipe_id,
                 )
                 for item in result.value.recipes
             ))
@@ -1390,7 +2892,8 @@ class DataManagerSuitePresenter(QObject):
 
     def _after_write_refresh(self) -> None:
         if self._supports_product_catalogs():
-            self._reconcile_then_catalog(force=False, preserve_report=True)
+            self._background_evidence_signature = None
+            self._request_background_refresh(force=False)
         else:
             self._scan_creation_foundations()
 
@@ -1548,12 +3051,12 @@ class DataManagerSuitePresenter(QObject):
             self._view.set_creation_base_plan_ready(not result.value.blocked)
             self._view.set_creation_plan_rows(tuple(
                 (
-                    item.portable_recipe_id,
-                    item.logical_artifact_id,
                     item.tool_key,
                     item.role,
                     item.status,
                     " | ".join(item.blockers),
+                    item.portable_recipe_id,
+                    item.logical_artifact_id,
                 )
                 for item in result.value.nodes
             ))
@@ -1591,8 +3094,10 @@ class DataManagerSuitePresenter(QObject):
             self._batch_plan_context = context
             self._view.set_creation_batch_plan_ready(not result.value.blocked)
             self._view.set_creation_summary(
-                f"Batch plan: {len(result.value.new_recipe_ids)} new Recipe(s), "
-                f"{len(result.value.reusable_recipe_ids)} reusable, blockers={len(result.value.blockers)}"
+                f"Batch plan: {len(result.value.new_logical_artifact_ids)} "
+                "create/update Artifact(s), "
+                f"{len(result.value.reusable_logical_artifact_ids)} reusable, "
+                f"blockers={len(result.value.blockers)}"
             )
             return
         self._pending_batch_plan_context = None
@@ -1686,7 +3191,8 @@ class DataManagerSuitePresenter(QObject):
                 ("Ready", "yes" if result.value.ready else "no", " | ".join(result.value.blockers)),
                 ("Rows", str(result.value.row_count), f"Warm-up excluded: {result.value.warmup_excluded_rows}"),
                 ("Columns", str(result.value.column_count), ", ".join(result.value.column_names)),
-                ("Coverage", str(result.value.first_usable_timestamp_ms or ""), str(result.value.last_usable_timestamp_ms or "")),
+                ("First TS", format_utc_timestamp_ms(result.value.first_usable_timestamp_ms), ""),
+                ("Last TS", format_utc_timestamp_ms(result.value.last_usable_timestamp_ms), ""),
             ))
             self._view.set_creation_summary(
                 f"Database ready={result.value.ready}; rows={result.value.row_count}; "
@@ -1705,7 +3211,10 @@ class DataManagerSuitePresenter(QObject):
                 f"Database revision published: {result.value.database_id} / {result.value.revision_id}"
             )
             self._view.set_creation_build_report(tuple(
-                (name, str(getattr(result.value, name)))
+                (
+                    name,
+                    format_data_manager_value(name, getattr(result.value, name)),
+                )
                 for name in (
                     "database_id",
                     "revision_id",
@@ -1733,6 +3242,7 @@ class DataManagerSuitePresenter(QObject):
             self._selected_recipe = None
             self._market_snapshot = None
             self._selected_market = None
+            self._background_selected_market_refresh_pending = None
             return
         if market_id != self._selected_market:
             self._invalidate_creation_context(
@@ -1742,6 +3252,7 @@ class DataManagerSuitePresenter(QObject):
 
     def _begin_market_inspection(self, market_id: MarketId) -> None:
         if market_id != self._selected_market:
+            self._background_selected_market_refresh_pending = None
             self._invalidate_creation_context(
                 "Creation plans were cleared because Target OHLCV changed"
             )
@@ -1885,11 +3396,15 @@ class DataManagerSuitePresenter(QObject):
         settle,
         *,
         preserve_report: bool = False,
+        display_operation: str | None = None,
     ) -> None:
         if self._active_task_id is not None or self._disposed:
             return
         self._active_operation = operation
-        self._view.set_busy(True, operation, preserve_operation=preserve_report)
+        operation_label = display_operation or operation
+        self._view.set_busy(
+            True, operation_label, preserve_operation=preserve_report
+        )
         task_ref: list[str] = []
         settled = [False]
 
@@ -1905,23 +3420,41 @@ class DataManagerSuitePresenter(QObject):
         def on_result(result: TaskResult) -> None:
             settled[0] = True
             task_id = task_ref[0] if task_ref else result.task_id
-            if self._disposed or task_id != self._active_task_id:
+            if (
+                self._disposed
+                or result.task_id != task_id
+                or task_id != self._active_task_id
+            ):
                 return
             if operation in {
                 "scan_catalog",
                 "reconcile_status",
                 "scan_product_catalogs",
                 "inspect_study_environment",
+                "inspect_recipe_derivation_environment",
                 "inspect_portable_recipe",
                 "inspect_recipe_collection",
                 "inspect_managed_artifact",
                 "inspect_artifact_collection",
                 "inspect_database",
+                "plan_recipe_derivation",
+                "persist_recipe_derivation",
                 "plan_artifact_update",
                 "execute_artifact_update",
                 "plan_database_update",
                 "execute_database_append",
                 "execute_database_rebuild",
+                "delete_portable_recipe",
+                "delete_recipe_collection",
+                "delete_managed_artifact",
+                "delete_artifact_collection",
+                "inspect_recipe_collection_for_edit",
+                "plan_recipe_collection",
+                "create_recipe_collection_from_catalog",
+                "update_recipe_collection_from_catalog",
+                "plan_artifact_collection_selection",
+                "create_artifact_collection_from_selection",
+                "edit_artifact_collection_from_selection",
             }:
                 current = generation == self._catalog_generation
             else:
@@ -1939,6 +3472,7 @@ class DataManagerSuitePresenter(QObject):
                 )
             if current:
                 settle(result)
+            self._apply_deferred_background_catalogs()
             self._apply_pending_focus()
 
         try:
@@ -1946,11 +3480,12 @@ class DataManagerSuitePresenter(QObject):
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             self._active_operation = None
             self._view.set_busy(False)
-            self._view.set_status(f"{operation} submission failed")
+            self._view.set_status(f"{operation_label} submission failed")
             self._view.append_status(f"{type(error).__name__}: {error}")
             self._view.settle_operation(
                 "failed", f"{type(error).__name__}: {error}"
             )
+            self._apply_deferred_background_catalogs()
             self._apply_pending_focus()
             return
         task_ref.append(submission.task_id)
@@ -1993,6 +3528,28 @@ class DataManagerSuitePresenter(QObject):
             self._market_snapshot = result.value
             self._view.set_market_snapshot(result.value)
             self._view.set_status("Market inspection ready")
+            batch_dialog = self._view.construct_batch_dialog()
+            if (
+                batch_dialog is not None
+                and batch_dialog.isVisible()
+                and batch_dialog.market_id != result.value.market_id
+            ):
+                self._submit_construct_batch_catalog(
+                    result.value.market_id,
+                    expected_dialog=batch_dialog,
+                )
+                return
+            dialog = self._view.artifact_creation_dialog()
+            if (
+                dialog is not None
+                and dialog.isVisible()
+                and dialog.market_id != result.value.market_id
+            ):
+                self._submit_direct_artifact_catalog(
+                    result.value.market_id,
+                    preserve_configuration=False,
+                    preserve_report=False,
+                )
             return
         self._report_failure("Market inspection", result)
 
@@ -2058,19 +3615,14 @@ class DataManagerSuitePresenter(QObject):
             or _deletion_identity(deletion) != expected
         ):
             return
-        market, kind, tool_key, object_id = expected
-        if market != self._selected_market or self._market_snapshot is None:
+        market, _kind, _tool_key, _object_id = expected
+        if market != self._selected_market:
             return
         if deletion.object_kind == "artifact":
             selected = self._selected_artifact
             if selected is None or _artifact_identity(selected) != expected:
                 return
-            artifacts = tuple(
-                item
-                for item in self._market_snapshot.artifacts
-                if _artifact_identity(item) != expected
-            )
-            recipes = self._market_snapshot.recipes
+            self._selected_artifact = None
         else:
             selected = self._selected_recipe
             if selected is None or (
@@ -2080,62 +3632,9 @@ class DataManagerSuitePresenter(QObject):
                 selected.recipe_id,
             ) != expected:
                 return
-            artifacts = self._market_snapshot.artifacts
-            recipes = tuple(
-                item
-                for item in self._market_snapshot.recipes
-                if (
-                    item.market_id,
-                    item.kind,
-                    item.tool_key,
-                    item.recipe_id,
-                )
-                != expected
-            )
-        filtered = DataManagerMarketSnapshot(
-            market_id=market,
-            dataset=self._market_snapshot.dataset,
-            recipes=recipes,
-            artifacts=artifacts,
-        )
-        self._market_snapshot = filtered
-        self._selected_artifact = None
-        self._selected_recipe = None
-        self._view.set_market_snapshot(filtered)
+            self._selected_recipe = None
         self._view.set_status("Deletion completed")
-        if self._pending_focus is not None:
-            return
-        generation = self._market_generation
-        self._submit(
-            "refresh_after_delete",
-            generation,
-            lambda progress, callback: self._service.submit_inspect_market(
-                market,
-                progress_callback=progress,
-                result_callback=callback,
-                callback_dispatcher=self._dispatcher.dispatch,
-            ),
-            self._settle_deletion_refresh,
-        )
-        if self._active_operation == "refresh_after_delete":
-            self._view.set_status("Deletion completed; refreshing catalog")
-
-    def _settle_deletion_refresh(self, result: TaskResult) -> None:
-        if self._pending_focus is not None:
-            return
-        if result.status == "completed" and isinstance(
-            result.value, DataManagerMarketSnapshot
-        ):
-            if result.value.market_id != self._selected_market:
-                return
-            self._market_snapshot = result.value
-            self._view.set_market_snapshot(result.value)
-            self._view.set_status("Deletion completed; catalog refreshed")
-            return
-        message = result.error_message or result.error_type or result.status
-        status = f"Deletion completed; catalog refresh failed: {message}"
-        self._view.set_status(status)
-        self._view.append_status(status)
+        self._after_write_refresh()
 
     def _report_failure(self, label: str, result: TaskResult) -> None:
         message = result.error_message or result.error_type or result.status
@@ -2154,6 +3653,7 @@ class DataManagerSuitePresenter(QObject):
         message = result.error_message or result.error_type
         self._market_generation += 1
         self._selected_market = None
+        self._background_selected_market_refresh_pending = None
         self._selected_artifact = None
         self._selected_recipe = None
         self._market_snapshot = None
@@ -2196,6 +3696,7 @@ class DataManagerSuitePresenter(QObject):
     def _clear_unavailable_focus(self, market_id: MarketId, reason: str) -> None:
         self._market_generation += 1
         self._selected_market = None
+        self._background_selected_market_refresh_pending = None
         self._selected_artifact = None
         self._selected_recipe = None
         self._market_snapshot = None
@@ -2230,12 +3731,12 @@ def _collection_rows(value: object) -> tuple[tuple[str, ...], ...]:
     }
     return tuple(
         (
-            item.logical_artifact_id,
             item.output_name,
             item.column_name,
             str(order.get(item.column_name, "")),
             "root" if item.logical_artifact_id in roots else "support",
             "no" if item.logical_artifact_id in roots else "yes",
+            item.logical_artifact_id,
         )
         for item in getattr(value, "selected_outputs", ())
     )
@@ -2260,6 +3761,7 @@ def _operation_details(
         "execute_artifact_update",
         "execute_database_append",
         "execute_database_rebuild",
+        "create_direct_artifact",
     }
     details = [
         ("Operation", operation),

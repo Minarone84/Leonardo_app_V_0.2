@@ -1,0 +1,16 @@
+{
+  "dependencies": [],
+  "kind": "indicator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "sma_14"
+  ],
+  "parameters": {
+    "period": 14
+  },
+  "recipe_id": "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+  "schema_version": "1.0",
+  "tool_key": "sma",
+  "tool_version": "1.0"
+}

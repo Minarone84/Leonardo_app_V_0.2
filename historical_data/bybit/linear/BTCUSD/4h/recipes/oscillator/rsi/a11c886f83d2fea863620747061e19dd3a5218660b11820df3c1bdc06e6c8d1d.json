@@ -1,0 +1,23 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-08-09T18:32:27.268430Z",
+  "description": "",
+  "display_name": "rsi",
+  "kind": "oscillator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "rsi_14"
+  ],
+  "parameters": {
+    "period": 14
+  },
+  "recipe_id": "a11c886f83d2fea863620747061e19dd3a5218660b11820df3c1bdc06e6c8d1d",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "rsi"
+}

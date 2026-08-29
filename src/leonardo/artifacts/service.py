@@ -15,7 +15,7 @@ from leonardo.financial_tools import (
 )
 from leonardo.ohlcv.store import OHLCVStore
 
-from ._stores import _CanonicalArtifactStore
+from ._stores import _CanonicalArtifactStore, _io_path
 from .identity import (
     artifact_identity_payload,
     canonical_json_identity_bytes,
@@ -673,6 +673,70 @@ class ArtifactService:
             sorted(records, key=lambda item: (item.created_at_utc, item.artifact_id))
         )
 
+    def _load_exact_managed_artifact_versions(
+        self, market: MarketId, logical_id: str
+    ) -> tuple[ArtifactVersionRecordV1, ...]:
+        head_path = self._store.head_path(market, logical_id)
+        logical_root = head_path.parent
+        versions_root = self._store.version_record_path(
+            market, logical_id, "0" * 64
+        ).parent
+        try:
+            self._store._assert_safe(logical_root)
+            logical_entries = tuple(_io_path(logical_root).iterdir())
+            for io_entry in logical_entries:
+                self._store._assert_safe(logical_root / io_entry.name)
+            if (
+                {entry.name for entry in logical_entries}
+                != {"head.json", "versions"}
+                or not _io_path(head_path).is_file()
+                or not _io_path(versions_root).is_dir()
+            ):
+                raise ArtifactLineageError(
+                    "managed Artifact lineage root inventory is invalid"
+                )
+
+            self._store._assert_safe(versions_root)
+            version_entries = tuple(_io_path(versions_root).iterdir())
+            if not version_entries:
+                raise ArtifactLineageError(
+                    "managed Artifact versions inventory is empty"
+                )
+            version_paths: list[Path] = []
+            for io_entry in version_entries:
+                path = versions_root / io_entry.name
+                self._store._assert_safe(path)
+                if not io_entry.is_file() or path.suffix != ".json":
+                    raise ArtifactLineageError(
+                        "managed Artifact versions inventory is invalid"
+                    )
+                artifact_id = _require_sha(
+                    path.stem, "managed Artifact version filename"
+                )
+                if path.name != f"{artifact_id}.json":
+                    raise ArtifactLineageError(
+                        "managed Artifact version filename is not canonical"
+                    )
+                version_paths.append(path)
+        except OSError as exc:
+            raise ArtifactLineageError(
+                "managed Artifact lineage inventory cannot be inspected"
+            ) from exc
+
+        records = tuple(
+            self.load_artifact_version(market, logical_id, path.stem)
+            for path in sorted(version_paths)
+        )
+        if {path.stem for path in version_paths} != {
+            record.artifact_id for record in records
+        }:
+            raise ArtifactLineageError(
+                "managed Artifact version inventory does not match records"
+            )
+        return tuple(
+            sorted(records, key=lambda item: (item.created_at_utc, item.artifact_id))
+        )
+
     def list_managed_artifacts(
         self, market_id: MarketId
     ) -> tuple[ManagedArtifactSummary, ...]:
@@ -727,6 +791,94 @@ class ArtifactService:
                     )
                 )
         return tuple(sorted(summaries, key=lambda item: item.logical_artifact_id))
+
+    def delete_managed_artifact(
+        self,
+        market_id: MarketId,
+        logical_artifact_id: str,
+        *,
+        before_delete: Callable[[], None] | None = None,
+    ) -> ManagedArtifactSummary:
+        market = _require_market(market_id)
+        logical_id = _require_sha(logical_artifact_id, "logical_artifact_id")
+        with self._mutation_lock:
+            head = self.load_artifact_head(market, logical_id)
+            versions = self._load_exact_managed_artifact_versions(
+                market, logical_id
+            )
+            _validate_managed_version_chain(
+                logical_id, versions, head_artifact_id=head.artifact_id
+            )
+            owned_ids = {item.artifact_id for item in versions}
+            owned_directories: dict[str, Path] = {}
+            owned_metadata: dict[str, ArtifactMetadataV1] = {}
+            for artifact_id in owned_ids:
+                directories = self._store.find_artifact_dirs(market, artifact_id)
+                if len(directories) != 1:
+                    raise ArtifactLineageError(
+                        "cannot prove managed Artifact payload ownership"
+                    )
+                loaded = self._load_artifact_directory(market, directories[0])
+                owned_directories[artifact_id] = directories[0]
+                owned_metadata[artifact_id] = loaded.metadata
+
+            for other_logical_dir in self._store.iter_logical_artifact_dirs(market):
+                if other_logical_dir.name == logical_id:
+                    continue
+                for path in self._store.iter_version_record_paths(
+                    market, other_logical_dir.name
+                ):
+                    record = self.load_artifact_version(
+                        market, other_logical_dir.name, path.stem
+                    )
+                    if record.artifact_id in owned_ids:
+                        raise ArtifactLineageError(
+                            "managed Artifact payload is shared by another lineage"
+                        )
+
+            try:
+                candidates = tuple(self._store.iter_artifact_dirs(market))
+            except (ArtifactError, OSError) as exc:
+                raise ArtifactLineageError(
+                    "cannot prove managed Artifact is unreferenced"
+                ) from exc
+            for directory in candidates:
+                try:
+                    candidate = self._load_artifact_directory(market, directory)
+                except (ArtifactError, OSError) as exc:
+                    raise ArtifactLineageError(
+                        "cannot prove managed Artifact is unreferenced"
+                    ) from exc
+                if candidate.metadata.artifact_id in owned_ids:
+                    continue
+                if any(
+                    ref.artifact_id in owned_ids
+                    for ref in candidate.metadata.recipe.source_artifacts
+                ):
+                    raise ArtifactLineageError(
+                        "managed Artifact is referenced by a dependent Artifact"
+                    )
+
+            current_record = next(
+                item for item in versions if item.artifact_id == head.artifact_id
+            )
+            summary = _managed_summary(
+                current_record, owned_metadata[head.artifact_id]
+            )
+            if before_delete is not None:
+                before_delete()
+
+            self._store.delete_head(self._store.head_path(market, logical_id))
+            for version in versions:
+                self._store.delete_version_record(
+                    self._store.version_record_path(
+                        market, logical_id, version.artifact_id
+                    )
+                )
+            self._store.remove_empty_managed_directories(market, logical_id)
+            for directory in owned_directories.values():
+                self._store.delete_artifact_dir(directory)
+            return summary
 
     def list_managed_markets(self) -> tuple[MarketId, ...]:
         return tuple(self._store.iter_managed_market_ids())

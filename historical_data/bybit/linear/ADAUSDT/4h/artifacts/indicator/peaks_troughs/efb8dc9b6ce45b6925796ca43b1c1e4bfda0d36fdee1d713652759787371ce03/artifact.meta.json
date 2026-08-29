@@ -1,0 +1,59 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "efb8dc9b6ce45b6925796ca43b1c1e4bfda0d36fdee1d713652759787371ce03",
+  "created_at_utc": "2026-08-09T18:28:59.367379Z",
+  "first_timestamp_ms": 1616040000000,
+  "last_timestamp_ms": 1786104000000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-08-09T18:28:59.367379Z",
+    "description": "",
+    "display_name": "peaks_troughs",
+    "kind": "indicator",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "ADAUSDT",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "peak_fractal_3",
+      "trough_fractal_3",
+      "peak_fractal_5",
+      "trough_fractal_5",
+      "peak_fractal_7",
+      "trough_fractal_7",
+      "peak_fractal_9",
+      "trough_fractal_9",
+      "peak_fractal_11",
+      "trough_fractal_11"
+    ],
+    "parameters": {},
+    "recipe_id": "f5facf847ff4f7a95b377586f337cd84518d366aa79c38933b01ef034f704fce",
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "tool_key": "peaks_troughs"
+  },
+  "row_count": 11811,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "154416e78099939c293b039dda48baec8ca829cf7e15ad2a19568dff4000b3b9",
+    "first_timestamp_ms": 1616040000000,
+    "last_timestamp_ms": 1786104000000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "ADAUSDT",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 11811,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "6031cc552a63f0f779b0c0fed34b3affe6bb588fb0f3df90d86ae7e45856d8aa",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "519eb88d56354be4cdccd09568c1bffb96a5d25c55634f7e09a7475a6f5a4b03"
+}

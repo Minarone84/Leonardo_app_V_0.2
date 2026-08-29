@@ -1,0 +1,22 @@
+{
+  "dependencies": [
+    {
+      "output_name": "slow_vwap",
+      "recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+      "role": "source"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "research_source__d1"
+  ],
+  "parameters": {
+    "order": 1
+  },
+  "recipe_id": "81f5bf5828b68e3d5478a23983d6fc05386277a1a64aa3198e669d293259e457",
+  "schema_version": "1.0",
+  "tool_key": "derivative",
+  "tool_version": "1.0"
+}

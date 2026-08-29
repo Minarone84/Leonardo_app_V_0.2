@@ -42,17 +42,50 @@ Research architecture and workflow details are documented in the
 ## Data Manager Suite
 
 `data_manager_suite.window` is a tracked single-instance window composed by the
-real application root. Repeated open commands focus the existing window.
-Research handoff carries only a canonical `MarketId`; the Data Manager reloads
-its own canonical persisted truth and focuses the matching OHLCV row.
+real application root. A newly created Suite opens maximized with normal desktop
+chrome. Repeated open commands focus the existing window while preserving its
+current maximized or restored state and geometry. Research handoff carries only
+a canonical `MarketId`; Data Manager reloads its own canonical persisted truth
+and makes that market active.
+
+The complete accepted-and-rejected OHLCV catalog is presented in the dedicated
+tracked selector `data_manager.dataset_selector.window`. The selector provides
+cascading Exchange, Market Type, Symbol, and Timeframe filters, two explicit
+metadata-search fields, a catalog-aware help dialog, one active-dataset row, and
+content-derived table sizing. The full multi-row table supports typed
+presentation-only text, number, and UTC sorting while preserving the selected
+domain identity; the one-row Active Dataset summary remains unsorted. Repeated
+open commands reuse the selector, and it closes with the Data Manager Suite.
 
 The Suite has three top-level tabs: Catalogs, Create Database, and Update &
-Reconcile. Catalogs exposes all eight persisted product families. Creation uses
-nine explicit stages; update uses six explicit stages. One common operation
-surface displays the Core task identity, progress, cancellation availability,
-structured plan or report details, and terminal state. The window owns only
-selection and presentation state; every read, write, plan, validation, and
-reconciliation operation delegates through `DataManagerApplicationService`.
+Reconcile. The main Catalogs family list exposes seven non-OHLCV product
+families; OHLCV selection is intentionally confined to the selector. Creation
+uses nine explicit stages and update uses six explicit stages. `Create
+Artifact...` provides accepted Direct Artifact creation, and `Batch
+Constructs...` provides reviewed Batch planning, execution, and a local terminal
+report.
+
+The responsive Suite body uses `3:1` for Workspace to Operation, `7:3` for the
+upper region to the bottom strip, and `1:1` for Inspector to Revision History.
+The Inspector and Revision History strip spans the full width. Major panels and
+tables resize with the window. The central Catalog family table supports typed
+presentation-only sorting through `sort_data_manager_rows(...)`; sort state is
+retained per family and selected domain identity remains attached to the
+displayed row. Inspector, Revision History, and Operation details remain
+unsorted.
+
+One common Operation surface is the only live Data Manager progress, Core task,
+cancellation, and operation authority. On first open it presents deterministic
+`Loading Data Manager` foreground warm-up: initial reconciliation succeeds,
+product catalogs are scanned and applied, then warm-up completes. Failed warm-up
+stays visible and retryable. After warm-up, background reconciliation is
+autonomous, asynchronous, non-blocking, and independent of foreground Operation
+ownership. The window owns only selection and presentation state; every read,
+write, plan, validation, and reconciliation operation delegates through
+`DataManagerApplicationService`.
+
+Task 1064 is closed. Tasks 1065, 1066, and 1067 remain. Use the [Data Manager
+manual](../data_manager_docs/DATA_MANAGER.md) for the current boundary.
 
 ## Window tracking
 

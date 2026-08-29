@@ -22,6 +22,10 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.data_manager import DataManagerProductCatalogSnapshot
+from leonardo.gui.data_manager.table_presentation import (
+    format_utc_timestamp_ms,
+    resize_data_manager_table,
+)
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
@@ -67,9 +71,9 @@ class DataManagerUpdateWorkspace(QWidget):
 
         self.reconciliation_tables = {
             "sources": self._table("sources", ("Market", "Status", "Previous Through", "Current Through", "Missing Rows", "Reason")),
-            "artifacts": self._table("artifacts", ("Logical Artifact", "Market", "Status", "Artifact Through", "OHLCV Through", "Missing Rows", "Reasons")),
-            "collections": self._table("collections", ("Collection", "Market", "Status", "Aligned Through", "OHLCV Through", "Stale", "Blocked", "Database Ready", "Reasons")),
-            "databases": self._table("databases", ("Database", "Market", "Status", "Snapshot Through", "OHLCV Through", "Collection Through", "Missing Rows", "Prefix", "Reasons")),
+            "artifacts": self._table("artifacts", ("Market", "Status", "Artifact Through", "OHLCV Through", "Missing Rows", "Reasons", "Logical Artifact ID")),
+            "collections": self._table("collections", ("Market", "Status", "Aligned Through", "OHLCV Through", "Stale", "Blocked", "Database Ready", "Reasons", "Collection ID")),
+            "databases": self._table("databases", ("Market", "Status", "Snapshot Through", "OHLCV Through", "Collection Through", "Missing Rows", "Prefix", "Reasons", "Database ID")),
             "failures": self._table("failures", ("Failure",)),
         }
         source_page, source_layout = self._page("Source Change Review")
@@ -94,7 +98,7 @@ class DataManagerUpdateWorkspace(QWidget):
         artifact_plan_layout.addLayout(form)
         self.artifact_plan_table = self._table(
             "artifact_plan",
-            ("Recipe", "Logical Artifact", "Tool", "Role", "Action", "Strategy", "Context", "Revisable Tail", "Blockers"),
+            ("Tool", "Role", "Action", "Strategy", "Context", "Revisable Tail", "Blockers", "Recipe ID", "Logical Artifact ID"),
         )
         artifact_plan_layout.addWidget(self.artifact_plan_table, 1)
         artifact_plan_layout.addLayout(self._buttons(artifact_plan_page, (
@@ -114,8 +118,9 @@ class DataManagerUpdateWorkspace(QWidget):
         self.collection_validation_table = self._table(
             "collection_validation",
             (
-                "Collection", "Revision", "State", "Roots", "Supports",
-                "Selected Outputs", "Coverage", "Database Ready", "Reasons",
+                "State", "Selected Outputs", "First TS", "Last TS",
+                "Database Ready", "Reasons", "Collection ID", "Revision ID",
+                "Root Logical Artifact IDs", "Support Logical Artifact IDs",
             ),
         )
         collection_layout.addWidget(self.collection_validation_table, 1)
@@ -130,7 +135,7 @@ class DataManagerUpdateWorkspace(QWidget):
         database_plan_layout.addLayout(database_form)
         self.database_plan_table = self._table(
             "database_plan",
-            ("Database", "Mode", "Status", "Collection Revision", "Columns", "Stages", "Blockers"),
+            ("Mode", "Status", "Columns", "Stages", "Blockers", "Collection Revision ID", "Database ID"),
         )
         database_plan_layout.addWidget(self.database_plan_table, 1)
         database_plan_layout.addLayout(self._buttons(database_plan_page, (
@@ -181,40 +186,53 @@ class DataManagerUpdateWorkspace(QWidget):
         reconciliation = snapshot.latest_reconciliation
         _set_rows(self.reconciliation_tables["sources"], tuple(
             (
-                item.market_id.as_key(), item.status, str(item.previous_through_ms or ""),
-                str(item.current_through_ms or ""), str(item.missing_row_count), item.reason,
+                item.market_id.as_key(), item.status,
+                format_utc_timestamp_ms(item.previous_through_ms),
+                format_utc_timestamp_ms(item.current_through_ms),
+                str(item.missing_row_count), item.reason,
             )
             for item in reconciliation.source_changes
         ))
         _set_rows(self.reconciliation_tables["artifacts"], tuple(
             (
-                item.logical_artifact_id, item.market_id.as_key(), item.status,
-                str(item.artifact_through_ms or ""), str(item.ohlcv_through_ms or ""),
+                item.market_id.as_key(), item.status,
+                format_utc_timestamp_ms(item.artifact_through_ms),
+                format_utc_timestamp_ms(item.ohlcv_through_ms),
                 str(item.missing_row_count), " | ".join(item.reasons),
+                item.logical_artifact_id,
             )
             for item in reconciliation.artifacts
         ))
         collection_rows = tuple(
             (
-                item.collection_id, item.market_id.as_key(), item.status,
-                str(item.aligned_through_ms or ""), str(item.ohlcv_through_ms or ""),
+                item.market_id.as_key(), item.status,
+                format_utc_timestamp_ms(item.aligned_through_ms),
+                format_utc_timestamp_ms(item.ohlcv_through_ms),
                 str(item.stale_member_count), str(item.blocked_member_count),
                 "yes" if item.database_ready else "no", " | ".join(item.reasons),
+                item.collection_id,
             )
             for item in reconciliation.collections
         )
         _set_rows(self.reconciliation_tables["collections"], collection_rows)
         if not self._artifact_result_active:
             _set_rows(self.collection_validation_table, tuple(
-                (row[0], "", row[2], "", "", "", row[3], row[7], row[8])
-                for row in collection_rows
+                (
+                    item.status, "", "", "",
+                    "yes" if item.database_ready else "no",
+                    " | ".join(item.reasons), item.collection_id, "", "", "",
+                )
+                for item in reconciliation.collections
             ))
         _set_rows(self.reconciliation_tables["databases"], tuple(
             (
-                item.database_id, item.market_id.as_key(), item.status,
-                str(item.snapshot_through_ms or ""), str(item.ohlcv_through_ms or ""),
-                str(item.collection_through_ms or ""), str(item.missing_row_count),
-                "valid" if item.prefix_integrity else "mismatch", " | ".join(item.reasons),
+                item.market_id.as_key(), item.status,
+                format_utc_timestamp_ms(item.snapshot_through_ms),
+                format_utc_timestamp_ms(item.ohlcv_through_ms),
+                format_utc_timestamp_ms(item.collection_through_ms),
+                str(item.missing_row_count),
+                "valid" if item.prefix_integrity else "mismatch",
+                " | ".join(item.reasons), item.database_id,
             )
             for item in reconciliation.databases
         ))
@@ -226,10 +244,10 @@ class DataManagerUpdateWorkspace(QWidget):
     def set_artifact_plan(self, plan) -> None:
         _set_rows(self.artifact_plan_table, tuple(
             (
-                item.portable_recipe_id, item.logical_artifact_id, item.tool_key,
-                item.role, item.action, item.update_strategy.value,
+                item.tool_key, item.role, item.action, item.update_strategy.value,
                 str(item.context_rows), str(item.revisable_tail_rows),
-                " | ".join(item.blockers),
+                " | ".join(item.blockers), item.portable_recipe_id,
+                item.logical_artifact_id,
             )
             for item in plan.nodes
         ))
@@ -252,9 +270,9 @@ class DataManagerUpdateWorkspace(QWidget):
 
     def set_database_plan(self, plan) -> None:
         _set_rows(self.database_plan_table, ((
-            plan.database_id, plan.mode, plan.status, plan.collection_revision_id,
-            ", ".join(plan.column_names), str(len(plan.execution_stages)),
-            " | ".join(plan.blockers),
+            plan.mode, plan.status, ", ".join(plan.column_names),
+            str(len(plan.execution_stages)), " | ".join(plan.blockers),
+            plan.collection_revision_id, plan.database_id,
         ),))
         self._database_plan_database_id = plan.database_id
         blocked = bool(getattr(plan, "blocked", plan.blockers))
@@ -277,18 +295,19 @@ class DataManagerUpdateWorkspace(QWidget):
         revision = result.collection_revision
         self._artifact_result_active = True
         _set_rows(self.collection_validation_table, ((
-            revision.collection_id,
-            revision.revision_id,
             revision.validation_state,
-            ", ".join(revision.root_logical_artifact_ids),
-            ", ".join(revision.support_logical_artifact_ids),
             ", ".join(
                 f"{item.logical_artifact_id}:{item.output_name}->{item.column_name}"
                 for item in revision.selected_outputs
             ),
-            f"{revision.first_timestamp_ms} - {revision.last_timestamp_ms}",
+            format_utc_timestamp_ms(revision.first_timestamp_ms),
+            format_utc_timestamp_ms(revision.last_timestamp_ms),
             "yes" if revision.database_ready else "no",
             "",
+            revision.collection_id,
+            revision.revision_id,
+            ", ".join(revision.root_logical_artifact_ids),
+            ", ".join(revision.support_logical_artifact_ids),
         ),))
 
     def set_database_update_result(self, result) -> None:
@@ -303,10 +322,8 @@ class DataManagerUpdateWorkspace(QWidget):
                 ("collection_revision_id", revision.collection_revision_id),
                 ("rows", str(revision.row_count)),
                 ("columns", str(revision.column_count)),
-                (
-                    "coverage",
-                    f"{revision.first_timestamp_ms} - {revision.last_timestamp_ms}",
-                ),
+                ("First TS", format_utc_timestamp_ms(revision.first_timestamp_ms)),
+                ("Last TS", format_utc_timestamp_ms(revision.last_timestamp_ms)),
                 ("values_hash", revision.values_sha256),
             )
         ))
@@ -409,3 +426,4 @@ def _set_rows(table: QTableWidget, rows: tuple[tuple[str, ...], ...]) -> None:
     for row, values in enumerate(rows):
         for column, value in enumerate(values):
             table.setItem(row, column, QTableWidgetItem(value))
+    resize_data_manager_table(table)

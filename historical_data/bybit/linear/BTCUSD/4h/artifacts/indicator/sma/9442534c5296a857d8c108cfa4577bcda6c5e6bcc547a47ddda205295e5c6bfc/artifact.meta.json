@@ -1,0 +1,52 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "9442534c5296a857d8c108cfa4577bcda6c5e6bcc547a47ddda205295e5c6bfc",
+  "created_at_utc": "2026-07-23T09:18:07.814178Z",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-07-23T09:18:07.610349Z",
+    "description": "",
+    "display_name": "SMA",
+    "kind": "indicator",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "sma_15"
+    ],
+    "parameters": {
+      "period": 15
+    },
+    "recipe_id": "9b5d1b29697526291f69154d29a8a6eead0399405e025351b40012d278509408",
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "tool_key": "sma"
+  },
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "487fffb065925bc6325f8cf3902be791b7588b17efa4ffc447d6315774bf37c1"
+}

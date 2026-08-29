@@ -1,0 +1,32 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-08-16T14:35:04.284269Z",
+  "description": "",
+  "display_name": "delta",
+  "kind": "construct",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "close_research_slow_delta"
+  ],
+  "parameters": {
+    "eps": 1e-12,
+    "fast": "close",
+    "mode": "abs",
+    "slow": "__research_slow"
+  },
+  "recipe_id": "80c01422a08ee239ce82862060ffb4426ce98cb9e32e728cabb95eb331a4eb41",
+  "schema_version": "1.0",
+  "source_artifacts": [
+    {
+      "artifact_id": "d295a159abd1914270a30c2bc3bc47e735490041974b234433182adcf41bcd99",
+      "output_name": "fast_vwap",
+      "role": "slow"
+    }
+  ],
+  "tool_key": "delta"
+}

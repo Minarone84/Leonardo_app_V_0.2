@@ -1,0 +1,22 @@
+{
+  "dependencies": [
+    {
+      "output_name": "sma_14",
+      "recipe_id": "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+      "role": "source"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "research_source__d1"
+  ],
+  "parameters": {
+    "order": 1
+  },
+  "recipe_id": "f3bd082122c1ee962d99af5336c5f810dace4468d419e4bec2acbee09bd2fbe8",
+  "schema_version": "1.0",
+  "tool_key": "derivative",
+  "tool_version": "1.0"
+}

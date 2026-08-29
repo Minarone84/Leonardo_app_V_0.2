@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
 from html import escape
 
 from PySide6.QtCore import QSignalBlocker, Signal, Qt
@@ -27,27 +26,20 @@ from PySide6.QtWidgets import (
 from leonardo.data import MarketId
 from leonardo.data_manager import DataManagerCatalogSnapshot, DataManagerDatasetEntry
 from leonardo.gui.action_observer import GuiActionObserver
-from leonardo.gui.table_sizing import resize_table_columns_to_contents
+from leonardo.gui.data_manager.table_presentation import (
+    DATA_MANAGER_DATASET_COLUMNS,
+    DataManagerSortKind,
+    data_manager_dataset_details,
+    data_manager_dataset_row,
+    resize_data_manager_table,
+    sort_data_manager_rows,
+)
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
 DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID = "data_manager.dataset_selector.window"
 DATA_MANAGER_DATASET_SEARCH_HELP_WINDOW_ID = (
     "data_manager.dataset_selector.search_help.window"
-)
-
-_DATASET_COLUMNS = (
-    "Exchange",
-    "Market Type",
-    "Symbol",
-    "Timeframe",
-    "Status",
-    "Persistence",
-    "Validation",
-    "Rows",
-    "First Data UTC",
-    "Last Data UTC",
-    "Details",
 )
 
 _FILTER_ORDER = ("exchange", "market_type", "symbol", "timeframe")
@@ -59,6 +51,8 @@ _FILTER_LABELS = {
 }
 _FILTER_TEXT_SCALE = 1.5
 _COMBO_CHROME_WIDTH = 44
+_DATASET_NUMBER_COLUMNS = {"Rows"}
+_DATASET_UTC_COLUMNS = {"First Data UTC", "Last Data UTC"}
 
 def _search_help_html(snapshot: DataManagerCatalogSnapshot) -> str:
     entries = snapshot.datasets
@@ -235,6 +229,7 @@ class DataManagerDatasetSelectorDialog(QDialog):
         self._catalog = DataManagerCatalogSnapshot(())
         self._visible_entries: tuple[DataManagerDatasetEntry, ...] = ()
         self._current_market: MarketId | None = None
+        self._sort_state: tuple[int, bool] | None = None
         self._busy = False
         self._filters: dict[str, QComboBox] = {}
         self._filter_labels: dict[str, QLabel] = {}
@@ -470,6 +465,9 @@ class DataManagerDatasetSelectorDialog(QDialog):
             "data_manager.table.datasets",
             selectable=True,
         )
+        table.horizontalHeader().setSectionsClickable(True)
+        table.horizontalHeader().setSortIndicatorShown(False)
+        table.horizontalHeader().sectionClicked.connect(self._on_sort_column)
         table.itemSelectionChanged.connect(self._sync_actions)
         table.itemDoubleClicked.connect(lambda _item: self._accept_selection())
         self._table = table
@@ -513,8 +511,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         table = configure_table(
             QTableWidget(self),
             object_id=object_id,
-            columns=_DATASET_COLUMNS,
-            labels=_DATASET_COLUMNS,
+            columns=DATA_MANAGER_DATASET_COLUMNS,
+            labels=DATA_MANAGER_DATASET_COLUMNS,
         )
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setWordWrap(False)
@@ -554,6 +552,28 @@ class DataManagerDatasetSelectorDialog(QDialog):
 
     def _on_text_filter_changed(self, _text: str) -> None:
         self._populate()
+
+    def _on_sort_column(self, column: int) -> None:
+        previous = self._sort_state
+        descending = previous is not None and previous == (column, False)
+        self._sort_state = (column, descending)
+        header = self.table_for_id("data_manager.table.datasets").horizontalHeader()
+        header.setSortIndicatorShown(True)
+        header.setSortIndicator(
+            column,
+            Qt.SortOrder.DescendingOrder
+            if descending
+            else Qt.SortOrder.AscendingOrder,
+        )
+        self._populate()
+
+    def _sort_kind(self, column: int) -> DataManagerSortKind:
+        label = DATA_MANAGER_DATASET_COLUMNS[column]
+        if label in _DATASET_NUMBER_COLUMNS:
+            return "number"
+        if label in _DATASET_UTC_COLUMNS:
+            return "utc"
+        return "text"
 
     def _rebuild_filter_values(self) -> None:
         previous = {
@@ -656,13 +676,23 @@ class DataManagerDatasetSelectorDialog(QDialog):
             self._search_inputs["source_reason"].text().strip().casefold()
         )
 
-        visible = tuple(
+        filtered = tuple(
             entry
             for entry in self._catalog.datasets
             if _matches_dropdowns(entry, selected_filters)
             and _matches_id_state_search(entry, id_state_text)
             and _matches_source_reason_search(entry, source_reason_text)
         )
+        visible = filtered
+        if self._sort_state is not None:
+            column, descending = self._sort_state
+            projected = sort_data_manager_rows(
+                tuple((data_manager_dataset_row(entry), entry) for entry in filtered),
+                column=column,
+                kind=self._sort_kind(column),
+                descending=descending,
+            )
+            visible = tuple(entry for _values, entry in projected)
         blocker = QSignalBlocker(table)
         table.setRowCount(len(visible))
         table.clearSelection()
@@ -684,8 +714,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         row: int,
         entry: DataManagerDatasetEntry,
     ) -> None:
-        details = _dataset_details(entry)
-        for column, value in enumerate(_dataset_row(entry)):
+        details = data_manager_dataset_details(entry)
+        for column, value in enumerate(data_manager_dataset_row(entry)):
             item = QTableWidgetItem(value)
             item.setToolTip(details)
             table.setItem(row, column, item)
@@ -699,8 +729,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         if not tables:
             return
         for table in tables:
-            resize_table_columns_to_contents(table)
-        for column in range(len(_DATASET_COLUMNS)):
+            resize_data_manager_table(table)
+        for column in range(len(DATA_MANAGER_DATASET_COLUMNS)):
             width = max(table.columnWidth(column) for table in tables)
             for table in tables:
                 table.setColumnWidth(column, width)
@@ -826,7 +856,6 @@ def _matches_id_state_search(entry: DataManagerDatasetEntry, token: str) -> bool
     )
     return token in " | ".join(values).casefold()
 
-
 def _matches_source_reason_search(
     entry: DataManagerDatasetEntry,
     token: str,
@@ -840,36 +869,3 @@ def _matches_source_reason_search(
         *entry.warnings,
     )
     return token in " | ".join(values).casefold()
-
-
-def _dataset_row(entry: DataManagerDatasetEntry) -> tuple[str, ...]:
-    market = entry.market_id
-    return (
-        "" if market is None else market.exchange,
-        "" if market is None else market.market_type,
-        "" if market is None else market.symbol,
-        "" if market is None else market.timeframe,
-        "accepted" if entry.accepted else "rejected",
-        entry.persistence_status,
-        entry.validation_status,
-        "" if entry.row_count is None else f"{entry.row_count:,}",
-        _timestamp_text(entry.first_timestamp_ms),
-        _timestamp_text(entry.last_timestamp_ms),
-        _dataset_details(entry),
-    )
-
-
-def _timestamp_text(timestamp_ms: int | None) -> str:
-    if timestamp_ms is None:
-        return ""
-    value = datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
-    return value.strftime("%d %b %Y %H:%M UTC")
-
-
-def _dataset_details(entry: DataManagerDatasetEntry) -> str:
-    if not entry.accepted:
-        return ": ".join(
-            value for value in (entry.rejection_code, entry.rejection_reason) if value
-        )
-    details = [value for value in entry.warnings if value]
-    return " | ".join(details) or "Accepted canonical OHLCV dataset"

@@ -1,0 +1,36 @@
+{
+  "created_at_utc": "2026-07-24T07:48:45.038649+00:00",
+  "file_sha256": "3151d754cc8e7de9047f335f72a1cb0554d2d545a53c1f3b72321b41179d087d",
+  "first_timestamp_ms": 1603270800000,
+  "last_timestamp_ms": 1784872800000,
+  "lineage": {
+    "canonical_validation": {
+      "error_count": 0,
+      "issue_codes": [],
+      "status": "ok",
+      "validator": "canonical_ohlcv_v1",
+      "warning_count": 0
+    },
+    "canonical_validation_status": "unknown",
+    "download_mode": "new_download",
+    "file_mtime_ns": 1784879350211071600,
+    "file_size": 2513121,
+    "pages_written": 51,
+    "planned_end_ms": 1784872800000,
+    "planned_start_ms": 1603270800000,
+    "preliminary_validation_status": "ok"
+  },
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "LINKUSDT",
+    "timeframe": "1h"
+  },
+  "persistence_status": "committed",
+  "row_count": 50446,
+  "schema_version": "1.0",
+  "source": "bybit",
+  "updated_at_utc": "2026-07-24T07:53:05.178801+00:00",
+  "validation_status": "ok",
+  "warnings": []
+}

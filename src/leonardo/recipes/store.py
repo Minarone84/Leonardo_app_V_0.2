@@ -183,9 +183,18 @@ class PortableRecipeStore:
         description: str,
         root_recipe_ids: Sequence[str],
         member_recipe_ids: Sequence[str],
+        *,
+        expected_head_revision_id: str | None = None,
     ) -> PortableRecipeCollectionRevisionV1:
         with self._lock:
             current = self.load_collection(collection_id)
+            if (
+                expected_head_revision_id is not None
+                and current.revision_id != expected_head_revision_id
+            ):
+                raise PortableRecipeStoreError(
+                    "Recipe Collection changed since it was selected"
+                )
             self._validate_collection_members(root_recipe_ids, member_recipe_ids)
             created_at = self._now()
             revision = PortableRecipeCollectionRevisionV1.build(
@@ -281,6 +290,76 @@ class PortableRecipeStore:
             )
             return tuple(sorted(revisions, key=lambda item: (item.created_at_utc, item.revision_id)))
 
+    def delete_recipe(
+        self,
+        recipe_id: str,
+        *,
+        before_delete: Callable[[], None] | None = None,
+    ) -> PortableRecipeV1:
+        with self._lock:
+            recipe = self.load_recipe(recipe_id)
+            for candidate in self._all_recipes_for_deletion_proof():
+                if candidate.recipe_id == recipe_id:
+                    continue
+                if any(
+                    dependency.recipe_id == recipe_id
+                    for dependency in candidate.dependencies
+                ):
+                    raise PortableRecipeStoreError(
+                        "portable Recipe is referenced by another Recipe"
+                    )
+            for revision in self._all_collection_revisions_for_deletion_proof():
+                if recipe_id in revision.member_recipe_ids:
+                    raise PortableRecipeStoreError(
+                        "portable Recipe is referenced by a Recipe Collection"
+                    )
+
+            provenance_dir = self._root_dir / "recipe_provenance" / recipe_id
+            provenance_paths = self._provenance_paths_for_deletion(
+                recipe_id, provenance_dir
+            )
+            if before_delete is not None:
+                before_delete()
+
+            self._recipe_path(recipe_id).unlink()
+            for path in provenance_paths:
+                path.unlink()
+            if provenance_dir.exists():
+                provenance_dir.rmdir()
+            self._remove_empty_directory(self._root_dir / "recipe_provenance")
+            self._remove_empty_directory(self._root_dir / "recipes")
+            self._remove_empty_directory(self._root_dir)
+            return recipe
+
+    def delete_collection(
+        self,
+        collection_id: str,
+        *,
+        before_delete: Callable[[], None] | None = None,
+    ) -> PortableRecipeCollectionRevisionV1:
+        with self._lock:
+            current = self.load_collection(collection_id)
+            collection_dir = self._collection_dir(collection_id)
+            revisions = self._preflight_collection_directory(collection_dir)
+            if not revisions or current.revision_id not in {
+                item.revision_id for item in revisions
+            }:
+                raise PortableRecipeStoreError(
+                    "portable Recipe Collection revisions do not match head"
+                )
+            if before_delete is not None:
+                before_delete()
+
+            (collection_dir / "head.json").unlink()
+            revisions_dir = collection_dir / "revisions"
+            for revision in revisions:
+                (revisions_dir / f"{revision.revision_id}.json").unlink()
+            revisions_dir.rmdir()
+            collection_dir.rmdir()
+            self._remove_empty_directory(self._root_dir / "recipe_collections")
+            self._remove_empty_directory(self._root_dir)
+            return current
+
     def _publish_revision(
         self,
         revision: PortableRecipeCollectionRevisionV1,
@@ -296,6 +375,117 @@ class PortableRecipeStore:
             self._collection_dir(revision.collection_id) / "head.json",
             head.canonical_json_bytes(),
         )
+
+    def _all_recipes_for_deletion_proof(self) -> tuple[PortableRecipeV1, ...]:
+        root = self._root_dir / "recipes"
+        self._require_safe_directory(root)
+        values: list[PortableRecipeV1] = []
+        for path in sorted(root.iterdir(), key=lambda item: item.name):
+            if (
+                _is_link(path)
+                or not path.is_file()
+                or path.suffix != ".json"
+                or len(path.stem) != 64
+            ):
+                raise PortableRecipeStoreError(
+                    "unexpected portable Recipe persistence shape"
+                )
+            self._validate_sha(path.stem, "recipe_id")
+            value = self._load_model(path, PortableRecipeV1)
+            if value.recipe_id != path.stem:
+                raise PortableRecipeStoreError("Recipe ID does not match file name")
+            values.append(value)
+        return tuple(values)
+
+    def _all_collection_revisions_for_deletion_proof(
+        self,
+    ) -> tuple[PortableRecipeCollectionRevisionV1, ...]:
+        root = self._root_dir / "recipe_collections"
+        if not root.exists() and not _is_link(root):
+            return ()
+        self._require_safe_directory(root)
+        values: list[PortableRecipeCollectionRevisionV1] = []
+        for path in sorted(root.iterdir(), key=lambda item: item.name):
+            if _is_link(path) or not path.is_dir():
+                raise PortableRecipeStoreError(
+                    "unexpected portable Recipe Collection persistence shape"
+                )
+            self._validate_collection_id(path.name)
+            current = self.load_collection(path.name)
+            revisions = self._preflight_collection_directory(path)
+            if current.revision_id not in {item.revision_id for item in revisions}:
+                raise PortableRecipeStoreError(
+                    "portable Recipe Collection revisions do not match head"
+                )
+            values.extend(revisions)
+        return tuple(values)
+
+    def _preflight_collection_directory(
+        self, collection_dir: Path
+    ) -> tuple[PortableRecipeCollectionRevisionV1, ...]:
+        self._require_safe_directory(collection_dir)
+        children = {item.name for item in collection_dir.iterdir()}
+        if children != {"head.json", "revisions"}:
+            raise PortableRecipeStoreError(
+                "unexpected portable Recipe Collection persistence shape"
+            )
+        head = self._load_model(
+            collection_dir / "head.json", PortableRecipeCollectionHeadV1
+        )
+        if head.collection_id != collection_dir.name:
+            raise PortableRecipeStoreError(
+                "Collection head identity does not match path"
+            )
+        revisions_dir = collection_dir / "revisions"
+        self._require_safe_directory(revisions_dir)
+        paths = tuple(sorted(revisions_dir.iterdir(), key=lambda item: item.name))
+        if not paths:
+            raise PortableRecipeStoreError(
+                "portable Recipe Collection has no valid revisions"
+            )
+        revisions: list[PortableRecipeCollectionRevisionV1] = []
+        for path in paths:
+            if _is_link(path) or not path.is_file() or path.suffix != ".json":
+                raise PortableRecipeStoreError(
+                    "unexpected portable Recipe Collection revision shape"
+                )
+            self._validate_sha(path.stem, "revision_id")
+            revision = self.load_collection_revision(
+                collection_dir.name, path.stem
+            )
+            revisions.append(revision)
+        if head.revision_id not in {item.revision_id for item in revisions}:
+            raise PortableRecipeStoreError(
+                "portable Recipe Collection head revision is missing"
+            )
+        return tuple(revisions)
+
+    def _provenance_paths_for_deletion(
+        self, recipe_id: str, provenance_dir: Path
+    ) -> tuple[Path, ...]:
+        if not provenance_dir.exists() and not _is_link(provenance_dir):
+            return ()
+        self._require_safe_directory(provenance_dir)
+        paths = tuple(sorted(provenance_dir.iterdir(), key=lambda item: item.name))
+        for path in paths:
+            if _is_link(path) or not path.is_file() or path.suffix != ".json":
+                raise PortableRecipeStoreError(
+                    "unexpected portable Recipe provenance persistence shape"
+                )
+            self._validate_sha(path.stem, "provenance_id")
+            value = self._load_model(path, PortableRecipeProvenanceV1)
+            if value.recipe_id != recipe_id or value.provenance_id != path.stem:
+                raise PortableRecipeStoreError(
+                    "provenance identity does not match path"
+                )
+        return paths
+
+    def _remove_empty_directory(self, path: Path) -> None:
+        if not path.exists() and not _is_link(path):
+            return
+        self._require_safe_directory(path)
+        if not any(path.iterdir()):
+            path.rmdir()
 
     def _validate_collection_members(
         self, root_recipe_ids: Sequence[str], member_recipe_ids: Sequence[str]

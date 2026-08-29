@@ -17,35 +17,34 @@ from leonardo.artifacts import (
     ArtifactError,
     ArtifactLineageError,
     ArtifactMetadataV1,
+    ArtifactRecipeV1,
     ArtifactService,
     ArtifactSourceRefV1,
     ManagedArtifactVersionKey,
     OHLCVSourceFingerprintV1,
-    compute_logical_artifact_id,
 )
 from leonardo.data import MarketId
 from leonardo.financial_tools import (
     FinancialToolCalculationResult,
     UpdateStrategy,
     get_financial_tool_spec,
+    resolve_output_signals,
 )
-from leonardo.recipes import (
-    PortableRecipeGraphError,
-    PortableRecipeGraphPlanner,
-    PortableRecipeStore,
-    PortableRecipeStoreError,
+from leonardo.financial_tools.construct_input_eligibility import (
+    FinancialToolInputCompatibilityError,
+    FinancialToolInputSource,
+    validate_financial_tool_inputs,
 )
 from leonardo.research.catalog import AcceptedDatasetCatalog, AcceptedDatasetSummary
 from leonardo.research.dataset import HistoricalDatasetLoader
 
 from .artifact_materialization import (
     ArtifactMaterializationValidationError,
-    _calculate_recipe,
+    _calculate_artifact_recipe,
     _dataset_frame,
-    _source_refs,
-    _target_configuration,
 )
 from .creation_models import (
+    ArtifactCollectionDependencyV1,
     ArtifactCollectionRevisionV1,
     DatabaseDefinitionV1,
     DatabaseRevisionManifestV1,
@@ -105,8 +104,6 @@ class DataManagerUpdateWorkflow:
         catalog: AcceptedDatasetCatalog,
         loader: HistoricalDatasetLoader,
         artifacts: ArtifactService,
-        portable_recipes: PortableRecipeStore,
-        recipe_planner: PortableRecipeGraphPlanner,
         creation: DataManagerCreationWorkflow,
         *,
         clock: Callable[[], datetime] | None = None,
@@ -114,8 +111,6 @@ class DataManagerUpdateWorkflow:
         self._catalog = catalog
         self._loader = loader
         self._artifacts = artifacts
-        self._portable_recipes = portable_recipes
-        self._recipe_planner = recipe_planner
         self._creation = creation
         self._clock = clock or (lambda: datetime.now(UTC))
         self._snapshot: DataManagerReconciliationSnapshot | None = None
@@ -373,6 +368,194 @@ class DataManagerUpdateWorkflow:
             reason,
         )
 
+    @staticmethod
+    def _incoming_collection_edges(
+        collection: ArtifactCollectionRevisionV1,
+    ) -> dict[str, tuple[ArtifactCollectionDependencyV1, ...]]:
+        incoming: dict[str, list[ArtifactCollectionDependencyV1]] = {
+            member.version_key.logical_artifact_id: []
+            for member in collection.members
+        }
+        seen: set[tuple[str, str, str, str]] = set()
+        for edge in collection.dependency_edges:
+            signature = (
+                edge.dependency_logical_artifact_id,
+                edge.dependent_logical_artifact_id,
+                edge.role,
+                edge.output_name,
+            )
+            if signature in seen:
+                raise DataManagerOperationError(
+                    "Artifact Collection dependency edges must be unique"
+                )
+            seen.add(signature)
+            incoming[edge.dependent_logical_artifact_id].append(edge)
+        return {key: tuple(value) for key, value in incoming.items()}
+
+    @classmethod
+    def _artifact_execution_stages(
+        cls, collection: ArtifactCollectionRevisionV1
+    ) -> tuple[tuple[str, ...], ...]:
+        incoming = cls._incoming_collection_edges(collection)
+        member_order = {
+            member.version_key.logical_artifact_id: index
+            for index, member in enumerate(collection.members)
+        }
+        indegree = {logical_id: len(edges) for logical_id, edges in incoming.items()}
+        dependents: dict[str, list[str]] = {logical_id: [] for logical_id in indegree}
+        for edge in collection.dependency_edges:
+            dependents[edge.dependency_logical_artifact_id].append(
+                edge.dependent_logical_artifact_id
+            )
+        ready = tuple(
+            sorted(
+                (logical_id for logical_id, count in indegree.items() if count == 0),
+                key=member_order.__getitem__,
+            )
+        )
+        stages: list[tuple[str, ...]] = []
+        consumed: set[str] = set()
+        while ready:
+            stages.append(ready)
+            next_ready: set[str] = set()
+            for logical_id in ready:
+                consumed.add(logical_id)
+                for dependent_id in dependents[logical_id]:
+                    indegree[dependent_id] -= 1
+                    if indegree[dependent_id] == 0:
+                        next_ready.add(dependent_id)
+            ready = tuple(sorted(next_ready, key=member_order.__getitem__))
+        if consumed != set(member_order):
+            raise DataManagerOperationError(
+                "Artifact Collection dependency graph cannot be completely ordered"
+            )
+        return tuple(stages)
+
+    def _load_and_prove_member_artifact(
+        self,
+        collection: ArtifactCollectionRevisionV1,
+        member,
+        summary,
+        members: Mapping[str, object],
+        incoming_edges: Sequence[ArtifactCollectionDependencyV1],
+    ):
+        logical_id = member.version_key.logical_artifact_id
+        if summary.logical_artifact_id != logical_id:
+            raise DataManagerOperationError(
+                "managed Artifact logical identity disagrees with Collection member"
+            )
+        if summary.portable_recipe_id != member.portable_recipe_id:
+            raise DataManagerOperationError(
+                "managed Artifact semantic signature disagrees with Collection member"
+            )
+        if (
+            summary.tool_key != member.tool_key
+            or summary.kind != member.kind
+            or summary.output_names != member.output_names
+        ):
+            raise DataManagerOperationError(
+                "managed Artifact specification disagrees with Collection member"
+            )
+        version = self._artifacts.load_artifact_version(
+            collection.market_id, logical_id, summary.artifact_id
+        )
+        if version.portable_recipe_id != member.portable_recipe_id:
+            raise DataManagerOperationError(
+                "managed Artifact version semantic signature disagrees"
+            )
+        loaded = self._artifacts.load_artifact_by_id(
+            collection.market_id, summary.artifact_id
+        )
+        recipe = loaded.metadata.recipe
+        if (
+            loaded.metadata.artifact_id != summary.artifact_id
+            or recipe.market_id != collection.market_id
+            or recipe.tool_key != member.tool_key
+            or recipe.kind != member.kind
+            or recipe.output_names != member.output_names
+        ):
+            raise DataManagerOperationError(
+                "Artifact-owned calculation metadata disagrees with Collection member"
+            )
+        refs_by_role = {ref.role: ref for ref in recipe.source_artifacts}
+        edges_by_role = {edge.role: edge for edge in incoming_edges}
+        if len(edges_by_role) != len(incoming_edges):
+            raise DataManagerOperationError(
+                "Artifact Collection dependency roles must be unique per dependent"
+            )
+        if set(refs_by_role) != set(edges_by_role):
+            raise DataManagerOperationError(
+                "Artifact source references do not match Collection dependency roles"
+            )
+        dependency_sources: list[FinancialToolInputSource] = []
+        for role, edge in edges_by_role.items():
+            ref = refs_by_role[role]
+            if ref.output_name != edge.output_name:
+                raise DataManagerOperationError(
+                    "Artifact source output disagrees with Collection dependency edge"
+                )
+            dependency_member = members[edge.dependency_logical_artifact_id]
+            source_version = self._artifacts.load_artifact_version(
+                collection.market_id,
+                edge.dependency_logical_artifact_id,
+                ref.artifact_id,
+            )
+            if source_version.portable_recipe_id != dependency_member.portable_recipe_id:
+                raise DataManagerOperationError(
+                    "Artifact source version belongs to another semantic lineage"
+                )
+            source = self._artifacts.load_artifact_by_id(
+                collection.market_id, ref.artifact_id
+            )
+            if (
+                source.metadata.recipe.market_id != collection.market_id
+                or source.metadata.recipe.tool_key != dependency_member.tool_key
+                or source.metadata.recipe.kind != dependency_member.kind
+                or source.metadata.recipe.output_names != dependency_member.output_names
+                or ref.output_name not in source.metadata.recipe.output_names
+            ):
+                raise DataManagerOperationError(
+                    "Artifact source metadata disagrees with dependency lineage"
+                )
+            source_recipe = source.metadata.recipe
+            naming = dict(source_recipe.parameters)
+            naming.update(source_recipe.bindings)
+            signal = next(
+                (
+                    item
+                    for item in resolve_output_signals(source_recipe.tool_key, naming)
+                    if item.name == ref.output_name
+                ),
+                None,
+            )
+            if signal is None:
+                raise DataManagerOperationError(
+                    "Artifact source output metadata is unavailable"
+                )
+            dependency_sources.append(
+                FinancialToolInputSource(
+                    role,
+                    source_recipe.kind,
+                    ref.output_name,
+                    True,
+                    source_recipe.tool_key,
+                    edge.dependency_logical_artifact_id,
+                    signal.analysis_usable,
+                    signal.value_type,
+                )
+            )
+        try:
+            validate_financial_tool_inputs(
+                get_financial_tool_spec(recipe.tool_key),
+                dependency_sources,
+                parameters=recipe.parameters,
+                allow_partial_roles=True,
+                family_scope="dependencies",
+            )
+        except FinancialToolInputCompatibilityError as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+        return loaded
+
     def plan_artifact_collection_update(
         self, collection_id: str
     ) -> ArtifactCollectionUpdatePlan:
@@ -381,98 +564,107 @@ class DataManagerUpdateWorkflow:
             source_change = self.classify_source_change(
                 collection.source_ohlcv, collection.market_id
             )
-            roots_by_logical = {
-                member.version_key.logical_artifact_id: member.portable_recipe_id
+            members = {
+                member.version_key.logical_artifact_id: member
                 for member in collection.members
             }
-            roots = tuple(roots_by_logical[value] for value in collection.root_logical_artifact_ids)
-            graph = self._recipe_planner.plan(roots)
-            recipes = {
-                recipe_id: self._portable_recipes.load_recipe(recipe_id)
-                for recipe_id in graph.member_recipe_ids
-            }
-            managed = {
-                item.logical_artifact_id: item
-                for item in self._artifacts.list_managed_artifacts(collection.market_id)
-            }
-            root_set = set(roots)
-            node_by_recipe: dict[str, ArtifactUpdateNodePlan] = {}
+            logical_stages = self._artifact_execution_stages(collection)
+            member_order = tuple(
+                logical_id for stage in logical_stages for logical_id in stage
+            )
+            roots = tuple(
+                members[logical_id].portable_recipe_id
+                for logical_id in collection.root_logical_artifact_ids
+            )
+            member_recipe_ids = tuple(
+                members[logical_id].portable_recipe_id for logical_id in member_order
+            )
+            execution_stages = tuple(
+                tuple(members[logical_id].portable_recipe_id for logical_id in stage)
+                for stage in logical_stages
+            )
+            managed_by_logical: dict[str, list[object]] = {}
+            for item in self._artifacts.list_managed_artifacts(collection.market_id):
+                managed_by_logical.setdefault(item.logical_artifact_id, []).append(item)
+            incoming = self._incoming_collection_edges(collection)
+            root_set = set(collection.root_logical_artifact_ids)
+            node_by_logical: dict[str, ArtifactUpdateNodePlan] = {}
             nodes: list[ArtifactUpdateNodePlan] = []
             plan_blockers: list[str] = []
             current_source = source_change.current_source
-            for recipe_id in graph.member_recipe_ids:
-                recipe = recipes[recipe_id]
-                logical_id = compute_logical_artifact_id(collection.market_id, recipe_id)
-                summary = managed.get(logical_id)
+            for logical_id in member_order:
+                member = members[logical_id]
+                summaries = tuple(managed_by_logical.get(logical_id, ()))
+                summary = summaries[0] if len(summaries) == 1 else None
                 blockers: list[str] = []
-                dependency_ids = tuple(
-                    compute_logical_artifact_id(collection.market_id, item.recipe_id)
-                    for item in recipe.dependencies
-                )
-                if recipe.tool_key == "dynamic_binning":
-                    blockers.append("dynamic_binning cannot be materialized")
-                for dependency in recipe.dependencies:
-                    dependency_node = node_by_recipe.get(dependency.recipe_id)
+                edges = incoming[logical_id]
+                dependency_ids = tuple(dict.fromkeys(
+                    edge.dependency_logical_artifact_id for edge in edges
+                ))
+                if len(summaries) > 1:
+                    blockers.append("managed Artifact head is not unique")
+                for dependency_id in dependency_ids:
+                    dependency_node = node_by_logical.get(dependency_id)
                     if dependency_node is None or dependency_node.action == "BLOCKED":
                         blockers.append("dependency update is blocked")
                 current_artifact_id = None
+                loaded = None
                 if summary is None or not summary.valid:
-                    blockers.append(
-                        "managed Artifact is unavailable"
-                        if summary is None
-                        else summary.rejection_reason
-                    )
+                    if len(summaries) <= 1:
+                        blockers.append(
+                            "managed Artifact is unavailable"
+                            if summary is None
+                            else summary.rejection_reason
+                        )
                 else:
                     current_artifact_id = summary.artifact_id
-                    if summary.portable_recipe_id != recipe_id:
-                        blockers.append("managed portable Recipe identity disagrees")
+                    try:
+                        loaded = self._load_and_prove_member_artifact(
+                            collection, member, summary, members, edges
+                        )
+                    except (ArtifactError, DataManagerOperationError, KeyError, ValueError) as exc:
+                        blockers.append(str(exc))
+                recipe = None if loaded is None else loaded.metadata.recipe
+                if recipe is not None and recipe.tool_key == "dynamic_binning":
+                    blockers.append("dynamic_binning cannot be materialized")
                 action = "UPDATE"
                 if blockers or current_source is None:
                     if current_source is None:
                         blockers.append("accepted OHLCV source is unavailable")
                     action = "BLOCKED"
-                elif summary is not None and summary.valid:
-                    try:
-                        loaded = self._artifacts.load_artifact_by_id(
-                            collection.market_id, summary.artifact_id
-                        )
-                        dependency_heads = {
-                            item.recipe_id: node_by_recipe[item.recipe_id].current_artifact_id
-                            for item in recipe.dependencies
-                        }
-                        expected_refs = _source_refs(
-                            recipe,
-                            {
-                                key: value
-                                for key, value in dependency_heads.items()
-                                if value is not None
-                            },
-                        )
-                        parameters, bindings = _target_configuration(recipe)
-                        if (
-                            loaded.metadata.source_ohlcv == current_source
-                            and loaded.metadata.recipe.tool_key == recipe.tool_key
-                            and dict(loaded.metadata.recipe.parameters) == parameters
-                            and dict(loaded.metadata.recipe.bindings) == bindings
-                            and loaded.metadata.recipe.output_names == recipe.output_names
-                            and loaded.metadata.recipe.source_artifacts == expected_refs
-                            and all(
-                                node_by_recipe[item.recipe_id].action == "REUSE_CURRENT"
-                                for item in recipe.dependencies
-                            )
-                        ):
-                            action = "REUSE_CURRENT"
-                    except (ArtifactError, ArtifactMaterializationValidationError, KeyError, ValueError) as exc:
-                        blockers.append(str(exc))
-                        action = "BLOCKED"
-                parameters, _bindings = _target_configuration(recipe)
-                policy = get_financial_tool_spec(recipe.tool_key).update_policy
-                context = policy.effective_context_rows(parameters)
+                elif loaded is not None:
+                    current_refs = {ref.role: ref for ref in loaded.metadata.recipe.source_artifacts}
+                    dependencies_reused = all(
+                        node_by_logical[dependency_id].action == "REUSE_CURRENT"
+                        for dependency_id in dependency_ids
+                    )
+                    refs_are_current = all(
+                        current_refs[edge.role].artifact_id
+                        == node_by_logical[
+                            edge.dependency_logical_artifact_id
+                        ].current_artifact_id
+                        for edge in edges
+                    )
+                    if (
+                        loaded.metadata.source_ohlcv == current_source
+                        and dependencies_reused
+                        and refs_are_current
+                    ):
+                        action = "REUSE_CURRENT"
+                policy = get_financial_tool_spec(member.tool_key).update_policy
+                try:
+                    context = policy.effective_context_rows(
+                        {} if recipe is None else recipe.parameters
+                    )
+                except (TypeError, ValueError) as exc:
+                    blockers.append(str(exc))
+                    context = 0
+                    action = "BLOCKED"
                 node = ArtifactUpdateNodePlan(
-                    portable_recipe_id=recipe_id,
+                    portable_recipe_id=member.portable_recipe_id,
                     logical_artifact_id=logical_id,
-                    tool_key=recipe.tool_key,
-                    role="ROOT" if recipe_id in root_set else "SUPPORT",
+                    tool_key=member.tool_key,
+                    role="ROOT" if logical_id in root_set else "SUPPORT",
                     action=action,
                     current_artifact_id=current_artifact_id,
                     dependency_logical_artifact_ids=dependency_ids,
@@ -482,8 +674,10 @@ class DataManagerUpdateWorkflow:
                     blockers=tuple(blockers),
                 )
                 nodes.append(node)
-                node_by_recipe[recipe_id] = node
-                plan_blockers.extend(f"{recipe_id}: {value}" for value in blockers)
+                node_by_logical[logical_id] = node
+                plan_blockers.extend(
+                    f"{member.portable_recipe_id}: {value}" for value in blockers
+                )
             starting_heads = tuple(
                 (node.logical_artifact_id, node.current_artifact_id)
                 for node in nodes
@@ -496,9 +690,9 @@ class DataManagerUpdateWorkflow:
                 "source": _source_payload(current_source),
                 "source_status": source_change.status,
                 "roots": list(roots),
-                "members": list(graph.member_recipe_ids),
+                "members": list(member_recipe_ids),
                 "heads": [list(value) for value in sorted(starting_heads)],
-                "stages": [list(value) for value in graph.execution_stages],
+                "stages": [list(value) for value in execution_stages],
                 "nodes": [
                     {
                         "recipe_id": node.portable_recipe_id,
@@ -520,22 +714,21 @@ class DataManagerUpdateWorkflow:
                 source_change=source_change,
                 source_ohlcv=current_source,
                 root_recipe_ids=roots,
-                member_recipe_ids=graph.member_recipe_ids,
+                member_recipe_ids=member_recipe_ids,
                 root_logical_artifact_ids=collection.root_logical_artifact_ids,
                 support_logical_artifact_ids=collection.support_logical_artifact_ids,
                 starting_artifact_heads=starting_heads,
-                execution_stages=graph.execution_stages,
+                execution_stages=execution_stages,
                 nodes=tuple(nodes),
                 blockers=tuple(plan_blockers),
             )
         except (
             ArtifactError,
             DataManagerCreationError,
-            PortableRecipeGraphError,
-            PortableRecipeStoreError,
             ArtifactMaterializationValidationError,
             FileNotFoundError,
             KeyError,
+            TypeError,
             ValueError,
         ) as exc:
             if isinstance(exc, DataManagerOperationError):
@@ -566,11 +759,13 @@ class DataManagerUpdateWorkflow:
                 plan.market_id, cancellation_requested=cancelled
             )
             target_frame = _dataset_frame(dataset)
-            recipes = {
-                recipe_id: self._portable_recipes.load_recipe(recipe_id)
-                for recipe_id in plan.member_recipe_ids
+            collection = self._creation.load_artifact_collection(plan.collection_id)
+            incoming = self._incoming_collection_edges(collection)
+            nodes = {node.logical_artifact_id: node for node in plan.nodes}
+            logical_by_recipe = {
+                node.portable_recipe_id: node.logical_artifact_id for node in plan.nodes
             }
-            nodes = {node.portable_recipe_id: node for node in plan.nodes}
+            recipes: dict[str, ArtifactRecipeV1] = {}
             frames: dict[str, pd.DataFrame] = {}
             metadata: dict[str, ArtifactMetadataV1] = {}
             artifact_ids: dict[str, str] = {}
@@ -582,43 +777,53 @@ class DataManagerUpdateWorkflow:
                         raise DataManagerOperationError(
                             "Artifact Collection update cancelled"
                         )
-                    node = nodes[recipe_id]
+                    logical_id = logical_by_recipe[recipe_id]
+                    node = nodes[logical_id]
+                    loaded = self._artifacts.load_artifact_by_id(
+                        plan.market_id, node.current_artifact_id
+                    )
+                    recipes[logical_id] = loaded.metadata.recipe
                     if node.action == "REUSE_CURRENT":
                         if node.current_artifact_id is None:
                             raise DataManagerOperationError("reused node has no Artifact")
-                        loaded = self._artifacts.load_artifact_by_id(
-                            plan.market_id, node.current_artifact_id
-                        )
-                        frames[recipe_id] = loaded.frame
-                        metadata[recipe_id] = loaded.metadata
-                        artifact_ids[recipe_id] = node.current_artifact_id
+                        frames[logical_id] = loaded.frame
+                        metadata[logical_id] = loaded.metadata
+                        artifact_ids[logical_id] = node.current_artifact_id
                         continue
-                    recipe = recipes[recipe_id]
+                    recipe = recipes[logical_id]
                     result = self._calculate_updated_node(
                         recipe,
-                        recipes,
                         node,
                         plan.source_change,
                         target_frame,
                         frames,
+                        incoming[logical_id],
                     )
-                    calculations[recipe_id] = result
-                    frames[recipe_id] = result.to_frame()
+                    calculations[logical_id] = result
+                    frames[logical_id] = result.to_frame()
             prepared = []
             for recipe_id in plan.member_recipe_ids:
-                node = nodes[recipe_id]
+                logical_id = logical_by_recipe[recipe_id]
+                node = nodes[logical_id]
                 if node.action == "REUSE_CURRENT":
                     continue
-                recipe = recipes[recipe_id]
-                refs = _source_refs(recipe, artifact_ids)
+                refs = tuple(
+                    ArtifactSourceRefV1(
+                        edge.role,
+                        artifact_ids[edge.dependency_logical_artifact_id],
+                        edge.output_name,
+                    )
+                    for edge in incoming[logical_id]
+                )
                 source_metadata = tuple({
-                    metadata[item.recipe_id].artifact_id: metadata[item.recipe_id]
-                    for item in recipe.dependencies
+                    metadata[edge.dependency_logical_artifact_id].artifact_id:
+                    metadata[edge.dependency_logical_artifact_id]
+                    for edge in incoming[logical_id]
                 }.values())
                 candidate = self._artifacts.prepare_managed_calculation(
                     plan.market_id,
                     recipe_id,
-                    calculations[recipe_id],
+                    calculations[logical_id],
                     expected_source=plan.source_ohlcv,
                     source_artifacts=refs,
                     source_metadata=source_metadata,
@@ -626,8 +831,8 @@ class DataManagerUpdateWorkflow:
                     created_at_utc=operation_time,
                 )
                 prepared.append(candidate)
-                artifact_ids[recipe_id] = candidate.metadata.artifact_id
-                metadata[recipe_id] = candidate.metadata
+                artifact_ids[logical_id] = candidate.metadata.artifact_id
+                metadata[logical_id] = candidate.metadata
             if cancelled():
                 raise DataManagerOperationError("Artifact Collection update cancelled")
             if prepared:
@@ -646,7 +851,7 @@ class DataManagerUpdateWorkflow:
                 reused_ids = tuple(artifact_ids.values())
                 created_keys = ()
                 reused_keys = tuple(
-                    ManagedArtifactVersionKey(nodes[key].logical_artifact_id, value)
+                    ManagedArtifactVersionKey(key, value)
                     for key, value in artifact_ids.items()
                 )
                 advanced_ids = ()
@@ -655,7 +860,7 @@ class DataManagerUpdateWorkflow:
                 for item in self._artifacts.list_managed_artifacts(plan.market_id)
             }
             entries = tuple(
-                self._managed_entry(current[nodes[recipe_id].logical_artifact_id])
+                self._managed_entry(current[logical_by_recipe[recipe_id]])
                 for recipe_id in plan.member_recipe_ids
             )
             materialization = DataManagerArtifactMaterializationResult(
@@ -667,16 +872,22 @@ class DataManagerUpdateWorkflow:
                 created_artifact_ids=tuple(created_ids),
                 reused_artifact_ids=tuple(
                     dict.fromkeys(
-                        (*reused_ids, *(artifact_ids[key] for key in plan.member_recipe_ids if nodes[key].action == "REUSE_CURRENT"))
+                        (*reused_ids, *(
+                            artifact_ids[logical_by_recipe[key]]
+                            for key in plan.member_recipe_ids
+                            if nodes[logical_by_recipe[key]].action == "REUSE_CURRENT"
+                        ))
                     )
                 ),
                 created_version_keys=tuple(created_keys),
                 reused_version_keys=tuple(
                     dict.fromkeys(
                         (*reused_keys, *(
-                            ManagedArtifactVersionKey(nodes[key].logical_artifact_id, artifact_ids[key])
+                            ManagedArtifactVersionKey(
+                                logical_by_recipe[key], artifact_ids[logical_by_recipe[key]]
+                            )
                             for key in plan.member_recipe_ids
-                            if nodes[key].action == "REUSE_CURRENT"
+                            if nodes[logical_by_recipe[key]].action == "REUSE_CURRENT"
                         ))
                     )
                 ),
@@ -699,7 +910,6 @@ class DataManagerUpdateWorkflow:
         except (
             ArtifactError,
             DataManagerCreationError,
-            PortableRecipeStoreError,
             ArtifactMaterializationValidationError,
             FileNotFoundError,
             KeyError,
@@ -1259,16 +1469,45 @@ class DataManagerUpdateWorkflow:
         return terminal == previous.last_timestamp_ms
 
     def _calculate_updated_node(
-        self, recipe, recipes, node, source_change, target_frame, dependency_frames
+        self,
+        recipe,
+        node,
+        source_change,
+        target_frame,
+        dependency_frames,
+        incoming_edges,
     ) -> FinancialToolCalculationResult:
+        refs_by_role = {ref.role: ref for ref in recipe.source_artifacts}
+
+        def calculate(frame, frames):
+            dependencies = tuple(
+                (
+                    refs_by_role[edge.role],
+                    frames.get(edge.dependency_logical_artifact_id),
+                )
+                for edge in incoming_edges
+            )
+            if any(frame is None for _ref, frame in dependencies):
+                missing = next(
+                    edge.dependency_logical_artifact_id
+                    for edge in incoming_edges
+                    if frames.get(edge.dependency_logical_artifact_id) is None
+                )
+                raise ArtifactMaterializationValidationError(
+                    f"dependency result is unavailable: {missing}"
+                )
+            return _calculate_artifact_recipe(
+                recipe,
+                frame,
+                tuple((ref, value) for ref, value in dependencies if value is not None),
+            )
+
         if (
             source_change.status != "APPEND_ONLY"
             or node.current_artifact_id is None
             or node.update_strategy is not UpdateStrategy.OVERLAP_RECALCULATION
         ):
-            return _calculate_recipe(
-                recipe, recipes, target_frame, dependency_frames
-            ).result
+            return calculate(target_frame, dependency_frames)
         previous = self._artifacts.load_artifact_by_id(
             source_change.market_id, node.current_artifact_id
         ).frame
@@ -1276,17 +1515,13 @@ class DataManagerUpdateWorkflow:
         start = max(0, preserve_count - node.context_rows)
         comparison_start = start + max(0, node.context_rows - 1)
         if comparison_start >= preserve_count:
-            return _calculate_recipe(
-                recipe, recipes, target_frame, dependency_frames
-            ).result
+            return calculate(target_frame, dependency_frames)
         target_slice = target_frame.iloc[start:].reset_index(drop=True)
         dependency_slices = {
             key: value.iloc[start:].reset_index(drop=True)
             for key, value in dependency_frames.items()
         }
-        recalculated = _calculate_recipe(
-            recipe, recipes, target_slice, dependency_slices
-        ).result
+        recalculated = calculate(target_slice, dependency_slices)
         replacement = recalculated.to_frame()
         old_overlap = previous.iloc[comparison_start:preserve_count].reset_index(drop=True)
         new_overlap = replacement.loc[

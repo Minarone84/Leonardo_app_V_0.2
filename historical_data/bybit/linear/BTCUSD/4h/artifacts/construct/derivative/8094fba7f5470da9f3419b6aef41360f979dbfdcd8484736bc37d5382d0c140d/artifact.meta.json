@@ -1,0 +1,60 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "8094fba7f5470da9f3419b6aef41360f979dbfdcd8484736bc37d5382d0c140d",
+  "created_at_utc": "2026-08-11T19:58:41.299194Z",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "recipe": {
+    "bindings": {
+      "source": "__research_source"
+    },
+    "created_at_utc": "2026-08-11T19:58:41.299194Z",
+    "description": "",
+    "display_name": "derivative",
+    "kind": "construct",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "research_source__d1"
+    ],
+    "parameters": {
+      "order": 1
+    },
+    "recipe_id": "31da383a38aa5ed09ea42f44bced6367f24ef26da5439f478d87a537d7e3241d",
+    "schema_version": "1.0",
+    "source_artifacts": [
+      {
+        "artifact_id": "d295a159abd1914270a30c2bc3bc47e735490041974b234433182adcf41bcd99",
+        "output_name": "slow_vwap",
+        "role": "source"
+      }
+    ],
+    "tool_key": "derivative"
+  },
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "8e6fe8b678375c548fc3f6f88414843bdce971bcaa8f344470a9cec288386254"
+}

@@ -512,6 +512,7 @@ class DataManagerPortableRecipeEntry:
     kind: str
     parameters: Mapping[str, object]
     output_names: tuple[str, ...]
+    input_bindings: tuple[str, ...]
     dependency_count: int
     ohlcv_input_count: int
     origin_market_ids: tuple[MarketId, ...]
@@ -536,6 +537,9 @@ class DataManagerPortableRecipeEntry:
             _freeze_portable_parameter(self.parameters),
         )
         object.__setattr__(self, "output_names", _text_tuple(self.output_names, "output_names", allow_empty=True))
+        object.__setattr__(self, "input_bindings", _text_tuple(
+            self.input_bindings, "input_bindings", allow_empty=True
+        ))
         if any(type(value) is not int or value < 0 for value in (self.dependency_count, self.ohlcv_input_count, self.provenance_count)):
             raise ValueError("portable Recipe counts must be non-negative integers")
         markets = tuple(self.origin_market_ids)
@@ -619,6 +623,7 @@ class DataManagerRecipeCollectionEntry:
     description: str
     root_count: int
     member_count: int
+    member_recipe_ids: tuple[str, ...]
     dependency_edge_count: int
     execution_stage_count: int
     created_at_utc: datetime | None
@@ -637,6 +642,18 @@ class DataManagerRecipeCollectionEntry:
         )
         if any(type(value) is not int or value < 0 for value in counts):
             raise ValueError("Recipe Collection counts must be non-negative integers")
+        members = _text_tuple(
+            self.member_recipe_ids,
+            "member_recipe_ids",
+            allow_empty=not self.valid,
+        )
+        if len(set(members)) != len(members):
+            raise ValueError("member_recipe_ids must be unique")
+        for recipe_id in members:
+            _sha(recipe_id, "member_recipe_id")
+        if self.valid and len(members) != self.member_count:
+            raise ValueError("member_recipe_ids must match member_count")
+        object.__setattr__(self, "member_recipe_ids", members)
         object.__setattr__(self, "created_at_utc", _aware_datetime(self.created_at_utc, "created_at_utc"))
         object.__setattr__(self, "updated_at_utc", _aware_datetime(self.updated_at_utc, "updated_at_utc"))
         _require_validity(self.valid, self.rejection_reason)

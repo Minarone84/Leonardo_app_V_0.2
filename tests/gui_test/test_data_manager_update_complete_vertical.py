@@ -59,8 +59,17 @@ def _open_data_manager(app: LeonardoApp):
 
 
 def _select_catalog_identity(catalog, identity: str) -> None:
+    identity_label = {
+        "Artifact Collections": "Collection ID",
+        "Databases": "Database ID",
+    }[catalog.current_family]
+    identity_column = next(
+        column
+        for column in range(catalog.table.columnCount())
+        if catalog.table.horizontalHeaderItem(column).text() == identity_label
+    )
     for row in range(catalog.table.rowCount()):
-        if catalog.table.item(row, 0).text() == identity:
+        if catalog.table.item(row, identity_column).text() == identity:
             catalog.table.selectRow(row)
             return
     raise AssertionError(f"Catalog identity not found: {identity}")
@@ -124,8 +133,8 @@ def test_update_plans_render_structured_nodes_and_commit_evidence() -> None:
             blockers=(),
         ))
         assert workspace.artifact_plan_table.rowCount() == 1
-        assert workspace.artifact_plan_table.item(0, 5).text() == "OVERLAP_RECALCULATION"
-        assert workspace.database_plan_table.item(0, 1).text() == "APPEND"
+        assert workspace.artifact_plan_table.item(0, 3).text() == "OVERLAP_RECALCULATION"
+        assert workspace.database_plan_table.item(0, 0).text() == "APPEND"
     finally:
         workspace.close()
 
@@ -316,10 +325,10 @@ def test_real_gui_update_append_restart_and_explicit_rebuild(tmp_path) -> None:
         update.buttons["data_manager.update.button.execute_artifacts"].click()
         _settle(presenter)
         validation = update.collection_validation_table
-        assert validation.item(0, 0).text() == collection.collection_id
+        assert validation.item(0, 6).text() == collection.collection_id
+        assert validation.item(0, 7).text()
+        assert validation.item(0, 8).text()
         assert validation.item(0, 1).text()
-        assert validation.item(0, 3).text()
-        assert validation.item(0, 5).text()
 
         update.database_combo.setCurrentIndex(
             update.database_combo.findData(database.database_id)
@@ -367,6 +376,8 @@ def test_real_gui_update_append_restart_and_explicit_rebuild(tmp_path) -> None:
     _composition, main, window, presenter = _open_data_manager(restarted)
     try:
         window.confirm_database_rebuild = lambda _plan: True
+        assert window.select_market(MARKET)
+        _settle(presenter)
         revisions = restarted.data_manager_domain.list_database_revisions(
             database.database_id
         )
@@ -429,9 +440,9 @@ def test_real_gui_update_append_restart_and_explicit_rebuild(tmp_path) -> None:
             _select_catalog_identity(catalog, identity)
             _settle(presenter)
             assert catalog.history.rowCount() >= 3
-            first_revision = catalog.history.item(0, 0).text()
+            first_revision = catalog.history.item(0, 2).text()
             last_revision = catalog.history.item(
-                catalog.history.rowCount() - 1, 0
+                catalog.history.rowCount() - 1, 2
             ).text()
             catalog.history.selectRow(0)
             assert _inspector_fields(window)[field_name] == first_revision

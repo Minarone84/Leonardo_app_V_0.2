@@ -1,0 +1,15 @@
+{
+  "artifact_id": "f801cfd30b0079150b6bbe00ddf3ab359130ef8e8a9cc50c93444e9f63baa7b1",
+  "created_at_utc": "2026-08-16T08:37:01.773327Z",
+  "logical_artifact_id": "584b860132210bfc736abba481a4eb364e71709733dc087d8ffaf730e25bba7f",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "object_type": "artifact_version_record",
+  "portable_recipe_id": "3605b485df542811a8ca4c776e7c6cee8410f1169e1e190dedc002b606a81601",
+  "previous_artifact_id": null,
+  "schema_version": "1.0"
+}

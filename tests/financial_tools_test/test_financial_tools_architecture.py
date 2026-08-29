@@ -28,9 +28,14 @@ def test_public_package_exports_only_frozen_task_api() -> None:
 
 def test_package_contains_only_authorized_task_modules() -> None:
     assert {path.name for path in PACKAGE.glob("*.py")} == {
-        "__init__.py", "calculation.py", "calculation_models.py", "models.py", "naming.py",
-        "specifications.py",
+        "__init__.py", "calculation.py", "calculation_models.py",
+        "construct_input_eligibility.py", "models.py", "naming.py", "specifications.py",
     }
+    assert {
+        path.name
+        for path in PACKAGE.iterdir()
+        if path.is_file() and path.suffix != ".py"
+    } == {"construct_input_eligibility.json"}
     assert {path.name for path in (PACKAGE / "_calculation").glob("*.py")} == {
         "__init__.py", "common.py", "constructs.py", "dynamic_binning.py", "indicators.py",
         "oscillators.py", "universal_trend_classifier.py",
@@ -93,7 +98,14 @@ def test_only_the_accepted_public_calculation_entry_point_is_created() -> None:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
         )
     assert ("calculation.py", "calculate_financial_tool") in public_functions
-    assert not any(name.startswith(("compute", "execute", "persist", "save", "load")) for _, name in public_functions)
+    assert not any(
+        name.startswith(("compute", "execute", "persist", "save", "load"))
+        and (path_name, name) != (
+            "construct_input_eligibility.py",
+            "load_construct_input_eligibility",
+        )
+        for path_name, name in public_functions
+    )
 
 
 def test_no_filesystem_persistence_calls_are_created() -> None:
@@ -110,6 +122,14 @@ def test_no_filesystem_persistence_calls_are_created() -> None:
                 elif isinstance(node.func, ast.Attribute):
                     name = node.func.attr
                 else:
+                    continue
+                if name == "open" and path.name == "construct_input_eligibility.py":
+                    assert isinstance(node.func, ast.Attribute), (path, name)
+                    assert (
+                        node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and node.args[0].value == "r"
+                    ), (path, name)
                     continue
                 assert name not in forbidden_calls, (path, name)
 

@@ -1,0 +1,16 @@
+{
+  "dependencies": [],
+  "kind": "oscillator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "mfi_14"
+  ],
+  "parameters": {
+    "period": 14
+  },
+  "recipe_id": "e26a83a34a8c2dc143530825ad428b0854c369c8b84e7c62fce16d8dd2555cab",
+  "schema_version": "1.0",
+  "tool_key": "mfi",
+  "tool_version": "1.0"
+}

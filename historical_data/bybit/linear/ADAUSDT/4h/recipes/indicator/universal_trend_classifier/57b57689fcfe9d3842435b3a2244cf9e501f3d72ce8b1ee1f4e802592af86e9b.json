@@ -1,0 +1,84 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-08-09T18:29:11.415367Z",
+  "description": "",
+  "display_name": "universal_trend_classifier",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "ADAUSDT",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "horizontal_range",
+    "hr_start",
+    "hr_end",
+    "hor_upper",
+    "hor_lower",
+    "uptrend",
+    "uptrend_start",
+    "uptrend_end",
+    "downtrend",
+    "downtrend_start",
+    "downtrend_end",
+    "hr_uptrend",
+    "hr_downtrend",
+    "hr_start_marker",
+    "hr_end_marker",
+    "uptrend_start_marker",
+    "uptrend_end_marker",
+    "downtrend_start_marker",
+    "downtrend_end_marker",
+    "hr_breakout_attempt",
+    "hr_pending_breakout",
+    "hr_breakout_confirmed",
+    "hr_false_breakout",
+    "hr_reclaim",
+    "hr_break_direction",
+    "hr_break_extreme",
+    "hr_reclaim_marker"
+  ],
+  "parameters": {
+    "fractal_window": 5,
+    "hr_break_mode": "close",
+    "hr_min_inside_ratio": 0.8,
+    "hr_trend_atr_len": 500,
+    "hr_trend_atr_mult": 1.0,
+    "hr_trend_length": 20,
+    "hr_trend_max_gap": 20,
+    "hr_trend_tol_mult": 0.3,
+    "min_hr_band_perc": 0.005,
+    "min_range_swings": 4,
+    "peak_column": "peak_fractal_5",
+    "range_fractal_window": 3,
+    "source": "close",
+    "trend_fractal_window": 5,
+    "trough_column": "trough_fractal_5"
+  },
+  "recipe_id": "57b57689fcfe9d3842435b3a2244cf9e501f3d72ce8b1ee1f4e802592af86e9b",
+  "schema_version": "1.0",
+  "source_artifacts": [
+    {
+      "artifact_id": "efb8dc9b6ce45b6925796ca43b1c1e4bfda0d36fdee1d713652759787371ce03",
+      "output_name": "peak_fractal_3",
+      "role": "range_peak"
+    },
+    {
+      "artifact_id": "efb8dc9b6ce45b6925796ca43b1c1e4bfda0d36fdee1d713652759787371ce03",
+      "output_name": "trough_fractal_3",
+      "role": "range_trough"
+    },
+    {
+      "artifact_id": "efb8dc9b6ce45b6925796ca43b1c1e4bfda0d36fdee1d713652759787371ce03",
+      "output_name": "peak_fractal_5",
+      "role": "trend_peak"
+    },
+    {
+      "artifact_id": "efb8dc9b6ce45b6925796ca43b1c1e4bfda0d36fdee1d713652759787371ce03",
+      "output_name": "trough_fractal_5",
+      "role": "trend_trough"
+    }
+  ],
+  "tool_key": "universal_trend_classifier"
+}

@@ -753,6 +753,76 @@ def test_braid_instability_transitive_graph_materializes_shared_dependencies_onc
     assert len(artifacts.list_managed_artifacts(market)) == 7
 
 
+def test_cross_family_braids_and_instability_materialize_with_exact_lineage(
+    tmp_path: Path,
+) -> None:
+    market, service, artifacts, recipes, _root, _environments = _domain(tmp_path)
+    sma = _leaf("sma", {"period": 3})
+    rsi = _leaf("rsi", {"period": 3})
+    derivative = _construct("derivative", {"order": 1}, (("source", sma),))
+    sources = (("fast", sma), ("mid", rsi), ("slow", derivative))
+    braids = _construct("braids", {"tie_policy": "carry"}, sources)
+    instability = _construct("braid_instability", {"n": 3}, sources)
+    for recipe in (sma, rsi, derivative, braids, instability):
+        recipes.save_recipe(recipe)
+
+    plan = service.plan_artifact_materialization(
+        DataManagerArtifactMaterializationRequest(
+            market, (braids.recipe_id, instability.recipe_id)
+        )
+    )
+    assert not plan.blocked
+    result = service.execute_artifact_materialization(plan)
+    roots = {
+        item.portable_recipe_id: item
+        for item in result.managed_artifacts
+        if item.logical_artifact_id in result.root_logical_artifact_ids
+    }
+    assert set(roots) == {braids.recipe_id, instability.recipe_id}
+    for recipe in (braids, instability):
+        loaded = artifacts.load_artifact_by_id(
+            market, roots[recipe.recipe_id].artifact_id
+        )
+        assert tuple(ref.role for ref in loaded.metadata.recipe.source_artifacts) == (
+            "fast", "mid", "slow"
+        )
+        assert {
+            ref.output_name for ref in loaded.metadata.recipe.source_artifacts
+        } == {sma.output_names[0], rsi.output_names[0], derivative.output_names[0]}
+        assert loaded.metadata.source_ohlcv == plan.source_ohlcv
+
+
+def test_portable_recipe_braid_with_raw_ohlc_sources_remains_blocked(
+    tmp_path: Path,
+) -> None:
+    market, service, _artifacts, recipes, _root, _environments = _domain(tmp_path)
+    parameters = dict(resolve_parameters("braids", {"tie_policy": "carry"}))
+    naming = {**parameters, "fast": "high", "mid": "close", "slow": "low"}
+    braid = build_portable_recipe(
+        tool_key="braids",
+        kind="construct",
+        parameters=parameters,
+        output_names=resolve_output_names("braids", naming),
+        ohlcv_inputs=(
+            PortableRecipeOHLCVInputV1("fast", "high"),
+            PortableRecipeOHLCVInputV1("mid", "close"),
+            PortableRecipeOHLCVInputV1("slow", "low"),
+        ),
+    )
+    recipes.save_recipe(braid)
+
+    plan = service.plan_artifact_materialization(
+        DataManagerArtifactMaterializationRequest(market, (braid.recipe_id,))
+    )
+
+    assert plan.blocked
+    assert any(
+        "braids source-family mismatch" in blocker
+        for node in plan.nodes
+        for blocker in node.blockers
+    )
+
+
 def test_utc_materializes_four_outputs_from_one_peaks_troughs_owner(
     tmp_path: Path,
 ) -> None:
@@ -948,6 +1018,79 @@ def test_changed_accepted_source_advances_one_immutable_version(tmp_path: Path) 
     )
     assert newest.previous_artifact_id == first_artifact_id
     assert artifacts.load_artifact_by_id(market, first_artifact_id).metadata.artifact_id == first_artifact_id
+
+
+def test_managed_history_survives_recipe_deletion_and_service_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    market, service, artifacts, recipes, historical_root, _environments = _domain(
+        tmp_path
+    )
+    sma = _leaf("sma")
+    recipes.save_recipe(sma)
+    result = service.execute_artifact_materialization(
+        service.plan_artifact_materialization(
+            DataManagerArtifactMaterializationRequest(market, (sma.recipe_id,))
+        )
+    )
+    managed = result.managed_artifacts[0]
+    logical_id = managed.logical_artifact_id
+    artifact_id = managed.artifact_id
+    persisted_versions = artifacts.list_artifact_versions(market, logical_id)
+
+    deleted = service.delete_portable_recipe(sma.recipe_id)
+    assert deleted.recipe_id == sma.recipe_id
+    assert recipes.list_recipe_summaries() == ()
+
+    history = service.list_managed_artifact_versions(market, logical_id)
+    inspection = service.inspect_managed_artifact(market, logical_id)
+    assert history == inspection
+
+    def reject_recipe_access(_recipe_id: str):
+        raise AssertionError("managed Artifact history consulted Recipe Store")
+
+    monkeypatch.setattr(recipes, "load_recipe", reject_recipe_access)
+    history = service.list_managed_artifact_versions(market, logical_id)
+    inspection = service.inspect_managed_artifact(market, logical_id)
+    assert history == inspection
+    assert history.current.logical_artifact_id == logical_id
+    assert history.current.artifact_id == artifact_id
+    assert history.current.portable_recipe_id == sma.recipe_id
+    assert history.versions == persisted_versions
+    assert all(
+        version.portable_recipe_id == sma.recipe_id
+        for version in history.versions
+    )
+    loaded = artifacts.load_artifact_by_id(market, artifact_id)
+    assert len(loaded.frame.index) > 0
+    assert loaded.metadata.artifact_id == artifact_id
+    assert loaded.metadata.recipe.tool_key == sma.tool_key
+
+    restarted_recipes = PortableRecipeStore(recipes.root_dir)
+    restarted_artifacts = ArtifactService(historical_root)
+    restarted_catalog = AcceptedDatasetCatalog(historical_root)
+    restarted_service = DataManagerService(
+        restarted_catalog,
+        HistoricalDatasetLoader(restarted_catalog),
+        restarted_artifacts,
+        StudyEnvironmentStore(tmp_path / "study_environments"),
+        restarted_recipes,
+        PortableRecipeGraphPlanner(restarted_recipes),
+    )
+    assert restarted_recipes.list_recipe_summaries() == ()
+    monkeypatch.setattr(restarted_recipes, "load_recipe", reject_recipe_access)
+    restarted_history = restarted_service.list_managed_artifact_versions(
+        market, logical_id
+    )
+    restarted_inspection = restarted_service.inspect_managed_artifact(
+        market, logical_id
+    )
+    assert restarted_history == restarted_inspection == history
+    restarted_loaded = restarted_artifacts.load_artifact_by_id(
+        market, artifact_id
+    )
+    assert len(restarted_loaded.frame.index) > 0
+    assert restarted_loaded.metadata == loaded.metadata
 
 
 def test_later_calculation_failure_publishes_nothing(

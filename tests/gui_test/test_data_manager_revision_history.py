@@ -35,8 +35,9 @@ def test_exact_revision_history_remains_separate_from_current_inspection() -> No
         )
         assert workspace.inspector.rowCount() == 2
         assert workspace.history.rowCount() == 2
-        assert workspace.history.item(0, 0).text() == "revision-1"
-        assert workspace.history.item(1, 2).text() == "current"
+        assert workspace.history.item(0, 0).text() == "2026-08-01 00:00:00 UTC"
+        assert workspace.history.item(0, 2).text() == "revision-1"
+        assert workspace.history.item(1, 1).text() == "current"
     finally:
         workspace.close()
 
@@ -63,6 +64,10 @@ def test_history_selection_emits_exact_identity_and_replaces_only_inspector() ->
         workspace.set_history_items("ac_123", revisions)
         assert workspace.inspector.item(1, 1).text() == "current"
         assert workspace.history.rowCount() == 2
+        assert tuple(
+            workspace.history.horizontalHeaderItem(column).text()
+            for column in range(workspace.history.columnCount())
+        ) == ("Created", "State", "Revision ID")
 
         workspace.history.selectRow(0)
         assert observed[-1] == (

@@ -8,7 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QSize
 from PySide6.QtWidgets import QApplication
 
 from leonardo.core.app import LeonardoApp
@@ -39,6 +39,20 @@ def test_app_composes_one_functional_data_manager_service_and_window(tmp_path) -
         assert window is not None
         assert composition.data_manager_suite_presenter is not None
         assert window.isVisible()
+        assert window.isMaximized()
+        assert not window.isFullScreen()
+
+        window.showNormal()
+        window.resize(QSize(1110, 740))
+        QCoreApplication.processEvents()
+        assert not window.isMaximized()
+        restored_size = window.size()
+        main.action_for_id("main_window.open_data_manager_suite").trigger()
+        QCoreApplication.processEvents()
+        assert composition.data_manager_suite_window is window
+        assert not window.isMaximized()
+        assert not window.isFullScreen()
+        assert window.size() == restored_size
 
         select_button = window.button_for_id("data_manager.button.select_dataset")
         select_button.click()

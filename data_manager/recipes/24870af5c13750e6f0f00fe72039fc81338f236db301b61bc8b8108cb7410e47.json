@@ -1,0 +1,16 @@
+{
+  "dependencies": [],
+  "kind": "oscillator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "rsi_14"
+  ],
+  "parameters": {
+    "period": 14
+  },
+  "recipe_id": "24870af5c13750e6f0f00fe72039fc81338f236db301b61bc8b8108cb7410e47",
+  "schema_version": "1.0",
+  "tool_key": "rsi",
+  "tool_version": "1.0"
+}

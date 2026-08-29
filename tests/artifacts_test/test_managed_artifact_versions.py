@@ -22,6 +22,7 @@ from leonardo.artifacts import (
     compute_logical_artifact_id,
 )
 from leonardo.artifacts.serialization import encode_canonical_json
+from leonardo.artifacts._stores import _io_path
 from leonardo.data import MarketId
 from leonardo.financial_tools import calculate_financial_tool
 
@@ -34,6 +35,28 @@ OTHER_MARKET = MarketId("bybit", "linear", "ETHUSDT", "1m")
 PORTABLE_ID = "a" * 64
 OTHER_PORTABLE_ID = "b" * 64
 CREATED = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
+
+
+def _managed_deletion_fixture(tmp_path: Path):
+    market, frame = _accepted_dataset(tmp_path, market=MARKET)
+    service = ArtifactService(tmp_path)
+    source = service.capture_accepted_source(market)
+    target = service.prepare_managed_calculation(
+        market,
+        PORTABLE_ID,
+        calculate_financial_tool("sma", frame, {"period": 3}),
+        expected_source=source,
+        created_at_utc=CREATED,
+    )
+    service.publish_managed_artifact_graph((target,), expected_source=source)
+    head_path = service._store.head_path(market, target.logical_artifact_id)
+    version_path = service._store.version_record_path(
+        market, target.logical_artifact_id, target.metadata.artifact_id
+    )
+    payload_path = service._store.find_artifact_dirs(
+        market, target.metadata.artifact_id
+    )[0]
+    return service, market, target, head_path, version_path, payload_path
 
 
 def test_logical_identity_and_strict_managed_schemas() -> None:
@@ -497,6 +520,190 @@ def test_current_and_historical_managed_artifacts_cannot_be_deleted(
         market, "indicator", "ema", unmanaged.metadata.artifact_id
     )
     assert deleted.artifact_id == unmanaged.metadata.artifact_id
+
+
+def test_complete_managed_artifact_deletion_removes_only_owned_lineage(
+    tmp_path: Path,
+) -> None:
+    market, first_frame = _accepted_dataset(tmp_path, market=MARKET)
+    service = ArtifactService(tmp_path)
+    first_source = service.capture_accepted_source(market)
+    first = service.prepare_managed_calculation(
+        market,
+        PORTABLE_ID,
+        calculate_financial_tool("sma", first_frame, {"period": 3}),
+        expected_source=first_source,
+        created_at_utc=CREATED,
+    )
+    service.publish_managed_artifact_graph((first,), expected_source=first_source)
+    _market, second_frame = _accepted_dataset(tmp_path, market=MARKET, rows=97)
+    second_source = service.capture_accepted_source(market)
+    second = service.prepare_managed_calculation(
+        market,
+        PORTABLE_ID,
+        calculate_financial_tool("sma", second_frame, {"period": 4}),
+        expected_source=second_source,
+        previous_artifact_id=first.metadata.artifact_id,
+        created_at_utc=datetime(2026, 8, 3, 12, 1, tzinfo=UTC),
+    )
+    other = service.prepare_managed_calculation(
+        market,
+        OTHER_PORTABLE_ID,
+        calculate_financial_tool("ema", second_frame, {"period": 5}),
+        expected_source=second_source,
+        created_at_utc=datetime(2026, 8, 3, 12, 2, tzinfo=UTC),
+    )
+    service.publish_managed_artifact_graph(
+        (second, other), expected_source=second_source
+    )
+    recipe_path = service._store.recipe_path(
+        market,
+        second.metadata.recipe.kind,
+        second.metadata.recipe.tool_key,
+        second.metadata.recipe.recipe_id,
+    )
+    logical_lineage_path = service._store.head_path(
+        market, first.logical_artifact_id
+    ).parent
+    owned_payload_paths = tuple(
+        service._store.find_artifact_dirs(market, artifact_id)[0]
+        for artifact_id in (first.metadata.artifact_id, second.metadata.artifact_id)
+    )
+    owned_metadata_paths = tuple(
+        path / "artifact.meta.json" for path in owned_payload_paths
+    )
+    other_payload_path = service._store.find_artifact_dirs(
+        market, other.metadata.artifact_id
+    )[0]
+    other_metadata_path = other_payload_path / "artifact.meta.json"
+    other_metadata_bytes = _io_path(other_metadata_path).read_bytes()
+    callback_evidence: list[bool] = []
+
+    deleted = service.delete_managed_artifact(
+        market,
+        first.logical_artifact_id,
+        before_delete=lambda: callback_evidence.append(
+            service.load_artifact_head(market, first.logical_artifact_id)
+            == second.head
+        ),
+    )
+
+    assert deleted.logical_artifact_id == first.logical_artifact_id
+    assert deleted.artifact_id == second.metadata.artifact_id
+    assert callback_evidence == [True]
+    with pytest.raises(ArtifactNotFoundError):
+        service.load_artifact_head(market, first.logical_artifact_id)
+    assert not _io_path(logical_lineage_path).exists()
+    for artifact_id in (first.metadata.artifact_id, second.metadata.artifact_id):
+        with pytest.raises(ArtifactNotFoundError):
+            service.load_artifact_by_id(market, artifact_id)
+    assert not any(_io_path(path).exists() for path in owned_payload_paths)
+    assert not any(_io_path(path).exists() for path in owned_metadata_paths)
+    assert recipe_path.exists()
+    assert service.load_artifact_head(market, other.logical_artifact_id) == other.head
+    assert service.load_artifact_by_id(market, other.metadata.artifact_id).metadata == (
+        other.metadata
+    )
+    assert _io_path(other_payload_path).exists()
+    assert _io_path(other_metadata_path).read_bytes() == other_metadata_bytes
+
+
+@pytest.mark.parametrize(
+    ("location", "entry_name", "directory"),
+    (
+        ("versions", "unexpected.txt", False),
+        ("lineage", "unexpected.txt", False),
+        ("versions", "unexpected", True),
+    ),
+    ids=("versions-file", "lineage-file", "versions-directory"),
+)
+def test_managed_artifact_deletion_refuses_unexpected_lineage_evidence(
+    tmp_path: Path,
+    location: str,
+    entry_name: str,
+    directory: bool,
+) -> None:
+    (
+        service,
+        market,
+        target,
+        head_path,
+        version_path,
+        payload_path,
+    ) = _managed_deletion_fixture(tmp_path)
+    metadata_path = payload_path / "artifact.meta.json"
+    head_bytes = _io_path(head_path).read_bytes()
+    version_bytes = _io_path(version_path).read_bytes()
+    metadata_bytes = _io_path(metadata_path).read_bytes()
+    parent = version_path.parent if location == "versions" else head_path.parent
+    unexpected = parent / entry_name
+    if directory:
+        _io_path(unexpected).mkdir()
+    else:
+        _io_path(unexpected).write_text("unexpected", encoding="utf-8")
+    callback_values: list[bool] = []
+
+    with pytest.raises(ArtifactLineageError, match="inventory"):
+        service.delete_managed_artifact(
+            market,
+            target.logical_artifact_id,
+            before_delete=lambda: callback_values.append(True),
+        )
+
+    assert callback_values == []
+    assert _io_path(head_path).read_bytes() == head_bytes
+    assert _io_path(version_path).read_bytes() == version_bytes
+    assert _io_path(payload_path).exists()
+    assert _io_path(metadata_path).read_bytes() == metadata_bytes
+    assert _io_path(unexpected).exists()
+
+
+def test_managed_artifact_deletion_refuses_dependents_and_invalid_evidence(
+    tmp_path: Path,
+) -> None:
+    market, frame = _accepted_dataset(tmp_path, market=MARKET)
+    service = ArtifactService(tmp_path)
+    source = service.capture_accepted_source(market)
+    target = service.prepare_managed_calculation(
+        market,
+        PORTABLE_ID,
+        calculate_financial_tool("sma", frame, {"period": 3}),
+        expected_source=source,
+        created_at_utc=CREATED,
+    )
+    service.publish_managed_artifact_graph((target,), expected_source=source)
+    dependent = service.save_calculation(
+        market,
+        calculate_financial_tool("ema", frame, {"period": 3}),
+        source_artifacts=(ArtifactSourceRefV1(
+            "source", target.metadata.artifact_id, "sma_3"
+        ),),
+    )
+    callback_values: list[bool] = []
+    with pytest.raises(ArtifactLineageError, match="dependent Artifact"):
+        service.delete_managed_artifact(
+            market,
+            target.logical_artifact_id,
+            before_delete=lambda: callback_values.append(True),
+        )
+    assert callback_values == []
+    assert service.load_artifact_by_id(
+        market, dependent.metadata.artifact_id
+    ).metadata == dependent.metadata
+
+    service._store.delete_artifact_dir(dependent.path)
+    invalid = service.save_calculation(
+        market, calculate_financial_tool("rsi", frame, {"period": 14})
+    )
+    (invalid.path / "metadata.json").write_bytes(b"{}")
+    with pytest.raises(ArtifactLineageError, match="cannot prove"):
+        service.delete_managed_artifact(
+            market,
+            target.logical_artifact_id,
+            before_delete=lambda: callback_values.append(True),
+        )
+    assert callback_values == []
+    assert service.load_artifact_head(market, target.logical_artifact_id) == target.head
 
 
 def test_managed_publication_recursively_revalidates_source_lineage(

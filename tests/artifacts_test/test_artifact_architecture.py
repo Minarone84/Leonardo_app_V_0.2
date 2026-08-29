@@ -81,6 +81,7 @@ def test_artifact_service_is_the_only_public_write_owner() -> None:
         if not name.startswith("_")
     } == {
         "delete_artifact",
+        "delete_managed_artifact",
         "delete_recipe",
         "capture_accepted_source",
         "list_artifacts",

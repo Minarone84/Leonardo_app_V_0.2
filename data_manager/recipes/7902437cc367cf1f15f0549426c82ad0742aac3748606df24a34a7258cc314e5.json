@@ -1,0 +1,19 @@
+{
+  "dependencies": [],
+  "kind": "indicator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "fast_vwap",
+    "slow_vwap",
+    "vwap_color"
+  ],
+  "parameters": {
+    "fast_vwap_l": 13,
+    "slow_vwap_l": 48
+  },
+  "recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+  "schema_version": "1.0",
+  "tool_key": "hck",
+  "tool_version": "1.0"
+}

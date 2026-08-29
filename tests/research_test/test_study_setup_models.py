@@ -193,7 +193,7 @@ def test_builds_existing_calculation_and_artifact_requests() -> None:
     assert saved.display_name == "Saved SMA"
 
 
-def test_source_order_family_and_stale_artifact_selection_are_rejected() -> None:
+def test_source_order_stale_artifact_and_mixed_family_selection_rules() -> None:
     value = catalog()
     with pytest.raises(StudySetupValidationError):
         build_study_request(
@@ -226,31 +226,43 @@ def test_source_order_family_and_stale_artifact_selection_are_rejected() -> None
             ),
         ),
     )
-    with pytest.raises(StudySetupValidationError, match="one family"):
-        build_study_request(
-            StudySetupDraft(
-                "calculation",
-                "braids",
-                {"tie_policy": "carry"},
-                (
-                    StudySetupSourceSelection(
-                        "fast", "study", study_id="study_ema", output_name="ema_9"
-                    ),
-                    StudySetupSourceSelection(
-                        "mid", "study", study_id="study_ema", output_name="ema_9"
-                    ),
-                    StudySetupSourceSelection(
-                        "slow",
-                        "artifact",
-                        artifact_kind="oscillator",
-                        artifact_tool_key="rsi",
-                        artifact_id="c" * 64,
-                        output_name="rsi_14",
-                    ),
+    request = build_study_request(
+        StudySetupDraft(
+            "calculation",
+            "braids",
+            {"tie_policy": "carry"},
+            (
+                StudySetupSourceSelection(
+                    "fast", "study", study_id="study_ema", output_name="ema_9"
+                ),
+                StudySetupSourceSelection(
+                    "mid", "study", study_id="study_ema", output_name="ema_9"
+                ),
+                StudySetupSourceSelection(
+                    "slow",
+                    "artifact",
+                    artifact_kind="oscillator",
+                    artifact_tool_key="rsi",
+                    artifact_id="c" * 64,
+                    output_name="rsi_14",
                 ),
             ),
-            mixed,
-        )
+        ),
+        mixed,
+    )
+    assert request.tool_key == "braids"
+    assert tuple(source.role for source in request.input_sources) == (
+        "fast",
+        "mid",
+        "slow",
+    )
+    fast, mid, slow = request.input_sources
+    assert fast.source_kind == "study"
+    assert mid.source_kind == "study"
+    assert slow.source_kind == "artifact"
+    assert slow.artifact_tool_key == "rsi"
+    assert slow.artifact_id == "c" * 64
+    assert slow.output_name == "rsi_14"
 
 
 def test_braid_mid_is_required_while_trap_area_mid_remains_optional() -> None:

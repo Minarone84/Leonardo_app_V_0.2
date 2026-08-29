@@ -20,12 +20,14 @@ def test_preview_dialog_renders_dynamic_read_only_cells_and_no_path() -> None:
     market = MarketId("bybit", "linear", "BTCUSDT", "1h")
     preview = DataManagerPreview(
         "OHLCV", market, "dataset", None, ("ts_ms", "close"),
-        (("1", "2.5"),), 6, True, {"market_id": market.as_key()},
+        (("1786297337123", "2.5"),), 6, True, {"market_id": market.as_key()},
     )
     dialog = DataManagerPreviewDialog(preview)
     try:
         table = dialog.findChild(QTableWidget, "data_manager_preview.table.values")
         assert table.columnCount() == 2
+        assert table.horizontalHeaderItem(0).text() == "Timestamp"
+        assert table.item(0, 0).text() == "2026-08-09 17:42:17 UTC"
         assert table.item(0, 1).text() == "2.5"
         assert table.editTriggers() == QTableWidget.EditTrigger.NoEditTriggers
         assert "path" not in " ".join(

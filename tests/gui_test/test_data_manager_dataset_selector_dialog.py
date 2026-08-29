@@ -83,6 +83,34 @@ def _snapshot() -> DataManagerCatalogSnapshot:
     )
 
 
+def _sorting_snapshot() -> DataManagerCatalogSnapshot:
+    return DataManagerCatalogSnapshot(
+        (
+            DataManagerDatasetEntry(
+                BYBIT_BTC, True, 100, 7_200_000, 10_800_000,
+                source="canonical download", persistence_status="committed",
+                validation_status="ok", warnings=("verified",),
+            ),
+            DataManagerDatasetEntry(
+                BYBIT_LINK, True, 2, 0, 3_600_000,
+                source="canonical download", persistence_status="committed",
+                validation_status="ok", warnings=("verified",),
+            ),
+            DataManagerDatasetEntry(
+                BYBIT_INVERSE, True, 10, 3_600_000, 7_200_000,
+                source="canonical download", persistence_status="committed",
+                validation_status="ok", warnings=("verified",),
+            ),
+            DataManagerDatasetEntry(
+                BINANCE_ETH, True, 20, 10_800_000, 14_400_000,
+                source="provider download", persistence_status="committed",
+                validation_status="ok", warnings=("verified",),
+            ),
+            _rejected(),
+        )
+    )
+
+
 def _row_for_symbol(dialog: DataManagerDatasetSelectorDialog, symbol: str) -> int:
     table = dialog.table_for_id("data_manager.table.datasets")
     for row in range(table.rowCount()):
@@ -120,6 +148,22 @@ def _header_texts(table) -> tuple[str, ...]:
         table.horizontalHeaderItem(column).text()
         for column in range(table.columnCount())
     )
+
+
+def _dataset_column(table, label: str) -> int:
+    return _header_texts(table).index(label)
+
+
+def _dataset_column_values(table, label: str) -> tuple[str, ...]:
+    column = _dataset_column(table, label)
+    return tuple(
+        table.item(row, column).text() for row in range(table.rowCount())
+    )
+
+
+def _click_dataset_header(table, label: str) -> None:
+    table.horizontalHeader().sectionClicked.emit(_dataset_column(table, label))
+    QCoreApplication.processEvents()
 
 
 def test_dialog_structure_removes_old_text_and_labels_both_searches(qapp) -> None:
@@ -386,8 +430,8 @@ def test_human_utc_rejected_gating_and_exact_selection_emission(qapp) -> None:
         dialog.set_catalog(_snapshot())
         table = dialog.table_for_id("data_manager.table.datasets")
         btc_row = _row_for_symbol(dialog, "BTCUSDT")
-        assert table.item(btc_row, 8).text() == "01 Jan 1970 00:00 UTC"
-        assert table.item(btc_row, 9).text() == "01 Jan 1970 01:00 UTC"
+        assert table.item(btc_row, 8).text() == "1970-01-01 00:00:00 UTC"
+        assert table.item(btc_row, 9).text() == "1970-01-01 01:00:00 UTC"
         assert table.item(btc_row, 7).text() == "2"
 
         rejected_row = _row_for_symbol(dialog, "XRPUSD")
@@ -403,6 +447,110 @@ def test_human_utc_rejected_gating_and_exact_selection_emission(qapp) -> None:
         dialog.market_selected.connect(emitted.append)
         dialog.button_for_id("data_manager.dataset_selector.button.select").click()
         assert emitted == [BYBIT_LINK]
+    finally:
+        dialog.close()
+
+
+def test_dataset_navigation_table_uses_typed_sorting_and_excludes_active_table(
+    qapp,
+) -> None:
+    dialog = DataManagerDatasetSelectorDialog()
+    try:
+        dialog.set_catalog(_sorting_snapshot())
+        table = dialog.table_for_id("data_manager.table.datasets")
+        active = dialog.table_for_id(
+            "data_manager.dataset_selector.table.active_dataset"
+        )
+        header = table.horizontalHeader()
+
+        assert header.sectionsClickable()
+        assert not header.isSortIndicatorShown()
+        assert _dataset_column_values(table, "Rows") == ("20", "10", "100", "2", "")
+        assert not active.isSortingEnabled()
+        assert not active.horizontalHeader().isSortIndicatorShown()
+
+        _click_dataset_header(table, "Symbol")
+        assert _dataset_column_values(table, "Symbol") == (
+            "BTCUSD", "BTCUSDT", "ETHUSDT", "LINKUSDT", "XRPUSD"
+        )
+        assert header.sortIndicatorSection() == _dataset_column(table, "Symbol")
+        assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+        _click_dataset_header(table, "Symbol")
+        assert _dataset_column_values(table, "Symbol") == (
+            "XRPUSD", "LINKUSDT", "ETHUSDT", "BTCUSDT", "BTCUSD"
+        )
+        assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+
+        _click_dataset_header(table, "Rows")
+        assert _dataset_column_values(table, "Rows") == ("2", "10", "20", "100", "")
+        _click_dataset_header(table, "First Data UTC")
+        assert _dataset_column_values(table, "First Data UTC") == (
+            "1970-01-01 00:00:00 UTC",
+            "1970-01-01 01:00:00 UTC",
+            "1970-01-01 02:00:00 UTC",
+            "1970-01-01 03:00:00 UTC",
+            "",
+        )
+        _click_dataset_header(table, "First Data UTC")
+        assert _dataset_column_values(table, "First Data UTC") == (
+            "1970-01-01 03:00:00 UTC",
+            "1970-01-01 02:00:00 UTC",
+            "1970-01-01 01:00:00 UTC",
+            "1970-01-01 00:00:00 UTC",
+            "",
+        )
+        _click_dataset_header(table, "Last Data UTC")
+        assert _dataset_column_values(table, "Last Data UTC") == (
+            "1970-01-01 01:00:00 UTC",
+            "1970-01-01 02:00:00 UTC",
+            "1970-01-01 03:00:00 UTC",
+            "1970-01-01 04:00:00 UTC",
+            "",
+        )
+    finally:
+        dialog.close()
+
+
+def test_dataset_sort_preserves_selection_filters_search_show_all_and_refresh(
+    qapp,
+) -> None:
+    dialog = DataManagerDatasetSelectorDialog()
+    try:
+        snapshot = _sorting_snapshot()
+        dialog.set_catalog(snapshot)
+        table = dialog.table_for_id("data_manager.table.datasets")
+        table.selectRow(_row_for_symbol(dialog, "LINKUSDT"))
+        assert dialog.selected_market_id() == BYBIT_LINK
+
+        _click_dataset_header(table, "Rows")
+        assert dialog.selected_market_id() == BYBIT_LINK
+        assert _dataset_column_values(table, "Rows") == ("2", "10", "20", "100", "")
+
+        _select_combo(dialog, "exchange", "bybit")
+        assert _dataset_column_values(table, "Rows") == ("2", "10", "100")
+        assert dialog.selected_market_id() == BYBIT_LINK
+
+        search = dialog.filter_for_id("data_manager.dataset_selector.filter.text")
+        search.setText("BTC")
+        QCoreApplication.processEvents()
+        assert _dataset_column_values(table, "Rows") == ("10", "100")
+        search.clear()
+        QCoreApplication.processEvents()
+        assert _dataset_column_values(table, "Rows") == ("2", "10", "100")
+
+        dialog.button_for_id("data_manager.dataset_selector.button.show_all").click()
+        QCoreApplication.processEvents()
+        assert _dataset_column_values(table, "Rows") == ("2", "10", "20", "100", "")
+        table.selectRow(_row_for_symbol(dialog, "LINKUSDT"))
+        assert dialog.selected_market_id() == BYBIT_LINK
+
+        dialog.set_catalog(
+            DataManagerCatalogSnapshot(tuple(reversed(snapshot.datasets)))
+        )
+        assert _dataset_column_values(table, "Rows") == ("2", "10", "20", "100", "")
+        assert dialog.selected_market_id() == BYBIT_LINK
+        dialog.set_current_market(BYBIT_LINK)
+        assert dialog.selected_market_id() == BYBIT_LINK
     finally:
         dialog.close()
 

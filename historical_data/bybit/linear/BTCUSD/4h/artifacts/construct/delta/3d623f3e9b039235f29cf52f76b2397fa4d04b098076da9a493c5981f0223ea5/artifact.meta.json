@@ -1,0 +1,61 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "3d623f3e9b039235f29cf52f76b2397fa4d04b098076da9a493c5981f0223ea5",
+  "created_at_utc": "2026-08-16T14:35:04.284269Z",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-08-16T14:35:04.284269Z",
+    "description": "",
+    "display_name": "delta",
+    "kind": "construct",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "close_research_slow_delta"
+    ],
+    "parameters": {
+      "eps": 1e-12,
+      "fast": "close",
+      "mode": "abs",
+      "slow": "__research_slow"
+    },
+    "recipe_id": "0bd79abcf820b6266d7678d635505b238e20977d76f1edb9982e099e23305ee5",
+    "schema_version": "1.0",
+    "source_artifacts": [
+      {
+        "artifact_id": "f801cfd30b0079150b6bbe00ddf3ab359130ef8e8a9cc50c93444e9f63baa7b1",
+        "output_name": "research_source_1_ang_mtm_3",
+        "role": "slow"
+      }
+    ],
+    "tool_key": "delta"
+  },
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "4b483151ae3e1b25b10e393515c52f9e5acc86f8ad21cc17765e203bae31cfd8"
+}

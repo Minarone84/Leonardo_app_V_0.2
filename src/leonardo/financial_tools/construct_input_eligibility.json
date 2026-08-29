@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "sma": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "ema": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "tema": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "hma": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "kama": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "bb": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "hck": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "strategy": {
+      "kind": "indicator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "peaks_troughs": {
+      "kind": "indicator",
+      "construct_source_policy": "none"
+    },
+    "universal_trend_classifier": {
+      "kind": "indicator",
+      "construct_source_policy": "none"
+    },
+    "rsi": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "arsi": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "tdirsi": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "smi": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "mfi": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "obv": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "volume": {
+      "kind": "oscillator",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "dynamic_binning": {
+      "kind": "construct",
+      "construct_source_policy": "none"
+    },
+    "derivative": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "angle": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "braids": {
+      "kind": "construct",
+      "construct_source_policy": "none"
+    },
+    "braid_instability": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "delta": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "trap_area": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "percent_span_angle": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    },
+    "angle_momentum": {
+      "kind": "construct",
+      "construct_source_policy": "all_numeric_signals"
+    }
+  }
+}

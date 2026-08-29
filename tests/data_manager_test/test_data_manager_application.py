@@ -147,6 +147,42 @@ class _TrackingService(DataManagerService):
 
 
 class _PortableOperationsService(_TrackingService):
+    def plan_artifact_collection_selection(self, market_id, root_ids):
+        if not hasattr(self, "selection_plan"):
+            self.selection_plan = SimpleNamespace(
+                market_id=market_id,
+                root_logical_artifact_ids=tuple(root_ids),
+                plan_id="c" * 64,
+            )
+        return self.selection_plan
+
+    def _create_artifact_collection_from_selection(
+        self, plan, display_name, *, before_publish=None, **_kwargs
+    ):
+        self.selection_create_fenced = before_publish is not None
+        if before_publish is not None:
+            before_publish()
+        return ("selection-create", plan.plan_id, display_name)
+
+    def _edit_artifact_collection_from_selection(
+        self,
+        collection_id,
+        plan,
+        *,
+        before_publish=None,
+        expected_revision_id,
+        **_kwargs,
+    ):
+        self.selection_edit_fenced = before_publish is not None
+        if before_publish is not None:
+            before_publish()
+        return (
+            "selection-edit",
+            collection_id,
+            plan.plan_id,
+            expected_revision_id,
+        )
+
     def scan_study_environments(self, **_kwargs):
         return "environments"
 
@@ -167,6 +203,9 @@ class _PortableOperationsService(_TrackingService):
     def create_recipe_collection(self, *_args):
         return "create"
 
+    def plan_recipe_collection(self, root_recipe_ids):
+        return ("collection-plan", root_recipe_ids)
+
     def _create_recipe_collection(self, *_args, before_publish=None):
         if before_publish is not None:
             before_publish()
@@ -175,10 +214,12 @@ class _PortableOperationsService(_TrackingService):
     def update_recipe_collection(self, *_args):
         return "update"
 
-    def _update_recipe_collection(self, *_args, before_publish=None):
+    def _update_recipe_collection(
+        self, *_args, before_publish=None, expected_revision_id=None
+    ):
         if before_publish is not None:
             before_publish()
-        return "update"
+        return ("update", expected_revision_id)
 
     def list_recipe_collections(self):
         return "collections"
@@ -214,8 +255,44 @@ class _ControlledPublicationService(_PortableOperationsService):
     def _create_recipe_collection(self, *_args, before_publish=None):
         return self._run_publication("create", before_publish)
 
-    def _update_recipe_collection(self, *_args, before_publish=None):
+    def _update_recipe_collection(
+        self, *_args, before_publish=None, expected_revision_id=None
+    ):
         return self._run_publication("update", before_publish)
+
+
+class _ControlledCatalogDeletionService(_PortableOperationsService):
+    def __init__(self) -> None:
+        super().__init__(_Catalog(), _Loader(), _Artifacts())
+        self.preflight_entered = Event()
+        self.release_preflight = Event()
+        self.deletion_started = Event()
+        self.release_deletion = Event()
+        self.deleted: list[str] = []
+
+    def _run_deletion(self, operation: str, before_delete):
+        self.preflight_entered.set()
+        if not self.release_preflight.wait(3.0):
+            raise RuntimeError("deletion preflight release timed out")
+        if before_delete is not None:
+            before_delete()
+        self.deletion_started.set()
+        if not self.release_deletion.wait(3.0):
+            raise RuntimeError("deletion release timed out")
+        self.deleted.append(operation)
+        return operation
+
+    def _delete_portable_recipe(self, *_args, before_delete=None):
+        return self._run_deletion("portable_recipe", before_delete)
+
+    def _delete_recipe_collection(self, *_args, before_delete=None):
+        return self._run_deletion("recipe_collection", before_delete)
+
+    def _delete_managed_artifact(self, *_args, before_delete=None):
+        return self._run_deletion("managed_artifact", before_delete)
+
+    def _delete_artifact_collection(self, *_args, before_delete=None):
+        return self._run_deletion("artifact_collection", before_delete)
 
 
 class _UpdateOperationsService(_PortableOperationsService):
@@ -375,6 +452,59 @@ def test_update_operations_use_exact_core_metadata_and_direct_latest_read() -> N
         runner.shutdown()
 
 
+def test_artifact_collection_selection_operations_use_exact_core_metadata_and_fence(
+) -> None:
+    service = _PortableOperationsService(_Catalog(), _Loader(), _Artifacts())
+    manager, runner, application = _application(service=service)
+    completed = Event()
+    results: list[TaskResult] = []
+
+    def receive(result: TaskResult) -> None:
+        results.append(result)
+        if len(results) == 3:
+            completed.set()
+
+    plan = service.plan_artifact_collection_selection(MARKET, ("a" * 64,))
+    runner.start()
+    try:
+        application.submit_plan_artifact_collection_selection(
+            MARKET, ("a" * 64,), result_callback=receive
+        )
+        application.submit_create_artifact_collection_from_selection(
+            plan, "Selection", result_callback=receive
+        )
+        application.submit_edit_artifact_collection_from_selection(
+            "ac_" + "b" * 32,
+            plan,
+            expected_revision_id="d" * 64,
+            result_callback=receive,
+        )
+        assert completed.wait(3.0)
+        assert all(item.status == "completed" for item in results)
+        assert any(item.value is plan for item in results)
+        assert service.selection_create_fenced
+        assert service.selection_edit_fenced
+        assert any(
+            item.value
+            == (
+                "selection-edit",
+                "ac_" + "b" * 32,
+                "c" * 64,
+                "d" * 64,
+            )
+            for item in results
+        )
+        assert {
+            item.metadata.get("operation") for item in manager.snapshots()
+        } >= {
+            "data_manager.plan_artifact_collection_selection",
+            "data_manager.create_artifact_collection_from_selection",
+            "data_manager.edit_artifact_collection_from_selection",
+        }
+    finally:
+        runner.shutdown()
+
+
 def test_product_catalog_read_operations_use_exact_core_metadata() -> None:
     service = _ProductReadOperationsService(_Catalog(), _Loader(), _Artifacts())
     manager, runner, application = _application(service=service)
@@ -419,7 +549,7 @@ def test_portable_recipe_operations_use_exact_core_metadata() -> None:
 
     def receive(result: TaskResult) -> None:
         results.append(result)
-        if len(results) == 8:
+        if len(results) == 9:
             completed.set()
 
     runner.start()
@@ -436,8 +566,12 @@ def test_portable_recipe_operations_use_exact_core_metadata() -> None:
         application.submit_create_recipe_collection(
             "Collection", "", ("a" * 64,), result_callback=receive
         )
+        application.submit_plan_recipe_collection(
+            ("a" * 64,), result_callback=receive
+        )
         application.submit_update_recipe_collection(
             "prc_" + "b" * 32, "Collection", "", ("a" * 64,),
+            expected_revision_id="c" * 64,
             result_callback=receive,
         )
         application.submit_list_recipe_collections(result_callback=receive)
@@ -455,10 +589,19 @@ def test_portable_recipe_operations_use_exact_core_metadata() -> None:
             "data_manager.persist_recipe_derivation",
             "data_manager.scan_portable_recipes",
             "data_manager.create_recipe_collection",
+            "data_manager.plan_recipe_collection",
             "data_manager.update_recipe_collection",
             "data_manager.list_recipe_collections",
             "data_manager.inspect_recipe_collection",
         }.issubset(operations)
+        plan_result = next(
+            item for item in results if item.value == ("collection-plan", ("a" * 64,))
+        )
+        assert plan_result.status == "completed"
+        update_result = next(
+            item for item in results if item.value == ("update", "c" * 64)
+        )
+        assert update_result.status == "completed"
     finally:
         runner.shutdown()
 
@@ -620,4 +763,92 @@ def test_cancellation_is_refused_after_canonical_deletion_starts(object_kind) ->
     finally:
         artifacts.release_artifact_deletion.set()
         artifacts.release_recipe_deletion.set()
+        runner.shutdown()
+
+
+def _submit_catalog_deletion(application, operation: str, callback):
+    if operation == "portable_recipe":
+        return application.submit_delete_portable_recipe(
+            "a" * 64, result_callback=callback
+        )
+    if operation == "recipe_collection":
+        return application.submit_delete_recipe_collection(
+            "prc_" + "b" * 32, result_callback=callback
+        )
+    if operation == "managed_artifact":
+        return application.submit_delete_managed_artifact(
+            MARKET, "c" * 64, result_callback=callback
+        )
+    return application.submit_delete_artifact_collection(
+        "ac_" + "d" * 32, result_callback=callback
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "operation_id"),
+    (
+        ("portable_recipe", "data_manager.delete_portable_recipe"),
+        ("recipe_collection", "data_manager.delete_recipe_collection"),
+        ("managed_artifact", "data_manager.delete_managed_artifact"),
+        ("artifact_collection", "data_manager.delete_artifact_collection"),
+    ),
+)
+def test_catalog_deletion_uses_core_and_cancels_before_destructive_gate(
+    operation, operation_id
+) -> None:
+    service = _ControlledCatalogDeletionService()
+    manager, runner, application = _application(service=service)
+    ready = Event()
+    results: list[TaskResult] = []
+    runner.start()
+    try:
+        submission = _submit_catalog_deletion(
+            application,
+            operation,
+            lambda result: (results.append(result), ready.set()),
+        )
+        assert service.preflight_entered.wait(3.0)
+        assert application.cancel(submission.task_id) is True
+        service.release_preflight.set()
+        assert ready.wait(3.0)
+        assert results[0].status == "cancelled"
+        assert service.deleted == []
+        assert any(
+            item.metadata.get("operation") == operation_id
+            for item in manager.snapshots()
+        )
+    finally:
+        service.release_preflight.set()
+        service.release_deletion.set()
+        runner.shutdown()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("portable_recipe", "recipe_collection", "managed_artifact", "artifact_collection"),
+)
+def test_catalog_deletion_refuses_cancellation_after_destructive_gate(operation) -> None:
+    service = _ControlledCatalogDeletionService()
+    _manager, runner, application = _application(service=service)
+    ready = Event()
+    results: list[TaskResult] = []
+    runner.start()
+    try:
+        submission = _submit_catalog_deletion(
+            application,
+            operation,
+            lambda result: (results.append(result), ready.set()),
+        )
+        assert service.preflight_entered.wait(3.0)
+        service.release_preflight.set()
+        assert service.deletion_started.wait(3.0)
+        assert application.cancel(submission.task_id) is False
+        service.release_deletion.set()
+        assert ready.wait(3.0)
+        assert results[0].status == "completed"
+        assert results[0].value == operation
+        assert service.deleted == [operation]
+    finally:
+        service.release_preflight.set()
+        service.release_deletion.set()
         runner.shutdown()

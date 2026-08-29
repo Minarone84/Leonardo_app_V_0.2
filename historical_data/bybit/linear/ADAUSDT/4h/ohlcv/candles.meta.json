@@ -1,0 +1,36 @@
+{
+  "created_at_utc": "2026-08-07T16:27:14.970735+00:00",
+  "file_sha256": "154416e78099939c293b039dda48baec8ca829cf7e15ad2a19568dff4000b3b9",
+  "first_timestamp_ms": 1616040000000,
+  "last_timestamp_ms": 1786104000000,
+  "lineage": {
+    "canonical_validation": {
+      "error_count": 0,
+      "issue_codes": [],
+      "status": "ok",
+      "validator": "canonical_ohlcv_v1",
+      "warning_count": 0
+    },
+    "canonical_validation_status": "unknown",
+    "download_mode": "new_download",
+    "file_mtime_ns": 1786120040992203400,
+    "file_size": 630047,
+    "pages_written": 12,
+    "planned_end_ms": 1786104000000,
+    "planned_start_ms": 1616040000000,
+    "preliminary_validation_status": "ok"
+  },
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "ADAUSDT",
+    "timeframe": "4h"
+  },
+  "persistence_status": "committed",
+  "row_count": 11811,
+  "schema_version": "1.0",
+  "source": "bybit",
+  "updated_at_utc": "2026-08-07T16:27:35.589341+00:00",
+  "validation_status": "ok",
+  "warnings": []
+}

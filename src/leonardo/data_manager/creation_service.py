@@ -12,20 +12,16 @@ from io import StringIO
 import pandas as pd
 
 from leonardo.artifacts import (
+    ArtifactError,
     ArtifactService,
     ManagedArtifactVersionKey,
     compute_logical_artifact_id,
 )
 from leonardo.data import MarketId
-from leonardo.financial_tools import (
-    get_financial_tool_spec,
-    resolve_output_names,
-    resolve_parameters,
-)
+from leonardo.financial_tools import get_financial_tool_spec, resolve_output_names, resolve_parameters
 from leonardo.recipes import (
     PortableRecipeDependencyV1,
-    PortableRecipeGraphPlanner,
-    PortableRecipeStore,
+    PortableRecipeOHLCVInputV1,
     PortableRecipeV1,
     build_portable_recipe,
 )
@@ -36,7 +32,9 @@ from .creation_models import (
     ArtifactCollectionMemberV1,
     ArtifactCollectionOutputV1,
     ArtifactCollectionRevisionV1,
+    ArtifactCollectionSelectionPlan,
     ArtifactCollectionValidation,
+    BatchArtifactBranchRequest,
     BatchArtifactPlan,
     BatchArtifactRequest,
     DatabaseDefinitionV1,
@@ -46,9 +44,17 @@ from .creation_models import (
     DataManagerCreationError,
     deterministic_hash,
 )
+from .construct_batch import visible_output_names
+from .construct_sources import list_construct_source_signals
+from .direct_artifact import (
+    DataManagerDirectArtifactSource,
+    DataManagerDirectArtifactRequest,
+    _build_direct_portable_recipe,
+    _validate_source_roles,
+)
 from .creation_store import DataManagerCreationStore
 from .models import (
-    DataManagerArtifactMaterializationRequest,
+    DataManagerArtifactMaterializationPlan,
     DataManagerArtifactMaterializationResult,
 )
 
@@ -63,20 +69,19 @@ class DataManagerCreationWorkflow:
         catalog: AcceptedDatasetCatalog | object,
         loader: HistoricalDatasetLoader | object,
         artifacts: ArtifactService | object,
-        portable_recipes: PortableRecipeStore,
-        recipe_planner: PortableRecipeGraphPlanner,
-        materialization_planner: Callable[[DataManagerArtifactMaterializationRequest], object],
-        materialization_executor: Callable[..., DataManagerArtifactMaterializationResult],
+        batch_materialization_planner: Callable[
+            [BatchArtifactRequest, tuple[PortableRecipeV1, ...]],
+            tuple[DataManagerArtifactMaterializationPlan, object],
+        ],
+        batch_materialization_executor: Callable[..., DataManagerArtifactMaterializationResult],
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
         self._catalog = catalog
         self._loader = loader
         self._artifacts = artifacts
-        self._portable_recipes = portable_recipes
-        self._recipe_planner = recipe_planner
-        self._plan_materialization = materialization_planner
-        self._execute_materialization = materialization_executor
+        self._plan_batch_materialization = batch_materialization_planner
+        self._execute_batch_materialization = batch_materialization_executor
         self._clock = clock or (lambda: datetime.now(UTC))
 
     @property
@@ -163,6 +168,129 @@ class DataManagerCreationWorkflow:
         )
         return self._store.save_collection_revision(revision, expected_head_revision_id=None)
 
+    def create_artifact_collection_from_selection(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        display_name: str,
+        *,
+        description: str = "",
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+    ) -> ArtifactCollectionRevisionV1:
+        if not isinstance(plan, ArtifactCollectionSelectionPlan):
+            raise TypeError("plan must be an ArtifactCollectionSelectionPlan")
+        outputs = self._selection_outputs(plan, selected_outputs)
+        now = self._clock()
+        revision = self._build_collection_revision(
+            collection_id=self._store.new_collection_id(),
+            display_name=display_name,
+            description=description,
+            market_id=plan.market_id,
+            roots=plan.root_logical_artifact_ids,
+            supports=plan.support_logical_artifact_ids,
+            members=plan.members,
+            edges=plan.dependency_edges,
+            selected_outputs=outputs,
+            presentation_order=tuple(item.column_name for item in outputs),
+            source_recipe_collection_id=None,
+            source_recipe_collection_revision_id=None,
+            source_ohlcv=plan.source_ohlcv,
+            first_timestamp_ms=plan.first_timestamp_ms,
+            last_timestamp_ms=plan.last_timestamp_ms,
+            previous_revision_id=None,
+            created_at_utc=now,
+            revised_at_utc=now,
+        )
+        return self._store.save_collection_revision(
+            revision, expected_head_revision_id=None
+        )
+
+    def edit_artifact_collection_from_selection(
+        self,
+        collection_id: str,
+        plan: ArtifactCollectionSelectionPlan,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+        presentation_order: Sequence[str] | None = None,
+        expected_revision_id: str,
+    ) -> ArtifactCollectionRevisionV1:
+        if not isinstance(plan, ArtifactCollectionSelectionPlan):
+            raise TypeError("plan must be an ArtifactCollectionSelectionPlan")
+        current = self.load_artifact_collection(collection_id)
+        if current.revision_id != expected_revision_id:
+            raise DataManagerCreationError(
+                "Artifact Collection revision changed before Edit"
+            )
+        if current.market_id != plan.market_id:
+            raise DataManagerCreationError(
+                "Artifact Collection selection MarketId differs"
+            )
+        member_by_id = {
+            item.version_key.logical_artifact_id: item for item in plan.members
+        }
+        if selected_outputs is None:
+            output_values = [
+                item
+                for item in current.selected_outputs
+                if item.logical_artifact_id in member_by_id
+                and item.output_name
+                in member_by_id[item.logical_artifact_id].output_names
+            ]
+            selected_pairs = {
+                (item.logical_artifact_id, item.output_name)
+                for item in output_values
+            }
+            old_roots = set(current.root_logical_artifact_ids)
+            for logical_id in plan.root_logical_artifact_ids:
+                if logical_id in old_roots:
+                    continue
+                for output_name in member_by_id[logical_id].output_names:
+                    pair = (logical_id, output_name)
+                    if pair not in selected_pairs:
+                        output_values.append(
+                            ArtifactCollectionOutputV1(
+                                logical_id, output_name, output_name
+                            )
+                        )
+                        selected_pairs.add(pair)
+            outputs = tuple(output_values)
+        else:
+            outputs = tuple(selected_outputs)
+        if presentation_order is None:
+            columns = {item.column_name for item in outputs}
+            order = tuple(
+                item for item in current.presentation_order if item in columns
+            )
+            order = (*order, *(item.column_name for item in outputs if item.column_name not in order))
+        else:
+            order = tuple(presentation_order)
+        revised = self._build_collection_revision(
+            collection_id=current.collection_id,
+            display_name=current.display_name if display_name is None else display_name,
+            description=current.description if description is None else description,
+            market_id=plan.market_id,
+            roots=plan.root_logical_artifact_ids,
+            supports=plan.support_logical_artifact_ids,
+            members=plan.members,
+            edges=plan.dependency_edges,
+            selected_outputs=outputs,
+            presentation_order=order,
+            source_recipe_collection_id=current.source_recipe_collection_id,
+            source_recipe_collection_revision_id=(
+                current.source_recipe_collection_revision_id
+            ),
+            source_ohlcv=plan.source_ohlcv,
+            first_timestamp_ms=plan.first_timestamp_ms,
+            last_timestamp_ms=plan.last_timestamp_ms,
+            previous_revision_id=current.revision_id,
+            created_at_utc=current.created_at_utc,
+            revised_at_utc=self._clock(),
+        )
+        return self._store.save_collection_revision(
+            revised, expected_head_revision_id=current.revision_id
+        )
+
     def list_artifact_collections(self) -> tuple[ArtifactCollectionRevisionV1, ...]:
         return tuple(self._store.load_collection(item) for item in self._store.list_collection_ids())
 
@@ -234,23 +362,44 @@ class DataManagerCreationWorkflow:
         current = self.load_artifact_collection(collection_id)
         if current.market_id != materialization.target_market_id or current.source_ohlcv != materialization.source_ohlcv:
             raise DataManagerCreationError("Artifact branches are incompatible with the Collection")
+        branch_member_ids = {
+            item.logical_artifact_id for item in materialization.managed_artifacts
+        }
+        branch_outputs = (
+            None
+            if selected_outputs is None
+            else tuple(
+                item
+                for item in selected_outputs
+                if item.logical_artifact_id in branch_member_ids
+            )
+            or None
+        )
         branch = self._collection_revision_from_materialization(
             materialization, collection_id=current.collection_id,
             display_name=current.display_name, description=current.description,
             previous=current.revision_id, created_at=current.created_at_utc,
             revised_at=self._clock(), source_recipe_collection_id=current.source_recipe_collection_id,
             source_recipe_collection_revision_id=current.source_recipe_collection_revision_id,
-            selected_outputs=selected_outputs,
+            selected_outputs=branch_outputs,
         )
         member_map = {item.version_key.logical_artifact_id: item for item in current.members}
         member_map.update({item.version_key.logical_artifact_id: item for item in branch.members})
         roots = tuple(dict.fromkeys((*current.root_logical_artifact_ids, *branch.root_logical_artifact_ids)))
         supports = tuple(item for item in dict.fromkeys((*current.support_logical_artifact_ids, *branch.support_logical_artifact_ids)) if item not in roots)
         edges = tuple(dict.fromkeys((*current.dependency_edges, *branch.dependency_edges)))
-        outputs = tuple(selected_outputs) if selected_outputs is not None else tuple(
-            dict.fromkeys((*current.selected_outputs, *branch.selected_outputs))
-        )
-        order = tuple(dict.fromkeys((*current.presentation_order, *(item.column_name for item in outputs))))
+        if selected_outputs is not None:
+            outputs = tuple(selected_outputs)
+            order = tuple(item.column_name for item in outputs)
+        else:
+            outputs = tuple(
+                dict.fromkeys((*current.selected_outputs, *branch.selected_outputs))
+            )
+            order = tuple(
+                dict.fromkeys(
+                    (*current.presentation_order, *(item.column_name for item in outputs))
+                )
+            )
         revised = self._build_collection_revision(
             collection_id=current.collection_id, display_name=current.display_name,
             description=current.description, market_id=current.market_id, roots=roots,
@@ -366,57 +515,24 @@ class DataManagerCreationWorkflow:
     def plan_batch_artifacts(self, request: BatchArtifactRequest) -> BatchArtifactPlan:
         if not isinstance(request, BatchArtifactRequest):
             raise TypeError("request must be a BatchArtifactRequest")
-        existing = {item.logical_artifact_id: item for item in self._artifacts.list_managed_artifacts(request.market_id)}
-        recipes: dict[str, PortableRecipeV1] = {}
-        unsupported: list[str] = []
-        collisions: list[str] = []
-        requested_columns: list[str] = []
-        for index, branch in enumerate(request.branches, start=1):
-            source = existing.get(branch.source_logical_artifact_id)
-            if source is None or not source.valid:
-                unsupported.append(f"branch {index}: source Artifact is unavailable")
-                continue
-            if branch.source_output not in source.output_names:
-                unsupported.append(f"branch {index}: source output is unavailable")
-                continue
-            try:
-                recipe = self._build_batch_recipe(branch, source.portable_recipe_id, source.output_names)
-                visible_outputs = self._batch_visible_output_names(branch)
-                if tuple(branch.requested_outputs) not in {
-                    recipe.output_names,
-                    visible_outputs,
-                }:
-                    unsupported.append(f"branch {index}: requested outputs do not match canonical outputs")
-                    continue
-                recipes[recipe.recipe_id] = recipe
-                requested_columns.extend(recipe.output_names)
-            except (DataManagerCreationError, ValueError, KeyError) as exc:
-                unsupported.append(f"branch {index}: {exc}")
-        for name in requested_columns:
-            if requested_columns.count(name) > 1 and name not in collisions:
-                collisions.append(name)
-        recipe_ids = tuple(recipes)
-        if recipes:
-            graph = self._recipe_planner.plan(recipe_ids, recipes=recipes)
-            edges = tuple((item.dependency_recipe_id, item.dependent_recipe_id, item.role, item.output_name) for item in graph.dependency_edges)
-            stages = graph.execution_stages
-        else:
-            edges, stages = (), ()
-        existing_recipe_ids = {item.recipe_id for item in self._portable_recipes.list_recipe_summaries() if item.valid}
-        new_recipe_ids = tuple(item for item in recipe_ids if item not in existing_recipe_ids)
-        reusable_recipe_ids = tuple(item for item in recipe_ids if item in existing_recipe_ids)
-        logical_ids = tuple(compute_logical_artifact_id(request.market_id, item) for item in recipe_ids)
-        current_ids = {item.logical_artifact_id for item in existing.values() if item.valid}
-        blockers = tuple(unsupported)
-        return BatchArtifactPlan(
-            request=request, recipe_ids=recipe_ids, dependency_edges=edges,
-            execution_stages=stages, new_recipe_ids=new_recipe_ids,
-            reusable_recipe_ids=reusable_recipe_ids,
-            new_logical_artifact_ids=tuple(item for item in logical_ids if item not in current_ids),
-            reusable_logical_artifact_ids=tuple(item for item in logical_ids if item in current_ids),
-            naming_collisions=tuple(collisions), unsupported_combinations=tuple(unsupported),
-            blockers=blockers,
-        )
+        if request.destination == "collection_revision":
+            collection = self.load_artifact_collection(request.collection_id)
+            if (
+                collection.market_id != request.market_id
+                or collection.source_ohlcv != request.expected_source_ohlcv
+            ):
+                raise DataManagerCreationError(
+                    "Batch destination is incompatible with the selected MarketId "
+                    "or OHLCV fingerprint"
+                )
+        branch_recipes = self._validated_batch_recipes(request)
+        try:
+            materialization, _members = self._plan_batch_materialization(
+                request, branch_recipes
+            )
+        except (ArtifactError, KeyError, TypeError, ValueError) as exc:
+            raise DataManagerCreationError(str(exc)) from exc
+        return self._project_batch_plan(request, branch_recipes, materialization)
 
     def execute_batch_artifacts(
         self,
@@ -430,33 +546,43 @@ class DataManagerCreationWorkflow:
             raise DataManagerCreationError("blocked batch plan cannot execute")
         cancelled = cancellation_requested or (lambda: False)
         if cancelled():
-            raise DataManagerCreationError("batch cancelled before Recipe persistence")
-        existing = {item.logical_artifact_id: item for item in self._artifacts.list_managed_artifacts(plan.request.market_id)}
-        recipes: list[PortableRecipeV1] = []
-        for branch in plan.request.branches:
-            source = existing[branch.source_logical_artifact_id]
-            recipe = self._build_batch_recipe(branch, source.portable_recipe_id, source.output_names)
-            self._portable_recipes.save_recipe(recipe)
-            recipes.append(recipe)
-        if tuple(item.recipe_id for item in recipes) != plan.recipe_ids:
-            raise DataManagerCreationError("batch plan changed before execution")
-        materialization_plan = self._plan_materialization(
-            DataManagerArtifactMaterializationRequest(
-                target_market_id=plan.request.market_id,
-                root_recipe_ids=plan.recipe_ids,
+            raise DataManagerCreationError("batch cancelled before Artifact validation")
+        recipes = self._validated_batch_recipes(plan.request)
+        try:
+            materialization_plan, members = self._plan_batch_materialization(
+                plan.request, recipes
             )
-        )
-        result = self._execute_materialization(
-            materialization_plan, progress=progress,
-            cancellation_requested=cancelled, before_publish=None,
-        )
+        except (ArtifactError, KeyError, TypeError, ValueError) as exc:
+            raise DataManagerCreationError(str(exc)) from exc
+        if self._project_batch_plan(
+            plan.request, recipes, materialization_plan
+        ) != plan:
+            raise DataManagerCreationError("batch Artifact graph changed before execution")
+        if cancelled():
+            raise DataManagerCreationError("batch cancelled before Artifact publication")
+        try:
+            result = self._execute_batch_materialization(
+                materialization_plan, members, progress=progress,
+                cancellation_requested=cancelled, before_publish=None,
+            )
+        except (ArtifactError, KeyError, TypeError, ValueError) as exc:
+            raise DataManagerCreationError(str(exc)) from exc
         if cancelled():
             raise DataManagerCreationError("batch cancelled before Collection mutation")
         collection = None
+        selected_outputs = self._batch_collection_outputs(plan, recipes)
         if plan.request.destination == "new_collection":
-            collection = self.create_artifact_collection(result, collection_display_name)
+            collection = self.create_artifact_collection(
+                result,
+                collection_display_name,
+                selected_outputs=selected_outputs,
+            )
         elif plan.request.destination == "collection_revision":
-            collection = self.add_collection_branches(plan.request.collection_id, result)
+            collection = self.add_collection_branches(
+                plan.request.collection_id,
+                result,
+                selected_outputs=selected_outputs,
+            )
         return result, collection
 
     def assess_database_readiness(
@@ -666,6 +792,33 @@ class DataManagerCreationWorkflow:
             previous_revision_id=previous, created_at_utc=created_at, revised_at_utc=revised_at,
         )
 
+    @staticmethod
+    def _selection_outputs(
+        plan: ArtifactCollectionSelectionPlan,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None,
+    ) -> tuple[ArtifactCollectionOutputV1, ...]:
+        if selected_outputs is not None:
+            return tuple(selected_outputs)
+        member_by_id = {
+            item.version_key.logical_artifact_id: item for item in plan.members
+        }
+        outputs: list[ArtifactCollectionOutputV1] = []
+        used: set[str] = set()
+        for logical_id in plan.root_logical_artifact_ids:
+            for output_name in member_by_id[logical_id].output_names:
+                if output_name in used:
+                    raise DataManagerCreationError(
+                        "selected output-column collision requires explicit mapping: "
+                        f"{output_name}"
+                    )
+                used.add(output_name)
+                outputs.append(
+                    ArtifactCollectionOutputV1(
+                        logical_id, output_name, output_name
+                    )
+                )
+        return tuple(outputs)
+
     def _build_collection_revision(self, **values) -> ArtifactCollectionRevisionV1:
         payload = {
             "schema_version": "1.0", "object_type": "artifact_collection_revision",
@@ -706,69 +859,323 @@ class DataManagerCreationWorkflow:
             created_at_utc=values["created_at_utc"], revised_at_utc=values["revised_at_utc"],
         )
 
-    def _build_batch_recipe(
-        self, branch, source_recipe_id: str, source_outputs: Sequence[str]
-    ) -> PortableRecipeV1:
-        parameters = dict(branch.parameters)
-        dependencies: list[PortableRecipeDependencyV1] = []
-        key = branch.tool_key
-        if key in {"derivative", "angle"}:
-            roles = ("source",)
-        elif key in {"percent_span_angle", "angle_momentum"}:
-            roles = ("source_1",)
-        elif key == "delta":
-            roles = ("fast", "slow")
-        elif key == "trap_area":
-            roles = ("fast", "slow") if "mid_output" not in parameters else ("fast", "mid", "slow")
-        else:
-            raise DataManagerCreationError("unsupported batch Construct")
-        output_by_role = {roles[0]: branch.source_output}
-        for role in roles[1:]:
-            key_name = f"{role}_output"
-            value = parameters.pop(key_name, None)
-            if value is None:
-                raise DataManagerCreationError(f"{key} requires explicit {key_name}")
-            output_by_role[role] = str(value)
-        if any(item not in source_outputs for item in output_by_role.values()):
-            raise DataManagerCreationError("batch source role references an unavailable output")
-        if len(set(output_by_role.values())) != len(output_by_role):
-            raise DataManagerCreationError("batch source roles must use distinct outputs")
-        dependencies.extend(
-            PortableRecipeDependencyV1(role, source_recipe_id, output)
-            for role, output in output_by_role.items()
-        )
-        resolved_parameters = resolve_parameters(key, parameters)
-        naming_parameters = dict(resolved_parameters)
-        if key in {"derivative", "angle"}:
-            naming_parameters["source"] = "__research_source"
-        elif key in {"percent_span_angle", "angle_momentum"}:
-            naming_parameters["source_columns"] = "__research_source_1"
-        elif key in {"delta", "trap_area"}:
-            naming_parameters.update(
-                {role: f"__research_{role}" for role in output_by_role}
+    def _validated_batch_recipes(
+        self, request: BatchArtifactRequest
+    ) -> tuple[PortableRecipeV1, ...]:
+        current_source = self._artifacts.capture_accepted_source(request.market_id)
+        if current_source != request.expected_source_ohlcv:
+            raise DataManagerCreationError(
+                "accepted OHLCV source changed after Batch Preview"
             )
-        outputs = resolve_output_names(key, naming_parameters)
-        return build_portable_recipe(
-            tool_key=key, kind=get_financial_tool_spec(key).kind,
-            parameters=resolved_parameters, output_names=outputs,
-            dependencies=tuple(dependencies),
-        )
+        try:
+            catalogue = {
+                (
+                    item.logical_artifact_id,
+                    item.artifact_id,
+                    item.output_name,
+                ): item
+                for item in list_construct_source_signals(
+                    self._artifacts, request.market_id
+                )
+                if item.source_ohlcv == current_source
+            }
+        except (ArtifactError, OSError, ValueError) as exc:
+            raise DataManagerCreationError(
+                f"Construct Source Catalogue is unavailable: {exc}"
+            ) from exc
+        managed = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts(request.market_id)
+        }
+        recipes: list[PortableRecipeV1] = []
+        for index, branch in enumerate(request.branches, start=1):
+            source_recipe_ids: dict[str, str] = {}
+            for source in branch.sources:
+                if source.source_kind == "current_ohlcv":
+                    if (
+                        source.market_id != request.market_id
+                        or source.source_ohlcv != request.expected_source_ohlcv
+                    ):
+                        raise DataManagerCreationError(
+                            f"branch {index}: current OHLCV source identity changed"
+                        )
+                    continue
+                identity = (
+                    source.logical_artifact_id,
+                    source.artifact_id,
+                    source.output_name,
+                )
+                admitted = catalogue.get(identity)
+                if admitted is None:
+                    raise DataManagerCreationError(
+                        f"branch {index}: frozen source is no longer admitted"
+                    )
+                if admitted.source_ohlcv != request.expected_source_ohlcv:
+                    raise DataManagerCreationError(
+                        f"branch {index}: source OHLCV fingerprint changed"
+                    )
+                summary = managed.get(source.logical_artifact_id)
+                if summary is None or not summary.valid:
+                    raise DataManagerCreationError(
+                        f"branch {index}: source Artifact is unavailable or invalid"
+                    )
+                if summary.artifact_id != source.artifact_id:
+                    raise DataManagerCreationError(
+                        f"branch {index}: source Artifact head changed"
+                    )
+                if source.output_name not in summary.output_names:
+                    raise DataManagerCreationError(
+                        f"branch {index}: selected source output disappeared"
+                    )
+                loaded = self._artifacts.load_artifact_by_id(
+                    request.market_id, source.artifact_id
+                )
+                if loaded.metadata.source_ohlcv != request.expected_source_ohlcv:
+                    raise DataManagerCreationError(
+                        f"branch {index}: source Artifact OHLCV changed"
+                    )
+                if source.output_name not in loaded.metadata.recipe.output_names:
+                    raise DataManagerCreationError(
+                        f"branch {index}: selected source output disappeared"
+                    )
+                source_recipe_ids[source.role] = summary.portable_recipe_id
+            recipe = self._build_batch_portable_recipe(
+                request,
+                branch,
+                source_recipe_ids,
+            )
+            if branch.requested_outputs != visible_output_names(
+                branch.tool_key, branch.parameters, branch.sources
+            ):
+                raise DataManagerCreationError(
+                    f"branch {index}: requested outputs do not match canonical visible outputs"
+                )
+            recipes.append(recipe)
+        if (
+            self._artifacts.capture_accepted_source(request.market_id)
+            != request.expected_source_ohlcv
+        ):
+            raise DataManagerCreationError(
+                "accepted OHLCV source changed during batch validation"
+            )
+        return tuple(recipes)
 
     @staticmethod
-    def _batch_visible_output_names(branch) -> tuple[str, ...]:
-        parameters = dict(branch.parameters)
-        key = branch.tool_key
-        if key in {"derivative", "angle"}:
-            parameters["source"] = branch.source_output
-        elif key in {"percent_span_angle", "angle_momentum"}:
-            parameters["source_columns"] = branch.source_output
-        elif key in {"delta", "trap_area"}:
-            parameters["fast"] = branch.source_output
-            for role in ("mid", "slow"):
-                output = parameters.pop(f"{role}_output", None)
-                if output is not None:
-                    parameters[role] = output
-        return resolve_output_names(key, parameters)
+    def _build_batch_portable_recipe(
+        request: BatchArtifactRequest,
+        branch: BatchArtifactBranchRequest,
+        source_recipe_ids: Mapping[str, str],
+    ) -> PortableRecipeV1:
+        artifact_sources = tuple(
+            source for source in branch.sources if source.source_kind == "artifact"
+        )
+        raw_sources = tuple(
+            source
+            for source in branch.sources
+            if source.source_kind == "current_ohlcv"
+        )
+        if not raw_sources:
+            direct_sources = tuple(
+                DataManagerDirectArtifactSource(
+                    source.role,
+                    source.logical_artifact_id,
+                    source.artifact_id,
+                    source.output_name,
+                )
+                for source in artifact_sources
+            )
+            direct_request = DataManagerDirectArtifactRequest(
+                market_id=request.market_id,
+                expected_source_ohlcv=request.expected_source_ohlcv,
+                tool_key=branch.tool_key,
+                parameters=branch.parameters,
+                sources=direct_sources,
+            )
+            return _build_direct_portable_recipe(
+                direct_request, source_recipe_ids
+            )
+
+        spec = get_financial_tool_spec(branch.tool_key)
+        roles = tuple(source.role for source in branch.sources)
+        _validate_source_roles(spec.key, spec.kind, roles)
+        resolved = dict(resolve_parameters(spec.key, branch.parameters))
+        naming = dict(resolved)
+        bound_names = {
+            source.role: source.column
+            if source.source_kind == "current_ohlcv"
+            else f"__research_{source.role}"
+            for source in branch.sources
+        }
+        if spec.key in {"derivative", "angle"}:
+            naming["source"] = bound_names["source"]
+        elif spec.key == "delta":
+            naming.update(fast=bound_names["fast"], slow=bound_names["slow"])
+        elif spec.key in {"braids", "braid_instability"}:
+            naming.update(
+                fast=bound_names["fast"],
+                mid=bound_names["mid"],
+                slow=bound_names["slow"],
+            )
+        elif spec.key == "trap_area":
+            naming.update(fast=bound_names["fast"], slow=bound_names["slow"])
+            if "mid" in roles:
+                naming["mid"] = bound_names["mid"]
+            else:
+                naming.pop("mid", None)
+        elif spec.key in {"percent_span_angle", "angle_momentum"}:
+            naming["source_columns"] = ",".join(
+                bound_names[f"source_{index}"]
+                for index in range(1, len(roles) + 1)
+            )
+        dependencies = tuple(
+            PortableRecipeDependencyV1(
+                source.role,
+                source_recipe_ids[source.role],
+                source.output_name,
+            )
+            for source in artifact_sources
+        )
+        ohlcv_inputs = tuple(
+            PortableRecipeOHLCVInputV1(source.role, source.column)
+            for source in raw_sources
+        )
+        return build_portable_recipe(
+            tool_key=spec.key,
+            kind=spec.kind,
+            parameters=resolved,
+            output_names=resolve_output_names(spec.key, naming),
+            ohlcv_inputs=ohlcv_inputs,
+            dependencies=dependencies,
+        )
+
+    def _project_batch_plan(
+        self,
+        request: BatchArtifactRequest,
+        recipes: tuple[PortableRecipeV1, ...],
+        materialization: DataManagerArtifactMaterializationPlan,
+    ) -> BatchArtifactPlan:
+        branch_recipe_ids = tuple(recipe.recipe_id for recipe in recipes)
+        recipe_ids = tuple(dict.fromkeys(branch_recipe_ids))
+        node_by_recipe = {
+            node.portable_recipe_id: node for node in materialization.nodes
+        }
+        branch_nodes = tuple(node_by_recipe[item] for item in branch_recipe_ids)
+        branch_reuse = tuple(
+            node.status == "REUSE_CURRENT" for node in branch_nodes
+        )
+        new_recipe_ids = tuple(
+            recipe_id
+            for recipe_id in recipe_ids
+            if node_by_recipe[recipe_id].status != "REUSE_CURRENT"
+        )
+        reusable_recipe_ids = tuple(
+            recipe_id
+            for recipe_id in recipe_ids
+            if node_by_recipe[recipe_id].status == "REUSE_CURRENT"
+        )
+        new_logical_ids = tuple(
+            node_by_recipe[item].logical_artifact_id for item in new_recipe_ids
+        )
+        reusable_logical_ids = tuple(
+            node_by_recipe[item].logical_artifact_id
+            for item in reusable_recipe_ids
+        )
+        collisions = self._batch_output_collisions(
+            request,
+            recipes,
+            tuple(node.logical_artifact_id for node in branch_nodes),
+        )
+        return BatchArtifactPlan(
+            request=request,
+            branch_recipe_ids=branch_recipe_ids,
+            branch_reuse_current=branch_reuse,
+            recipe_ids=recipe_ids,
+            dependency_edges=tuple(
+                (
+                    edge.dependency_recipe_id,
+                    edge.dependent_recipe_id,
+                    edge.role,
+                    edge.output_name,
+                )
+                for edge in materialization.dependency_edges
+            ),
+            execution_stages=materialization.execution_stages,
+            new_recipe_ids=new_recipe_ids,
+            reusable_recipe_ids=reusable_recipe_ids,
+            new_logical_artifact_ids=new_logical_ids,
+            reusable_logical_artifact_ids=reusable_logical_ids,
+            naming_collisions=collisions,
+            unsupported_combinations=(),
+            blockers=(),
+        )
+
+    def _batch_output_collisions(
+        self,
+        request: BatchArtifactRequest,
+        recipes: Sequence[PortableRecipeV1],
+        logical_ids: Sequence[str],
+    ) -> tuple[str, ...]:
+        if request.destination == "individual":
+            return ()
+        owners: dict[str, tuple[str, str]] = {}
+        if request.destination == "collection_revision":
+            current = self.load_artifact_collection(request.collection_id)
+            owners.update(
+                {
+                    item.column_name: (
+                        item.logical_artifact_id,
+                        item.output_name,
+                    )
+                    for item in current.selected_outputs
+                }
+            )
+        collisions: list[str] = []
+        for branch, recipe, logical_id in zip(
+            request.branches, recipes, logical_ids, strict=True
+        ):
+            for output, column in zip(
+                recipe.output_names, branch.requested_outputs, strict=True
+            ):
+                owner = (logical_id, output)
+                previous = owners.setdefault(column, owner)
+                if previous != owner and column not in collisions:
+                    collisions.append(column)
+        return tuple(collisions)
+
+    def _batch_collection_outputs(
+        self,
+        plan: BatchArtifactPlan,
+        recipes: Sequence[PortableRecipeV1],
+    ) -> tuple[ArtifactCollectionOutputV1, ...] | None:
+        if plan.request.destination == "individual":
+            return None
+        outputs: list[ArtifactCollectionOutputV1] = []
+        seen: set[tuple[str, str, str]] = set()
+        if plan.request.destination == "collection_revision":
+            current = self.load_artifact_collection(plan.request.collection_id)
+            for item in current.selected_outputs:
+                identity = (
+                    item.logical_artifact_id,
+                    item.output_name,
+                    item.column_name,
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    outputs.append(item)
+        for branch, recipe in zip(plan.request.branches, recipes, strict=True):
+            logical_id = compute_logical_artifact_id(
+                plan.request.market_id, recipe.recipe_id
+            )
+            for output, column in zip(
+                recipe.output_names, branch.requested_outputs, strict=True
+            ):
+                identity = (logical_id, output, column)
+                if identity not in seen:
+                    seen.add(identity)
+                    outputs.append(
+                        ArtifactCollectionOutputV1(logical_id, output, column)
+                    )
+        return tuple(outputs)
 
     @staticmethod
     def _required_members(

@@ -42,7 +42,10 @@ def test_role_schema_and_service_owned_selectors_are_rejected(tmp_path: Path) ->
         )
 
 
-def test_same_family_and_output_eligibility_are_enforced(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tool_key", ["braids", "braid_instability"])
+def test_mixed_family_braid_sources_and_output_eligibility_are_enforced(
+    tmp_path: Path, tool_key: str
+) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
     service = ResearchStudyService(artifacts)
     sma = prepare(service, dataset, "sma", parameters={"period": 3})
@@ -53,18 +56,32 @@ def test_same_family_and_output_eligibility_are_enforced(tmp_path: Path) -> None
         "hck",
         parameters={"fast_vwap_l": 3, "slow_vwap_l": 5},
     )
-    with pytest.raises(StudyValidationError, match="same family"):
-        prepare(
-            service,
-            dataset,
-            "braids",
-            sources=(
-                StudyInputSource("fast", "study", study_id=sma.study_id, output_name="sma_3"),
-                StudyInputSource("mid", "study", study_id=rsi.study_id, output_name="rsi_3"),
-                StudyInputSource("slow", "study", study_id=sma.study_id, output_name="sma_3"),
+    derivative = prepare(
+        service,
+        dataset,
+        "derivative",
+        sources=(
+            StudyInputSource(
+                "source", "study", study_id=sma.study_id, output_name="sma_3"
             ),
-            studies=(sma, rsi),
-        )
+        ),
+        studies=(sma,),
+    )
+    mixed = prepare(
+        service,
+        dataset,
+        tool_key,
+        sources=(
+            StudyInputSource("fast", "study", study_id=sma.study_id, output_name="sma_3"),
+            StudyInputSource("mid", "study", study_id=rsi.study_id, output_name="rsi_3"),
+            StudyInputSource(
+                "slow", "study", study_id=derivative.study_id,
+                output_name=derivative.result.output_names[0],
+            ),
+        ),
+        studies=(sma, rsi, derivative),
+    )
+    assert mixed.result.row_count == dataset.row_count
     with pytest.raises(StudyValidationError, match="not analysis-usable"):
         prepare(
             service,

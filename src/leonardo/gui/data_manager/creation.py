@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.financial_tools import CONSTRUCT_SPECS
+from leonardo.gui.data_manager.table_presentation import resize_data_manager_table
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
@@ -247,8 +248,8 @@ class DataManagerCreationWorkspace(QWidget):
         self.environment_table = configure_table(
             QTableWidget(page),
             object_id="data_manager.creation.table.environment_portability",
-            columns=("Entry", "Tool", "Mode", "Status", "Dependencies", "Reason"),
-            labels=("Entry", "Tool", "Mode", "Status", "Dependencies", "Reason"),
+            columns=("Tool", "Mode", "Status", "Dependencies", "Reason", "Entry ID"),
+            labels=("Tool", "Mode", "Status", "Dependencies", "Reason", "Entry ID"),
         )
         layout.addWidget(self.environment_table, 1)
         layout.addLayout(self._button_row(page, (
@@ -291,8 +292,8 @@ class DataManagerCreationWorkspace(QWidget):
         self.recipe_table = configure_table(
             QTableWidget(page),
             object_id="data_manager.creation.table.recipes",
-            columns=("Recipe", "Tool", "Kind", "Outputs", "Dependencies", "State"),
-            labels=("Recipe", "Tool", "Kind", "Outputs", "Dependencies", "State"),
+            columns=("Tool", "Kind", "Outputs", "Dependencies", "State", "Recipe ID"),
+            labels=("Tool", "Kind", "Outputs", "Dependencies", "State", "Recipe ID"),
         )
         layout.addWidget(self.recipe_table, 1)
         layout.addLayout(self._button_row(page, (
@@ -308,8 +309,8 @@ class DataManagerCreationWorkspace(QWidget):
         self.plan_table = configure_table(
             QTableWidget(page),
             object_id="data_manager.creation.table.materialization_plan",
-            columns=("Recipe", "Logical Artifact", "Tool", "Role", "Status", "Blockers"),
-            labels=("Recipe", "Logical Artifact", "Tool", "Role", "Status", "Blockers"),
+            columns=("Tool", "Role", "Status", "Blockers", "Recipe ID", "Logical Artifact ID"),
+            labels=("Tool", "Role", "Status", "Blockers", "Recipe ID", "Logical Artifact ID"),
         )
         layout.addWidget(self.plan_table, 1)
         layout.addLayout(self._button_row(page, (
@@ -333,8 +334,8 @@ class DataManagerCreationWorkspace(QWidget):
         self.batch_table = configure_table(
             QTableWidget(page),
             object_id="data_manager.creation.table.batch_branches",
-            columns=("Source Logical ID", "Source Output", "Tool", "Parameters", "Requested Outputs"),
-            labels=("Source Logical ID", "Source Output", "Tool", "Parameters", "Requested Outputs"),
+            columns=("Source Output", "Tool", "Parameters", "Requested Outputs", "Source Logical Artifact ID"),
+            labels=("Source Output", "Tool", "Parameters", "Requested Outputs", "Source Logical Artifact ID"),
         )
         self.batch_table.setRowCount(1)
         layout.addWidget(self.batch_table, 1)
@@ -372,10 +373,10 @@ class DataManagerCreationWorkspace(QWidget):
             QTableWidget(page),
             object_id="data_manager.creation.table.collection_members",
             columns=(
-                "Logical Artifact", "Output", "Database Column", "Order", "Role", "Locked"
+                "Output", "Database Column", "Order", "Role", "Locked", "Logical Artifact ID"
             ),
             labels=(
-                "Logical Artifact", "Output", "Database Column", "Order", "Role", "Locked"
+                "Output", "Database Column", "Order", "Role", "Locked", "Logical Artifact ID"
             ),
         )
         layout.addWidget(self.collection_table, 1)
@@ -553,6 +554,9 @@ class DataManagerCreationWorkspace(QWidget):
         self.batch_table.itemChanged.connect(
             lambda _item: self._context_changed("batch")
         )
+        self.batch_table.itemChanged.connect(
+            lambda _item: resize_data_manager_table(self.batch_table)
+        )
         self.controls[
             "data_manager.creation.check.build_confirmed"
         ].toggled.connect(self._sync_gating)
@@ -600,7 +604,6 @@ def _csv(value: str) -> tuple[str, ...]:
 
 
 def _table_payload(table: QTableWidget) -> tuple[dict[str, object], ...]:
-    keys = ("source_logical_artifact_id", "source_output", "tool_key", "parameters", "requested_outputs")
     values: list[dict[str, object]] = []
     for row in range(table.rowCount()):
         raw = tuple(
@@ -610,12 +613,18 @@ def _table_payload(table: QTableWidget) -> tuple[dict[str, object], ...]:
         if not any(raw):
             continue
         parameters: object = {}
-        if raw[3]:
+        if raw[2]:
             try:
-                parameters = json.loads(raw[3])
+                parameters = json.loads(raw[2])
             except json.JSONDecodeError:
-                parameters = raw[3]
-        values.append(dict(zip(keys, (*raw[:3], parameters, _csv(raw[4])), strict=True)))
+                parameters = raw[2]
+        values.append({
+            "source_logical_artifact_id": raw[4],
+            "source_output": raw[0],
+            "tool_key": raw[1],
+            "parameters": parameters,
+            "requested_outputs": _csv(raw[3]),
+        })
     return tuple(values)
 
 
@@ -623,14 +632,18 @@ def _collection_output_payload(
     table: QTableWidget,
 ) -> tuple[dict[str, str], ...]:
     values: list[dict[str, str]] = []
-    keys = ("logical_artifact_id", "output_name", "column_name", "order")
     for row in range(table.rowCount()):
         raw = tuple(
             "" if table.item(row, column) is None else table.item(row, column).text().strip()
-            for column in range(4)
+            for column in range(table.columnCount())
         )
         if any(raw):
-            values.append(dict(zip(keys, raw, strict=True)))
+            values.append({
+                "logical_artifact_id": raw[5],
+                "output_name": raw[0],
+                "column_name": raw[1],
+                "order": raw[2],
+            })
     return tuple(values)
 
 
@@ -640,7 +653,8 @@ def _set_rows(table: QTableWidget, rows: tuple[tuple[str, ...], ...]) -> None:
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
             if table.objectName() == "data_manager.creation.table.collection_members" and (
-                column in {0, 4, 5} or (len(values) > 5 and values[5] == "yes")
+                column in {3, 4, 5} or (len(values) > 4 and values[4] == "yes")
             ):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             table.setItem(row_index, column, item)
+    resize_data_manager_table(table)

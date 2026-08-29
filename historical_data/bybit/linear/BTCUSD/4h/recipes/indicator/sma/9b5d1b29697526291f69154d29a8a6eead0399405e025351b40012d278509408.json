@@ -1,0 +1,23 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-07-23T09:18:07.610349Z",
+  "description": "",
+  "display_name": "SMA",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "sma_15"
+  ],
+  "parameters": {
+    "period": 15
+  },
+  "recipe_id": "9b5d1b29697526291f69154d29a8a6eead0399405e025351b40012d278509408",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "sma"
+}

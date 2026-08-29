@@ -5,6 +5,8 @@ from pathlib import Path
 from threading import Event
 import time
 
+import pytest
+
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.core.core_runner import TaskResult
@@ -87,12 +89,17 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
     app = LeonardoApp(config)
     recipe = _recipe()
     app.portable_recipe_store.save_recipe(recipe)
+    recipe_collection = app.portable_recipe_store.create_collection(
+        "SMA Recipe", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
     app.startup()
     app.start_core_runtime()
     application = app.data_manager_service
     try:
         request = DataManagerArtifactMaterializationRequest(
-            MARKET, (recipe.recipe_id,)
+            MARKET,
+            recipe_collection_id=recipe_collection.collection_id,
+            recipe_collection_revision_id=recipe_collection.revision_id,
         )
         materialization = _completed(
             application.submit_execute_artifact_materialization,
@@ -102,6 +109,8 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             application.submit_create_artifact_collection,
             materialization,
             "SMA",
+            source_recipe_collection_id=recipe_collection.collection_id,
+            source_recipe_collection_revision_id=recipe_collection.revision_id,
         )
         seed = _completed(
             application.submit_create_database_seed,
@@ -113,6 +122,25 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             seed.seed_id,
             collection.collection_id,
         )
+        assert collection.source_recipe_collection_id == recipe_collection.collection_id
+        assert (
+            collection.source_recipe_collection_revision_id
+            == recipe_collection.revision_id
+        )
+        provenance = (
+            collection.source_portable_recipe_ids,
+            collection.source_recipe_collection_id,
+            collection.source_recipe_collection_revision_id,
+        )
+        _completed(
+            application.submit_delete_recipe_collection,
+            recipe_collection.collection_id,
+        )
+        _completed(application.submit_delete_portable_recipe, recipe.recipe_id)
+        with pytest.raises(FileNotFoundError):
+            app.portable_recipe_store.load_collection(recipe_collection.collection_id)
+        with pytest.raises(FileNotFoundError):
+            app.portable_recipe_store.load_recipe(recipe.recipe_id)
         _accepted_dataset(historical, market=MARKET, rows=104)
         stale = _completed(application.submit_reconcile_status, force=True)
         assert stale.collections[0].status == "MEMBERS_REQUIRE_UPDATE"
@@ -131,6 +159,11 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
         )
         assert appended.database_revision.previous_revision_id == database.revision_id
         artifact_revision_id = artifact_result.collection_revision.revision_id
+        assert (
+            artifact_result.collection_revision.source_portable_recipe_ids,
+            artifact_result.collection_revision.source_recipe_collection_id,
+            artifact_result.collection_revision.source_recipe_collection_revision_id,
+        ) == provenance
     finally:
         app.shutdown()
 
@@ -139,6 +172,25 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
     restarted.start_core_runtime()
     application = restarted.data_manager_service
     try:
+        with pytest.raises(FileNotFoundError):
+            restarted.portable_recipe_store.load_collection(
+                recipe_collection.collection_id
+            )
+        with pytest.raises(FileNotFoundError):
+            restarted.portable_recipe_store.load_recipe(recipe.recipe_id)
+        surviving_collection = _completed(
+            application.submit_load_artifact_collection,
+            collection.collection_id,
+        )
+        assert (
+            surviving_collection.source_portable_recipe_ids,
+            surviving_collection.source_recipe_collection_id,
+            surviving_collection.source_recipe_collection_revision_id,
+        ) == provenance
+        assert restarted.artifact_service.list_managed_artifacts(MARKET)
+        assert _completed(
+            application.submit_load_database_revision, database.database_id
+        ).manifest.database_id == database.database_id
         current = application.latest_reconciliation_snapshot()
         assert current.collections[0].revision_id == artifact_revision_id
         assert current.collections[0].status == "CURRENT"
@@ -167,5 +219,14 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             )
         ) == 3
         assert rebuilt.reconciliation_snapshot.databases[0].status == "CURRENT"
+        final_collection = _completed(
+            application.submit_load_artifact_collection,
+            collection.collection_id,
+        )
+        assert (
+            final_collection.source_portable_recipe_ids,
+            final_collection.source_recipe_collection_id,
+            final_collection.source_recipe_collection_revision_id,
+        ) == provenance
     finally:
         restarted.shutdown()

@@ -159,6 +159,170 @@ def test_store_provenance_and_collection_revisions_are_durable(tmp_path: Path) -
     assert len(store.list_collection_revisions(first.collection_id)) == 2
 
 
+def test_collection_update_expected_head_is_atomic_and_rejects_stale_edits(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=lambda: "b" * 32
+    )
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    first = store.create_collection(
+        "First", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+    second = store.update_collection(
+        first.collection_id,
+        "Second",
+        "",
+        (recipe.recipe_id,),
+        (recipe.recipe_id,),
+        expected_head_revision_id=first.revision_id,
+    )
+    revision_paths = {
+        item.revision_id: (
+            store.root_dir
+            / "recipe_collections"
+            / first.collection_id
+            / "revisions"
+            / f"{item.revision_id}.json"
+        ).read_bytes()
+        for item in (first, second)
+    }
+
+    with pytest.raises(
+        PortableRecipeStoreError, match="changed since it was selected"
+    ):
+        store.update_collection(
+            first.collection_id,
+            "Stale",
+            "",
+            (recipe.recipe_id,),
+            (recipe.recipe_id,),
+            expected_head_revision_id=first.revision_id,
+        )
+
+    assert store.load_collection(first.collection_id) == second
+    assert store.list_collection_revisions(first.collection_id) == (first, second)
+    for revision_id, expected in revision_paths.items():
+        path = (
+            store.root_dir
+            / "recipe_collections"
+            / first.collection_id
+            / "revisions"
+            / f"{revision_id}.json"
+        )
+        assert path.read_bytes() == expected
+
+
+def test_recipe_deletion_removes_exact_recipe_and_provenance_after_preflight(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 17, tzinfo=UTC)
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    fast, slow, _delta = _recipes()
+    store.save_recipe(fast)
+    store.save_recipe(slow)
+    provenance = PortableRecipeProvenanceV1.build(
+        recipe_id=fast.recipe_id,
+        origin_market_id=MarketId("bybit", "linear", "BTCUSDT", "1h"),
+        study_environment_id="env_delete",
+        study_environment_content_hash="b" * 64,
+        study_environment_updated_at_utc=now,
+        study_environment_display_name="Delete",
+        study_entry_id="entry_fast",
+        study_display_name="Fast",
+        study_description="",
+    )
+    store.save_provenance(provenance)
+    callback_evidence: list[bool] = []
+
+    deleted = store.delete_recipe(
+        fast.recipe_id,
+        before_delete=lambda: callback_evidence.append(
+            store.load_recipe(fast.recipe_id) == fast
+            and store.list_provenance(fast.recipe_id) == (provenance,)
+        ),
+    )
+
+    assert deleted == fast
+    assert callback_evidence == [True]
+    assert store.load_recipe(slow.recipe_id) == slow
+    with pytest.raises(FileNotFoundError):
+        store.load_recipe(fast.recipe_id)
+    assert not (store.root_dir / "recipe_provenance" / fast.recipe_id).exists()
+
+
+def test_recipe_deletion_refuses_recipe_and_historical_collection_references(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=lambda: "d" * 32
+    )
+    fast, slow, delta = _recipes()
+    historical = build_portable_recipe(
+        tool_key="ema", kind="indicator", parameters={"period": 3},
+        output_names=("ema_3",),
+    )
+    for recipe in (fast, slow, delta, historical):
+        store.save_recipe(recipe)
+    with pytest.raises(PortableRecipeStoreError, match="another Recipe"):
+        store.delete_recipe(fast.recipe_id)
+
+    first = store.create_collection(
+        "Historical", "", (historical.recipe_id,), (historical.recipe_id,)
+    )
+    store.update_collection(
+        first.collection_id, "Current", "", (delta.recipe_id,),
+        PortableRecipeGraphPlanner(store).plan((delta.recipe_id,)).member_recipe_ids,
+    )
+    with pytest.raises(PortableRecipeStoreError, match="Recipe Collection"):
+        store.delete_recipe(historical.recipe_id)
+    assert store.load_recipe(historical.recipe_id) == historical
+
+
+def test_collection_deletion_is_exact_and_invalid_shapes_fail_before_callback(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=lambda: "e" * 32
+    )
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    first = store.create_collection(
+        "One", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+    current = store.update_collection(
+        first.collection_id, "Two", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+    callback_values: list[str] = []
+    assert store.delete_collection(
+        first.collection_id,
+        before_delete=lambda: callback_values.append(
+            store.load_collection(first.collection_id).revision_id
+        ),
+    ) == current
+    assert callback_values == [current.revision_id]
+    assert store.load_recipe(recipe.recipe_id) == recipe
+    assert not (store.root_dir / "recipe_collections" / first.collection_id).exists()
+
+    second_store = PortableRecipeStore(
+        tmp_path / "unsafe", collection_id_factory=lambda: "f" * 32
+    )
+    second_store.save_recipe(recipe)
+    second = second_store.create_collection(
+        "Unsafe", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+    collection_dir = second_store.root_dir / "recipe_collections" / second.collection_id
+    (collection_dir / "unexpected.txt").write_text("unexpected", encoding="utf-8")
+    called: list[bool] = []
+    with pytest.raises(PortableRecipeStoreError, match="unexpected"):
+        second_store.delete_collection(
+            second.collection_id, before_delete=lambda: called.append(True)
+        )
+    assert called == []
+    assert second_store.load_collection(second.collection_id) == second
+
+
 def test_failed_collection_head_publication_preserves_previous_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

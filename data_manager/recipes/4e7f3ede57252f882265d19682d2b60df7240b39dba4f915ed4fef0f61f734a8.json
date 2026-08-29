@@ -1,0 +1,19 @@
+{
+  "dependencies": [],
+  "kind": "indicator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "bb_middle",
+    "bb_upper_band",
+    "bb_lower_band"
+  ],
+  "parameters": {
+    "period": 14,
+    "std": 2.0
+  },
+  "recipe_id": "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+  "schema_version": "1.0",
+  "tool_key": "bb",
+  "tool_version": "1.0"
+}

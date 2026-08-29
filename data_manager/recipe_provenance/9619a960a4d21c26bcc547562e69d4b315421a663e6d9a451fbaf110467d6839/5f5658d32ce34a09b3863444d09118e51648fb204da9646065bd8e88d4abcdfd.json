@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "provenance_id": "5f5658d32ce34a09b3863444d09118e51648fb204da9646065bd8e88d4abcdfd",
+  "recipe_id": "9619a960a4d21c26bcc547562e69d4b315421a663e6d9a451fbaf110467d6839",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "Peaks & Troughs",
+  "study_entry_id": "entry_001",
+  "study_environment_content_hash": "61ca75302dd040db204722b0de4ce33ce06a2d0ff7600ff87ef25824b20ae967",
+  "study_environment_display_name": "BTC_TEST_A_STUDY",
+  "study_environment_id": "env_7ce88aae4f9a4a76bd9ee5d68d1da60f",
+  "study_environment_updated_at_utc": "2026-07-31T17:23:57.952354+00:00"
+}

@@ -1,0 +1,23 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-08-01T15:30:40.403545Z",
+  "description": "",
+  "display_name": "SMA",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "LINKUSDT",
+    "timeframe": "1h"
+  },
+  "output_names": [
+    "sma_14"
+  ],
+  "parameters": {
+    "period": 14
+  },
+  "recipe_id": "8ec7266d2409f3e0c824b9699c92d0b9751411fee4b562958cc37637ba2864ed",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "sma"
+}

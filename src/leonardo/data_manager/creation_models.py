@@ -21,8 +21,18 @@ _SEED_RE = re.compile(r"^seed_[0-9a-f]{32}$")
 _DATABASE_RE = re.compile(r"^db_[0-9a-f]{32}$")
 _COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
+_BATCH_RAW_OHLC_COLUMNS = ("open", "high", "low", "close")
 _BATCH_TOOLS = frozenset(
-    {"derivative", "angle", "angle_momentum", "delta", "trap_area", "percent_span_angle"}
+    {
+        "derivative",
+        "angle",
+        "angle_momentum",
+        "delta",
+        "trap_area",
+        "percent_span_angle",
+        "braids",
+        "braid_instability",
+    }
 )
 
 
@@ -278,6 +288,129 @@ class ArtifactCollectionOutputV1:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactCollectionSelectionPlan:
+    plan_id: str
+    market_id: MarketId
+    source_ohlcv: OHLCVSourceFingerprintV1
+    root_logical_artifact_ids: tuple[str, ...]
+    support_logical_artifact_ids: tuple[str, ...]
+    members: tuple[ArtifactCollectionMemberV1, ...]
+    dependency_edges: tuple[ArtifactCollectionDependencyV1, ...]
+    execution_stages: tuple[tuple[str, ...], ...]
+    first_timestamp_ms: int
+    last_timestamp_ms: int
+
+    def __post_init__(self) -> None:
+        market = _market(self.market_id)
+        if (
+            not isinstance(self.source_ohlcv, OHLCVSourceFingerprintV1)
+            or self.source_ohlcv.market_id != market
+        ):
+            raise DataManagerCreationError("source_ohlcv must match market_id")
+        roots = _strings(
+            self.root_logical_artifact_ids, "root_logical_artifact_ids"
+        )
+        supports = _strings(
+            self.support_logical_artifact_ids,
+            "support_logical_artifact_ids",
+            empty=True,
+        )
+        for logical_id in (*roots, *supports):
+            _sha(logical_id, "logical_artifact_id")
+        if set(roots) & set(supports):
+            raise DataManagerCreationError(
+                "root and support members must be disjoint"
+            )
+        members = tuple(self.members)
+        if not members or not all(
+            isinstance(item, ArtifactCollectionMemberV1) for item in members
+        ):
+            raise DataManagerCreationError(
+                "members must contain ArtifactCollectionMemberV1 values"
+            )
+        member_ids = tuple(
+            item.version_key.logical_artifact_id for item in members
+        )
+        if (
+            len(member_ids) != len(set(member_ids))
+            or set(member_ids) != set(roots) | set(supports)
+        ):
+            raise DataManagerCreationError(
+                "member identities must exactly match root/support membership"
+            )
+        edges = tuple(self.dependency_edges)
+        if not all(
+            isinstance(item, ArtifactCollectionDependencyV1) for item in edges
+        ):
+            raise DataManagerCreationError(
+                "dependency_edges contain invalid values"
+            )
+        for edge in edges:
+            if (
+                edge.dependency_logical_artifact_id not in member_ids
+                or edge.dependent_logical_artifact_id not in member_ids
+            ):
+                raise DataManagerCreationError(
+                    "dependency edge references a non-member Artifact"
+                )
+        stages = tuple(tuple(stage) for stage in self.execution_stages)
+        if not stages or any(not stage for stage in stages):
+            raise DataManagerCreationError(
+                "execution_stages must contain non-empty stages"
+            )
+        staged_ids = tuple(item for stage in stages for item in stage)
+        for logical_id in staged_ids:
+            _sha(logical_id, "execution stage logical_artifact_id")
+        if (
+            len(staged_ids) != len(set(staged_ids))
+            or set(staged_ids) != set(member_ids)
+        ):
+            raise DataManagerCreationError(
+                "every member must appear exactly once in execution_stages"
+            )
+        stage_by_id = {
+            logical_id: index
+            for index, stage in enumerate(stages)
+            for logical_id in stage
+        }
+        if any(
+            stage_by_id[edge.dependency_logical_artifact_id]
+            >= stage_by_id[edge.dependent_logical_artifact_id]
+            for edge in edges
+        ):
+            raise DataManagerCreationError(
+                "execution_stages must place dependencies before dependents"
+            )
+        first = _integer(self.first_timestamp_ms, "first_timestamp_ms")
+        last = _integer(self.last_timestamp_ms, "last_timestamp_ms")
+        if first > last:
+            raise DataManagerCreationError(
+                "Artifact Collection selection coverage is empty"
+            )
+        object.__setattr__(self, "root_logical_artifact_ids", roots)
+        object.__setattr__(self, "support_logical_artifact_ids", supports)
+        object.__setattr__(self, "members", members)
+        object.__setattr__(self, "dependency_edges", edges)
+        object.__setattr__(self, "execution_stages", stages)
+        expected = deterministic_hash(
+            {
+                "market_id": _market_dict(market),
+                "source_ohlcv": self.source_ohlcv.to_dict(),
+                "root_logical_artifact_ids": list(roots),
+                "members": [item.to_dict() for item in members],
+                "dependency_edges": [item.to_dict() for item in edges],
+                "execution_stages": [list(stage) for stage in stages],
+                "first_timestamp_ms": first,
+                "last_timestamp_ms": last,
+            }
+        )
+        if _sha(self.plan_id, "plan_id") != expected:
+            raise DataManagerCreationError(
+                "plan_id does not match Artifact Collection selection truth"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactCollectionRevisionV1:
     collection_id: str
     revision_id: str
@@ -486,32 +619,159 @@ class ArtifactCollectionValidation:
 
 
 @dataclass(frozen=True, slots=True)
+class BatchArtifactSource:
+    role: str
+    source_kind: str
+    label: str
+    output_name: str
+    logical_artifact_id: str | None = None
+    artifact_id: str | None = None
+    market_id: MarketId | None = None
+    source_ohlcv: OHLCVSourceFingerprintV1 | None = None
+    column: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "role", _text(self.role, "role"))
+        object.__setattr__(self, "label", _text(self.label, "label"))
+        object.__setattr__(
+            self, "output_name", _text(self.output_name, "output_name")
+        )
+        if self.source_kind == "artifact":
+            object.__setattr__(
+                self,
+                "logical_artifact_id",
+                _sha(self.logical_artifact_id, "logical_artifact_id"),
+            )
+            object.__setattr__(
+                self, "artifact_id", _sha(self.artifact_id, "artifact_id")
+            )
+            if any(
+                value is not None
+                for value in (self.market_id, self.source_ohlcv, self.column)
+            ):
+                raise DataManagerCreationError(
+                    "Artifact batch sources cannot carry current OHLCV identity"
+                )
+            return
+        if self.source_kind != "current_ohlcv":
+            raise DataManagerCreationError("source_kind is invalid")
+        market = _market(self.market_id)
+        if (
+            not isinstance(self.source_ohlcv, OHLCVSourceFingerprintV1)
+            or self.source_ohlcv.market_id != market
+        ):
+            raise DataManagerCreationError(
+                "current OHLCV source fingerprint must match market_id"
+            )
+        if self.column not in _BATCH_RAW_OHLC_COLUMNS:
+            raise DataManagerCreationError(
+                "current OHLCV column must be open, high, low, or close"
+            )
+        if self.output_name != self.column:
+            raise DataManagerCreationError(
+                "current OHLCV output_name must match column"
+            )
+        if self.label != self.column.title():
+            raise DataManagerCreationError(
+                "current OHLCV label must match its canonical column"
+            )
+        if self.logical_artifact_id is not None or self.artifact_id is not None:
+            raise DataManagerCreationError(
+                "current OHLCV sources cannot carry Artifact identity"
+            )
+        object.__setattr__(self, "market_id", market)
+
+    @classmethod
+    def from_artifact(
+        cls,
+        source: "DataManagerDirectArtifactSource",
+        *,
+        label: str | None = None,
+    ) -> "BatchArtifactSource":
+        from .direct_artifact import DataManagerDirectArtifactSource
+
+        if not isinstance(source, DataManagerDirectArtifactSource):
+            raise TypeError("source must be a DataManagerDirectArtifactSource")
+        return cls(
+            role=source.role,
+            source_kind="artifact",
+            label=label
+            or f"{source.output_name} [{source.logical_artifact_id[:8]}]",
+            output_name=source.output_name,
+            logical_artifact_id=source.logical_artifact_id,
+            artifact_id=source.artifact_id,
+        )
+
+    @classmethod
+    def current_ohlcv(
+        cls,
+        role: str,
+        market_id: MarketId,
+        source_ohlcv: OHLCVSourceFingerprintV1,
+        column: str,
+    ) -> "BatchArtifactSource":
+        label = column.title() if isinstance(column, str) else ""
+        return cls(
+            role=role,
+            source_kind="current_ohlcv",
+            label=label,
+            output_name=column,
+            market_id=market_id,
+            source_ohlcv=source_ohlcv,
+            column=column,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BatchArtifactBranchRequest:
-    source_logical_artifact_id: str
-    source_output: str
     tool_key: str
     parameters: Mapping[str, object]
+    sources: tuple[BatchArtifactSource, ...]
     requested_outputs: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _sha(self.source_logical_artifact_id, "source_logical_artifact_id")
-        _text(self.source_output, "source_output")
+        from .direct_artifact import DataManagerDirectArtifactSource
+
         if self.tool_key not in _BATCH_TOOLS:
             raise DataManagerCreationError("tool_key is not a supported batch Construct")
         copied = _json_copy(dict(self.parameters), "parameters")
+        sources = tuple(
+            item
+            if isinstance(item, BatchArtifactSource)
+            else BatchArtifactSource.from_artifact(item)
+            if isinstance(item, DataManagerDirectArtifactSource)
+            else item
+            for item in self.sources
+        )
+        if not sources or not all(isinstance(item, BatchArtifactSource) for item in sources):
+            raise DataManagerCreationError(
+                "sources must contain exact batch source values"
+            )
+        if len({item.role for item in sources}) != len(sources):
+            raise DataManagerCreationError("batch source roles must be unique")
         object.__setattr__(self, "parameters", _freeze(copied))
+        object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "requested_outputs", _strings(self.requested_outputs, "requested_outputs"))
 
 
 @dataclass(frozen=True, slots=True)
 class BatchArtifactRequest:
     market_id: MarketId
+    expected_source_ohlcv: OHLCVSourceFingerprintV1
     branches: tuple[BatchArtifactBranchRequest, ...]
     destination: str
     collection_id: str | None = None
 
     def __post_init__(self) -> None:
-        _market(self.market_id)
+        market = _market(self.market_id)
+        if not isinstance(self.expected_source_ohlcv, OHLCVSourceFingerprintV1):
+            raise DataManagerCreationError(
+                "expected_source_ohlcv must be an OHLCVSourceFingerprintV1"
+            )
+        if self.expected_source_ohlcv.market_id != market:
+            raise DataManagerCreationError(
+                "expected_source_ohlcv MarketId must match market_id"
+            )
         branches = tuple(self.branches)
         if not branches or not all(isinstance(item, BatchArtifactBranchRequest) for item in branches):
             raise DataManagerCreationError("branches must contain explicit batch branches")
@@ -527,6 +787,8 @@ class BatchArtifactRequest:
 @dataclass(frozen=True, slots=True)
 class BatchArtifactPlan:
     request: BatchArtifactRequest
+    branch_recipe_ids: tuple[str, ...]
+    branch_reuse_current: tuple[bool, ...]
     recipe_ids: tuple[str, ...]
     dependency_edges: tuple[tuple[str, str, str, str], ...]
     execution_stages: tuple[tuple[str, ...], ...]
@@ -537,6 +799,24 @@ class BatchArtifactPlan:
     naming_collisions: tuple[str, ...]
     unsupported_combinations: tuple[str, ...]
     blockers: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        branch_recipe_ids = tuple(self.branch_recipe_ids)
+        branch_reuse_current = tuple(self.branch_reuse_current)
+        if len(branch_recipe_ids) != len(self.request.branches):
+            raise DataManagerCreationError(
+                "branch_recipe_ids must align with request branches"
+            )
+        if len(branch_reuse_current) != len(self.request.branches) or any(
+            type(value) is not bool for value in branch_reuse_current
+        ):
+            raise DataManagerCreationError(
+                "branch_reuse_current must align with request branches"
+            )
+        for recipe_id in branch_recipe_ids:
+            _sha(recipe_id, "branch_recipe_id")
+        object.__setattr__(self, "branch_recipe_ids", branch_recipe_ids)
+        object.__setattr__(self, "branch_reuse_current", branch_reuse_current)
 
     @property
     def blocked(self) -> bool:

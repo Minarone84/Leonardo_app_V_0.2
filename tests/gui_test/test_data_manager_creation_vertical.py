@@ -43,8 +43,24 @@ def _inspector_fields(window) -> dict[str, str]:
 
 
 def _select_catalog_identity(catalog, identity: str) -> None:
+    if catalog.current_family == "Artifacts":
+        for row, value in enumerate(catalog._visible_values):
+            if value.logical_artifact_id == identity:
+                catalog.table.selectRow(row)
+                return
+        raise AssertionError(f"Catalog identity not found: {identity}")
+    identity_label = {
+        "Recipe Collections": "Collection ID",
+        "Artifact Collections": "Collection ID",
+        "Databases": "Database ID",
+    }[catalog.current_family]
+    identity_column = next(
+        column
+        for column in range(catalog.table.columnCount())
+        if catalog.table.horizontalHeaderItem(column).text() == identity_label
+    )
     for row in range(catalog.table.rowCount()):
-        if catalog.table.item(row, 0).text() == identity:
+        if catalog.table.item(row, identity_column).text() == identity:
             catalog.table.selectRow(row)
             return
     raise AssertionError(f"Catalog identity not found: {identity}")
@@ -181,8 +197,8 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         collection_table = window._creation_workspace.collection_table
         assert collection_table.rowCount() >= 4
         original_revision_id = presenter._creation_collection.revision_id
-        collection_table.item(0, 2).setText("duplicate_column")
-        collection_table.item(1, 2).setText("duplicate_column")
+        collection_table.item(0, 1).setText("duplicate_column")
+        collection_table.item(1, 1).setText("duplicate_column")
         window.button_for_id(
             "data_manager.creation.button.revise_collection"
         ).click()
@@ -191,17 +207,17 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         rows_by_logical: dict[str, list[int]] = {}
         for row in range(collection_table.rowCount()):
             rows_by_logical.setdefault(
-                collection_table.item(row, 0).text(), []
+                collection_table.item(row, 5).text(), []
             ).append(row)
         multi_rows = next(rows for rows in rows_by_logical.values() if len(rows) > 1)
         keep_row, remove_row = multi_rows[0], multi_rows[-1]
-        original_output = collection_table.item(keep_row, 1).text()
-        replacement_output = collection_table.item(remove_row, 1).text()
+        original_output = collection_table.item(keep_row, 0).text()
+        replacement_output = collection_table.item(remove_row, 0).text()
         collection_table.removeRow(remove_row)
-        collection_table.item(keep_row, 1).setText(replacement_output)
+        collection_table.item(keep_row, 0).setText(replacement_output)
         for row in range(collection_table.rowCount()):
-            collection_table.item(row, 2).setText(f"feature_{row + 1}")
-            collection_table.item(row, 3).setText(
+            collection_table.item(row, 1).setText(f"feature_{row + 1}")
+            collection_table.item(row, 2).setText(
                 str(collection_table.rowCount() - row)
             )
         window.button_for_id(
@@ -221,13 +237,13 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         source_output = source.output_names[0]
         batch = window._creation_workspace.batch_table
         for column, value in enumerate((
-            source.logical_artifact_id,
             source_output,
             "derivative",
             '{"order": 1}',
             ",".join(resolve_output_names(
                 "derivative", {"order": 1, "source": source_output}
             )),
+            source.logical_artifact_id,
         )):
             batch.setItem(0, column, QTableWidgetItem(value))
         destination = window._creation_controls[
@@ -239,8 +255,8 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         )
         window.button_for_id("data_manager.button.creation.plan_batch").click()
         _settle(presenter)
-        batch.item(0, 3).setText('{"order": 2}')
-        batch.item(0, 4).setText(
+        batch.item(0, 2).setText('{"order": 2}')
+        batch.item(0, 3).setText(
             ",".join(
                 resolve_output_names(
                     "derivative", {"order": 2, "source": source_output}
@@ -260,6 +276,14 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         _settle(presenter)
         window.button_for_id("data_manager.button.creation.review").click()
         _settle(presenter)
+        readiness = window._creation_workspace.readiness_table
+        readiness_values = {
+            readiness.item(row, 0).text(): readiness.item(row, 1).text()
+            for row in range(readiness.rowCount())
+        }
+        assert "Coverage" not in readiness_values
+        assert readiness_values["First TS"].endswith(" UTC")
+        assert readiness_values["Last TS"].endswith(" UTC")
         revision_input = window._creation_controls[
             "data_manager.creation.input.collection_revision"
         ]
@@ -328,9 +352,11 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         presenter = composition.data_manager_suite_presenter
         assert window is not None and presenter is not None
         _settle(presenter)
+        assert window.select_market(MARKET)
+        _settle(presenter)
         for family, expected_identity, field_name in (
             ("Recipe Collections", recipe_collection_id, "collection_id"),
-            ("Managed Artifacts", source.logical_artifact_id, "logical_artifact_id"),
+            ("Artifacts", source.logical_artifact_id, "logical_artifact_id"),
             ("Artifact Collections", collection_id, "collection_id"),
             ("Databases", database_id, "database_id"),
         ):

@@ -1,0 +1,23 @@
+{
+  "dependencies": [],
+  "kind": "indicator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "peak_fractal_3",
+    "trough_fractal_3",
+    "peak_fractal_5",
+    "trough_fractal_5",
+    "peak_fractal_7",
+    "trough_fractal_7",
+    "peak_fractal_9",
+    "trough_fractal_9",
+    "peak_fractal_11",
+    "trough_fractal_11"
+  ],
+  "parameters": {},
+  "recipe_id": "9619a960a4d21c26bcc547562e69d4b315421a663e6d9a451fbaf110467d6839",
+  "schema_version": "1.0",
+  "tool_key": "peaks_troughs",
+  "tool_version": "1.0"
+}

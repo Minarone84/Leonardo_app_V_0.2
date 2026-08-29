@@ -1,0 +1,24 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-07-23T09:17:34.226753Z",
+  "description": "",
+  "display_name": "Volume",
+  "kind": "oscillator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "volume",
+    "volume_mean_20"
+  ],
+  "parameters": {
+    "period": 20
+  },
+  "recipe_id": "45e8ef8c9fdd47eb345716a389a9d2be5f25b36bf5a1c2004479e8776b1c2f64",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "volume"
+}

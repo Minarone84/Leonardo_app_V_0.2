@@ -1,0 +1,30 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-07-24T14:54:29.345397Z",
+  "description": "",
+  "display_name": "Peaks & Troughs",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "peak_fractal_3",
+    "trough_fractal_3",
+    "peak_fractal_5",
+    "trough_fractal_5",
+    "peak_fractal_7",
+    "trough_fractal_7",
+    "peak_fractal_9",
+    "trough_fractal_9",
+    "peak_fractal_11",
+    "trough_fractal_11"
+  ],
+  "parameters": {},
+  "recipe_id": "ee12ed861a6d3025686dbb097de8ea526b83c60d4e2e9237347a3897649d7096",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "peaks_troughs"
+}

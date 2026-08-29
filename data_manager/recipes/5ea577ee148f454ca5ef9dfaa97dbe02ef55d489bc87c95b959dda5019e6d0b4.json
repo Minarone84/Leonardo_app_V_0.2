@@ -1,0 +1,23 @@
+{
+  "dependencies": [
+    {
+      "output_name": "fast_vwap",
+      "recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+      "role": "source_1"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "research_source_1_ang_mtm_3"
+  ],
+  "parameters": {
+    "n": 3,
+    "source_columns": "close"
+  },
+  "recipe_id": "5ea577ee148f454ca5ef9dfaa97dbe02ef55d489bc87c95b959dda5019e6d0b4",
+  "schema_version": "1.0",
+  "tool_key": "angle_momentum",
+  "tool_version": "1.0"
+}

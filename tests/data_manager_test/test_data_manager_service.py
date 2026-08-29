@@ -27,7 +27,12 @@ from leonardo.data_manager import (
 )
 from leonardo.data_manager.models import DataManagerDeletionResult
 from leonardo.data_manager.service import DataManagerMarketUnavailableError
-from leonardo.recipes import PortableRecipeGraphPlanner, PortableRecipeStore
+from leonardo.recipes import (
+    PortableRecipeGraphPlanner,
+    PortableRecipeProvenanceV1,
+    PortableRecipeStore,
+    build_portable_recipe,
+)
 from leonardo.research import (
     AcceptedDatasetSummary,
     DatasetCatalogReport,
@@ -100,6 +105,10 @@ class _Artifacts:
         self.validation_error = None
         self.recipe_error = None
         self.frame = pd.DataFrame({"ts_ms": range(1, 7), "rsi": [45, 48, 52, 57, 61, 64]})
+        self.managed_markets = ()
+        self.managed_artifacts = {}
+        self.managed_versions = {}
+        self.managed_deleted = []
 
     def list_recipes(self, market_id):
         self.calls.append(("list_recipes", market_id))
@@ -168,9 +177,30 @@ class _Artifacts:
         self.deleted.append(("recipe", market_id, kind, tool_key, recipe_id))
         return self._recipe_summary(market_id)
 
+    def list_managed_markets(self):
+        return self.managed_markets
 
-def _service(catalog=None, loader=None, artifacts=None):
-    recipes = PortableRecipeStore(Path("__unused_data_manager_recipes_test__"))
+    def list_managed_artifacts(self, market_id):
+        return self.managed_artifacts.get(market_id, ())
+
+    def list_artifact_versions(self, market_id, logical_artifact_id):
+        return self.managed_versions.get((market_id, logical_artifact_id), ())
+
+    def delete_managed_artifact(
+        self, market_id, logical_artifact_id, *, before_delete=None
+    ):
+        if before_delete is not None:
+            before_delete()
+        self.managed_deleted.append((market_id, logical_artifact_id))
+        return SimpleNamespace(
+            market_id=market_id, logical_artifact_id=logical_artifact_id
+        )
+
+
+def _service(catalog=None, loader=None, artifacts=None, *, root=None):
+    recipes = PortableRecipeStore(
+        Path("__unused_data_manager_recipes_test__") if root is None else root
+    )
     return DataManagerService(
         catalog or _Catalog(),
         loader or _Loader(),
@@ -235,6 +265,41 @@ def test_product_catalog_scan_aggregates_each_family_once(monkeypatch) -> None:
         "collections",
         "seeds",
     ]
+
+
+def test_recipe_collection_catalog_projects_exact_current_member_ids(
+    tmp_path: Path,
+) -> None:
+    service = _service(root=tmp_path / "data_manager")
+    recipes = (
+        build_portable_recipe(
+            tool_key="sma",
+            kind="indicator",
+            parameters={"period": 10},
+            output_names=("sma_10",),
+        ),
+        build_portable_recipe(
+            tool_key="sma",
+            kind="indicator",
+            parameters={"period": 20},
+            output_names=("sma_20",),
+        ),
+    )
+    for recipe in recipes:
+        service._portable_recipes.save_recipe(recipe)
+    roots = tuple(recipe.recipe_id for recipe in recipes)
+    plan = PortableRecipeGraphPlanner(service._portable_recipes).plan(roots)
+    service._portable_recipes.create_collection(
+        "Collection",
+        "",
+        plan.root_recipe_ids,
+        plan.member_recipe_ids,
+    )
+
+    entry = service.list_recipe_collections().collections[0]
+    assert entry.valid
+    assert entry.member_recipe_ids == plan.member_recipe_ids
+    assert entry.member_count == len(plan.member_recipe_ids)
 
 
 def test_catalog_projects_accepted_and_rejected_without_paths() -> None:
@@ -402,3 +467,226 @@ def test_rejected_or_missing_market_uses_exact_unavailable_subtype(state) -> Non
     with pytest.raises(DataManagerMarketUnavailableError) as captured:
         _service(catalog=_Catalog(report)).inspect_market(MARKET)
     assert str(captured.value) == expected
+
+
+def test_global_recipe_deletion_ignores_external_provenance_and_invalidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _Artifacts()
+    service = _service(artifacts=artifacts, root=tmp_path / "data_manager")
+    recipe = build_portable_recipe(
+        tool_key="sma",
+        kind="indicator",
+        parameters={"period": 20},
+        output_names=("sma_20",),
+    )
+    service._portable_recipes.save_recipe(recipe)
+    provenance = PortableRecipeProvenanceV1.build(
+        recipe_id=recipe.recipe_id,
+        origin_market_id=MARKET,
+        study_environment_id="env_recipe_delete",
+        study_environment_content_hash="b" * 64,
+        study_environment_updated_at_utc=datetime(2026, 8, 17, tzinfo=UTC),
+        study_environment_display_name="Recipe deletion",
+        study_entry_id="entry_sma",
+        study_display_name="SMA",
+        study_description="",
+    )
+    service._portable_recipes.save_provenance(provenance)
+    managed_summary = SimpleNamespace(valid=True, logical_artifact_id="a" * 64)
+    managed_version = SimpleNamespace(portable_recipe_id=recipe.recipe_id)
+    artifacts.managed_markets = (MARKET,)
+    artifacts.managed_artifacts[MARKET] = (managed_summary,)
+    artifacts.managed_versions[(MARKET, managed_summary.logical_artifact_id)] = (
+        managed_version,
+    )
+    artifact_collection = SimpleNamespace(
+        source_portable_recipe_ids=(recipe.recipe_id,),
+    )
+    database = SimpleNamespace(portable_recipe_ids=(recipe.recipe_id,))
+    monkeypatch.setattr(
+        service,
+        "_artifact_collection_revisions_for_deletion_proof",
+        lambda: (artifact_collection,),
+    )
+    monkeypatch.setattr(
+        service, "_database_revisions_for_deletion_proof", lambda: (database,)
+    )
+    invalidations: list[bool] = []
+    monkeypatch.setattr(service._updates, "invalidate", lambda: invalidations.append(True))
+
+    assert service.delete_portable_recipe(recipe.recipe_id) == recipe
+    assert invalidations == [True]
+    with pytest.raises(FileNotFoundError):
+        service._portable_recipes.load_recipe(recipe.recipe_id)
+    assert service._portable_recipes.list_provenance(recipe.recipe_id) == ()
+    assert artifacts.managed_markets == (MARKET,)
+    assert artifacts.managed_artifacts[MARKET] == (managed_summary,)
+    assert artifacts.managed_versions[
+        (MARKET, managed_summary.logical_artifact_id)
+    ] == (managed_version,)
+    assert artifact_collection.source_portable_recipe_ids == (recipe.recipe_id,)
+    assert database.portable_recipe_ids == (recipe.recipe_id,)
+
+
+def test_global_recipe_deletion_does_not_read_artifact_domain_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _Artifacts()
+    service = _service(artifacts=artifacts, root=tmp_path / "data_manager")
+    recipe = build_portable_recipe(
+        tool_key="sma", kind="indicator", parameters={"period": 20},
+        output_names=("sma_20",),
+    )
+    service._portable_recipes.save_recipe(recipe)
+
+    def unexpected_evidence_read(*_args, **_kwargs):
+        raise AssertionError("Artifact-domain evidence must not be read")
+
+    monkeypatch.setattr(
+        service,
+        "_managed_markets_for_deletion_proof",
+        unexpected_evidence_read,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_managed_artifacts_for_deletion_proof",
+        unexpected_evidence_read,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_artifact_collection_revisions_for_deletion_proof",
+        unexpected_evidence_read,
+    )
+    monkeypatch.setattr(
+        service, "_database_revisions_for_deletion_proof", unexpected_evidence_read
+    )
+    monkeypatch.setattr(artifacts, "list_managed_markets", unexpected_evidence_read)
+    monkeypatch.setattr(artifacts, "list_managed_artifacts", unexpected_evidence_read)
+    monkeypatch.setattr(artifacts, "list_artifact_versions", unexpected_evidence_read)
+
+    assert service.delete_portable_recipe(recipe.recipe_id) == recipe
+    with pytest.raises(FileNotFoundError):
+        service._portable_recipes.load_recipe(recipe.recipe_id)
+
+
+def test_recipe_collection_deletion_ignores_artifact_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(root=tmp_path / "data_manager")
+    recipe = build_portable_recipe(
+        tool_key="sma", kind="indicator", parameters={"period": 10},
+        output_names=("sma_10",),
+    )
+    service._portable_recipes.save_recipe(recipe)
+    provenance = PortableRecipeProvenanceV1.build(
+        recipe_id=recipe.recipe_id,
+        origin_market_id=MARKET,
+        study_environment_id="env_collection_delete",
+        study_environment_content_hash="c" * 64,
+        study_environment_updated_at_utc=datetime(2026, 8, 17, tzinfo=UTC),
+        study_environment_display_name="Collection deletion",
+        study_entry_id="entry_sma",
+        study_display_name="SMA",
+        study_description="",
+    )
+    service._portable_recipes.save_provenance(provenance)
+    collection = service._portable_recipes.create_collection(
+        "Collection", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+    artifact_collection = SimpleNamespace(
+        source_recipe_collection_id=collection.collection_id,
+        source_recipe_collection_revision_id=collection.revision_id,
+    )
+    monkeypatch.setattr(
+        service,
+        "_artifact_collection_revisions_for_deletion_proof",
+        lambda: (artifact_collection,),
+    )
+    invalidations: list[bool] = []
+    monkeypatch.setattr(service._updates, "invalidate", lambda: invalidations.append(True))
+
+    assert service.delete_recipe_collection(collection.collection_id) == collection
+    assert invalidations == [True]
+    with pytest.raises(FileNotFoundError):
+        service._portable_recipes.load_collection(collection.collection_id)
+    assert service._portable_recipes.load_recipe(recipe.recipe_id) == recipe
+    assert service._portable_recipes.list_provenance(recipe.recipe_id) == (provenance,)
+    assert artifact_collection.source_recipe_collection_id == collection.collection_id
+    assert artifact_collection.source_recipe_collection_revision_id == collection.revision_id
+
+
+def test_managed_artifact_and_artifact_collection_deletion_are_dependency_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _Artifacts()
+    service = _service(artifacts=artifacts, root=tmp_path / "data_manager")
+    logical_id = "c" * 64
+    member = SimpleNamespace(
+        version_key=SimpleNamespace(logical_artifact_id=logical_id)
+    )
+    collection = SimpleNamespace(
+        market_id=MARKET,
+        members=(member,),
+        source_recipe_collection_id=None,
+        source_portable_recipe_ids=(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_artifact_collection_revisions_for_deletion_proof",
+        lambda: (collection,),
+    )
+    monkeypatch.setattr(service, "_database_revisions_for_deletion_proof", lambda: ())
+    with pytest.raises(DataManagerOperationError, match="Artifact Collection"):
+        service.delete_managed_artifact(MARKET, logical_id)
+    assert artifacts.managed_deleted == []
+
+    monkeypatch.setattr(
+        service, "_artifact_collection_revisions_for_deletion_proof", lambda: ()
+    )
+    monkeypatch.setattr(
+        service,
+        "_database_revisions_for_deletion_proof",
+        lambda: (SimpleNamespace(
+            artifact_version_keys=(SimpleNamespace(logical_artifact_id=logical_id),),
+        ),),
+    )
+    with pytest.raises(DataManagerOperationError, match="Database"):
+        service.delete_managed_artifact(MARKET, logical_id)
+    assert artifacts.managed_deleted == []
+
+    monkeypatch.setattr(service, "_database_revisions_for_deletion_proof", lambda: ())
+    deleted = service.delete_managed_artifact(MARKET, logical_id)
+    assert deleted.logical_artifact_id == logical_id
+    assert artifacts.managed_deleted == [(MARKET, logical_id)]
+
+    expected_collection = SimpleNamespace(collection_id="ac_" + "d" * 32)
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        service.creation_store,
+        "delete_collection",
+        lambda collection_id, before_delete=None: (
+            before_delete() if before_delete is not None else None,
+            calls.append((collection_id, before_delete is not None)),
+            expected_collection,
+        )[-1],
+    )
+    assert service.delete_artifact_collection(expected_collection.collection_id) is expected_collection
+    assert calls == [(expected_collection.collection_id, False)]
+
+
+def test_invalid_artifact_reference_evidence_refuses_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _Artifacts()
+    service = _service(artifacts=artifacts, root=tmp_path / "data_manager")
+    monkeypatch.setattr(
+        service,
+        "_artifact_collection_revisions_for_deletion_proof",
+        lambda: (_ for _ in ()).throw(ValueError("invalid historical revision")),
+    )
+    with pytest.raises(DataManagerOperationError, match="could not prove"):
+        service.delete_managed_artifact(MARKET, "c" * 64)
+    assert artifacts.managed_deleted == []

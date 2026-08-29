@@ -7,9 +7,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from leonardo.artifacts import ArtifactService
+from leonardo.artifacts import ArtifactService, ArtifactSourceRefV1
 from leonardo.data import MarketId
 from leonardo.data_manager import (
+    DataManagerArtifactMaterializationResult,
     DataManagerArtifactMaterializationRequest,
     ArtifactCollectionOutputV1,
     DataManagerCreationStore,
@@ -20,7 +21,11 @@ from leonardo.data_manager.artifact_materialization import (
     _calculate_recipe,
     _dataset_frame,
 )
-from leonardo.financial_tools import resolve_output_names, resolve_parameters
+from leonardo.financial_tools import (
+    calculate_financial_tool,
+    resolve_output_names,
+    resolve_parameters,
+)
 from leonardo.ohlcv.store import Candle, OHLCVStore
 from leonardo.recipes import (
     PortableRecipeDependencyV1,
@@ -97,6 +102,27 @@ def _angle(owner):
             PortableRecipeDependencyV1(
                 "source", owner.recipe_id, owner.output_names[0]
             ),
+        ),
+    )
+
+
+def _braid(fast, mid, slow):
+    parameters = dict(resolve_parameters("braids", {"tie_policy": "carry"}))
+    naming = {
+        **parameters,
+        "fast": "__research_fast",
+        "mid": "__research_mid",
+        "slow": "__research_slow",
+    }
+    return build_portable_recipe(
+        tool_key="braids",
+        kind="construct",
+        parameters=parameters,
+        output_names=resolve_output_names("braids", naming),
+        dependencies=(
+            PortableRecipeDependencyV1("fast", fast.recipe_id, fast.output_names[0]),
+            PortableRecipeDependencyV1("mid", mid.recipe_id, mid.output_names[0]),
+            PortableRecipeDependencyV1("slow", slow.recipe_id, slow.output_names[0]),
         ),
     )
 
@@ -271,6 +297,227 @@ def test_dependency_reconciliation_and_collection_update_are_atomic(
     ) == collection
     for logical_id, artifact_id in old_artifacts.items():
         assert artifacts.load_artifact_version(MARKET, logical_id, artifact_id)
+
+
+def test_selection_created_collection_preserves_update_vertical(
+    tmp_path: Path,
+) -> None:
+    service, _artifacts, recipes, historical = _domain(tmp_path)
+    sma = _sma()
+    derivative = _derivative(sma)
+    recipes.save_recipe(sma)
+    materialization = _materialize(service, recipes, derivative)
+    selection = service.plan_artifact_collection_selection(
+        MARKET, materialization.root_logical_artifact_ids
+    )
+    collection = service.create_artifact_collection_from_selection(
+        selection, "Selected derivative"
+    )
+
+    _append(historical)
+    plan = service.plan_artifact_collection_update(collection.collection_id)
+    assert not plan.blocked
+    assert tuple(node.tool_key for node in plan.nodes) == ("sma", "derivative")
+    updated = service.execute_artifact_collection_update(plan)
+
+    assert updated.collection_revision.previous_revision_id == collection.revision_id
+    assert updated.collection_revision.root_logical_artifact_ids == (
+        selection.root_logical_artifact_ids
+    )
+    assert {item.role for item in updated.collection_revision.dependency_edges} == {
+        "source"
+    }
+
+
+def test_collection_update_never_consults_recipe_domain_after_artifact_creation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, artifacts, recipes, historical = _domain(tmp_path)
+    sma = _sma()
+    derivative = _derivative(sma)
+    recipes.save_recipe(sma)
+    materialization = _materialize(service, recipes, derivative)
+    collection = service.create_artifact_collection(
+        materialization, "Recipe-independent derivative"
+    )
+    recipes.delete_recipe(derivative.recipe_id)
+    recipes.delete_recipe(sma.recipe_id)
+    for recipe_id in (sma.recipe_id, derivative.recipe_id):
+        with pytest.raises(FileNotFoundError):
+            recipes.load_recipe(recipe_id)
+
+    def forbidden_recipe_access(*_args, **_kwargs):
+        raise AssertionError("Artifact Collection update consulted Recipe authority")
+
+    monkeypatch.setattr(service._portable_recipes, "load_recipe", forbidden_recipe_access)
+    monkeypatch.setattr(service._recipe_planner, "plan", forbidden_recipe_access)
+    _append(historical)
+
+    plan = service.plan_artifact_collection_update(collection.collection_id)
+    assert not plan.blocked
+    updated = service.execute_artifact_collection_update(plan)
+    assert updated.collection_revision.previous_revision_id == collection.revision_id
+
+    heads = {
+        item.portable_recipe_id: item
+        for item in artifacts.list_managed_artifacts(MARKET)
+    }
+    source = artifacts.load_artifact_by_id(
+        MARKET, heads[sma.recipe_id].artifact_id
+    )
+    dependent = artifacts.load_artifact_by_id(
+        MARKET, heads[derivative.recipe_id].artifact_id
+    )
+    recipe = dependent.metadata.recipe
+    selector = recipe.bindings["source"]
+    complete_input = _dataset_frame(service._loader.load(MARKET))
+    complete_input[selector] = source.frame[sma.output_names[0]].to_numpy(copy=True)
+    expected = calculate_financial_tool(
+        recipe.tool_key,
+        complete_input,
+        recipe.parameters,
+        bindings=recipe.bindings,
+    )
+    pd.testing.assert_frame_equal(dependent.frame, expected.to_frame())
+    assert dependent.metadata.recipe.source_artifacts == (
+        ArtifactSourceRefV1("source", source.metadata.artifact_id, sma.output_names[0]),
+    )
+
+
+def test_collection_update_rejects_matching_but_invalid_artifact_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, artifacts, _recipes, historical = _domain(tmp_path)
+    dataset = service._loader.load(MARKET)
+    frame = _dataset_frame(dataset)
+    source = artifacts.capture_accepted_source(MARKET)
+    sma = artifacts.prepare_managed_calculation(
+        MARKET,
+        "a" * 64,
+        calculate_financial_tool("sma", frame, {"period": 3}),
+        expected_source=source,
+    )
+    malformed = artifacts.prepare_managed_calculation(
+        MARKET,
+        "b" * 64,
+        calculate_financial_tool(
+            "derivative",
+            frame,
+            {"order": 1},
+            bindings={"source": "close"},
+        ),
+        expected_source=source,
+        source_artifacts=(
+            ArtifactSourceRefV1(
+                "fast", sma.metadata.artifact_id, sma.metadata.recipe.output_names[0]
+            ),
+        ),
+        source_metadata=(sma.metadata,),
+    )
+    publication = artifacts.publish_managed_artifact_graph(
+        (sma, malformed), expected_source=source
+    )
+    entries = service.scan_managed_artifacts().artifacts
+    by_id = {item.logical_artifact_id: item for item in entries}
+    materialization = DataManagerArtifactMaterializationResult(
+        "c" * 64,
+        MARKET,
+        source,
+        (malformed.logical_artifact_id,),
+        (sma.logical_artifact_id,),
+        publication.created_artifact_ids,
+        publication.reused_artifact_ids,
+        publication.created_version_keys,
+        publication.reused_version_keys,
+        publication.advanced_logical_artifact_ids,
+        (by_id[sma.logical_artifact_id], by_id[malformed.logical_artifact_id]),
+    )
+    collection = service.create_artifact_collection(
+        materialization, "Malformed derivative"
+    )
+    assert collection.dependency_edges[0].role == "fast"
+    revisions_before = service.list_artifact_collection_revisions(
+        collection.collection_id
+    )
+    heads_before = tuple(artifacts.list_managed_artifacts(MARKET))
+    publication_calls = 0
+
+    def reject_publication(*_args, **_kwargs):
+        nonlocal publication_calls
+        publication_calls += 1
+        raise AssertionError("invalid Update reached Artifact publication")
+
+    monkeypatch.setattr(
+        artifacts, "publish_managed_artifact_graph", reject_publication
+    )
+    _append(historical)
+
+    plan = service.plan_artifact_collection_update(collection.collection_id)
+
+    assert plan.blocked
+    assert any("derivative source roles are invalid" in item for item in plan.blockers)
+    assert publication_calls == 0
+    assert service.list_artifact_collection_revisions(
+        collection.collection_id
+    ) == revisions_before
+    assert tuple(artifacts.list_managed_artifacts(MARKET)) == heads_before
+
+
+def test_braid_update_preserves_fast_mid_slow_roles_without_recipe_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, artifacts, recipes, historical = _domain(tmp_path)
+    fast = _sma(3)
+    mid = _sma(5)
+    slow = _sma(8)
+    braid = _braid(fast, mid, slow)
+    for recipe in (fast, mid, slow):
+        recipes.save_recipe(recipe)
+    materialization = _materialize(service, recipes, braid)
+    collection = service.create_artifact_collection(materialization, "Braid")
+    for recipe in (braid, fast, mid, slow):
+        recipes.delete_recipe(recipe.recipe_id)
+
+    def forbidden_recipe_access(*_args, **_kwargs):
+        raise AssertionError("Braid update consulted Recipe authority")
+
+    monkeypatch.setattr(service._portable_recipes, "load_recipe", forbidden_recipe_access)
+    monkeypatch.setattr(service._recipe_planner, "plan", forbidden_recipe_access)
+    _append(historical)
+
+    plan = service.plan_artifact_collection_update(collection.collection_id)
+    assert not plan.blocked
+    braid_node = next(node for node in plan.nodes if node.tool_key == "braids")
+    support_nodes = tuple(node for node in plan.nodes if node.tool_key == "sma")
+    assert len(support_nodes) == 3
+    assert all(
+        plan.member_recipe_ids.index(node.portable_recipe_id)
+        < plan.member_recipe_ids.index(braid_node.portable_recipe_id)
+        for node in support_nodes
+    )
+    assert set(braid_node.dependency_logical_artifact_ids) == {
+        node.logical_artifact_id for node in support_nodes
+    }
+
+    service.execute_artifact_collection_update(plan)
+    heads = {
+        item.portable_recipe_id: item
+        for item in artifacts.list_managed_artifacts(MARKET)
+    }
+    braid_artifact = artifacts.load_artifact_by_id(
+        MARKET, heads[braid.recipe_id].artifact_id
+    )
+    refs = {ref.role: ref for ref in braid_artifact.metadata.recipe.source_artifacts}
+    expected = {
+        "fast": (heads[fast.recipe_id].artifact_id, fast.output_names[0]),
+        "mid": (heads[mid.recipe_id].artifact_id, mid.output_names[0]),
+        "slow": (heads[slow.recipe_id].artifact_id, slow.output_names[0]),
+    }
+    assert tuple(refs) == ("fast", "mid", "slow")
+    assert {
+        role: (ref.artifact_id, ref.output_name) for role, ref in refs.items()
+    } == expected
+    assert braid_artifact.metadata.recipe.output_names == braid.output_names
 
 
 def test_reconciliation_captures_one_source_for_all_managed_dependents(

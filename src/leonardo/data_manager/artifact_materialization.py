@@ -10,7 +10,7 @@ from typing import Protocol
 
 import pandas as pd
 
-from leonardo.artifacts import ArtifactSourceRefV1
+from leonardo.artifacts import ArtifactRecipeV1, ArtifactSourceRefV1
 from leonardo.data import MarketId
 from leonardo.financial_tools import (
     FinancialToolCalculationResult,
@@ -18,6 +18,11 @@ from leonardo.financial_tools import (
     get_financial_tool_spec,
     resolve_output_signals,
     resolve_parameters,
+)
+from leonardo.financial_tools.construct_input_eligibility import (
+    FinancialToolInputCompatibilityError,
+    FinancialToolInputSource,
+    validate_financial_tool_inputs,
 )
 from leonardo.recipes import PortableRecipeGraphEdge, PortableRecipeV1
 
@@ -101,32 +106,19 @@ def _validate_recipe_execution(
                 "ordinary Financial Tool OHLCV inputs must be empty or exact "
                 "canonical input bindings"
             )
-    if key == "universal_trend_classifier":
-        expected_roles = {
-            "trend_peak", "trend_trough", "range_peak", "range_trough"
-        }
-        owner_ids = {item.recipe_id for item in dependencies}
-        if (
-            ohlcv_inputs
-            or len(dependencies) != 4
-            or roles != expected_roles
-            or len(owner_ids) != 1
-        ):
-            raise ArtifactMaterializationValidationError(
-                "UTC requires one complete Peaks & Troughs dependency set"
-            )
-        owner = recipes_by_id[next(iter(owner_ids))]
-        if owner.tool_key != "peaks_troughs":
-            raise ArtifactMaterializationValidationError(
-                "UTC requires one complete Peaks & Troughs dependency set"
-            )
-        try:
-            _validate_utc_outputs(recipe)
-        except ArtifactMaterializationValidationError as exc:
-            raise ArtifactMaterializationValidationError(
-                "UTC requires one complete Peaks & Troughs dependency set"
-            ) from exc
-
+    input_sources = [
+        FinancialToolInputSource(
+            item.role,
+            "ohlc",
+            item.column_name,
+            False,
+            None,
+            None,
+            True,
+            "numeric",
+        )
+        for item in ohlcv_inputs
+    ]
     for dependency in dependencies:
         upstream = recipes_by_id[dependency.recipe_id]
         if dependency.output_name not in upstream.output_names:
@@ -143,40 +135,33 @@ def _validate_recipe_execution(
             )
         }
         signal = signals.get(dependency.output_name)
-        if (
-            signal is None
-            or not signal.analysis_usable
-            or signal.value_type != "numeric"
-        ):
+        if signal is None:
             raise ArtifactMaterializationValidationError(
-                "dependency output is not a numeric analysis source"
+                f"missing dependency output: {dependency.output_name}"
             )
+        input_sources.append(
+            FinancialToolInputSource(
+                dependency.role,
+                upstream.kind,
+                dependency.output_name,
+                True,
+                upstream.tool_key,
+                upstream.recipe_id,
+                signal.analysis_usable,
+                signal.value_type,
+            )
+        )
 
-    if key in {"derivative", "angle"}:
-        _require_roles(roles, ("source",), key)
-    elif key == "delta":
-        _require_roles(roles, ("fast", "slow"), key)
-    elif key in {"braids", "braid_instability"}:
-        _require_roles(roles, ("fast", "mid", "slow"), key)
-        _require_source_compatibility(recipe, recipes_by_id)
-    elif key == "trap_area":
-        if roles not in ({"fast", "slow"}, {"fast", "mid", "slow"}):
-            raise ArtifactMaterializationValidationError(
-                "trap_area requires fast/slow or fast/mid/slow"
-            )
-    elif key in {"percent_span_angle", "angle_momentum"}:
-        expected = tuple(f"source_{index}" for index in range(1, len(roles) + 1))
-        _require_roles(roles, expected, key)
-    elif key == "universal_trend_classifier":
-        pass
-    elif dependencies:
-        raise ArtifactMaterializationValidationError(
-            "ordinary Financial Tools cannot depend on portable Recipes"
+    try:
+        validate_financial_tool_inputs(
+            spec,
+            input_sources,
+            parameters=recipe.parameters,
+            allow_partial_roles=False,
+            family_scope="all",
         )
-    elif recipe.kind == "construct" and roles:
-        raise ArtifactMaterializationValidationError(
-            f"unsupported source-role schema for {key}"
-        )
+    except FinancialToolInputCompatibilityError as exc:
+        raise ArtifactMaterializationValidationError(str(exc)) from exc
 
     if recipe.kind == "construct" and key not in {
         "derivative",
@@ -190,74 +175,6 @@ def _validate_recipe_execution(
     }:
         raise ArtifactMaterializationValidationError(
             f"unsupported construct for managed materialization: {key}"
-        )
-    if key not in {"braids", "braid_instability"}:
-        _require_source_compatibility(recipe, recipes_by_id)
-
-
-def _require_roles(
-    actual: set[str], expected: Sequence[str], tool_key: str
-) -> None:
-    expected_set = set(expected)
-    if actual != expected_set:
-        raise ArtifactMaterializationValidationError(
-            f"{tool_key} source roles must be exactly {tuple(expected)}"
-        )
-
-
-def _source_family(
-    role: str,
-    recipe: PortableRecipeV1,
-    recipes_by_id: Mapping[str, PortableRecipeV1],
-) -> str:
-    dependency = next((item for item in recipe.dependencies if item.role == role), None)
-    if dependency is None:
-        return "ohlc"
-    return recipes_by_id[dependency.recipe_id].kind
-
-
-def _require_source_compatibility(
-    recipe: PortableRecipeV1,
-    recipes_by_id: Mapping[str, PortableRecipeV1],
-) -> None:
-    spec = get_financial_tool_spec(recipe.tool_key)
-    construct = spec.construct_io
-    if construct is None:
-        return
-    roles = tuple(
-        sorted(
-            {item.role for item in recipe.dependencies}
-            | {item.role for item in recipe.ohlcv_inputs}
-        )
-    )
-    families = tuple(_source_family(role, recipe, recipes_by_id) for role in roles)
-    if any(family not in construct.allowed_source_families for family in families):
-        raise ArtifactMaterializationValidationError(
-            f"{recipe.tool_key} source-family mismatch"
-        )
-    if construct.source_compatibility == "same_family" and len(set(families)) > 1:
-        raise ArtifactMaterializationValidationError(
-            f"{recipe.tool_key} requires same-family sources"
-        )
-
-
-def _validate_utc_outputs(recipe: PortableRecipeV1) -> None:
-    by_role = {item.role: item.output_name for item in recipe.dependencies}
-    trend_window = int(
-        recipe.parameters.get(
-            "trend_fractal_window", recipe.parameters.get("fractal_window", 5)
-        )
-    )
-    range_window = int(recipe.parameters.get("range_fractal_window", 3))
-    expected = {
-        "trend_peak": f"peak_fractal_{trend_window}",
-        "trend_trough": f"trough_fractal_{trend_window}",
-        "range_peak": f"peak_fractal_{range_window}",
-        "range_trough": f"trough_fractal_{range_window}",
-    }
-    if by_role != expected:
-        raise ArtifactMaterializationValidationError(
-            "UTC dependency outputs do not match trend/range windows"
         )
 
 
@@ -401,6 +318,113 @@ def _calculate_recipe(
             f"portable Recipe output-name mismatch for {recipe.tool_key}"
         )
     return _CalculatedMaterializationNode(result)
+
+
+def _calculate_artifact_configuration(
+    *,
+    tool_key: str,
+    kind: str,
+    parameters: Mapping[str, object],
+    bindings: Mapping[str, object],
+    output_names: tuple[str, ...],
+    target_frame: pd.DataFrame,
+    dependencies: Sequence[tuple[ArtifactSourceRefV1, pd.DataFrame]],
+) -> FinancialToolCalculationResult:
+    frame = target_frame.copy(deep=True)
+    target_timestamps = tuple(int(value) for value in frame["ts_ms"])
+    for ref, upstream in dependencies:
+        if "ts_ms" not in upstream or ref.output_name not in upstream.columns:
+            raise ArtifactMaterializationValidationError(
+                f"dependency output is unavailable: {ref.output_name}"
+            )
+        upstream_timestamps = tuple(int(value) for value in upstream["ts_ms"])
+        if len(set(upstream_timestamps)) != len(upstream_timestamps):
+            raise ArtifactMaterializationValidationError(
+                "dependency timestamps must be unique"
+            )
+        if upstream_timestamps != target_timestamps:
+            raise ArtifactMaterializationValidationError(
+                "dependency timestamp spine does not match target OHLCV"
+            )
+        selector = _artifact_source_selector(
+            tool_key, parameters, bindings, ref
+        )
+        values = upstream[ref.output_name].reset_index(drop=True)
+        if selector in frame.columns:
+            same_utc_source = (
+                tool_key == "universal_trend_classifier"
+                and frame[selector].reset_index(drop=True).equals(values)
+            )
+            if not same_utc_source:
+                raise ArtifactMaterializationValidationError(
+                    f"source selector collision: {selector}"
+                )
+            continue
+        frame[selector] = values.to_numpy(copy=True)
+    result = calculate_financial_tool(
+        tool_key,
+        frame,
+        parameters,
+        bindings=bindings,
+    )
+    if (
+        result.tool_key != tool_key
+        or result.kind != kind
+        or dict(result.parameters) != dict(parameters)
+        or dict(result.bindings) != dict(bindings)
+        or result.output_names != output_names
+    ):
+        raise ArtifactMaterializationValidationError(
+            "Artifact calculation result disagrees with persisted calculation metadata"
+        )
+    return result
+
+
+def _calculate_artifact_recipe(
+    recipe: ArtifactRecipeV1,
+    target_frame: pd.DataFrame,
+    dependencies: Sequence[tuple[ArtifactSourceRefV1, pd.DataFrame]],
+) -> FinancialToolCalculationResult:
+    return _calculate_artifact_configuration(
+        tool_key=recipe.tool_key,
+        kind=recipe.kind,
+        parameters=recipe.parameters,
+        bindings=recipe.bindings,
+        output_names=recipe.output_names,
+        target_frame=target_frame,
+        dependencies=dependencies,
+    )
+
+
+def _artifact_source_selector(
+    tool_key: str,
+    parameters: Mapping[str, object],
+    bindings: Mapping[str, object],
+    ref: ArtifactSourceRefV1,
+) -> str:
+    for values in (bindings, parameters):
+        selector = values.get(ref.role)
+        if isinstance(selector, str) and selector.strip():
+            return selector.strip()
+    if ref.role.startswith("source_"):
+        raw_columns = parameters.get("source_columns")
+        if isinstance(raw_columns, str):
+            columns = tuple(
+                value.strip() for value in raw_columns.split(",") if value.strip()
+            )
+            try:
+                index = int(ref.role.removeprefix("source_")) - 1
+            except ValueError as exc:
+                raise ArtifactMaterializationValidationError(
+                    f"unsupported Artifact source role: {ref.role}"
+                ) from exc
+            if 0 <= index < len(columns):
+                return columns[index]
+    if tool_key == "universal_trend_classifier":
+        return ref.output_name
+    raise ArtifactMaterializationValidationError(
+        f"Artifact source selector is unavailable for role: {ref.role}"
+    )
 
 
 def _source_refs(

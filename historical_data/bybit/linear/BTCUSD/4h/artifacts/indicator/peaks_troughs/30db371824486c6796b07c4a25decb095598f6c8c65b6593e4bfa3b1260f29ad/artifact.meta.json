@@ -1,0 +1,59 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "30db371824486c6796b07c4a25decb095598f6c8c65b6593e4bfa3b1260f29ad",
+  "created_at_utc": "2026-07-24T14:54:29.547628Z",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-07-24T14:54:29.345397Z",
+    "description": "",
+    "display_name": "Peaks & Troughs",
+    "kind": "indicator",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "peak_fractal_3",
+      "trough_fractal_3",
+      "peak_fractal_5",
+      "trough_fractal_5",
+      "peak_fractal_7",
+      "trough_fractal_7",
+      "peak_fractal_9",
+      "trough_fractal_9",
+      "peak_fractal_11",
+      "trough_fractal_11"
+    ],
+    "parameters": {},
+    "recipe_id": "ee12ed861a6d3025686dbb097de8ea526b83c60d4e2e9237347a3897649d7096",
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "tool_key": "peaks_troughs"
+  },
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "0f3dc260e183667699b99e02f25d71b3069e8e167e833caf975829f6337c51fe"
+}

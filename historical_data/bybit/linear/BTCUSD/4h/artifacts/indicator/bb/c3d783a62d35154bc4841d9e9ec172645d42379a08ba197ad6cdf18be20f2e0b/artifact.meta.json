@@ -1,0 +1,55 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "c3d783a62d35154bc4841d9e9ec172645d42379a08ba197ad6cdf18be20f2e0b",
+  "created_at_utc": "2026-07-23T09:21:18.659396Z",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-07-23T09:21:18.434100Z",
+    "description": "",
+    "display_name": "Bollinger Bands",
+    "kind": "indicator",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "bb_middle",
+      "bb_upper_band",
+      "bb_lower_band"
+    ],
+    "parameters": {
+      "period": 14,
+      "std": 2.0
+    },
+    "recipe_id": "2bea23f7ed500a001ad60d025b7411042caecefeb3133677485cd073dfa0a16e",
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "tool_key": "bb"
+  },
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "2e3c4b0acf38930c61b8ed087ca442113880a03bc171e8b947e97ffecd217455"
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSignalBlocker, Signal, Qt
 from PySide6.QtWidgets import (
@@ -18,30 +19,43 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSplitter,
+    QSizePolicy,
     QStackedWidget,
     QTabWidget,
     QTableWidget,
-    QTextEdit,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from leonardo.data import MarketId
 from leonardo.data_manager import (
+    ArtifactCollectionRevisionV1,
     DataManagerArtifactEntry,
     DataManagerArtifactValidation,
     DataManagerCatalogSnapshot,
+    DataManagerDatasetEntry,
     DataManagerMarketSnapshot,
+    DataManagerManagedArtifactEntry,
+    DataManagerPortableRecipeEntry,
     DataManagerRecipeEntry,
+    DataManagerRecipeCollectionEntry,
     DataManagerProductCatalogSnapshot,
+    DataManagerStudyEnvironmentInspection,
 )
+from leonardo.data_manager.direct_artifact import DataManagerDirectArtifactCatalog
 from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.data_manager import (
     DataManagerCatalogWorkspace,
     DataManagerCreationWorkspace,
     DataManagerOperationSurface,
     DataManagerUpdateWorkspace,
+)
+from leonardo.gui.data_manager.table_presentation import (
+    DATA_MANAGER_DATASET_COLUMNS,
+    data_manager_dataset_details,
+    data_manager_dataset_row,
+    resize_data_manager_table,
 )
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.windows.data_manager_dataset_selector_dialog import (
@@ -51,19 +65,25 @@ from leonardo.gui.windows.data_manager_dataset_selector_dialog import (
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 from leonardo.financial_tools import CONSTRUCT_SPECS
 
+if TYPE_CHECKING:
+    from leonardo.gui.windows.data_manager_artifact_creation_dialog import (
+        DataManagerArtifactCreationDialog,
+    )
+    from leonardo.gui.windows.data_manager_construct_batch_dialog import (
+        DataManagerConstructBatchDialog,
+    )
+    from leonardo.gui.windows.data_manager_recipe_derivation_dialog import (
+        DataManagerRecipeDerivationDialog,
+    )
+    from leonardo.gui.windows.data_manager_recipe_collection_dialog import (
+        DataManagerRecipeCollectionDialog,
+    )
+    from leonardo.gui.windows.data_manager_artifact_collection_dialog import (
+        DataManagerArtifactCollectionDialog,
+    )
+
 
 DATA_MANAGER_SUITE_WINDOW_ID = "data_manager_suite.window"
-_ARTIFACT_COLUMNS = (
-    "Artifact",
-    "Tool",
-    "Kind",
-    "Outputs",
-    "Rows",
-    "Current",
-    "State",
-)
-_RECIPE_COLUMNS = ("Recipe", "Tool", "Kind", "Outputs", "Name", "Created", "State")
-
 
 class DataManagerSuiteWindow(QWidget):
     """Display immutable Data Manager projections and emit user intent."""
@@ -83,6 +103,30 @@ class DataManagerSuiteWindow(QWidget):
     catalog_row_selected = Signal(str, object)
     catalog_history_selected = Signal(str, str, object)
     creation_cancel_requested = Signal()
+    create_artifact_requested = Signal()
+    calculate_artifact_requested = Signal(object)
+    batch_constructs_requested = Signal()
+    batch_construct_preview_requested = Signal(object)
+    batch_construct_execute_requested = Signal()
+    derive_recipes_requested = Signal(object)
+    recipe_derivation_preview_requested = Signal(str, object)
+    recipe_derivation_create_requested = Signal(str, object, bool, str, str)
+    catalog_delete_recipe_requested = Signal(object)
+    catalog_delete_artifact_requested = Signal(object)
+    catalog_delete_recipe_collection_requested = Signal(object)
+    catalog_delete_artifact_collection_requested = Signal(object)
+    create_recipe_collection_requested = Signal()
+    edit_recipe_collection_requested = Signal(object)
+    create_artifact_collection_requested = Signal()
+    edit_artifact_collection_requested = Signal(object)
+    recipe_collection_preview_requested = Signal(object)
+    recipe_collection_create_requested = Signal(str, str, object)
+    recipe_collection_update_requested = Signal(str, str, str, object, str)
+    artifact_collection_preview_requested = Signal(object, object)
+    artifact_collection_create_requested = Signal(object, str, str, object)
+    artifact_collection_edit_requested = Signal(
+        str, object, str, str, object, object, str
+    )
 
     def __init__(
         self,
@@ -106,11 +150,9 @@ class DataManagerSuiteWindow(QWidget):
         self._artifacts: tuple[DataManagerArtifactEntry, ...] = ()
         self._recipes: tuple[DataManagerRecipeEntry, ...] = ()
         self._selected_market: MarketId | None = None
-        self._status_label: QLabel | None = None
-        self._selected_market_label: QLabel | None = None
-        self._selection_details: QLabel | None = None
+        self._selected_dataset_entry: DataManagerDatasetEntry | None = None
+        self._selected_dataset_table: QTableWidget | None = None
         self._progress: QProgressBar | None = None
-        self._log_area: QTextEdit | None = None
         self._creation_controls: dict[str, QWidget] = {}
         self._creation_stage_list: QListWidget | None = None
         self._creation_stack: QStackedWidget | None = None
@@ -118,9 +160,26 @@ class DataManagerSuiteWindow(QWidget):
         self._cancel_button: QPushButton | None = None
         self._catalog_workspace: DataManagerCatalogWorkspace | None = None
         self._dataset_selector_dialog: DataManagerDatasetSelectorDialog | None = None
+        self._artifact_creation_dialog: DataManagerArtifactCreationDialog | None = None
+        self._construct_batch_dialog: DataManagerConstructBatchDialog | None = None
+        self._recipe_derivation_dialog: (
+            DataManagerRecipeDerivationDialog | None
+        ) = None
+        self._recipe_collection_dialog: (
+            DataManagerRecipeCollectionDialog | None
+        ) = None
+        self._artifact_collection_dialog: (
+            DataManagerArtifactCollectionDialog | None
+        ) = None
+        self._product_catalogs: DataManagerProductCatalogSnapshot | None = None
+        self._existing_recipe_ids: tuple[str, ...] = ()
         self._creation_workspace: DataManagerCreationWorkspace | None = None
         self._update_workspace: DataManagerUpdateWorkspace | None = None
         self._operation_surface: DataManagerOperationSurface | None = None
+        self._workspace_tabs: QTabWidget | None = None
+        self._body_panel: QWidget | None = None
+        self._upper_panel: QWidget | None = None
+        self._catalog_details_panel: QWidget | None = None
         self._busy = False
         self._build_window()
         apply_theme_stylesheet(self, load_default_theme())
@@ -141,19 +200,31 @@ class DataManagerSuiteWindow(QWidget):
             raise KeyError(f"Unknown Data Manager table: {table_id}") from error
 
     def status_text(self) -> str:
-        return "" if self._status_label is None else self._status_label.text()
+        return (
+            ""
+            if self._operation_surface is None
+            else self._operation_surface.status_text()
+        )
 
     def status_log_text(self) -> str:
-        return "" if self._log_area is None else self._log_area.toPlainText()
+        return (
+            ""
+            if self._operation_surface is None
+            else self._operation_surface.notes_text()
+        )
 
     def selected_market_id(self) -> MarketId | None:
         return self._selected_market
 
     def selected_artifact(self) -> DataManagerArtifactEntry | None:
+        if "data_manager.table.artifacts" not in self._tables:
+            return None
         index = self._selected_row("data_manager.table.artifacts")
         return None if index is None else self._artifacts[index]
 
     def selected_recipe(self) -> DataManagerRecipeEntry | None:
+        if "data_manager.table.recipes" not in self._tables:
+            return None
         index = self._selected_row("data_manager.table.recipes")
         return None if index is None else self._recipes[index]
 
@@ -162,13 +233,19 @@ class DataManagerSuiteWindow(QWidget):
         self._artifacts = ()
         self._recipes = ()
         self._selected_market = None
+        self._selected_dataset_entry = None
+        if self._catalog_workspace is not None:
+            self._catalog_workspace.set_selected_market(None)
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.set_browsing_market(None)
+        self._invalidate_artifact_creation_target()
         for table in self._tables.values():
             table.setRowCount(0)
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_catalog(DataManagerCatalogSnapshot(()))
             self._dataset_selector_dialog.set_current_market(None)
-        self._set_selected_market_text("No accepted market selected")
-        self._set_selection_details("Select an accepted dataset to inspect recipes and artifacts.")
+        self._populate_selected_dataset()
+        self._set_selection_details("Select an accepted dataset to preview data or create a Database.")
         self.set_status("Scanning canonical persistence")
         self._sync_actions()
 
@@ -178,28 +255,38 @@ class DataManagerSuiteWindow(QWidget):
         self._datasets = snapshot.datasets
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_catalog(snapshot)
+        self._refresh_selected_dataset_from_catalog()
         self._sync_actions()
 
     def set_market_snapshot(self, snapshot: DataManagerMarketSnapshot | None) -> None:
         if snapshot is not None and not isinstance(snapshot, DataManagerMarketSnapshot):
             raise TypeError("snapshot must be a DataManagerMarketSnapshot or None")
+        next_market = None if snapshot is None else snapshot.market_id
+        if next_market != self._selected_market:
+            self._invalidate_artifact_creation_target()
         self._clear_object_selection()
         self._selected_market = None if snapshot is None else snapshot.market_id
+        self._selected_dataset_entry = None if snapshot is None else snapshot.dataset
+        if self._catalog_workspace is not None:
+            self._catalog_workspace.set_selected_market(self._selected_market)
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_current_market(self._selected_market)
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.set_browsing_market(
+                self._selected_market
+            )
         self._artifacts = () if snapshot is None else snapshot.artifacts
         self._recipes = () if snapshot is None else snapshot.recipes
         self._populate_artifacts()
         self._populate_recipes()
+        self._populate_selected_dataset()
         if snapshot is None:
-            self._set_selected_market_text("No accepted market selected")
             self._set_selection_details(
-                "Select an accepted dataset to inspect recipes and artifacts."
+                "Select an accepted dataset to preview data or create a Database."
             )
         else:
-            self._set_selected_market_text(snapshot.market_id.as_key())
             self._set_selection_details(
-                f"{len(snapshot.artifacts)} artifact(s), {len(snapshot.recipes)} recipe(s)"
+                "Accepted dataset ready for preview and Database workflows."
             )
         self._sync_actions()
 
@@ -218,11 +305,18 @@ class DataManagerSuiteWindow(QWidget):
         )
         if accepted is None:
             return False
+        if market_id != self._selected_market:
+            self._invalidate_artifact_creation_target()
         self._selected_market = market_id
+        self._selected_dataset_entry = accepted
+        if self._catalog_workspace is not None:
+            self._catalog_workspace.set_selected_market(market_id)
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.set_browsing_market(market_id)
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_current_market(market_id)
-        self._set_selected_market_text(market_id.as_key())
-        self._set_selection_details("Loading recipes and artifacts...")
+        self._populate_selected_dataset()
+        self._set_selection_details("Loading accepted dataset...")
         self._sync_actions()
         if emit_selection:
             self.market_selected.emit(market_id)
@@ -234,6 +328,7 @@ class DataManagerSuiteWindow(QWidget):
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_current_market(None)
             self._dataset_selector_dialog.clear_selection()
+        self._invalidate_artifact_creation_target()
         self.set_market_snapshot(None)
         self._set_selection_details(details)
 
@@ -266,7 +361,9 @@ class DataManagerSuiteWindow(QWidget):
                 )
                 self._artifacts = tuple(values)
                 self._populate_artifacts()
-                self._tables["data_manager.table.artifacts"].selectRow(index)
+                table = self._tables.get("data_manager.table.artifacts")
+                if table is not None:
+                    table.selectRow(index)
                 return
 
     def set_busy(
@@ -277,8 +374,19 @@ class DataManagerSuiteWindow(QWidget):
             table.setEnabled(not self._busy)
         if self._catalog_workspace is not None:
             self._catalog_workspace.setEnabled(not self._busy)
+            self._catalog_workspace.set_collection_actions_enabled(not self._busy)
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_busy(self._busy)
+        if self._artifact_creation_dialog is not None:
+            self._artifact_creation_dialog.set_busy(self._busy)
+        if self._construct_batch_dialog is not None:
+            self._construct_batch_dialog.set_busy(self._busy)
+        if self._recipe_derivation_dialog is not None:
+            self._recipe_derivation_dialog.set_busy(self._busy)
+        if self._recipe_collection_dialog is not None:
+            self._recipe_collection_dialog.set_busy(self._busy)
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.set_busy(self._busy)
         if self._creation_workspace is not None:
             self._creation_workspace.set_busy(self._busy)
         if self._update_workspace is not None:
@@ -290,12 +398,12 @@ class DataManagerSuiteWindow(QWidget):
         self._sync_actions()
 
     def set_status(self, message: str) -> None:
-        if self._status_label is not None:
-            self._status_label.setText(message)
+        if self._operation_surface is not None:
+            self._operation_surface.set_status(message)
 
     def append_status(self, message: str) -> None:
-        if self._log_area is not None:
-            self._log_area.append(message)
+        if self._operation_surface is not None:
+            self._operation_surface.append(message)
 
     def set_progress(
         self, current: int | None, total: int | None, message: str = ""
@@ -326,8 +434,27 @@ class DataManagerSuiteWindow(QWidget):
     def set_product_catalogs(self, snapshot: DataManagerProductCatalogSnapshot) -> None:
         if not isinstance(snapshot, DataManagerProductCatalogSnapshot):
             raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
+        self._product_catalogs = snapshot
         if self._catalog_workspace is not None:
+            self._catalog_workspace.set_selected_market(self._selected_market)
             self._catalog_workspace.set_snapshot(snapshot)
+            self._catalog_workspace.set_collection_actions_enabled(not self._busy)
+        self._existing_recipe_ids = tuple(
+            item.recipe_id
+            for item in snapshot.portable_recipes.recipes
+            if item.valid
+        )
+        if self._recipe_derivation_dialog is not None:
+            self._recipe_derivation_dialog.set_existing_recipe_ids(
+                self._existing_recipe_ids
+            )
+        if self._recipe_collection_dialog is not None:
+            self._recipe_collection_dialog.set_catalog(snapshot)
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.set_catalog(
+                snapshot,
+                browsing_market_id=self._selected_market,
+            )
         self.set_catalog(snapshot.catalog)
         self.set_creation_catalogs(
             portable_recipes=tuple(
@@ -582,6 +709,16 @@ class DataManagerSuiteWindow(QWidget):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.close()
+        if self._artifact_creation_dialog is not None:
+            self._artifact_creation_dialog.close()
+        if self._construct_batch_dialog is not None:
+            self._construct_batch_dialog.close()
+        if self._recipe_derivation_dialog is not None:
+            self._recipe_derivation_dialog.close()
+        if self._recipe_collection_dialog is not None:
+            self._recipe_collection_dialog.close()
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.close()
         self.closing.emit()
         super().closeEvent(event)
 
@@ -592,37 +729,87 @@ class DataManagerSuiteWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(1280, 820)
         root = QVBoxLayout(self)
-        root.addWidget(self._build_header())
-        root.addWidget(self._build_toolbar())
-        tabs = QTabWidget(self)
+        root.addWidget(self._build_top_strip())
+
+        body = QWidget(self)
+        apply_identity(body, "data_manager.panel.body", object_type="panel")
+        body.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+
+        upper = QWidget(body)
+        apply_identity(upper, "data_manager.panel.upper", object_type="panel")
+        upper.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        upper_layout = QHBoxLayout(upper)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
+
+        tabs = QTabWidget(upper)
         apply_identity(tabs, "data_manager.tabs.workspace", object_type="tab_widget")
+        tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         tabs.addTab(self._build_catalogs(), "Catalogs")
         tabs.addTab(self._build_creation_workflow(), "Create Database")
         tabs.addTab(self._build_update_workflow(), "Update & Reconcile")
-        root.addWidget(tabs, 1)
-        root.addWidget(self._build_status())
 
-    def _build_header(self) -> QWidget:
-        panel = QGroupBox("Data Manager Suite", self)
-        layout = QHBoxLayout(panel)
-        selected = QLabel(panel)
-        apply_identity(
-            selected, "data_manager.label.selected_market", object_type="label"
+        operation = self._build_status()
+        operation.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
         )
-        details = QLabel(panel)
-        details.setWordWrap(True)
+        upper_layout.addWidget(tabs)
+        upper_layout.addWidget(operation)
+        upper_layout.setStretch(0, 3)
+        upper_layout.setStretch(1, 1)
+
+        details = QWidget(body)
         apply_identity(
-            details, "data_manager.label.selection_details", object_type="label"
+            details,
+            "data_manager.panel.catalog_details",
+            object_type="panel",
         )
-        status = QLabel(panel)
-        apply_identity(status, "data_manager.label.status", object_type="status_label")
-        self._selected_market_label = selected
-        self._selection_details = details
-        self._status_label = status
-        layout.addWidget(selected)
-        layout.addWidget(details, 1)
-        layout.addWidget(status)
-        return panel
+        details.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        details_layout = QHBoxLayout(details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.addWidget(self._catalog_workspace.inspector_panel())
+        details_layout.addWidget(self._catalog_workspace.history_panel())
+        details_layout.setStretch(0, 1)
+        details_layout.setStretch(1, 1)
+
+        body_layout.addWidget(upper)
+        body_layout.addWidget(details)
+        body_layout.setStretch(0, 7)
+        body_layout.setStretch(1, 3)
+        root.addWidget(body, 1)
+
+        self._workspace_tabs = tabs
+        self._body_panel = body
+        self._upper_panel = upper
+        self._catalog_details_panel = details
+        tabs.currentChanged.connect(self._on_workspace_tab_changed)
+        self._on_workspace_tab_changed(tabs.currentIndex())
+
+    def _build_top_strip(self) -> QWidget:
+        strip = QWidget(self)
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(0, 0, 0, 0)
+        actions = self._build_toolbar()
+        selected_dataset = self._build_selected_dataset()
+        layout.addWidget(actions)
+        layout.addWidget(selected_dataset, 1)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
+        return strip
 
     def _build_toolbar(self) -> QWidget:
         panel = QGroupBox("Actions", self)
@@ -638,26 +825,6 @@ class DataManagerSuiteWindow(QWidget):
                 "data_manager.button.preview_dataset",
                 "Preview Dataset",
                 self.preview_dataset_requested.emit,
-            ),
-            (
-                "data_manager.button.preview_artifact",
-                "Preview Artifact",
-                self.preview_artifact_requested.emit,
-            ),
-            (
-                "data_manager.button.validate_artifact",
-                "Validate Artifact",
-                self.validate_artifact_requested.emit,
-            ),
-            (
-                "data_manager.button.delete_artifact",
-                "Delete Artifact",
-                self._confirm_delete_artifact,
-            ),
-            (
-                "data_manager.button.delete_recipe",
-                "Delete Recipe",
-                self._confirm_delete_recipe,
             ),
         )
         for object_id, label, callback in actions:
@@ -678,52 +845,82 @@ class DataManagerSuiteWindow(QWidget):
         layout.addStretch(1)
         return panel
 
-    def _build_catalogs(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Vertical, self)
-        workspace = DataManagerCatalogWorkspace(splitter)
-        workspace.row_selected.connect(self.catalog_row_selected.emit)
-        workspace.history_selected.connect(self.catalog_history_selected.emit)
-        self._catalog_workspace = workspace
-        splitter.addWidget(workspace)
-        objects = QSplitter(Qt.Orientation.Horizontal, splitter)
-        objects.addWidget(
-            self._table_panel(
-                objects, "Artifacts", "data_manager.table.artifacts", _ARTIFACT_COLUMNS
-            )
+    def _build_selected_dataset(self) -> QWidget:
+        panel = QGroupBox("Selected Dataset", self)
+        apply_identity(
+            panel,
+            "data_manager.selected_dataset.group",
+            object_type="group_box",
         )
-        objects.addWidget(
-            self._table_panel(
-                objects, "Recipes", "data_manager.table.recipes", _RECIPE_COLUMNS
-            )
-        )
-        splitter.addWidget(objects)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        return splitter
-
-    def _table_panel(
-        self, parent: QWidget, title: str, object_id: str, columns: tuple[str, ...]
-    ) -> QWidget:
-        panel = QGroupBox(title, parent)
         layout = QVBoxLayout(panel)
         table = configure_table(
-            QTableWidget(panel), object_id=object_id, columns=columns, labels=columns
+            QTableWidget(panel),
+            object_id="data_manager.selected_dataset.table",
+            columns=DATA_MANAGER_DATASET_COLUMNS,
+            labels=DATA_MANAGER_DATASET_COLUMNS,
         )
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        if object_id == "data_manager.table.artifacts":
-            table.itemSelectionChanged.connect(self._on_artifact_selection)
-        else:
-            table.itemSelectionChanged.connect(self._on_recipe_selection)
-        self._tables[object_id] = table
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.setWordWrap(False)
+        table.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self._selected_dataset_table = table
         layout.addWidget(table)
+        self._populate_selected_dataset()
         return panel
+
+    def _build_catalogs(self) -> QWidget:
+        workspace = DataManagerCatalogWorkspace(self)
+        workspace.row_selected.connect(self.catalog_row_selected.emit)
+        workspace.history_selected.connect(self.catalog_history_selected.emit)
+        workspace.create_artifact_requested.connect(
+            self.create_artifact_requested.emit
+        )
+        workspace.batch_constructs_requested.connect(
+            self.batch_constructs_requested.emit
+        )
+        workspace.derive_recipes_requested.connect(
+            self.derive_recipes_requested.emit
+        )
+        workspace.create_recipe_collection_requested.connect(
+            self.create_recipe_collection_requested.emit
+        )
+        workspace.edit_recipe_collection_requested.connect(
+            self.edit_recipe_collection_requested.emit
+        )
+        workspace.create_artifact_collection_requested.connect(
+            self.create_artifact_collection_requested.emit
+        )
+        workspace.edit_artifact_collection_requested.connect(
+            self.edit_artifact_collection_requested.emit
+        )
+        workspace.delete_recipe_requested.connect(
+            self._confirm_catalog_recipe_deletion
+        )
+        workspace.delete_artifact_requested.connect(
+            self._confirm_catalog_artifact_deletion
+        )
+        workspace.delete_recipe_collection_requested.connect(
+            self._confirm_catalog_recipe_collection_deletion
+        )
+        workspace.delete_artifact_collection_requested.connect(
+            self._confirm_catalog_artifact_collection_deletion
+        )
+        workspace.family_changed.connect(lambda _family: self._sync_actions())
+        self._catalog_workspace = workspace
+        return workspace
+
+    def _on_workspace_tab_changed(self, index: int) -> None:
+        if self._catalog_details_panel is not None:
+            self._catalog_details_panel.setVisible(index == 0)
 
     def _build_status(self) -> QWidget:
         surface = DataManagerOperationSurface(self)
         surface.cancel_requested.connect(self.creation_cancel_requested.emit)
         self._operation_surface = surface
         self._progress = surface.progress
-        self._log_area = surface.log
         self._cancel_button = surface.cancel_button
         return surface
 
@@ -946,6 +1143,273 @@ class DataManagerSuiteWindow(QWidget):
     def dataset_selector_dialog(self) -> DataManagerDatasetSelectorDialog | None:
         return self._dataset_selector_dialog
 
+    def artifact_creation_dialog(self) -> DataManagerArtifactCreationDialog | None:
+        return self._artifact_creation_dialog
+
+    def construct_batch_dialog(self) -> DataManagerConstructBatchDialog | None:
+        return self._construct_batch_dialog
+
+    def recipe_derivation_dialog(
+        self,
+    ) -> DataManagerRecipeDerivationDialog | None:
+        return self._recipe_derivation_dialog
+
+    def recipe_collection_dialog(
+        self,
+    ) -> DataManagerRecipeCollectionDialog | None:
+        return self._recipe_collection_dialog
+
+    def artifact_collection_dialog(
+        self,
+    ) -> DataManagerArtifactCollectionDialog | None:
+        return self._artifact_collection_dialog
+
+    def show_recipe_collection_dialog(
+        self,
+        snapshot: DataManagerProductCatalogSnapshot,
+        *,
+        inspection: object | None = None,
+    ) -> None:
+        from leonardo.data_manager import DataManagerRecipeCollectionInspection
+        from leonardo.gui.windows.data_manager_recipe_collection_dialog import (
+            DATA_MANAGER_RECIPE_COLLECTION_WINDOW_ID,
+            DataManagerRecipeCollectionDialog,
+        )
+
+        if not isinstance(snapshot, DataManagerProductCatalogSnapshot):
+            raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
+        if inspection is not None and not isinstance(
+            inspection, DataManagerRecipeCollectionInspection
+        ):
+            raise TypeError(
+                "inspection must be a DataManagerRecipeCollectionInspection or None"
+            )
+        dialog = self._recipe_collection_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerRecipeCollectionDialog(snapshot, self)
+            dialog.preview_requested.connect(
+                self.recipe_collection_preview_requested.emit
+            )
+            dialog.create_requested.connect(
+                self.recipe_collection_create_requested.emit
+            )
+            dialog.update_requested.connect(
+                self.recipe_collection_update_requested.emit
+            )
+            dialog.closing.connect(self._release_recipe_collection_dialog)
+            self._recipe_collection_dialog = dialog
+        if inspection is None:
+            dialog.configure_create(snapshot)
+        else:
+            dialog.configure_edit(inspection, snapshot)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_RECIPE_COLLECTION_WINDOW_ID,
+                "Recipe Collection",
+                "dialog",
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_artifact_collection_dialog(
+        self,
+        snapshot: DataManagerProductCatalogSnapshot,
+        *,
+        revision: ArtifactCollectionRevisionV1 | None = None,
+    ) -> None:
+        from leonardo.gui.windows.data_manager_artifact_collection_dialog import (
+            DATA_MANAGER_ARTIFACT_COLLECTION_WINDOW_ID,
+            DataManagerArtifactCollectionDialog,
+        )
+
+        if not isinstance(snapshot, DataManagerProductCatalogSnapshot):
+            raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
+        if revision is not None and not isinstance(
+            revision, ArtifactCollectionRevisionV1
+        ):
+            raise TypeError(
+                "revision must be an ArtifactCollectionRevisionV1 or None"
+            )
+        dialog = self._artifact_collection_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerArtifactCollectionDialog(
+                snapshot,
+                browsing_market_id=self._selected_market,
+                parent=self,
+            )
+            dialog.preview_requested.connect(
+                self.artifact_collection_preview_requested.emit
+            )
+            dialog.create_requested.connect(
+                self.artifact_collection_create_requested.emit
+            )
+            dialog.edit_requested.connect(
+                self.artifact_collection_edit_requested.emit
+            )
+            dialog.closing.connect(self._release_artifact_collection_dialog)
+            self._artifact_collection_dialog = dialog
+        if revision is None:
+            dialog.configure_create(
+                snapshot,
+                browsing_market_id=self._selected_market,
+            )
+        else:
+            dialog.configure_edit(
+                revision,
+                snapshot,
+                browsing_market_id=self._selected_market,
+            )
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_ARTIFACT_COLLECTION_WINDOW_ID,
+                "Artifact Collection",
+                "dialog",
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _release_recipe_collection_dialog(self) -> None:
+        self._recipe_collection_dialog = None
+
+    def _release_artifact_collection_dialog(self) -> None:
+        self._artifact_collection_dialog = None
+
+    def show_recipe_derivation_dialog(
+        self, inspection: DataManagerStudyEnvironmentInspection
+    ) -> None:
+        from leonardo.gui.windows.data_manager_recipe_derivation_dialog import (
+            DATA_MANAGER_RECIPE_DERIVATION_WINDOW_ID,
+            DataManagerRecipeDerivationDialog,
+        )
+
+        if not isinstance(inspection, DataManagerStudyEnvironmentInspection):
+            raise TypeError(
+                "inspection must be a DataManagerStudyEnvironmentInspection"
+            )
+        dialog = self._recipe_derivation_dialog
+        if dialog is None:
+            dialog = DataManagerRecipeDerivationDialog(
+                inspection,
+                existing_recipe_ids=self._existing_recipe_ids,
+                parent=self,
+            )
+            dialog.preview_requested.connect(
+                self.recipe_derivation_preview_requested.emit
+            )
+            dialog.create_requested.connect(
+                self.recipe_derivation_create_requested.emit
+            )
+            dialog.closing.connect(self._release_recipe_derivation_dialog)
+            self._recipe_derivation_dialog = dialog
+            if self._floating_window_tracker is not None:
+                self._floating_window_tracker(
+                    dialog,
+                    DATA_MANAGER_RECIPE_DERIVATION_WINDOW_ID,
+                    dialog.windowTitle(),
+                    "dialog",
+                )
+        else:
+            dialog.set_inspection(
+                inspection,
+                existing_recipe_ids=self._existing_recipe_ids,
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _release_recipe_derivation_dialog(self) -> None:
+        self._recipe_derivation_dialog = None
+
+    def show_artifact_creation_dialog(
+        self,
+        catalog: DataManagerDirectArtifactCatalog,
+        *,
+        preserve_configuration: bool = False,
+    ) -> None:
+        from leonardo.gui.windows.data_manager_artifact_creation_dialog import (
+            DATA_MANAGER_ARTIFACT_CREATION_WINDOW_ID,
+            DataManagerArtifactCreationDialog,
+        )
+
+        if not isinstance(catalog, DataManagerDirectArtifactCatalog):
+            raise TypeError("catalog must be a DataManagerDirectArtifactCatalog")
+        dialog = self._artifact_creation_dialog
+        if dialog is None:
+            dialog = DataManagerArtifactCreationDialog(catalog, self)
+            dialog.calculate_requested.connect(
+                self.calculate_artifact_requested.emit
+            )
+            self._artifact_creation_dialog = dialog
+            if self._floating_window_tracker is not None:
+                self._floating_window_tracker(
+                    dialog,
+                    DATA_MANAGER_ARTIFACT_CREATION_WINDOW_ID,
+                    dialog.windowTitle(),
+                    "dialog",
+                )
+        else:
+            dialog.set_catalog(
+                catalog,
+                preserve_configuration=preserve_configuration,
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_construct_batch_dialog(
+        self,
+        catalog: DataManagerDirectArtifactCatalog,
+        *,
+        collections: tuple[tuple[str, str], ...] = (),
+        preserve_configuration: bool = False,
+    ) -> None:
+        from leonardo.gui.windows.data_manager_construct_batch_dialog import (
+            DATA_MANAGER_CONSTRUCT_BATCH_WINDOW_ID,
+            DataManagerConstructBatchDialog,
+        )
+
+        if not isinstance(catalog, DataManagerDirectArtifactCatalog):
+            raise TypeError("catalog must be a DataManagerDirectArtifactCatalog")
+        dialog = self._construct_batch_dialog
+        if dialog is None:
+            dialog = DataManagerConstructBatchDialog(
+                catalog, collections=collections, parent=self
+            )
+            dialog.preview_requested.connect(
+                self.batch_construct_preview_requested.emit
+            )
+            dialog.execute_requested.connect(
+                self.batch_construct_execute_requested.emit
+            )
+            self._construct_batch_dialog = dialog
+            if self._floating_window_tracker is not None:
+                self._floating_window_tracker(
+                    dialog,
+                    DATA_MANAGER_CONSTRUCT_BATCH_WINDOW_ID,
+                    dialog.windowTitle(),
+                    "dialog",
+                )
+        else:
+            dialog.set_catalog(
+                catalog,
+                collections=collections,
+                preserve_configuration=preserve_configuration,
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     def _show_dataset_selector(self) -> None:
         dialog = self._ensure_dataset_selector()
         dialog.prepare_for_market(self._selected_market)
@@ -979,9 +1443,23 @@ class DataManagerSuiteWindow(QWidget):
     def _on_dataset_selector_selected(self, market_id: object) -> None:
         if not isinstance(market_id, MarketId):
             return
+        if market_id != self._selected_market:
+            self._invalidate_artifact_creation_target()
         self._selected_market = market_id
-        self._set_selected_market_text(market_id.as_key())
-        self._set_selection_details("Loading recipes and artifacts...")
+        if self._catalog_workspace is not None:
+            self._catalog_workspace.set_selected_market(market_id)
+        if self._artifact_collection_dialog is not None:
+            self._artifact_collection_dialog.set_browsing_market(market_id)
+        self._selected_dataset_entry = next(
+            (
+                entry
+                for entry in self._datasets
+                if entry.accepted and entry.market_id == market_id
+            ),
+            None,
+        )
+        self._populate_selected_dataset()
+        self._set_selection_details("Loading accepted dataset...")
         self.market_selected.emit(market_id)
         self._sync_actions()
 
@@ -1011,7 +1489,9 @@ class DataManagerSuiteWindow(QWidget):
 
     def _clear_object_selection(self) -> None:
         for object_id in ("data_manager.table.artifacts", "data_manager.table.recipes"):
-            self._tables[object_id].clearSelection()
+            table = self._tables.get(object_id)
+            if table is not None:
+                table.clearSelection()
         self._artifacts = ()
         self._recipes = ()
         self._populate_artifacts()
@@ -1020,7 +1500,9 @@ class DataManagerSuiteWindow(QWidget):
         self.recipe_selected.emit(None)
 
     def _populate_artifacts(self) -> None:
-        table = self._tables["data_manager.table.artifacts"]
+        table = self._tables.get("data_manager.table.artifacts")
+        if table is None:
+            return
         table.setRowCount(len(self._artifacts))
         for row, item in enumerate(self._artifacts):
             _set_row(
@@ -1038,7 +1520,9 @@ class DataManagerSuiteWindow(QWidget):
             )
 
     def _populate_recipes(self) -> None:
-        table = self._tables["data_manager.table.recipes"]
+        table = self._tables.get("data_manager.table.recipes")
+        if table is None:
+            return
         table.setRowCount(len(self._recipes))
         for row, item in enumerate(self._recipes):
             _set_row(
@@ -1058,24 +1542,17 @@ class DataManagerSuiteWindow(QWidget):
     def _sync_actions(self) -> None:
         if not self._buttons:
             return
-        artifact = self.selected_artifact()
-        recipe = self.selected_recipe()
         self._buttons["data_manager.button.refresh"].setEnabled(not self._busy)
         self._buttons["data_manager.button.select_dataset"].setEnabled(not self._busy)
         self._buttons["data_manager.button.preview_dataset"].setEnabled(
             not self._busy and self._selected_market is not None
         )
-        for object_id in (
-            "data_manager.button.preview_artifact",
-            "data_manager.button.validate_artifact",
-            "data_manager.button.delete_artifact",
-        ):
-            self._buttons[object_id].setEnabled(
-                not self._busy and artifact is not None and artifact.valid
+        if self._catalog_workspace is not None:
+            self._catalog_workspace.set_create_artifact_enabled(
+                not self._busy and self._selected_market is not None
             )
-        self._buttons["data_manager.button.delete_recipe"].setEnabled(
-            not self._busy and recipe is not None and recipe.valid
-        )
+            self._catalog_workspace.set_derive_recipes_enabled(not self._busy)
+            self._catalog_workspace.set_deletion_actions_enabled(not self._busy)
         if self._cancel_button is not None:
             self._cancel_button.setEnabled(self._busy)
         target = self._selected_market is not None
@@ -1088,6 +1565,12 @@ class DataManagerSuiteWindow(QWidget):
             "data_manager.button.creation.plan_batch",
         ):
             self._buttons[object_id].setEnabled(not self._busy and target)
+
+    def _invalidate_artifact_creation_target(self) -> None:
+        if self._artifact_creation_dialog is not None:
+            self._artifact_creation_dialog.invalidate_target()
+        if self._construct_batch_dialog is not None:
+            self._construct_batch_dialog.invalidate_target()
 
     def _confirm_delete_artifact(self) -> None:
         artifact = self.selected_artifact()
@@ -1111,6 +1594,71 @@ class DataManagerSuiteWindow(QWidget):
         ) == QMessageBox.StandardButton.Yes:
             self.delete_recipe_requested.emit()
 
+    def _confirm_catalog_recipe_deletion(self, value: object) -> None:
+        if not isinstance(value, DataManagerPortableRecipeEntry) or not value.valid:
+            return
+        message = (
+            f"Recipe ID: {value.recipe_id}\n"
+            f"Tool: {value.tool_key}\n\n"
+            "This deletes the global Recipe and its provenance.\n"
+            "No dependent object will be deleted.\n"
+            "Deletion is refused if the Recipe is still referenced."
+        )
+        if QMessageBox.question(
+            self, "Delete Recipe", message
+        ) == QMessageBox.StandardButton.Yes:
+            self.catalog_delete_recipe_requested.emit(value)
+
+    def _confirm_catalog_recipe_collection_deletion(self, value: object) -> None:
+        if not isinstance(value, DataManagerRecipeCollectionEntry) or not value.valid:
+            return
+        message = (
+            f"Collection name: {value.display_name}\n"
+            f"Collection ID: {value.collection_id}\n\n"
+            "This deletes the Collection and all of its revisions.\n"
+            "Member Recipes are not deleted.\n"
+            "Deletion is refused if an Artifact Collection references it."
+        )
+        if QMessageBox.question(
+            self, "Delete Recipe Collection", message
+        ) == QMessageBox.StandardButton.Yes:
+            self.catalog_delete_recipe_collection_requested.emit(value)
+
+    def _confirm_catalog_artifact_deletion(self, value: object) -> None:
+        if not isinstance(value, DataManagerManagedArtifactEntry) or not value.valid:
+            return
+        message = (
+            f"Logical Artifact ID: {value.logical_artifact_id}\n"
+            f"Tool: {value.tool_key}\n"
+            f"Market: {value.market_id.as_key()}\n\n"
+            "This deletes the complete managed Artifact and all of its versions.\n"
+            "Its Recipe and other Artifacts are not deleted.\n"
+            "Deletion is refused if any surviving object references it."
+        )
+        if QMessageBox.question(
+            self, "Delete Artifact", message
+        ) == QMessageBox.StandardButton.Yes:
+            self.catalog_delete_artifact_requested.emit(value)
+
+    def _confirm_catalog_artifact_collection_deletion(self, value: object) -> None:
+        if (
+            not isinstance(value, ArtifactCollectionRevisionV1)
+            or value.validation_state != "valid"
+        ):
+            return
+        message = (
+            f"Collection name: {value.display_name}\n"
+            f"Collection ID: {value.collection_id}\n"
+            f"Market: {value.market_id.as_key()}\n\n"
+            "This deletes the Collection and all revisions.\n"
+            "Member Artifacts are not deleted.\n"
+            "Deletion is refused if a Database revision references it."
+        )
+        if QMessageBox.question(
+            self, "Delete Artifact Collection", message
+        ) == QMessageBox.StandardButton.Yes:
+            self.catalog_delete_artifact_collection_requested.emit(value)
+
     def _invoke_action(self, action_id: str, callback) -> None:
         if self._action_observer is not None:
             decision = self._action_observer.record_action(
@@ -1131,17 +1679,50 @@ class DataManagerSuiteWindow(QWidget):
         }[object_id]
         return row if 0 <= row < limit else None
 
-    def _set_selected_market_text(self, text: str) -> None:
-        if self._selected_market_label is not None:
-            self._selected_market_label.setText(text)
-
     def _set_selection_details(self, text: str) -> None:
-        if self._selection_details is not None:
-            self._selection_details.setText(text)
+        if self._operation_surface is not None:
+            self._operation_surface.set_context(text)
+
+    def _refresh_selected_dataset_from_catalog(self) -> None:
+        self._selected_dataset_entry = next(
+            (
+                entry
+                for entry in self._datasets
+                if entry.accepted and entry.market_id == self._selected_market
+            ),
+            None,
+        )
+        self._populate_selected_dataset()
+
+    def _populate_selected_dataset(self) -> None:
+        table = self._selected_dataset_table
+        if table is None:
+            return
+        entry = self._selected_dataset_entry
+        blocker = QSignalBlocker(table)
+        table.setRowCount(0 if entry is None else 1)
+        if entry is not None:
+            details = data_manager_dataset_details(entry)
+            for column, value in enumerate(data_manager_dataset_row(entry)):
+                item = QTableWidgetItem(value)
+                item.setToolTip(details)
+                table.setItem(0, column, item)
+        del blocker
+        resize_data_manager_table(table)
+        row_height = (
+            table.rowHeight(0)
+            if table.rowCount()
+            else table.verticalHeader().defaultSectionSize()
+        )
+        table.setFixedHeight(
+            table.horizontalHeader().height()
+            + row_height
+            + table.horizontalScrollBar().sizeHint().height()
+            + (table.frameWidth() * 2)
+            + 4
+        )
 
 
 def _set_row(table: QTableWidget, row: int, values: tuple[str, ...]) -> None:
-    from PySide6.QtWidgets import QTableWidgetItem
-
     for column, value in enumerate(values):
         table.setItem(row, column, QTableWidgetItem(value))

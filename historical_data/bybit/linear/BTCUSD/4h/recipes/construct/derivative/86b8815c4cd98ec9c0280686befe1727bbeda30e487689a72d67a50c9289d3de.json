@@ -1,0 +1,31 @@
+{
+  "bindings": {
+    "source": "__research_source"
+  },
+  "created_at_utc": "2026-08-11T19:58:41.299194Z",
+  "description": "",
+  "display_name": "derivative",
+  "kind": "construct",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "research_source__d1"
+  ],
+  "parameters": {
+    "order": 1
+  },
+  "recipe_id": "86b8815c4cd98ec9c0280686befe1727bbeda30e487689a72d67a50c9289d3de",
+  "schema_version": "1.0",
+  "source_artifacts": [
+    {
+      "artifact_id": "d295a159abd1914270a30c2bc3bc47e735490041974b234433182adcf41bcd99",
+      "output_name": "fast_vwap",
+      "role": "source"
+    }
+  ],
+  "tool_key": "derivative"
+}

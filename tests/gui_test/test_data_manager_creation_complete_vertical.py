@@ -91,12 +91,12 @@ def test_complete_creation_workspace_requires_explicit_state_across_nine_stages(
 
         workspace.set_collection_rows((
             (
-                "a" * 64,
                 "sma_20",
                 "sma_20",
                 "1",
                 "support",
                 "yes",
+                "a" * 64,
             ),
         ))
         for column in range(workspace.collection_table.columnCount()):

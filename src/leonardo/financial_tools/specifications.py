@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from .construct_input_eligibility import (
+    load_construct_input_eligibility,
+    validate_construct_input_eligibility,
+)
 from .models import (
     ConstructIOSpec,
     DataInputSpec,
@@ -495,7 +499,7 @@ _construct_specs = {
                 required=False, choices=("carry", "drop"))),
         (), _OSCILLATOR, "multi-line-series", form_variant="construct_fms", signals=(),
         construct_io=_construct_io("fast_mid_slow", ("indicator", "oscillator", "construct"),
-                                   "same_family", "one_or_more", "state_series"),
+                                   "mixed_numeric", "one_or_more", "state_series"),
     ),
     "braid_instability": _spec(
         "braid_instability", "Braid Instability", "construct",
@@ -507,7 +511,7 @@ _construct_specs = {
                 "Rolling window used to compute braid instability.", required=False, minimum=1)),
         (), _OSCILLATOR, "line-series", form_variant="construct_fms", signals=(),
         construct_io=_construct_io("fast_mid_slow", ("indicator", "oscillator", "construct"),
-                                   "same_family", "single", "plotted_line"),
+                                   "mixed_numeric", "single", "plotted_line"),
     ),
     "delta": _spec(
         "delta", "Delta", "construct",
@@ -854,6 +858,9 @@ def validate_catalog() -> None:
     dynamic_binning = CONSTRUCT_SPECS["dynamic_binning"]
     if dynamic_binning.behavior.chart_renderable or dynamic_binning.behavior.output_mode != "non-visual":
         raise ValueError("dynamic_binning must remain non-visual")
+    validate_construct_input_eligibility(
+        load_construct_input_eligibility(), ALL_FINANCIAL_TOOL_SPECS
+    )
 
 
 validate_catalog()

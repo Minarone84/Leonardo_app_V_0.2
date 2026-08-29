@@ -1,0 +1,30 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-08-16T08:37:01.773327Z",
+  "description": "",
+  "display_name": "angle_momentum",
+  "kind": "construct",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "research_source_1_ang_mtm_3"
+  ],
+  "parameters": {
+    "n": 3,
+    "source_columns": "__research_source_1"
+  },
+  "recipe_id": "907ac6de5b5e92cf8649e0f00d031092bafebe9977629b906b5fbe59b82de529",
+  "schema_version": "1.0",
+  "source_artifacts": [
+    {
+      "artifact_id": "15df7908c9463368fc916441b1d0386db79f321d19bcd385e8bb3a9472b8e8fc",
+      "output_name": "rsi_14",
+      "role": "source_1"
+    }
+  ],
+  "tool_key": "angle_momentum"
+}

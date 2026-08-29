@@ -21,6 +21,7 @@ from leonardo.data_manager import (
     DataManagerRecipeEntry,
 )
 from leonardo.data_manager.models import DataManagerDeletionResult
+from leonardo.data_manager.models import DataManagerRecipeCollectionEntry
 from leonardo.data_manager.service import format_created_at
 from leonardo.research.dataset import HistoricalDataset
 from leonardo.research.session import ChartSessionState
@@ -265,3 +266,45 @@ def test_deletion_result_is_frozen_and_contains_only_exact_identity() -> None:
     assert result.object_id == "a"
     with pytest.raises(FrozenInstanceError):
         result.object_id = "changed"
+
+
+def test_recipe_collection_catalog_members_are_exact_immutable_recipe_ids() -> None:
+    members = ["a" * 64, "b" * 64]
+    entry = DataManagerRecipeCollectionEntry(
+        "collection_1",
+        "c" * 64,
+        "Collection",
+        "",
+        1,
+        2,
+        members,
+        1,
+        2,
+        datetime(2026, 8, 9, tzinfo=UTC),
+        datetime(2026, 8, 9, tzinfo=UTC),
+    )
+    members.append("d" * 64)
+    assert entry.member_recipe_ids == ("a" * 64, "b" * 64)
+    assert isinstance(entry.member_recipe_ids, tuple)
+
+    with pytest.raises(ValueError, match="unique"):
+        DataManagerRecipeCollectionEntry(
+            "collection_1", "c" * 64, "Collection", "", 1, 2,
+            ("a" * 64, "a" * 64), 1, 2, None, None,
+        )
+    with pytest.raises(ValueError, match="SHA-256"):
+        DataManagerRecipeCollectionEntry(
+            "collection_1", "c" * 64, "Collection", "", 1, 1,
+            ("not-a-sha",), 0, 1, None, None,
+        )
+    with pytest.raises(ValueError, match="member_count"):
+        DataManagerRecipeCollectionEntry(
+            "collection_1", "c" * 64, "Collection", "", 1, 2,
+            ("a" * 64,), 0, 1, None, None,
+        )
+
+    invalid = DataManagerRecipeCollectionEntry(
+        "broken", "", "Broken", "", 0, 3, (), 0, 0,
+        None, None, False, "unreadable",
+    )
+    assert invalid.member_recipe_ids == ()

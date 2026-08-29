@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "provenance_id": "c708b4b77319fc16a7614ba3680f2fef1bd8b6041398e42840eb45395e2bb442",
+  "recipe_id": "1d29abc63944e3441e425bff3202e70591184f7506c24119556182465fa8ad80",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "Universal Trend Classifier",
+  "study_entry_id": "entry_002",
+  "study_environment_content_hash": "61ca75302dd040db204722b0de4ce33ce06a2d0ff7600ff87ef25824b20ae967",
+  "study_environment_display_name": "BTC_TEST_A_STUDY",
+  "study_environment_id": "env_7ce88aae4f9a4a76bd9ee5d68d1da60f",
+  "study_environment_updated_at_utc": "2026-07-31T17:23:57.952354+00:00"
+}

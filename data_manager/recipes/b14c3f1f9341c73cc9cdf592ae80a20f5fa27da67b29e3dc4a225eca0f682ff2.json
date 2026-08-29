@@ -1,0 +1,23 @@
+{
+  "dependencies": [
+    {
+      "output_name": "sma_14",
+      "recipe_id": "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+      "role": "source_1"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "research_source_1_ang_mtm_3"
+  ],
+  "parameters": {
+    "n": 3,
+    "source_columns": "close"
+  },
+  "recipe_id": "b14c3f1f9341c73cc9cdf592ae80a20f5fa27da67b29e3dc4a225eca0f682ff2",
+  "schema_version": "1.0",
+  "tool_key": "angle_momentum",
+  "tool_version": "1.0"
+}

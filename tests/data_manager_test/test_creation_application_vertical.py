@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from threading import Event
+
+import pytest
 
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
@@ -12,6 +15,7 @@ from leonardo.data_manager import (
     BatchArtifactRequest,
     DataManagerArtifactMaterializationRequest,
 )
+from leonardo.data_manager.direct_artifact import DataManagerDirectArtifactSource
 from leonardo.financial_tools import resolve_output_names
 from leonardo.research import StudyEnvironmentDraft
 
@@ -20,6 +24,16 @@ from tests.research_test.test_study_environment_models import fixture_environmen
 
 
 MARKET = MarketId("bybit", "linear", "BTCUSDT", "1h")
+
+
+def _recipe_persistence_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.relative_to(root).parts[0]
+        in {"recipes", "recipe_provenance", "recipe_collections"}
+    }
 
 
 def _completed(submit, *args, **kwargs):
@@ -34,6 +48,19 @@ def _completed(submit, *args, **kwargs):
     assert settled.wait(10.0), f"Data Manager operation did not settle: {submit.__name__}"
     assert received[0].status == "completed", received[0]
     return received[0].value
+
+
+def _failed(submit, *args, **kwargs) -> TaskResult:
+    settled = Event()
+    received: list[TaskResult] = []
+    submit(
+        *args,
+        **kwargs,
+        result_callback=lambda result: (received.append(result), settled.set()),
+    )
+    assert settled.wait(10.0), f"Data Manager operation did not settle: {submit.__name__}"
+    assert received[0].status == "failed", received[0]
+    return received[0]
 
 
 def _save_upstream_environment(app: LeonardoApp) -> str:
@@ -129,6 +156,9 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         )
         assert collection.source_recipe_collection_id == recipes.collection_id
         assert collection.source_recipe_collection_revision_id == recipes.revision_id
+        recipe_state_before_batch = _recipe_persistence_bytes(
+            app.portable_recipe_store.root_dir
+        )
 
         root = next(
             item
@@ -137,18 +167,21 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         )
         source_output = root.output_names[0]
         batch_request = BatchArtifactRequest(
-            MARKET,
-            (BatchArtifactBranchRequest(
-                root.logical_artifact_id,
-                source_output,
-                "derivative",
-                {"order": 1},
-                resolve_output_names(
+            market_id=MARKET,
+            expected_source_ohlcv=materialization.source_ohlcv,
+            branches=(BatchArtifactBranchRequest(
+                tool_key="derivative",
+                parameters={"order": 1},
+                sources=(DataManagerDirectArtifactSource(
+                    "source", root.logical_artifact_id, root.artifact_id,
+                    source_output,
+                ),),
+                requested_outputs=resolve_output_names(
                     "derivative", {"order": 1, "source": source_output}
                 ),
             ),),
-            "collection_revision",
-            collection.collection_id,
+            destination="collection_revision",
+            collection_id=collection.collection_id,
         )
         batch_plan = _completed(
             application.submit_plan_batch_artifacts, batch_request
@@ -160,6 +193,22 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         assert batch_collection is not None
         assert batch_collection.previous_revision_id == collection.revision_id
         assert batch_materialization.root_logical_artifact_ids
+        assert _recipe_persistence_bytes(
+            app.portable_recipe_store.root_dir
+        ) == recipe_state_before_batch
+        batch_root = next(
+            item
+            for item in batch_materialization.managed_artifacts
+            if item.logical_artifact_id
+            in batch_materialization.root_logical_artifact_ids
+        )
+        batch_root_recipe = app.artifact_service.load_artifact_by_id(
+            MARKET, batch_root.artifact_id
+        ).metadata.recipe
+        batch_semantic_id = batch_plan.branch_recipe_ids[0]
+        assert batch_root.portable_recipe_id == batch_semantic_id
+        with pytest.raises(FileNotFoundError):
+            app.portable_recipe_store.load_recipe(batch_semantic_id)
 
         inspected, validation = _completed(
             application.submit_inspect_artifact_collection,
@@ -237,6 +286,54 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
             application.submit_list_database_revisions, first_manifest.database_id
         )
         assert database_history == (first_manifest, second_manifest)
+        member_recipe_ids = recipe_collection.member_recipe_ids
+        member_recipes = tuple(
+            app.portable_recipe_store.load_recipe(recipe_id)
+            for recipe_id in member_recipe_ids
+        )
+        member_provenance = tuple(
+            app.portable_recipe_store.list_provenance(recipe_id)
+            for recipe_id in member_recipe_ids
+        )
+        deleted_recipe_collection = _completed(
+            application.submit_delete_recipe_collection, recipes.collection_id
+        )
+        assert deleted_recipe_collection.collection_id == recipes.collection_id
+        with pytest.raises(FileNotFoundError):
+            app.portable_recipe_store.load_collection(recipes.collection_id)
+        assert tuple(
+            app.portable_recipe_store.load_recipe(recipe_id)
+            for recipe_id in member_recipe_ids
+        ) == member_recipes
+        assert tuple(
+            app.portable_recipe_store.list_provenance(recipe_id)
+            for recipe_id in member_recipe_ids
+        ) == member_provenance
+        assert _completed(
+            application.submit_load_artifact_collection, collection.collection_id
+        ) == current_collection
+        assert _completed(
+            application.submit_list_artifact_collection_revisions,
+            collection.collection_id,
+        ) == collection_history
+        assert _completed(
+            application.submit_list_database_revisions, first_manifest.database_id
+        ) == database_history
+        assert _completed(
+            application.submit_load_database_revision,
+            first_manifest.database_id,
+            first_manifest.revision_id,
+        ).values_csv == first_loaded.values_csv
+        assert _completed(
+            application.submit_load_database_revision,
+            first_manifest.database_id,
+            second_manifest.revision_id,
+        ).values_csv == second_loaded.values_csv
+        artifact_collection_refusal = _failed(
+            application.submit_delete_artifact_collection,
+            collection.collection_id,
+        )
+        assert "Database" in artifact_collection_refusal.error_message
     finally:
         app.shutdown()
 
@@ -245,6 +342,22 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
     restarted.start_core_runtime()
     application = restarted.data_manager_service
     try:
+        with pytest.raises(FileNotFoundError):
+            restarted.portable_recipe_store.load_collection(recipes.collection_id)
+        assert tuple(
+            restarted.portable_recipe_store.load_recipe(recipe_id)
+            for recipe_id in member_recipe_ids
+        ) == member_recipes
+        assert tuple(
+            restarted.portable_recipe_store.list_provenance(recipe_id)
+            for recipe_id in member_recipe_ids
+        ) == member_provenance
+        restarted_batch_root = restarted.artifact_service.load_artifact_by_id(
+            MARKET, batch_root.artifact_id
+        )
+        assert restarted_batch_root.metadata.recipe == batch_root_recipe
+        with pytest.raises(FileNotFoundError):
+            restarted.portable_recipe_store.load_recipe(batch_semantic_id)
         assert _completed(application.submit_load_database_seed, seed.seed_id) == seed
         assert _completed(
             application.submit_load_artifact_collection, collection.collection_id

@@ -13,6 +13,7 @@ from typing import Protocol
 from leonardo.artifacts import (
     ArtifactError,
     ArtifactMetadataV1,
+    ArtifactRecipeV1,
     ArtifactLineageError,
     ArtifactService,
     ArtifactSourceRefV1,
@@ -31,10 +32,22 @@ from leonardo.data import (
     normalize_symbol,
     normalize_timeframe,
 )
+from leonardo.financial_tools import (
+    get_financial_tool_spec,
+    resolve_output_signals,
+    resolve_parameters,
+)
+from leonardo.financial_tools.construct_input_eligibility import (
+    FinancialToolInputCompatibilityError,
+    FinancialToolInputSource,
+    validate_financial_tool_inputs,
+)
 from leonardo.recipes import (
     PortableRecipeGraphError,
+    PortableRecipeGraphEdge,
     PortableRecipeGraphPlan,
     PortableRecipeGraphPlanner,
+    PortableRecipeCollectionRevisionV1,
     PortableRecipeOHLCVInputV1,
     PortableRecipeDependencyV1,
     PortableRecipeProvenanceV1,
@@ -94,6 +107,8 @@ from .models import (
 )
 from .artifact_materialization import (
     ArtifactMaterializationValidationError,
+    _calculate_artifact_configuration,
+    _calculate_artifact_recipe,
     _calculate_recipe,
     _dataset_frame,
     _plan_id,
@@ -101,9 +116,13 @@ from .artifact_materialization import (
     _target_configuration,
     _validate_recipe_execution,
 )
+from .construct_sources import list_construct_source_signals
 from .creation_models import (
+    ArtifactCollectionDependencyV1,
+    ArtifactCollectionMemberV1,
     ArtifactCollectionOutputV1,
     ArtifactCollectionRevisionV1,
+    ArtifactCollectionSelectionPlan,
     ArtifactCollectionValidation,
     BatchArtifactPlan,
     BatchArtifactRequest,
@@ -111,6 +130,8 @@ from .creation_models import (
     DatabaseDefinitionV1,
     DatabaseRevisionManifestV1,
     DatabaseSeedV1,
+    DataManagerCreationError,
+    deterministic_hash,
 )
 from .creation_service import DataManagerCreationWorkflow
 from .creation_store import DataManagerCreationStore
@@ -122,9 +143,37 @@ from .update_models import (
     DatabaseUpdateResult,
 )
 from .update_service import DataManagerUpdateWorkflow
+from .direct_artifact import (
+    DataManagerDirectArtifactCatalog,
+    DataManagerDirectArtifactOption,
+    DataManagerDirectArtifactRequest,
+    DataManagerDirectArtifactResult,
+    DataManagerDirectArtifactSource,
+    _build_direct_portable_recipe,
+)
 
 
 _DATASET_COLUMNS = ("ts_ms", "open", "high", "low", "close", "volume")
+
+
+def _artifact_configuration_label(recipe: object) -> str:
+    tool_key = getattr(recipe, "tool_key")
+    parameters = getattr(recipe, "parameters")
+    spec = get_financial_tool_spec(tool_key)
+    values = tuple(
+        f"{parameter.name}={_format_configuration_scalar(parameters[parameter.name])}"
+        for parameter in spec.parameters
+        if parameter.name in parameters
+    )
+    return spec.title if not values else f"{spec.title} [{', '.join(values)}]"
+
+
+def _format_configuration_scalar(value: object) -> str:
+    if type(value) is bool:
+        return "true" if value else "false"
+    if type(value) is float:
+        return format(value, ".15g")
+    return str(value)
 
 
 class DataManagerMarketUnavailableError(DataManagerOperationError):
@@ -160,6 +209,20 @@ class _Artifacts(Protocol):
     def delete_recipe(
         self, market_id: MarketId, kind: str, tool_key: str, recipe_id: str
     ) -> RecipeSummary: ...
+    def list_managed_markets(self) -> tuple[MarketId, ...]: ...
+    def list_managed_artifacts(
+        self, market_id: MarketId
+    ) -> tuple[ManagedArtifactSummary, ...]: ...
+    def list_artifact_versions(
+        self, market_id: MarketId, logical_artifact_id: str
+    ) -> tuple[object, ...]: ...
+    def delete_managed_artifact(
+        self,
+        market_id: MarketId,
+        logical_artifact_id: str,
+        *,
+        before_delete: Callable[[], None] | None = None,
+    ) -> ManagedArtifactSummary: ...
 
 
 class _StudyEnvironments(Protocol):
@@ -172,6 +235,43 @@ class _EnvironmentAnalysis:
     classifications: tuple[DataManagerStudyEntryPortability, ...]
     recipes_by_entry: Mapping[str, PortableRecipeV1]
     dependency_entries: Mapping[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectArtifactDependency:
+    role: str
+    logical_artifact_id: str
+    portable_recipe_id: str
+    output_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectArtifactSemanticDependency:
+    role: str
+    portable_recipe_id: str
+    output_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectArtifactSemanticDescriptor:
+    tool_key: str
+    kind: str
+    parameters: Mapping[str, object]
+    bindings: Mapping[str, object]
+    output_names: tuple[str, ...]
+    dependencies: tuple[_DirectArtifactSemanticDependency, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectArtifactMember:
+    portable_recipe_id: str
+    logical_artifact_id: str
+    tool_key: str
+    kind: str
+    parameters: Mapping[str, object]
+    bindings: Mapping[str, object]
+    output_names: tuple[str, ...]
+    dependencies: tuple[_DirectArtifactDependency, ...]
 
 
 class DataManagerService:
@@ -221,17 +321,13 @@ class DataManagerService:
             catalog=catalog,
             loader=loader,
             artifacts=artifacts,
-            portable_recipes=portable_recipes,
-            recipe_planner=recipe_planner,
-            materialization_planner=self.plan_artifact_materialization,
-            materialization_executor=self._execute_artifact_materialization,
+            batch_materialization_planner=self._plan_batch_artifact_materialization,
+            batch_materialization_executor=self._execute_direct_artifact_materialization,
         )
         self._updates = DataManagerUpdateWorkflow(
             catalog,
             loader,
             artifacts,
-            portable_recipes,
-            recipe_planner,
             self._creation,
         )
 
@@ -306,6 +402,403 @@ class DataManagerService:
             source_recipe_collection_id=source_recipe_collection_id,
             source_recipe_collection_revision_id=source_recipe_collection_revision_id,
             selected_outputs=selected_outputs,
+        )
+        self._updates.invalidate()
+        return result
+
+    def plan_artifact_collection_selection(
+        self,
+        market_id: MarketId,
+        root_logical_artifact_ids: Sequence[str],
+    ) -> ArtifactCollectionSelectionPlan:
+        market = _canonical_market(market_id)
+        if isinstance(root_logical_artifact_ids, (str, bytes, bytearray)):
+            raise DataManagerCreationError(
+                "root_logical_artifact_ids must be a sequence"
+            )
+        roots = tuple(root_logical_artifact_ids)
+        if not roots or any(not isinstance(item, str) for item in roots):
+            raise DataManagerCreationError(
+                "one or more root logical Artifact IDs are required"
+            )
+        if len(roots) != len(set(roots)):
+            raise DataManagerCreationError(
+                "root logical Artifact IDs must be unique"
+            )
+        try:
+            current_source = self._artifacts.capture_accepted_source(market)
+            summaries = tuple(self._artifacts.list_managed_artifacts(market))
+            summaries_by_id: dict[str, list[ManagedArtifactSummary]] = {}
+            for summary in summaries:
+                summaries_by_id.setdefault(summary.logical_artifact_id, []).append(
+                    summary
+                )
+            for logical_id in roots:
+                matches = summaries_by_id.get(logical_id, ())
+                if len(matches) != 1:
+                    raise DataManagerCreationError(
+                        "root managed Artifact must exist exactly once: "
+                        f"{logical_id}"
+                    )
+                if not matches[0].valid:
+                    raise DataManagerCreationError(
+                        "root managed Artifact is invalid: "
+                        f"{matches[0].rejection_reason}"
+                    )
+
+            managed = {
+                logical_id: values[0]
+                for logical_id, values in summaries_by_id.items()
+                if len(values) == 1 and values[0].valid
+            }
+            versions_by_logical_id: dict[str, tuple[object, ...]] = {}
+            version_owners: dict[str, tuple[str, str]] = {}
+            for summary in managed.values():
+                versions = tuple(
+                    self._artifacts.list_artifact_versions(
+                        market, summary.logical_artifact_id
+                    )
+                )
+                if not versions:
+                    raise ArtifactLineageError(
+                        "managed Artifact lineage has no versions"
+                    )
+                versions_by_logical_id[summary.logical_artifact_id] = versions
+                for version in versions:
+                    if (
+                        version.logical_artifact_id
+                        != summary.logical_artifact_id
+                        or version.portable_recipe_id
+                        != summary.portable_recipe_id
+                        or version.market_id != market
+                    ):
+                        raise ArtifactLineageError(
+                            "managed Artifact version ownership is inconsistent"
+                        )
+                    owner = (
+                        version.logical_artifact_id,
+                        version.portable_recipe_id,
+                    )
+                    previous = version_owners.setdefault(
+                        version.artifact_id, owner
+                    )
+                    if previous != owner:
+                        raise ArtifactLineageError(
+                            "physical Artifact version has ambiguous managed ownership"
+                        )
+
+            selected_physical: dict[str, str] = {}
+            member_values: dict[str, ArtifactCollectionMemberV1] = {}
+            transient_members: dict[str, _DirectArtifactMember] = {}
+            metadata_by_id: dict[str, ArtifactMetadataV1] = {}
+            edges: list[ArtifactCollectionDependencyV1] = []
+            visiting: set[str] = set()
+
+            def collect(logical_id: str, artifact_id: str) -> None:
+                previous = selected_physical.get(logical_id)
+                if previous is not None:
+                    if previous != artifact_id:
+                        raise ArtifactLineageError(
+                            "logical Artifact resolves to conflicting physical versions"
+                        )
+                    return
+                if logical_id in visiting:
+                    raise ArtifactLineageError(
+                        "managed Artifact dependency graph contains a cycle"
+                    )
+                owner = version_owners.get(artifact_id)
+                if owner is None or owner[0] != logical_id:
+                    raise ArtifactLineageError(
+                        "Artifact source version has no exact managed owner"
+                    )
+                summary = managed.get(logical_id)
+                if (
+                    summary is None
+                    or summary.portable_recipe_id != owner[1]
+                    or summary.market_id != market
+                ):
+                    raise ArtifactLineageError(
+                        "Artifact source owner is not a current valid managed Artifact"
+                    )
+                versions = versions_by_logical_id.get(logical_id)
+                if versions is None:
+                    raise ArtifactLineageError(
+                        "managed Artifact lineage has no versions"
+                    )
+                descriptor = self._validate_direct_artifact_semantic_lineage(
+                    market, summary, versions, version_owners
+                )
+                selected_physical[logical_id] = artifact_id
+                visiting.add(logical_id)
+                loaded = self._artifacts.load_artifact_by_id(market, artifact_id)
+                metadata = loaded.metadata
+                recipe = metadata.recipe
+                semantic_dependencies = tuple(
+                    _DirectArtifactSemanticDependency(
+                        ref.role,
+                        version_owners[ref.artifact_id][1],
+                        ref.output_name,
+                    )
+                    for ref in recipe.source_artifacts
+                    if ref.artifact_id in version_owners
+                )
+                if (
+                    metadata.artifact_id != artifact_id
+                    or metadata.source_ohlcv != current_source
+                    or recipe.market_id != market
+                    or recipe.tool_key != descriptor.tool_key
+                    or recipe.kind != descriptor.kind
+                    or dict(recipe.parameters) != dict(descriptor.parameters)
+                    or dict(recipe.bindings) != dict(descriptor.bindings)
+                    or recipe.output_names != descriptor.output_names
+                    or semantic_dependencies != descriptor.dependencies
+                    or recipe.tool_key != summary.tool_key
+                    or recipe.kind != summary.kind
+                    or recipe.output_names != summary.output_names
+                ):
+                    raise ArtifactLineageError(
+                        "exact Artifact version metadata is inconsistent"
+                    )
+                if recipe.tool_key == "dynamic_binning":
+                    raise ArtifactLineageError(
+                        "Dynamic Binning cannot be an Artifact Collection member"
+                    )
+                dependencies: list[_DirectArtifactDependency] = []
+                for ref in recipe.source_artifacts:
+                    dependency_owner = version_owners.get(ref.artifact_id)
+                    if dependency_owner is None:
+                        raise ArtifactLineageError(
+                            "Artifact source version has no managed owner"
+                        )
+                    dependency_id, dependency_semantic_id = dependency_owner
+                    collect(dependency_id, ref.artifact_id)
+                    dependency_metadata = metadata_by_id[dependency_id]
+                    if ref.output_name not in dependency_metadata.recipe.output_names:
+                        raise ArtifactLineageError(
+                            "Artifact dependency output is unavailable"
+                        )
+                    dependencies.append(
+                        _DirectArtifactDependency(
+                            ref.role,
+                            dependency_id,
+                            dependency_semantic_id,
+                            ref.output_name,
+                        )
+                    )
+                    edges.append(
+                        ArtifactCollectionDependencyV1(
+                            dependency_id,
+                            logical_id,
+                            ref.role,
+                            ref.output_name,
+                        )
+                    )
+                member = _DirectArtifactMember(
+                    owner[1],
+                    logical_id,
+                    recipe.tool_key,
+                    recipe.kind,
+                    recipe.parameters,
+                    recipe.bindings,
+                    recipe.output_names,
+                    tuple(dependencies),
+                )
+                self._validate_transient_member_compatibility(
+                    member,
+                    transient_members,
+                    raw_inputs=(),
+                    allow_partial_roles=True,
+                )
+                metadata_by_id[logical_id] = metadata
+                transient_members[logical_id] = member
+                member_values[logical_id] = ArtifactCollectionMemberV1(
+                    ManagedArtifactVersionKey(logical_id, artifact_id),
+                    owner[1],
+                    recipe.tool_key,
+                    recipe.kind,
+                    recipe.output_names,
+                    metadata.values_sha256,
+                )
+                visiting.remove(logical_id)
+
+            for logical_id in roots:
+                summary = managed[logical_id]
+                loaded = self._load_direct_managed_artifact(
+                    market, summary, current_source
+                )
+                if loaded.metadata.artifact_id != summary.artifact_id:
+                    raise ArtifactLineageError(
+                        "root managed Artifact is not its current head"
+                    )
+                collect(logical_id, summary.artifact_id)
+
+            predecessor_ids: dict[str, set[str]] = {
+                logical_id: set() for logical_id in member_values
+            }
+            for edge in edges:
+                predecessor_ids[edge.dependent_logical_artifact_id].add(
+                    edge.dependency_logical_artifact_id
+                )
+            stages: list[tuple[str, ...]] = []
+            complete: set[str] = set()
+            member_order = tuple(member_values)
+            while len(complete) < len(member_order):
+                stage = tuple(
+                    logical_id
+                    for logical_id in member_order
+                    if logical_id not in complete
+                    and predecessor_ids[logical_id] <= complete
+                )
+                if not stage:
+                    raise ArtifactLineageError(
+                        "managed Artifact dependency graph contains a cycle"
+                    )
+                stages.append(stage)
+                complete.update(stage)
+            ordered_ids = tuple(item for stage in stages for item in stage)
+            root_set = set(roots)
+            supports = tuple(
+                logical_id for logical_id in ordered_ids if logical_id not in root_set
+            )
+            members = tuple(member_values[logical_id] for logical_id in ordered_ids)
+            first = max(
+                metadata_by_id[logical_id].first_timestamp_ms
+                for logical_id in ordered_ids
+            )
+            last = min(
+                metadata_by_id[logical_id].last_timestamp_ms
+                for logical_id in ordered_ids
+            )
+            if first > last:
+                raise DataManagerCreationError(
+                    "Artifact Collection selection has no common coverage"
+                )
+            identity = {
+                "market_id": {
+                    "exchange": market.exchange,
+                    "market_type": market.market_type,
+                    "symbol": market.symbol,
+                    "timeframe": market.timeframe,
+                },
+                "source_ohlcv": current_source.to_dict(),
+                "root_logical_artifact_ids": list(roots),
+                "members": [item.to_dict() for item in members],
+                "dependency_edges": [item.to_dict() for item in edges],
+                "execution_stages": [list(stage) for stage in stages],
+                "first_timestamp_ms": first,
+                "last_timestamp_ms": last,
+            }
+            return ArtifactCollectionSelectionPlan(
+                deterministic_hash(identity),
+                market,
+                current_source,
+                roots,
+                supports,
+                members,
+                tuple(edges),
+                tuple(stages),
+                first,
+                last,
+            )
+        except DataManagerCreationError:
+            raise
+        except (ArtifactError, KeyError, TypeError, ValueError) as exc:
+            raise DataManagerCreationError(str(exc)) from exc
+
+    def create_artifact_collection_from_selection(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        display_name: str,
+        *,
+        description: str = "",
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+    ) -> ArtifactCollectionRevisionV1:
+        return self._create_artifact_collection_from_selection(
+            plan,
+            display_name,
+            description=description,
+            selected_outputs=selected_outputs,
+            before_publish=None,
+        )
+
+    def _create_artifact_collection_from_selection(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        display_name: str,
+        *,
+        description: str,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None,
+        before_publish: Callable[[], None] | None,
+    ) -> ArtifactCollectionRevisionV1:
+        fresh = self.plan_artifact_collection_selection(
+            plan.market_id, plan.root_logical_artifact_ids
+        )
+        if fresh != plan:
+            raise DataManagerCreationError(
+                "Artifact Collection selection changed since Preview"
+            )
+        if before_publish is not None:
+            before_publish()
+        result = self._creation.create_artifact_collection_from_selection(
+            plan,
+            display_name,
+            description=description,
+            selected_outputs=selected_outputs,
+        )
+        self._updates.invalidate()
+        return result
+
+    def edit_artifact_collection_from_selection(
+        self,
+        collection_id: str,
+        plan: ArtifactCollectionSelectionPlan,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+        presentation_order: Sequence[str] | None = None,
+        expected_revision_id: str,
+    ) -> ArtifactCollectionRevisionV1:
+        return self._edit_artifact_collection_from_selection(
+            collection_id,
+            plan,
+            display_name=display_name,
+            description=description,
+            selected_outputs=selected_outputs,
+            presentation_order=presentation_order,
+            expected_revision_id=expected_revision_id,
+            before_publish=None,
+        )
+
+    def _edit_artifact_collection_from_selection(
+        self,
+        collection_id: str,
+        plan: ArtifactCollectionSelectionPlan,
+        *,
+        display_name: str | None,
+        description: str | None,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None,
+        presentation_order: Sequence[str] | None,
+        expected_revision_id: str,
+        before_publish: Callable[[], None] | None,
+    ) -> ArtifactCollectionRevisionV1:
+        fresh = self.plan_artifact_collection_selection(
+            plan.market_id, plan.root_logical_artifact_ids
+        )
+        if fresh != plan:
+            raise DataManagerCreationError(
+                "Artifact Collection selection changed since Preview"
+            )
+        if before_publish is not None:
+            before_publish()
+        result = self._creation.edit_artifact_collection_from_selection(
+            collection_id,
+            plan,
+            display_name=display_name,
+            description=description,
+            selected_outputs=selected_outputs,
+            presentation_order=presentation_order,
+            expected_revision_id=expected_revision_id,
         )
         self._updates.invalidate()
         return result
@@ -635,6 +1128,142 @@ class DataManagerService:
             market, "recipe", kind, tool_key, recipe_id
         )
 
+    def delete_portable_recipe(self, recipe_id: str) -> PortableRecipeV1:
+        return self._delete_portable_recipe(recipe_id, before_delete=None)
+
+    def _delete_portable_recipe(
+        self,
+        recipe_id: str,
+        *,
+        before_delete: Callable[[], None] | None,
+    ) -> PortableRecipeV1:
+        deleted = self._portable_recipes.delete_recipe(
+            recipe_id, before_delete=before_delete
+        )
+        self._updates.invalidate()
+        return deleted
+
+    def delete_recipe_collection(
+        self, collection_id: str
+    ) -> PortableRecipeCollectionRevisionV1:
+        return self._delete_recipe_collection(collection_id, before_delete=None)
+
+    def _delete_recipe_collection(
+        self,
+        collection_id: str,
+        *,
+        before_delete: Callable[[], None] | None,
+    ) -> PortableRecipeCollectionRevisionV1:
+        deleted = self._portable_recipes.delete_collection(
+            collection_id, before_delete=before_delete
+        )
+        self._updates.invalidate()
+        return deleted
+
+    def delete_managed_artifact(
+        self, market_id: MarketId, logical_artifact_id: str
+    ) -> ManagedArtifactSummary:
+        return self._delete_managed_artifact(
+            market_id, logical_artifact_id, before_delete=None
+        )
+
+    def _delete_managed_artifact(
+        self,
+        market_id: MarketId,
+        logical_artifact_id: str,
+        *,
+        before_delete: Callable[[], None] | None,
+    ) -> ManagedArtifactSummary:
+        market = _canonical_market(market_id)
+        try:
+            for revision in self._artifact_collection_revisions_for_deletion_proof():
+                if revision.market_id != market:
+                    continue
+                if any(
+                    member.version_key.logical_artifact_id == logical_artifact_id
+                    for member in revision.members
+                ):
+                    raise DataManagerOperationError(
+                        "Artifact deletion refused: referenced by an Artifact Collection"
+                    )
+            for revision in self._database_revisions_for_deletion_proof():
+                if any(
+                    key.logical_artifact_id == logical_artifact_id
+                    for key in revision.artifact_version_keys
+                ):
+                    raise DataManagerOperationError(
+                        "Artifact deletion refused: referenced by a Database"
+                    )
+            deleted = self._artifacts.delete_managed_artifact(
+                market,
+                logical_artifact_id,
+                before_delete=before_delete,
+            )
+            self._updates.invalidate()
+            return deleted
+        except DataManagerOperationError:
+            raise
+        except Exception as exc:
+            raise self._deletion_proof_error("Artifact", exc) from exc
+
+    def delete_artifact_collection(self, collection_id: str) -> ArtifactCollectionRevisionV1:
+        return self._delete_artifact_collection(collection_id, before_delete=None)
+
+    def _delete_artifact_collection(
+        self,
+        collection_id: str,
+        *,
+        before_delete: Callable[[], None] | None,
+    ) -> ArtifactCollectionRevisionV1:
+        try:
+            deleted = self.creation_store.delete_collection(
+                collection_id, before_delete=before_delete
+            )
+            self._updates.invalidate()
+            return deleted
+        except DataManagerOperationError:
+            raise
+        except Exception as exc:
+            raise self._deletion_proof_error("Artifact Collection", exc) from exc
+
+    def _artifact_collection_revisions_for_deletion_proof(
+        self,
+    ) -> tuple[ArtifactCollectionRevisionV1, ...]:
+        values: list[ArtifactCollectionRevisionV1] = []
+        for collection_id in self.creation_store.list_collection_ids():
+            head = self.creation_store.load_collection_head(collection_id)
+            revisions = self.creation_store.list_collection_revisions(collection_id)
+            if not revisions or head.revision_id not in {
+                item.revision_id for item in revisions
+            }:
+                raise DataManagerOperationError(
+                    "Deletion refused because Artifact Collection evidence is invalid"
+                )
+            values.extend(revisions)
+        return tuple(values)
+
+    def _database_revisions_for_deletion_proof(self) -> tuple[object, ...]:
+        values: list[object] = []
+        for database_id in self.creation_store.list_database_ids():
+            self.creation_store.load_database_definition(database_id)
+            head = self.creation_store.load_database_head(database_id)
+            revisions = self.creation_store.list_database_revisions(database_id)
+            if not revisions or head.revision_id not in {
+                item.revision_id for item in revisions
+            }:
+                raise DataManagerOperationError(
+                    "Deletion refused because Database evidence is invalid"
+                )
+            values.extend(revisions)
+        return tuple(values)
+
+    @staticmethod
+    def _deletion_proof_error(object_name: str, error: Exception) -> DataManagerOperationError:
+        return DataManagerOperationError(
+            f"{object_name} deletion refused because Leonardo could not prove "
+            f"the selected object was unreferenced: {error}"
+        )
+
     def _require_accepted(self, market: MarketId) -> DataManagerDatasetEntry:
         snapshot = self.scan_catalog()
         accepted = snapshot.accepted_market(market)
@@ -900,7 +1529,8 @@ class DataManagerService:
         for summary in self._portable_recipes.list_recipe_summaries():
             if not summary.valid:
                 item = DataManagerPortableRecipeEntry(
-                    summary.recipe_id, "", "", "", {}, (), 0, 0, (), (), (), 0,
+                    summary.recipe_id, "", "", "", {}, (), (), 0, 0,
+                    (), (), (), 0,
                     False, summary.rejection_reason,
                 )
             else:
@@ -911,6 +1541,7 @@ class DataManagerService:
                     item = DataManagerPortableRecipeEntry(
                         summary.recipe_id, summary.tool_key, summary.tool_version,
                         summary.kind, {}, summary.output_names,
+                        (),
                         summary.dependency_count, summary.ohlcv_input_count,
                         (), (), (), 0, False, f"{type(exc).__name__}: {exc}",
                     )
@@ -928,6 +1559,13 @@ class DataManagerService:
                         recipe.kind,
                         recipe.parameters,
                         recipe.output_names,
+                        tuple(
+                            f"{value.role}=OHLCV.{value.column_name}"
+                            for value in recipe.ohlcv_inputs
+                        ) + tuple(
+                            f"{value.role}=Recipe[{value.recipe_id}].{value.output_name}"
+                            for value in recipe.dependencies
+                        ),
                         len(recipe.dependencies),
                         len(recipe.ohlcv_inputs),
                         markets,
@@ -982,11 +1620,14 @@ class DataManagerService:
             display_name, description = _validate_collection_metadata(
                 display_name, description
             )
-            plan = self._recipe_planner.plan(root_recipe_ids)
+            plan = self.plan_recipe_collection(root_recipe_ids)
             if before_publish is not None:
                 before_publish()
             revision = self._portable_recipes.create_collection(
-                display_name, description, root_recipe_ids, plan.member_recipe_ids
+                display_name,
+                description,
+                plan.root_recipe_ids,
+                plan.member_recipe_ids,
             )
             result = self.inspect_recipe_collection(revision.collection_id)
             self._updates.invalidate()
@@ -1000,6 +1641,8 @@ class DataManagerService:
         display_name: str,
         description: str,
         root_recipe_ids: tuple[str, ...],
+        *,
+        expected_revision_id: str | None = None,
     ) -> DataManagerRecipeCollectionInspection:
         return self._update_recipe_collection(
             collection_id,
@@ -1007,6 +1650,7 @@ class DataManagerService:
             description,
             root_recipe_ids,
             before_publish=None,
+            expected_revision_id=expected_revision_id,
         )
 
     def _update_recipe_collection(
@@ -1017,16 +1661,22 @@ class DataManagerService:
         root_recipe_ids: tuple[str, ...],
         *,
         before_publish: Callable[[], None] | None,
+        expected_revision_id: str | None = None,
     ) -> DataManagerRecipeCollectionInspection:
         try:
             display_name, description = _validate_collection_metadata(
                 display_name, description
             )
-            plan = self._recipe_planner.plan(root_recipe_ids)
+            plan = self.plan_recipe_collection(root_recipe_ids)
             if before_publish is not None:
                 before_publish()
             self._portable_recipes.update_collection(
-                collection_id, display_name, description, root_recipe_ids, plan.member_recipe_ids
+                collection_id,
+                display_name,
+                description,
+                plan.root_recipe_ids,
+                plan.member_recipe_ids,
+                expected_head_revision_id=expected_revision_id,
             )
             result = self.inspect_recipe_collection(collection_id)
             self._updates.invalidate()
@@ -1034,6 +1684,32 @@ class DataManagerService:
         except DataManagerOperationError:
             raise
         except (FileNotFoundError, PortableRecipeGraphError, PortableRecipeStoreError, PortableRecipeValidationError) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+
+    def plan_recipe_collection(
+        self, root_recipe_ids: tuple[str, ...]
+    ) -> PortableRecipeGraphPlan:
+        try:
+            plan = self._recipe_planner.plan(root_recipe_ids)
+            recipes_by_id = {
+                recipe_id: self._portable_recipes.load_recipe(recipe_id)
+                for recipe_id in plan.member_recipe_ids
+            }
+            for recipe_id in plan.member_recipe_ids:
+                _validate_recipe_execution(recipes_by_id[recipe_id], recipes_by_id)
+            return plan
+        except DataManagerOperationError:
+            raise
+        except (
+            FileNotFoundError,
+            KeyError,
+            TypeError,
+            ValueError,
+            ArtifactMaterializationValidationError,
+            PortableRecipeGraphError,
+            PortableRecipeStoreError,
+            PortableRecipeValidationError,
+        ) as exc:
             raise DataManagerOperationError(str(exc)) from exc
 
     def list_recipe_collections(self) -> DataManagerRecipeCollectionCatalog:
@@ -1044,7 +1720,7 @@ class DataManagerService:
                     DataManagerRecipeCollectionEntry(
                         summary.collection_id, summary.revision_id,
                         summary.display_name, summary.description,
-                        summary.root_count, summary.member_count, 0, 0,
+                        summary.root_count, summary.member_count, (), 0, 0,
                         summary.created_at_utc, summary.updated_at_utc,
                         False, summary.rejection_reason,
                     )
@@ -1052,13 +1728,19 @@ class DataManagerService:
                 continue
             try:
                 revision = self._portable_recipes.load_collection(summary.collection_id)
-                graph = self._recipe_planner.plan(revision.root_recipe_ids)
-            except (FileNotFoundError, PortableRecipeGraphError, PortableRecipeStoreError, PortableRecipeValidationError) as exc:
+                graph = self.plan_recipe_collection(revision.root_recipe_ids)
+            except (
+                DataManagerOperationError,
+                FileNotFoundError,
+                PortableRecipeGraphError,
+                PortableRecipeStoreError,
+                PortableRecipeValidationError,
+            ) as exc:
                 values.append(
                     DataManagerRecipeCollectionEntry(
                         summary.collection_id, summary.revision_id,
                         summary.display_name, summary.description,
-                        summary.root_count, summary.member_count, 0, 0,
+                        summary.root_count, summary.member_count, (), 0, 0,
                         summary.created_at_utc, summary.updated_at_utc,
                         False, f"{type(exc).__name__}: {exc}",
                     )
@@ -1084,7 +1766,11 @@ class DataManagerService:
                     collection_id, revision_id
                 )
             )
-            graph = self._recipe_planner.plan(revision.root_recipe_ids)
+            graph = self.plan_recipe_collection(revision.root_recipe_ids)
+            if revision.member_recipe_ids != graph.member_recipe_ids:
+                raise DataManagerOperationError(
+                    "Collection members must match the canonical graph planner result"
+                )
             revisions = self._portable_recipes.list_collection_revisions(collection_id)
             created_at = revisions[0].created_at_utc if revisions else revision.created_at_utc
             current_summary = next(
@@ -1107,6 +1793,7 @@ class DataManagerService:
                 revision.description,
                 len(revision.root_recipe_ids),
                 len(revision.member_recipe_ids),
+                revision.member_recipe_ids,
                 len(graph.dependency_edges),
                 len(graph.execution_stages),
                 created_at,
@@ -1119,6 +1806,8 @@ class DataManagerService:
                 graph.dependency_edges,
                 graph.execution_stages,
             )
+        except DataManagerOperationError:
+            raise
         except (FileNotFoundError, StopIteration, PortableRecipeGraphError, PortableRecipeStoreError, PortableRecipeValidationError) as exc:
             raise DataManagerOperationError(str(exc)) from exc
 
@@ -1304,6 +1993,1028 @@ class DataManagerService:
             FileNotFoundError,
         ) as exc:
             raise DataManagerOperationError(str(exc)) from exc
+
+    def build_direct_artifact_catalog(
+        self, market_id: MarketId
+    ) -> DataManagerDirectArtifactCatalog:
+        if not isinstance(market_id, MarketId):
+            raise TypeError("market_id must be a MarketId")
+        market = canonicalize_market_id(
+            market_id.exchange,
+            market_id.market_type,
+            market_id.symbol,
+            market_id.timeframe,
+        )
+        try:
+            self._require_accepted(market)
+            source = self._artifacts.capture_accepted_source(market)
+            grouped: dict[
+                tuple[str, str],
+                list[object],
+            ] = {}
+            for signal in list_construct_source_signals(self._artifacts, market):
+                if signal.source_ohlcv != source:
+                    continue
+                grouped.setdefault(
+                    (signal.logical_artifact_id, signal.artifact_id), []
+                ).append(signal)
+            kind_order = {"indicator": 0, "oscillator": 1, "construct": 2}
+            option_values: list[DataManagerDirectArtifactOption] = []
+            for (logical_id, artifact_id), signals in grouped.items():
+                loaded = self._artifacts.load_artifact_by_id(market, artifact_id)
+                option_values.append(
+                    DataManagerDirectArtifactOption(
+                        market_id=market,
+                        logical_artifact_id=logical_id,
+                        artifact_id=artifact_id,
+                        tool_key=signals[0].tool_key,
+                        kind=signals[0].kind,
+                        display_name=_artifact_configuration_label(
+                            loaded.metadata.recipe
+                        ),
+                        output_names=tuple(
+                            signal.output_name for signal in signals
+                        ),
+                        source_ohlcv=source,
+                    )
+                )
+            construct_options = tuple(
+                sorted(
+                    option_values,
+                    key=lambda item: (
+                        kind_order[item.kind],
+                        item.tool_key,
+                        item.logical_artifact_id,
+                    ),
+                )
+            )
+            peaks_options: list[DataManagerDirectArtifactOption] = []
+            for summary in self._artifacts.list_managed_artifacts(market):
+                if not summary.valid or summary.tool_key != "peaks_troughs":
+                    continue
+                loaded = self._artifacts.load_artifact_by_id(
+                    market, summary.artifact_id
+                )
+                if loaded.metadata.source_ohlcv != source:
+                    continue
+                peaks_options.append(
+                    DataManagerDirectArtifactOption(
+                        market_id=market,
+                        logical_artifact_id=summary.logical_artifact_id,
+                        artifact_id=summary.artifact_id,
+                        tool_key=summary.tool_key,
+                        kind=summary.kind,
+                        display_name=get_financial_tool_spec(
+                            summary.tool_key
+                        ).title,
+                        output_names=loaded.metadata.recipe.output_names,
+                        source_ohlcv=source,
+                    )
+                )
+            return DataManagerDirectArtifactCatalog(
+                market_id=market,
+                source_ohlcv=source,
+                construct_options=construct_options,
+                utc_peaks_troughs_options=tuple(
+                    sorted(
+                        peaks_options,
+                        key=lambda item: item.logical_artifact_id,
+                    )
+                ),
+            )
+        except DataManagerOperationError:
+            raise
+        except (
+            ArtifactError,
+            FileNotFoundError,
+            KeyError,
+            PortableRecipeStoreError,
+            PortableRecipeValidationError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+
+    def create_direct_artifact(
+        self, request: DataManagerDirectArtifactRequest
+    ) -> DataManagerDirectArtifactResult:
+        return self._create_direct_artifact(
+            request,
+            progress=None,
+            cancellation_requested=None,
+            before_publish=None,
+        )
+
+    def _create_direct_artifact(
+        self,
+        request: DataManagerDirectArtifactRequest,
+        *,
+        progress: Callable[[int, int, str], None] | None,
+        cancellation_requested: Callable[[], bool] | None,
+        before_publish: Callable[[], None] | None,
+    ) -> DataManagerDirectArtifactResult:
+        if not isinstance(request, DataManagerDirectArtifactRequest):
+            raise TypeError("request must be a DataManagerDirectArtifactRequest")
+        try:
+            self._require_accepted(request.market_id)
+            current_source = self._artifacts.capture_accepted_source(
+                request.market_id
+            )
+            if current_source != request.expected_source_ohlcv:
+                raise DataManagerOperationError(
+                    "accepted OHLCV source changed after direct Artifact setup"
+                )
+            source_recipe_ids, _source_artifact_recipes = (
+                self._validate_direct_artifact_sources(request, current_source)
+            )
+
+            spec = get_financial_tool_spec(request.tool_key)
+            if spec.kind == "construct":
+                eligible = {
+                    (
+                        signal.logical_artifact_id,
+                        signal.artifact_id,
+                        signal.output_name,
+                    )
+                    for signal in list_construct_source_signals(
+                        self._artifacts, request.market_id
+                    )
+                    if signal.source_ohlcv == current_source
+                }
+                for source in request.sources:
+                    identity = (
+                        source.logical_artifact_id,
+                        source.artifact_id,
+                        source.output_name,
+                    )
+                    if identity not in eligible:
+                        raise DataManagerOperationError(
+                            "direct Construct source is not admitted by Task 1062"
+                        )
+
+            recipe = _build_direct_portable_recipe(
+                request, source_recipe_ids
+            )
+            plan, members = self._plan_direct_artifact_materialization(
+                request, recipe, current_source
+            )
+            materialization = self._execute_direct_artifact_materialization(
+                plan,
+                members,
+                progress=progress,
+                cancellation_requested=cancellation_requested,
+                before_publish=before_publish,
+            )
+            return DataManagerDirectArtifactResult(
+                portable_recipe_id=recipe.recipe_id,
+                materialization=materialization,
+            )
+        except DataManagerOperationError:
+            raise
+        except (
+            ArtifactError,
+            FileNotFoundError,
+            KeyError,
+            PortableRecipeValidationError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+
+    def _validate_direct_artifact_sources(
+        self,
+        request: DataManagerDirectArtifactRequest,
+        expected_source: OHLCVSourceFingerprintV1,
+    ) -> tuple[dict[str, str], dict[str, ArtifactRecipeV1]]:
+        managed = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts(request.market_id)
+        }
+        semantic_ids: dict[str, str] = {}
+        recipes: dict[str, ArtifactRecipeV1] = {}
+        for source in request.sources:
+            summary = managed.get(source.logical_artifact_id)
+            if summary is None or not summary.valid:
+                raise DataManagerOperationError(
+                    "direct source is not a current valid managed Artifact: "
+                    f"{source.logical_artifact_id}"
+                )
+            if summary.artifact_id != source.artifact_id:
+                raise DataManagerOperationError(
+                    f"direct source head changed: {source.logical_artifact_id}"
+                )
+            loaded = self._load_direct_managed_artifact(
+                request.market_id, summary, expected_source
+            )
+            if source.output_name not in loaded.metadata.recipe.output_names:
+                raise DataManagerOperationError(
+                    f"direct source output is unavailable: {source.output_name}"
+                )
+            semantic_ids[source.role] = summary.portable_recipe_id
+            recipes[source.role] = loaded.metadata.recipe
+        return semantic_ids, recipes
+
+    def _load_direct_managed_artifact(
+        self,
+        market: MarketId,
+        summary: ManagedArtifactSummary,
+        expected_source: OHLCVSourceFingerprintV1,
+    ):
+        if not summary.valid:
+            raise ArtifactLineageError(summary.rejection_reason)
+        loaded = self._artifacts.load_artifact_by_id(market, summary.artifact_id)
+        recipe = loaded.metadata.recipe
+        if (
+            summary.market_id != market
+            or loaded.metadata.artifact_id != summary.artifact_id
+            or loaded.metadata.source_ohlcv != expected_source
+            or recipe.market_id != market
+            or recipe.tool_key != summary.tool_key
+            or recipe.kind != summary.kind
+            or recipe.output_names != summary.output_names
+        ):
+            raise ArtifactLineageError(
+                "current managed Artifact metadata disagrees with its summary"
+            )
+        return loaded
+
+    def _plan_direct_artifact_materialization(
+        self,
+        request: DataManagerDirectArtifactRequest,
+        root_recipe: PortableRecipeV1,
+        expected_source: OHLCVSourceFingerprintV1,
+    ) -> tuple[
+        DataManagerArtifactMaterializationPlan,
+        dict[str, _DirectArtifactMember],
+    ]:
+        return self._plan_transient_artifact_materialization(
+            request.market_id,
+            expected_source,
+            ((root_recipe, request.sources),),
+        )
+
+    def _plan_batch_artifact_materialization(
+        self,
+        request: BatchArtifactRequest,
+        root_recipes: tuple[PortableRecipeV1, ...],
+    ) -> tuple[
+        DataManagerArtifactMaterializationPlan,
+        dict[str, _DirectArtifactMember],
+    ]:
+        if len(root_recipes) != len(request.branches):
+            raise DataManagerOperationError(
+                "batch roots do not align with requested branches"
+            )
+        roots = tuple(
+            (
+                recipe,
+                tuple(
+                    DataManagerDirectArtifactSource(
+                        source.role,
+                        source.logical_artifact_id,
+                        source.artifact_id,
+                        source.output_name,
+                    )
+                    for source in branch.sources
+                    if source.source_kind == "artifact"
+                ),
+            )
+            for branch, recipe in zip(
+                request.branches, root_recipes, strict=True
+            )
+        )
+        return self._plan_transient_artifact_materialization(
+            request.market_id,
+            request.expected_source_ohlcv,
+            roots,
+        )
+
+    def _plan_transient_artifact_materialization(
+        self,
+        market: MarketId,
+        expected_source: OHLCVSourceFingerprintV1,
+        roots: tuple[
+            tuple[PortableRecipeV1, tuple[DataManagerDirectArtifactSource, ...]],
+            ...,
+        ],
+    ) -> tuple[
+        DataManagerArtifactMaterializationPlan,
+        dict[str, _DirectArtifactMember],
+    ]:
+        managed = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts(market)
+        }
+        version_owners: dict[str, tuple[str, str]] = {}
+        versions_by_logical_id: dict[str, tuple[object, ...]] = {}
+        for summary in managed.values():
+            if not summary.valid:
+                continue
+            versions = self._artifacts.list_artifact_versions(
+                market, summary.logical_artifact_id
+            )
+            if not versions:
+                raise ArtifactLineageError(
+                    "managed Artifact lineage has no versions"
+                )
+            versions_by_logical_id[summary.logical_artifact_id] = versions
+            for version in versions:
+                if (
+                    version.logical_artifact_id != summary.logical_artifact_id
+                    or version.portable_recipe_id != summary.portable_recipe_id
+                    or version.market_id != market
+                ):
+                    raise ArtifactLineageError(
+                        "managed Artifact version ownership is inconsistent"
+                    )
+                owner = (
+                    version.logical_artifact_id,
+                    version.portable_recipe_id,
+                )
+                previous_owner = version_owners.setdefault(
+                    version.artifact_id, owner
+                )
+                if previous_owner != owner:
+                    raise ArtifactLineageError(
+                        "physical Artifact version has ambiguous managed ownership"
+                    )
+
+        members: dict[str, _DirectArtifactMember] = {}
+        visiting: set[str] = set()
+
+        def collect(logical_id: str) -> None:
+            if logical_id in members:
+                return
+            if logical_id in visiting:
+                raise ArtifactLineageError(
+                    "managed Artifact dependency graph contains a cycle"
+                )
+            visiting.add(logical_id)
+            summary = managed.get(logical_id)
+            if summary is None or not summary.valid:
+                raise ArtifactLineageError(
+                    f"managed Artifact dependency is unavailable: {logical_id}"
+                )
+            self._validate_direct_artifact_semantic_lineage(
+                market,
+                summary,
+                versions_by_logical_id[logical_id],
+                version_owners,
+            )
+            loaded = self._load_direct_managed_artifact(
+                market, summary, expected_source
+            )
+            dependencies: list[_DirectArtifactDependency] = []
+            for ref in loaded.metadata.recipe.source_artifacts:
+                owner = version_owners.get(ref.artifact_id)
+                if owner is None:
+                    raise ArtifactLineageError(
+                        "Artifact source version has no managed owner"
+                    )
+                owner_logical_id, owner_semantic_id = owner
+                exact_source = self._artifacts.load_artifact_by_id(
+                    market, ref.artifact_id
+                )
+                if (
+                    exact_source.metadata.source_ohlcv != expected_source
+                    or exact_source.metadata.recipe.market_id != market
+                    or ref.output_name
+                    not in exact_source.metadata.recipe.output_names
+                ):
+                    raise ArtifactLineageError(
+                        "Artifact source version metadata is inconsistent"
+                    )
+                owner_summary = managed.get(owner_logical_id)
+                if (
+                    owner_summary is None
+                    or not owner_summary.valid
+                    or owner_summary.portable_recipe_id != owner_semantic_id
+                ):
+                    raise ArtifactLineageError(
+                        "Artifact source owner is not a current valid managed Artifact"
+                    )
+                collect(owner_logical_id)
+                owner_member = members[owner_logical_id]
+                if ref.output_name not in owner_member.output_names:
+                    raise ArtifactLineageError(
+                        "current Artifact source owner does not expose the required output"
+                    )
+                dependencies.append(
+                    _DirectArtifactDependency(
+                        ref.role,
+                        owner_logical_id,
+                        owner_semantic_id,
+                        ref.output_name,
+                    )
+                )
+            recipe = loaded.metadata.recipe
+            member = _DirectArtifactMember(
+                summary.portable_recipe_id,
+                logical_id,
+                recipe.tool_key,
+                recipe.kind,
+                recipe.parameters,
+                recipe.bindings,
+                recipe.output_names,
+                tuple(dependencies),
+            )
+            self._validate_transient_member_compatibility(
+                member,
+                members,
+                raw_inputs=(),
+                allow_partial_roles=True,
+            )
+            members[logical_id] = member
+            visiting.remove(logical_id)
+
+        for _recipe, sources in roots:
+            for source in sources:
+                collect(source.logical_artifact_id)
+
+        root_logical_ids: list[str] = []
+        root_recipe_ids: list[str] = []
+        for root_recipe, sources in roots:
+            parameters, bindings = _target_configuration(root_recipe)
+            root_logical_id = compute_logical_artifact_id(
+                market, root_recipe.recipe_id
+            )
+            root_dependencies = tuple(
+                _DirectArtifactDependency(
+                    source.role,
+                    source.logical_artifact_id,
+                    managed[source.logical_artifact_id].portable_recipe_id,
+                    source.output_name,
+                )
+                for source in sources
+            )
+            requested_root_descriptor = _DirectArtifactSemanticDescriptor(
+                root_recipe.tool_key,
+                root_recipe.kind,
+                parameters,
+                bindings,
+                root_recipe.output_names,
+                tuple(
+                    _DirectArtifactSemanticDependency(
+                        dependency.role,
+                        dependency.portable_recipe_id,
+                        dependency.output_name,
+                    )
+                    for dependency in root_dependencies
+                ),
+            )
+            root_summary = managed.get(root_logical_id)
+            if root_summary is not None:
+                if not root_summary.valid:
+                    raise ArtifactLineageError(root_summary.rejection_reason)
+                if root_summary.portable_recipe_id != root_recipe.recipe_id:
+                    raise ArtifactLineageError(
+                        "managed Artifact semantic identity disagrees"
+                    )
+                root_versions = versions_by_logical_id.get(root_logical_id)
+                if root_versions is None:
+                    raise ArtifactLineageError(
+                        "managed Artifact lineage has no versions"
+                    )
+                historical_root_descriptor = (
+                    self._validate_direct_artifact_semantic_lineage(
+                        market,
+                        root_summary,
+                        root_versions,
+                        version_owners,
+                    )
+                )
+                if historical_root_descriptor != requested_root_descriptor:
+                    raise ArtifactLineageError(
+                        "managed Artifact semantic identity disagrees with "
+                        "requested calculation"
+                    )
+            root_member = _DirectArtifactMember(
+                root_recipe.recipe_id,
+                root_logical_id,
+                root_recipe.tool_key,
+                root_recipe.kind,
+                parameters,
+                bindings,
+                root_recipe.output_names,
+                root_dependencies,
+            )
+            self._validate_transient_member_compatibility(
+                root_member,
+                members,
+                raw_inputs=tuple(root_recipe.ohlcv_inputs),
+                allow_partial_roles=False,
+            )
+            previous_member = members.get(root_logical_id)
+            if previous_member is not None and previous_member != root_member:
+                raise ArtifactLineageError(
+                    "transient Artifact roots disagree on semantic identity"
+                )
+            members[root_logical_id] = root_member
+            if root_logical_id not in root_logical_ids:
+                root_logical_ids.append(root_logical_id)
+                root_recipe_ids.append(root_recipe.recipe_id)
+
+        order: list[str] = []
+        active: set[str] = set()
+        complete: set[str] = set()
+
+        def order_member(logical_id: str) -> None:
+            if logical_id in complete:
+                return
+            if logical_id in active:
+                raise ArtifactLineageError(
+                    "direct Artifact dependency graph contains a cycle"
+                )
+            active.add(logical_id)
+            for dependency in members[logical_id].dependencies:
+                order_member(dependency.logical_artifact_id)
+            active.remove(logical_id)
+            complete.add(logical_id)
+            order.append(logical_id)
+
+        for root_logical_id in root_logical_ids:
+            order_member(root_logical_id)
+        semantic_ids = tuple(members[item].portable_recipe_id for item in order)
+        if len(set(semantic_ids)) != len(semantic_ids):
+            raise ArtifactLineageError(
+                "direct Artifact graph contains duplicate semantic identities"
+            )
+        edges = tuple(
+            PortableRecipeGraphEdge(
+                dependency.portable_recipe_id,
+                member.portable_recipe_id,
+                dependency.role,
+                dependency.output_name,
+            )
+            for logical_id in order
+            for member in (members[logical_id],)
+            for dependency in member.dependencies
+        )
+        stages = tuple((members[item].portable_recipe_id,) for item in order)
+        nodes: list[DataManagerArtifactMaterializationNode] = []
+        node_by_logical_id: dict[str, DataManagerArtifactMaterializationNode] = {}
+        for logical_id in order:
+            member = members[logical_id]
+            dependency_nodes = tuple(
+                node_by_logical_id[item.logical_artifact_id]
+                for item in member.dependencies
+            )
+            current = managed.get(logical_id)
+            current_artifact_id: str | None = None
+            previous_artifact_id: str | None = None
+            status = "CREATE"
+            if current is not None:
+                if not current.valid:
+                    raise ArtifactLineageError(current.rejection_reason)
+                if current.portable_recipe_id != member.portable_recipe_id:
+                    raise ArtifactLineageError(
+                        "managed Artifact semantic identity disagrees"
+                    )
+                previous_artifact_id = current.artifact_id
+                loaded = self._artifacts.load_artifact_by_id(
+                    market, current.artifact_id
+                )
+                if (
+                    loaded.metadata.source_ohlcv == expected_source
+                    and all(
+                        item.status == "REUSE_CURRENT"
+                        for item in dependency_nodes
+                    )
+                ):
+                    refs = tuple(
+                        ArtifactSourceRefV1(
+                            dependency.role,
+                            node_by_logical_id[
+                                dependency.logical_artifact_id
+                            ].current_artifact_id,
+                            dependency.output_name,
+                        )
+                        for dependency in member.dependencies
+                    )
+                    target = loaded.metadata.recipe
+                    if (
+                        target.tool_key == member.tool_key
+                        and target.kind == member.kind
+                        and dict(target.parameters) == dict(member.parameters)
+                        and dict(target.bindings) == dict(member.bindings)
+                        and target.output_names == member.output_names
+                        and target.source_artifacts == refs
+                    ):
+                        status = "REUSE_CURRENT"
+                        current_artifact_id = current.artifact_id
+                        previous_artifact_id = current.previous_artifact_id
+            node = DataManagerArtifactMaterializationNode(
+                member.portable_recipe_id,
+                logical_id,
+                member.tool_key,
+                member.kind,
+                "ROOT" if logical_id in root_logical_ids else "SUPPORT",
+                status,
+                tuple(
+                    dependency.logical_artifact_id
+                    for dependency in member.dependencies
+                ),
+                current_artifact_id,
+                previous_artifact_id,
+            )
+            nodes.append(node)
+            node_by_logical_id[logical_id] = node
+        plan_id = _plan_id(
+            target_market_id=market,
+            source_ohlcv=expected_source.to_dict(),
+            root_recipe_ids=tuple(root_recipe_ids),
+            member_recipe_ids=semantic_ids,
+            source_recipe_collection_id=None,
+            source_recipe_collection_revision_id=None,
+            dependency_edges=edges,
+            execution_stages=stages,
+        )
+        return (
+            DataManagerArtifactMaterializationPlan(
+                plan_id,
+                market,
+                expected_source,
+                tuple(root_recipe_ids),
+                semantic_ids,
+                None,
+                None,
+                edges,
+                stages,
+                tuple(nodes),
+            ),
+            members,
+        )
+
+    @staticmethod
+    def _validate_transient_member_compatibility(
+        member: _DirectArtifactMember,
+        members: Mapping[str, _DirectArtifactMember],
+        *,
+        raw_inputs: Sequence[PortableRecipeOHLCVInputV1],
+        allow_partial_roles: bool,
+    ) -> None:
+        sources = [
+            FinancialToolInputSource(
+                item.role,
+                "ohlc",
+                item.column_name,
+                False,
+                None,
+                None,
+                True,
+                "numeric",
+            )
+            for item in raw_inputs
+        ]
+        for dependency in member.dependencies:
+            owner = members.get(dependency.logical_artifact_id)
+            if owner is None:
+                raise ArtifactLineageError(
+                    "Artifact dependency owner is unavailable for compatibility proof"
+                )
+            naming = dict(owner.parameters)
+            naming.update(owner.bindings)
+            signal = next(
+                (
+                    item
+                    for item in resolve_output_signals(owner.tool_key, naming)
+                    if item.name == dependency.output_name
+                ),
+                None,
+            )
+            if signal is None:
+                raise ArtifactLineageError(
+                    f"Artifact dependency output is unavailable: {dependency.output_name}"
+                )
+            sources.append(
+                FinancialToolInputSource(
+                    dependency.role,
+                    owner.kind,
+                    dependency.output_name,
+                    True,
+                    owner.tool_key,
+                    owner.logical_artifact_id,
+                    signal.analysis_usable,
+                    signal.value_type,
+                )
+            )
+        try:
+            validate_financial_tool_inputs(
+                get_financial_tool_spec(member.tool_key),
+                sources,
+                parameters=member.parameters,
+                allow_partial_roles=allow_partial_roles,
+                family_scope="dependencies",
+            )
+        except FinancialToolInputCompatibilityError as exc:
+            raise ArtifactLineageError(str(exc)) from exc
+
+    def _validate_direct_artifact_semantic_lineage(
+        self,
+        market: MarketId,
+        summary: ManagedArtifactSummary,
+        versions: tuple[object, ...],
+        version_owners: Mapping[str, tuple[str, str]],
+    ) -> _DirectArtifactSemanticDescriptor:
+        expected_descriptor: _DirectArtifactSemanticDescriptor | None = None
+        for version in versions:
+            loaded = self._artifacts.load_artifact_by_id(
+                market, version.artifact_id
+            )
+            recipe = loaded.metadata.recipe
+            if (
+                loaded.metadata.artifact_id != version.artifact_id
+                or recipe.market_id != market
+            ):
+                raise ArtifactLineageError(
+                    "managed Artifact version metadata is inconsistent"
+                )
+            dependencies: list[_DirectArtifactSemanticDependency] = []
+            for ref in recipe.source_artifacts:
+                owner = version_owners.get(ref.artifact_id)
+                if owner is None:
+                    raise ArtifactLineageError(
+                        "Artifact source version has no managed owner"
+                    )
+                dependencies.append(
+                    _DirectArtifactSemanticDependency(
+                        ref.role,
+                        owner[1],
+                        ref.output_name,
+                    )
+                )
+            descriptor = _DirectArtifactSemanticDescriptor(
+                recipe.tool_key,
+                recipe.kind,
+                recipe.parameters,
+                recipe.bindings,
+                recipe.output_names,
+                tuple(dependencies),
+            )
+            if expected_descriptor is None:
+                expected_descriptor = descriptor
+            elif descriptor != expected_descriptor:
+                raise ArtifactLineageError(
+                    "managed Artifact lineage changes semantic calculation identity"
+                )
+        if expected_descriptor is None:
+            raise ArtifactLineageError(
+                "managed Artifact lineage has no versions"
+            )
+        return expected_descriptor
+
+    def _execute_direct_artifact_materialization(
+        self,
+        plan: DataManagerArtifactMaterializationPlan,
+        members: Mapping[str, _DirectArtifactMember],
+        *,
+        progress: Callable[[int, int, str], None] | None,
+        cancellation_requested: Callable[[], bool] | None,
+        before_publish: Callable[[], None] | None,
+    ) -> DataManagerArtifactMaterializationResult:
+        cancelled = cancellation_requested or (lambda: False)
+        _raise_materialization_cancelled(cancelled, "dataset loading")
+        dataset = self._loader.load(
+            plan.target_market_id,
+            cancellation_requested=cancelled,
+        )
+        if (
+            dataset.market_id != plan.target_market_id
+            or dataset.file_sha256 != plan.source_ohlcv.csv_sha256
+            or dataset.row_count != plan.source_ohlcv.row_count
+            or dataset.first_timestamp_ms != plan.source_ohlcv.first_timestamp_ms
+            or dataset.last_timestamp_ms != plan.source_ohlcv.last_timestamp_ms
+        ):
+            raise DataManagerOperationError(
+                "loaded dataset does not match the direct materialization source"
+            )
+        target_frame = _dataset_frame(dataset)
+        node_by_recipe = {
+            node.portable_recipe_id: node for node in plan.nodes
+        }
+        member_by_recipe = {
+            member.portable_recipe_id: member for member in members.values()
+        }
+        current = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts(
+                plan.target_market_id
+            )
+        }
+        frames: dict[str, object] = {}
+        metadata: dict[str, ArtifactMetadataV1] = {}
+        artifact_ids: dict[str, str] = {}
+        calculations: dict[str, object] = {}
+        completed = 0
+        total = len(plan.nodes)
+        for stage in plan.execution_stages:
+            for semantic_id in stage:
+                _raise_materialization_cancelled(
+                    cancelled, f"Artifact {semantic_id}"
+                )
+                node = node_by_recipe[semantic_id]
+                member = member_by_recipe[semantic_id]
+                expected_head = (
+                    node.current_artifact_id
+                    if node.status == "REUSE_CURRENT"
+                    else node.previous_artifact_id
+                )
+                current_summary = current.get(node.logical_artifact_id)
+                if expected_head is None:
+                    if current_summary is not None:
+                        raise DataManagerOperationError(
+                            "direct Artifact head changed before execution"
+                        )
+                elif (
+                    current_summary is None
+                    or not current_summary.valid
+                    or current_summary.artifact_id != expected_head
+                ):
+                    raise DataManagerOperationError(
+                        "direct Artifact head changed before execution"
+                    )
+                if node.status == "REUSE_CURRENT":
+                    loaded = self._artifacts.load_artifact_by_id(
+                        plan.target_market_id, node.current_artifact_id
+                    )
+                    if loaded.metadata.source_ohlcv != plan.source_ohlcv:
+                        raise DataManagerOperationError(
+                            "reused direct Artifact source changed"
+                        )
+                    frames[node.logical_artifact_id] = loaded.frame
+                    metadata[node.logical_artifact_id] = loaded.metadata
+                    artifact_ids[node.logical_artifact_id] = node.current_artifact_id
+                    message = f"Reusing managed Artifact {node.logical_artifact_id}"
+                else:
+                    dependencies = tuple(
+                        (
+                            ArtifactSourceRefV1(
+                                dependency.role,
+                                dependency.portable_recipe_id,
+                                dependency.output_name,
+                            ),
+                            frames[dependency.logical_artifact_id],
+                        )
+                        for dependency in member.dependencies
+                    )
+                    if node.role == "ROOT":
+                        calculation = _calculate_artifact_configuration(
+                            tool_key=member.tool_key,
+                            kind=member.kind,
+                            parameters=member.parameters,
+                            bindings=member.bindings,
+                            output_names=member.output_names,
+                            target_frame=target_frame,
+                            dependencies=dependencies,
+                        )
+                    else:
+                        source_recipe = self._artifacts.load_artifact_by_id(
+                            plan.target_market_id, node.previous_artifact_id
+                        ).metadata.recipe
+                        calculation = _calculate_artifact_recipe(
+                            source_recipe,
+                            target_frame,
+                            dependencies,
+                        )
+                    calculations[node.logical_artifact_id] = calculation
+                    frames[node.logical_artifact_id] = calculation.to_frame()
+                    message = (
+                        f"Calculating {member.tool_key} {completed + 1}/{total}"
+                    )
+                completed += 1
+                if progress is not None:
+                    progress(completed, total, message)
+
+        operation_time = datetime.now(UTC)
+        prepared = []
+        for semantic_id in plan.member_recipe_ids:
+            node = node_by_recipe[semantic_id]
+            if node.status == "REUSE_CURRENT":
+                continue
+            _raise_materialization_cancelled(cancelled, "candidate preparation")
+            member = member_by_recipe[semantic_id]
+            refs = tuple(
+                ArtifactSourceRefV1(
+                    dependency.role,
+                    artifact_ids[dependency.logical_artifact_id],
+                    dependency.output_name,
+                )
+                for dependency in member.dependencies
+            )
+            source_metadata = tuple(
+                {
+                    metadata[dependency.logical_artifact_id].artifact_id:
+                    metadata[dependency.logical_artifact_id]
+                    for dependency in member.dependencies
+                }.values()
+            )
+            candidate = self._artifacts.prepare_managed_calculation(
+                plan.target_market_id,
+                member.portable_recipe_id,
+                calculations[node.logical_artifact_id],
+                expected_source=plan.source_ohlcv,
+                source_artifacts=refs,
+                source_metadata=source_metadata,
+                previous_artifact_id=node.previous_artifact_id,
+                created_at_utc=operation_time,
+            )
+            prepared.append(candidate)
+            artifact_ids[node.logical_artifact_id] = candidate.metadata.artifact_id
+            metadata[node.logical_artifact_id] = candidate.metadata
+
+        _raise_materialization_cancelled(cancelled, "publication")
+        if progress is not None:
+            progress(total, total, "Publishing managed Artifact graph")
+        if prepared:
+            publication = self._artifacts.publish_managed_artifact_graph(
+                tuple(prepared),
+                expected_source=plan.source_ohlcv,
+                before_publish=before_publish,
+            )
+            created_ids = publication.created_artifact_ids
+            publication_reused_ids = publication.reused_artifact_ids
+            created_keys = publication.created_version_keys
+            publication_reused_keys = publication.reused_version_keys
+            advanced_ids = publication.advanced_logical_artifact_ids
+        else:
+            if (
+                self._artifacts.capture_accepted_source(plan.target_market_id)
+                != plan.source_ohlcv
+            ):
+                raise DataManagerOperationError(
+                    "accepted OHLCV source changed during direct reuse"
+                )
+            created_ids = ()
+            publication_reused_ids = ()
+            created_keys = ()
+            publication_reused_keys = ()
+            advanced_ids = ()
+
+        created_id_set = set(created_ids)
+        publication_reused_id_set = set(publication_reused_ids)
+        created_key_set = set(created_keys)
+        publication_reused_key_set = set(publication_reused_keys)
+        projected_created_ids: list[str] = []
+        projected_reused_ids: list[str] = []
+        projected_created_keys: list[ManagedArtifactVersionKey] = []
+        projected_reused_keys: list[ManagedArtifactVersionKey] = []
+        seen_created_ids: set[str] = set()
+        seen_reused_ids: set[str] = set()
+        for node in plan.nodes:
+            artifact_id = artifact_ids[node.logical_artifact_id]
+            key = ManagedArtifactVersionKey(node.logical_artifact_id, artifact_id)
+            if (
+                artifact_id in created_id_set
+                and artifact_id not in seen_created_ids
+            ):
+                projected_created_ids.append(artifact_id)
+                seen_created_ids.add(artifact_id)
+            elif (
+                node.status == "REUSE_CURRENT"
+                or artifact_id in publication_reused_id_set
+            ) and artifact_id not in seen_reused_ids:
+                projected_reused_ids.append(artifact_id)
+                seen_reused_ids.add(artifact_id)
+            if key in created_key_set:
+                projected_created_keys.append(key)
+            elif (
+                node.status == "REUSE_CURRENT"
+                or key in publication_reused_key_set
+            ):
+                projected_reused_keys.append(key)
+        managed_after = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts(
+                plan.target_market_id
+            )
+        }
+        projected = tuple(
+            _project_managed_artifact(managed_after[node.logical_artifact_id])
+            for node in plan.nodes
+        )
+        result = DataManagerArtifactMaterializationResult(
+            plan.plan_id,
+            plan.target_market_id,
+            plan.source_ohlcv,
+            tuple(
+                node.logical_artifact_id
+                for node in plan.nodes
+                if node.role == "ROOT"
+            ),
+            tuple(
+                node.logical_artifact_id
+                for node in plan.nodes
+                if node.role == "SUPPORT"
+            ),
+            tuple(projected_created_ids),
+            tuple(projected_reused_ids),
+            tuple(projected_created_keys),
+            tuple(projected_reused_keys),
+            tuple(advanced_ids),
+            projected,
+        )
+        self._updates.invalidate()
+        return result
 
     def execute_artifact_materialization(
         self, plan: DataManagerArtifactMaterializationPlan
@@ -1616,12 +3327,26 @@ class DataManagerService:
             )
             if not summary.valid:
                 raise ArtifactLineageError(summary.rejection_reason)
-            recipe = self._portable_recipes.load_recipe(summary.portable_recipe_id)
-            if recipe.recipe_id != summary.portable_recipe_id:
-                raise ArtifactLineageError("portable Recipe identity disagrees")
+            head = self._artifacts.load_artifact_head(
+                market, logical_artifact_id
+            )
+            if (
+                head.logical_artifact_id != logical_artifact_id
+                or head.artifact_id != summary.artifact_id
+            ):
+                raise ArtifactLineageError(
+                    "managed Artifact head disagrees with summary"
+                )
             versions = self._artifacts.list_artifact_versions(
                 market, logical_artifact_id
             )
+            if any(
+                item.logical_artifact_id != logical_artifact_id
+                for item in versions
+            ):
+                raise ArtifactLineageError(
+                    "managed history contains another logical Artifact"
+                )
             if any(
                 item.portable_recipe_id != summary.portable_recipe_id
                 for item in versions
@@ -1629,13 +3354,33 @@ class DataManagerService:
                 raise ArtifactLineageError(
                     "managed history contains another portable Recipe"
                 )
+            if not any(
+                item.artifact_id == summary.artifact_id for item in versions
+            ):
+                raise ArtifactLineageError(
+                    "managed history does not contain the current Artifact"
+                )
+            loaded = self._artifacts.load_artifact_by_id(
+                market, summary.artifact_id
+            )
+            metadata: ArtifactMetadataV1 = loaded.metadata
+            recipe: ArtifactRecipeV1 = metadata.recipe
+            if (
+                metadata.artifact_id != summary.artifact_id
+                or recipe.market_id != summary.market_id
+                or recipe.market_id != market
+                or recipe.tool_key != summary.tool_key
+                or recipe.kind != summary.kind
+                or recipe.output_names != summary.output_names
+            ):
+                raise ArtifactLineageError(
+                    "current managed Artifact disagrees with summary"
+                )
             return DataManagerManagedArtifactHistory(
                 _project_managed_artifact(summary), versions
             )
         except (
             ArtifactError,
-            PortableRecipeStoreError,
-            PortableRecipeValidationError,
             StopIteration,
         ) as exc:
             raise DataManagerOperationError(str(exc)) from exc
@@ -2117,6 +3862,7 @@ def _collection_entry(summary, graph: PortableRecipeGraphPlan) -> DataManagerRec
         summary.description,
         summary.root_count,
         summary.member_count,
+        graph.member_recipe_ids,
         len(graph.dependency_edges),
         len(graph.execution_stages),
         summary.created_at_utc,

@@ -6,6 +6,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from leonardo.data_manager import DataManagerPreview
+from leonardo.gui.data_manager.table_presentation import (
+    format_utc_timestamp_ms,
+    resize_data_manager_table,
+)
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
@@ -31,12 +35,21 @@ class DataManagerPreviewDialog(QDialog):
             QTableWidget(self),
             object_id="data_manager_preview.table.values",
             columns=preview.columns,
-            labels=preview.columns,
+            labels=tuple(
+                "Timestamp" if column == "ts_ms" else column
+                for column in preview.columns
+            ),
         )
         table.setRowCount(len(preview.rows))
         for row_index, row in enumerate(preview.rows):
             for column_index, value in enumerate(row):
-                table.setItem(row_index, column_index, QTableWidgetItem(value))
+                display = (
+                    format_utc_timestamp_ms(int(value))
+                    if preview.columns[column_index] == "ts_ms"
+                    else value
+                )
+                table.setItem(row_index, column_index, QTableWidgetItem(display))
+        resize_data_manager_table(table)
         count = QLabel(
             f"Showing {len(preview.rows)} of {preview.total_rows} rows"
             + (" (truncated)" if preview.truncated else ""),

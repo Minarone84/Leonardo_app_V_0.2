@@ -1,0 +1,26 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-07-23T09:21:18.434100Z",
+  "description": "",
+  "display_name": "Bollinger Bands",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "bb_middle",
+    "bb_upper_band",
+    "bb_lower_band"
+  ],
+  "parameters": {
+    "period": 14,
+    "std": 2.0
+  },
+  "recipe_id": "2bea23f7ed500a001ad60d025b7411042caecefeb3133677485cd073dfa0a16e",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "bb"
+}

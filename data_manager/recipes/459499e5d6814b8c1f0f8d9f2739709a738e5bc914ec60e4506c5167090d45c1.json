@@ -1,0 +1,30 @@
+{
+  "dependencies": [
+    {
+      "output_name": "slow_vwap",
+      "recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+      "role": "slow"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [
+    {
+      "column_name": "close",
+      "role": "fast"
+    }
+  ],
+  "output_names": [
+    "close_research_slow_delta"
+  ],
+  "parameters": {
+    "eps": 1e-12,
+    "fast": "",
+    "mode": "abs",
+    "slow": ""
+  },
+  "recipe_id": "459499e5d6814b8c1f0f8d9f2739709a738e5bc914ec60e4506c5167090d45c1",
+  "schema_version": "1.0",
+  "tool_key": "delta",
+  "tool_version": "1.0"
+}

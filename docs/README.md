@@ -1,7 +1,7 @@
 # Leonardo V2 Documentation Authority Map
 
 **Status:** Current documentation index
-**Updated:** 2026-08-02
+**Updated:** 2026-08-05
 
 ## Purpose
 

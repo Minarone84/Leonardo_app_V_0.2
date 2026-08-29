@@ -1,0 +1,36 @@
+{
+  "created_at_utc": "2026-07-19T18:19:01.579870+00:00",
+  "file_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "lineage": {
+    "canonical_validation": {
+      "error_count": 0,
+      "issue_codes": [],
+      "status": "ok",
+      "validator": "canonical_ohlcv_v1",
+      "warning_count": 0
+    },
+    "canonical_validation_status": "unknown",
+    "download_mode": "new_download",
+    "file_mtime_ns": 1784485148528035700,
+    "file_size": 975492,
+    "pages_written": 17,
+    "planned_end_ms": 1784462400000,
+    "planned_start_ms": 1542211200000,
+    "preliminary_validation_status": "ok"
+  },
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "persistence_status": "committed",
+  "row_count": 16824,
+  "schema_version": "1.0",
+  "source": "bybit",
+  "updated_at_utc": "2026-07-19T18:20:16.735805+00:00",
+  "validation_status": "ok",
+  "warnings": []
+}

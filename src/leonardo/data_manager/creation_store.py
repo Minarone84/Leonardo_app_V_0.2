@@ -137,6 +137,39 @@ class DataManagerCreationStore:
                 raise DataManagerCreationStoreError("Artifact Collection identity disagrees with path")
             return revision
 
+    def delete_collection(
+        self,
+        collection_id: str,
+        *,
+        before_delete: Callable[[], None] | None = None,
+    ) -> ArtifactCollectionRevisionV1:
+        with self._lock:
+            current = self.load_collection(collection_id)
+            revisions = self._preflight_collection_deletion(collection_id)
+            if current.revision_id not in {item.revision_id for item in revisions}:
+                raise DataManagerCreationStoreError(
+                    "Artifact Collection revisions do not match head"
+                )
+            for database_id in self.list_database_ids():
+                for revision in self.list_database_revisions(database_id):
+                    if revision.collection_id == collection_id:
+                        raise DataManagerCreationStoreError(
+                            "Artifact Collection is referenced by a Database"
+                        )
+            if before_delete is not None:
+                before_delete()
+
+            collection_dir = self._collection_dir(collection_id)
+            (collection_dir / "head.json").unlink()
+            revisions_dir = collection_dir / "revisions"
+            for revision in revisions:
+                (revisions_dir / f"{revision.revision_id}.json").unlink()
+            revisions_dir.rmdir()
+            collection_dir.rmdir()
+            self._remove_empty_directory(self._root / "artifact_collections")
+            self._remove_empty_directory(self._root)
+            return current
+
     def save_seed(self, seed: DatabaseSeedV1) -> DatabaseSeedV1:
         if not isinstance(seed, DatabaseSeedV1):
             raise TypeError("seed must be a DatabaseSeedV1")
@@ -335,6 +368,40 @@ class DataManagerCreationStore:
             raise DataManagerCreationStoreError("Artifact Collection head identity disagrees")
         return head
 
+    def _preflight_collection_deletion(
+        self, collection_id: str
+    ) -> tuple[ArtifactCollectionRevisionV1, ...]:
+        collection_dir = self._collection_dir(collection_id)
+        self._require_safe_directory(collection_dir)
+        if {item.name for item in collection_dir.iterdir()} != {
+            "head.json",
+            "revisions",
+        }:
+            raise DataManagerCreationStoreError(
+                "Artifact Collection persistence files are not exact"
+            )
+        head = self.load_collection_head(collection_id)
+        revisions_dir = collection_dir / "revisions"
+        self._require_safe_directory(revisions_dir)
+        paths = tuple(sorted(revisions_dir.iterdir(), key=lambda item: item.name))
+        if not paths:
+            raise DataManagerCreationStoreError(
+                "Artifact Collection has no revisions"
+            )
+        revisions: list[ArtifactCollectionRevisionV1] = []
+        for path in paths:
+            if path.is_symlink() or not path.is_file() or path.suffix != ".json":
+                raise DataManagerCreationStoreError(
+                    "Artifact Collection revision files are not exact"
+                )
+            revision = self.load_collection(collection_id, path.stem)
+            revisions.append(revision)
+        if head.revision_id not in {item.revision_id for item in revisions}:
+            raise DataManagerCreationStoreError(
+                "Artifact Collection head revision is missing"
+            )
+        return tuple(revisions)
+
     def _load_optional_database_head(self, database_id: str) -> DatabaseHeadV1 | None:
         path = self._database_dir(database_id) / "head.json"
         if not path.exists():
@@ -466,6 +533,13 @@ class DataManagerCreationStore:
                 self._require_safe_directory(current)
             else:
                 current.mkdir()
+
+    def _remove_empty_directory(self, path: Path) -> None:
+        if not path.exists() and not path.is_symlink():
+            return
+        self._require_safe_directory(path)
+        if not any(path.iterdir()):
+            path.rmdir()
 
     def _require_safe_directory(self, path: Path) -> None:
         self._require_under_root(path)
