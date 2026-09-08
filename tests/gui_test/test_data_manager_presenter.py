@@ -23,18 +23,23 @@ from leonardo.data import MarketId
 from leonardo.data_manager import (
     BatchArtifactPlan,
     ArtifactCollectionRevisionV1,
+    ArtifactCollectionUpdateResult,
     DataManagerApplicationService,
     DataManagerCatalogSnapshot,
     DataManagerDatasetEntry,
     DataManagerMarketSnapshot,
     DataManagerManagedArtifactCatalog,
     DataManagerPortableRecipeCatalog,
+    DataManagerPortableRecipeInspection,
     DataManagerProductCatalogSnapshot,
     DataManagerRecipeCollectionCatalog,
     DataManagerRecipeCollectionEntry,
+    DataManagerRecipeCollectionInspection,
     DataManagerReconciliationSnapshot,
     DataManagerRecipeDerivationPlan,
     DataManagerRecipePersistenceResult,
+    DatabaseReadiness,
+    DatabaseUpdateResult,
     DataManagerStudyEntryPortability,
     DataManagerStudyEnvironmentCatalog,
     DataManagerStudyEnvironmentEntry,
@@ -58,8 +63,19 @@ from leonardo.data_manager.models import (
     DataManagerDeletionResult,
     DataManagerManagedArtifactEntry,
     DataManagerPortableRecipeEntry,
+    DUPLICATE_MAINTENANCE_DOMAINS,
+    DuplicateMaintenanceCandidate,
+    DuplicateMaintenanceGroup,
+    DuplicateMaintenancePreflight,
+    DuplicateMaintenancePurgeDetail,
+    DuplicateMaintenancePurgeResult,
+    DuplicateMaintenanceScanResult,
 )
-from leonardo.gui.presenters.data_manager_presenter import DataManagerSuitePresenter
+from leonardo.gui.presenters.data_manager_presenter import (
+    DataManagerSuitePresenter,
+    _ReadinessContext,
+)
+from leonardo.gui.data_manager.table_presentation import format_data_manager_value
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
 from leonardo.recipes import (
     PortableRecipeCollectionRevisionV1,
@@ -79,6 +95,55 @@ CATALOG = DataManagerCatalogSnapshot((DATASET,))
 CATALOG_BOTH = DataManagerCatalogSnapshot((DATASET, DATASET_B))
 MARKET_SNAPSHOT = DataManagerMarketSnapshot(MARKET, DATASET, (), ())
 MARKET_SNAPSHOT_B = DataManagerMarketSnapshot(MARKET_B, DATASET_B, (), ())
+
+
+def test_database_publication_coverage_uses_canonical_display_time(
+    monkeypatch,
+) -> None:
+    window = DataManagerSuiteWindow()
+    presenter = DataManagerSuitePresenter(window, _ControlledApplication())
+    captured: list[dict[str, object]] = []
+    try:
+        presenter._selected_market = MARKET
+        presenter._database_readiness = DatabaseReadiness(
+            "seed",
+            "collection",
+            "revision",
+            True,
+            (),
+            1786297337123,
+            1786297337123,
+            1,
+            1,
+            ("close",),
+            0,
+        )
+        presenter._readiness_context = _ReadinessContext(
+            "seed", "collection", "revision"
+        )
+        monkeypatch.setattr(presenter, "_current_seed_id", lambda _payload: "seed")
+        monkeypatch.setattr(
+            presenter, "_current_collection_id", lambda _payload: "collection"
+        )
+        monkeypatch.setattr(
+            presenter,
+            "_current_artifact_collection_revision",
+            lambda _collection_id: "revision",
+        )
+        window.confirm_database_publication = lambda **details: (
+            captured.append(details) or False
+        )
+
+        presenter._build_database({"build_confirmed": True}, 1)
+
+        assert captured[0]["coverage"] == (
+            "2026-08-09 19:42:17 CEST (+02:00) - "
+            "2026-08-09 19:42:17 CEST (+02:00)"
+        )
+        assert "1786297337123" not in str(captured[0]["coverage"])
+    finally:
+        presenter.dispose()
+        window.close()
 
 
 class _ControlledApplication(DataManagerApplicationService):
@@ -154,6 +219,12 @@ class _ControlledApplication(DataManagerApplicationService):
             values["result_callback"],
         )
 
+    def submit_find_equivalent_recipe_collection(self, root_recipe_ids, **values):
+        return self._submit(
+            ("find_equivalent_recipe_collection", root_recipe_ids),
+            values["result_callback"],
+        )
+
     def submit_create_recipe_collection(
         self, display_name, description, root_recipe_ids, **values
     ):
@@ -197,6 +268,14 @@ class _ControlledApplication(DataManagerApplicationService):
             values["result_callback"],
         )
 
+    def submit_inspect_artifact_collection_details(
+        self, collection_id, revision_id=None, **values
+    ):
+        return self._submit(
+            ("inspect_artifact_collection_details", collection_id, revision_id),
+            values["result_callback"],
+        )
+
     def submit_plan_artifact_collection_selection(
         self, market_id, root_logical_artifact_ids, **values
     ):
@@ -205,6 +284,67 @@ class _ControlledApplication(DataManagerApplicationService):
                 "plan_artifact_collection_selection",
                 market_id,
                 root_logical_artifact_ids,
+            ),
+            values["result_callback"],
+        )
+
+    def submit_find_equivalent_artifact_collection_from_selection(
+        self, plan, selected_outputs, presentation_order, **values
+    ):
+        return self._submit(
+            (
+                "find_equivalent_artifact_collection",
+                plan,
+                tuple(selected_outputs),
+                tuple(presentation_order),
+            ),
+            values["result_callback"],
+        )
+
+    def submit_find_equivalent_artifact_collection_for_materialization(
+        self, plan, selected_outputs, **values
+    ):
+        return self._submit(
+            (
+                "find_equivalent_materialized_collection",
+                plan,
+                tuple(selected_outputs),
+            ),
+            values["result_callback"],
+        )
+
+    def submit_plan_artifact_materialization(self, request, **values):
+        return self._submit(
+            ("plan_artifact_materialization", request),
+            values["result_callback"],
+        )
+
+    def submit_execute_artifact_materialization(self, plan, **values):
+        return self._submit(
+            ("execute_artifact_materialization", plan),
+            values["result_callback"],
+        )
+
+    def submit_create_artifact_collection(
+        self,
+        materialization,
+        display_name,
+        *,
+        description="",
+        source_recipe_collection_id=None,
+        source_recipe_collection_revision_id=None,
+        selected_outputs=None,
+        **values,
+    ):
+        return self._submit(
+            (
+                "create_artifact_collection",
+                materialization,
+                display_name,
+                description,
+                source_recipe_collection_id,
+                source_recipe_collection_revision_id,
+                selected_outputs,
             ),
             values["result_callback"],
         )
@@ -291,6 +431,29 @@ class _ControlledApplication(DataManagerApplicationService):
     def submit_scan_product_catalogs(self, **values):
         return self._submit(
             "scan_product_catalogs",
+            values["result_callback"],
+            values["progress_callback"],
+        )
+
+    def submit_prepare_duplicate_maintenance(
+        self, domain, market_id=None, **values
+    ):
+        return self._submit(
+            ("prepare_duplicate_maintenance", domain, market_id),
+            values["result_callback"],
+            values["progress_callback"],
+        )
+
+    def submit_scan_duplicate_maintenance(self, preflight, **values):
+        return self._submit(
+            ("scan_duplicate_maintenance", preflight),
+            values["result_callback"],
+            values["progress_callback"],
+        )
+
+    def submit_purge_duplicate_maintenance(self, scan, **values):
+        return self._submit(
+            ("purge_duplicate_maintenance", scan),
             values["result_callback"],
             values["progress_callback"],
         )
@@ -454,6 +617,10 @@ def _derivation_plan(
         "execution_stages": (),
         "warnings": (),
         "blockers": blockers,
+        "recipe_actions": ((recipe_id, "NEW"),),
+        "equivalent_collection_id": None,
+        "equivalent_collection_revision_id": None,
+        "equivalent_collection_name": "",
     }
     for name, item in attributes.items():
         object.__setattr__(value, name, item)
@@ -695,6 +862,452 @@ def _deletion_values():
     )
 
 
+def _projected_artifact_collection(
+    collection_id: str,
+    revision_id: str,
+    display_name: str,
+    *,
+    previous_revision_id: str | None = None,
+) -> ArtifactCollectionRevisionV1:
+    source = _deletion_values()[-1]
+    revision = object.__new__(ArtifactCollectionRevisionV1)
+    for name in ArtifactCollectionRevisionV1.__dataclass_fields__:
+        object.__setattr__(revision, name, getattr(source, name))
+    object.__setattr__(revision, "collection_id", collection_id)
+    object.__setattr__(revision, "revision_id", revision_id)
+    object.__setattr__(revision, "display_name", display_name)
+    object.__setattr__(revision, "previous_revision_id", previous_revision_id)
+    return revision
+
+
+def test_artifact_collection_publish_immediately_projects_create_before_refresh() -> None:
+    collection_a = _projected_artifact_collection(
+        "ac_" + "a" * 32, "1" * 64, "Alpha"
+    )
+    collection_b = _projected_artifact_collection(
+        "ac_" + "b" * 32, "2" * 64, "Beta"
+    )
+    collection_c = _projected_artifact_collection(
+        "ac_" + "c" * 32, "3" * 64, "Gamma"
+    )
+    snapshot = replace(
+        _product_catalog("a"),
+        artifact_collections=(collection_a, collection_b),
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    events: list[tuple[str, object]] = []
+    try:
+        presenter._product_catalogs = snapshot
+        view.set_product_catalogs = lambda value: events.append(("projection", value))
+        presenter._revalidate_plan_contexts = lambda: events.append(
+            ("revalidation", presenter._product_catalogs)
+        )
+        presenter._after_write_refresh = lambda: events.append(
+            ("refresh", presenter._product_catalogs)
+        )
+
+        presenter._settle_artifact_collection_publish(
+            TaskResult("publication", "completed", collection_c),
+            object(),
+        )
+
+        updated = presenter._product_catalogs
+        assert updated is not None
+        assert [item.collection_id for item in updated.artifact_collections] == [
+            collection_a.collection_id,
+            collection_b.collection_id,
+            collection_c.collection_id,
+        ]
+        assert updated.artifact_collections.count(collection_c) == 1
+        assert [event[0] for event in events] == [
+            "projection",
+            "revalidation",
+            "refresh",
+        ]
+        assert events[0][1] is updated
+        assert events[1][1] is updated
+        assert events[2][1] is updated
+        for field_name in (
+            "catalog",
+            "study_environments",
+            "portable_recipes",
+            "recipe_collections",
+            "managed_artifacts",
+            "database_seeds",
+            "databases",
+            "latest_reconciliation",
+        ):
+            assert getattr(updated, field_name) is getattr(snapshot, field_name)
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_artifact_collection_publish_immediately_replaces_current_revision() -> None:
+    collection_id = "ac_" + "c" * 32
+    revision_1 = _projected_artifact_collection(
+        collection_id, "3" * 64, "Collection"
+    )
+    revision_2 = _projected_artifact_collection(
+        collection_id,
+        "4" * 64,
+        "Collection revised",
+        previous_revision_id=revision_1.revision_id,
+    )
+    snapshot = replace(
+        _product_catalog("a"),
+        artifact_collections=(revision_1,),
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    applied: list[DataManagerProductCatalogSnapshot] = []
+    settled: list[ArtifactCollectionRevisionV1] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda value, **_kwargs: settled.append(value),
+    )
+    try:
+        presenter._product_catalogs = snapshot
+        view.artifact_collection_dialog = lambda: dialog
+        view.set_product_catalogs = lambda value: applied.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_artifact_collection_publish(
+            TaskResult("publication", "completed", revision_2),
+            dialog,
+        )
+
+        assert settled == [revision_2]
+        assert len(applied) == 1
+        assert applied[0].artifact_collections == (revision_2,)
+        assert revision_1 not in applied[0].artifact_collections
+        assert presenter._product_catalogs is applied[0]
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_artifact_collection_publish_failure_does_not_project() -> None:
+    snapshot = _product_catalog("a")
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    applied: list[DataManagerProductCatalogSnapshot] = []
+    failures: list[tuple[str, TaskResult]] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(isVisible=lambda: True)
+    result = TaskResult(
+        "publication",
+        "failed",
+        error_type="ArtifactCollectionError",
+        error_message="publication refused",
+    )
+    try:
+        presenter._product_catalogs = snapshot
+        view.artifact_collection_dialog = lambda: dialog
+        view.set_product_catalogs = lambda value: applied.append(value)
+        presenter._report_failure = lambda label, value: failures.append(
+            (label, value)
+        )
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_artifact_collection_publish(result, dialog)
+
+        assert presenter._product_catalogs is snapshot
+        assert applied == []
+        assert refreshes == []
+        assert failures == [("Artifact Collection publication", result)]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_artifact_collection_publish_without_snapshot_defers_to_refresh() -> None:
+    revision = _projected_artifact_collection(
+        "ac_" + "c" * 32, "3" * 64, "Collection"
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    applied: list[DataManagerProductCatalogSnapshot] = []
+    refreshes: list[str] = []
+    try:
+        assert presenter._product_catalogs is None
+        view.set_product_catalogs = lambda value: applied.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_artifact_collection_publish(
+            TaskResult("publication", "completed", revision),
+            object(),
+        )
+
+        assert presenter._product_catalogs is None
+        assert applied == []
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_artifact_collection_create_reuse_reports_and_projects_one_winner() -> None:
+    winner = _projected_artifact_collection(
+        "ac_" + "a" * 32, "1" * 64, "Existing"
+    )
+    snapshot = replace(
+        _product_catalog("a"), artifact_collections=(winner,)
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    statuses: list[str] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda _value, **_kwargs: None,
+    )
+    try:
+        presenter._product_catalogs = snapshot
+        view.artifact_collection_dialog = lambda: dialog
+        view.set_status = lambda value: statuses.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_artifact_collection_publish(
+            TaskResult("publication", "completed", winner),
+            dialog,
+            existing_collection_ids=frozenset({winner.collection_id}),
+        )
+
+        assert statuses == [
+            "Reused existing Artifact Collection: Existing "
+            f"[{winner.collection_id}]"
+        ]
+        assert presenter._product_catalogs is not None
+        assert presenter._product_catalogs.artifact_collections == (winner,)
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_artifact_collection_edit_peer_reuse_preserves_selected_collection() -> None:
+    winner = _projected_artifact_collection(
+        "ac_" + "a" * 32, "1" * 64, "Oldest"
+    )
+    selected = _projected_artifact_collection(
+        "ac_" + "b" * 32, "2" * 64, "Selected"
+    )
+    snapshot = replace(
+        _product_catalog("a"), artifact_collections=(winner, selected)
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    statuses: list[str] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda _value, **_kwargs: None,
+    )
+    try:
+        presenter._product_catalogs = snapshot
+        view.artifact_collection_dialog = lambda: dialog
+        view.set_status = lambda value: statuses.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_artifact_collection_publish(
+            TaskResult("publication", "completed", winner),
+            dialog,
+            selected_collection_id=selected.collection_id,
+        )
+
+        assert statuses == [
+            "Reused existing Artifact Collection: Oldest "
+            f"[{winner.collection_id}]"
+        ]
+        assert presenter._product_catalogs is not None
+        assert {
+            item.collection_id
+            for item in presenter._product_catalogs.artifact_collections
+        } == {winner.collection_id, selected.collection_id}
+        assert selected in presenter._product_catalogs.artifact_collections
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_artifact_collection_normal_edit_is_not_reported_as_reuse() -> None:
+    collection_id = "ac_" + "a" * 32
+    revised = _projected_artifact_collection(
+        collection_id, "2" * 64, "Updated"
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    statuses: list[str] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda _value, **_kwargs: None,
+    )
+    try:
+        presenter._product_catalogs = _product_catalog("a")
+        view.artifact_collection_dialog = lambda: dialog
+        view.set_status = lambda value: statuses.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_artifact_collection_publish(
+            TaskResult("publication", "completed", revised),
+            dialog,
+            selected_collection_id=collection_id,
+        )
+
+        assert statuses == []
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def _recipe_collection_result(
+    collection_id: str,
+    display_name: str,
+    *,
+    revision_id: str,
+) -> DataManagerRecipeCollectionInspection:
+    recipe_id = "8" * 64
+    entry = DataManagerRecipeCollectionEntry(
+        collection_id,
+        revision_id,
+        display_name,
+        "",
+        1,
+        1,
+        (recipe_id,),
+        0,
+        1,
+        datetime(2026, 9, 1, tzinfo=UTC),
+        datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    return DataManagerRecipeCollectionInspection(
+        entry,
+        (recipe_id,),
+        (recipe_id,),
+        (),
+        ((recipe_id,),),
+    )
+
+
+def test_recipe_collection_create_reuse_reports_winner_and_refreshes_once() -> None:
+    winner = _recipe_collection_result(
+        "prc_" + "a" * 32, "Existing", revision_id="1" * 64
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    settled: list[object] = []
+    statuses: list[str] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda value, **_kwargs: settled.append(value),
+    )
+    try:
+        view.recipe_collection_dialog = lambda: dialog
+        view.set_status = lambda value: statuses.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_recipe_collection_publish(
+            TaskResult("publication", "completed", winner),
+            dialog,
+            existing_collection_ids=frozenset(
+                {winner.collection.collection_id}
+            ),
+        )
+
+        assert settled == [winner]
+        assert statuses == [
+            "Reused existing Recipe Collection: Existing "
+            f"[{winner.collection.collection_id}]"
+        ]
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_recipe_collection_edit_peer_reuse_reports_winner_and_refreshes_once() -> None:
+    selected_id = "prc_" + "b" * 32
+    winner = _recipe_collection_result(
+        "prc_" + "a" * 32, "Oldest", revision_id="1" * 64
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    statuses: list[str] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda _value, **_kwargs: None,
+    )
+    try:
+        view.recipe_collection_dialog = lambda: dialog
+        view.set_status = lambda value: statuses.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_recipe_collection_publish(
+            TaskResult("publication", "completed", winner),
+            dialog,
+            selected_collection_id=selected_id,
+        )
+
+        assert statuses == [
+            "Reused existing Recipe Collection: Oldest "
+            f"[{winner.collection.collection_id}]"
+        ]
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_recipe_collection_normal_update_is_not_reported_as_reuse() -> None:
+    selected_id = "prc_" + "a" * 32
+    result = _recipe_collection_result(
+        selected_id, "Updated", revision_id="2" * 64
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    statuses: list[str] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda _value, **_kwargs: None,
+    )
+    try:
+        view.recipe_collection_dialog = lambda: dialog
+        view.set_status = lambda value: statuses.append(value)
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+
+        presenter._settle_recipe_collection_publish(
+            TaskResult("publication", "completed", result),
+            dialog,
+            selected_collection_id=selected_id,
+        )
+
+        assert statuses == []
+        assert refreshes == ["refresh"]
+    finally:
+        presenter.dispose()
+        view.close()
+
+
 def _open_both_creation_dialogs(
     view: DataManagerSuiteWindow,
     service: _ControlledApplication,
@@ -790,6 +1403,11 @@ def test_recipe_derivation_preview_persistence_collection_and_refresh_are_exact(
             (),
             "collection_1",
             "c" * 64,
+            ("a" * 64,),
+            (),
+            (),
+            (),
+            "CREATED",
         )
         persistence[2](TaskResult(persistence[1], "completed", result))
 
@@ -798,7 +1416,7 @@ def test_recipe_derivation_preview_persistence_collection_and_refresh_are_exact(
         assert "Recipes created/reused successfully" in dialog.status_label.text()
         assert dialog.preview_table.rowCount() == 0
         assert not dialog.create_button.isEnabled()
-        assert service.calls[-1][0] == "reconcile_status"
+        assert service.calls[-1][0] == "scan_product_catalogs"
         assert presenter.selected_market_id is None
 
         refreshed_recipe_id = "b" * 64
@@ -824,22 +1442,81 @@ def test_recipe_derivation_preview_persistence_collection_and_refresh_are_exact(
                 )
             ),
         )
-        reconcile = service.calls[-1]
-        reconcile[2](
-            TaskResult(
-                reconcile[1],
-                "completed",
-                refreshed.latest_reconciliation,
-            )
-        )
         product_scan = service.calls[-1]
         assert product_scan[0] == "scan_product_catalogs"
         product_scan[2](TaskResult(product_scan[1], "completed", refreshed))
+        assert service.calls[-1][0] == "reconcile_status"
 
         assert dialog.set_plan(_derivation_plan(recipe_id=refreshed_recipe_id))
-        assert dialog.preview_table.item(0, 5).text() == "Existing"
+        assert dialog.preview_table.item(0, 5).text() == "REUSE EXISTING"
         assert presenter.selected_market_id is None
     finally:
+        view.close()
+
+
+def test_recipe_derivation_actual_reuse_controls_one_modal_and_all_new_has_none() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    settled: list[DataManagerRecipePersistenceResult] = []
+    dialogs: list[tuple[str, tuple[str, ...]]] = []
+    refreshes: list[str] = []
+    dialog = SimpleNamespace(
+        isVisible=lambda: True,
+        settle_success=lambda value: settled.append(value),
+    )
+    try:
+        view.recipe_derivation_dialog = lambda: dialog
+        presenter._after_write_refresh = lambda: refreshes.append("refresh")
+        presenter._show_reuse_result = (
+            lambda title, lines: dialogs.append((title, lines))
+        )
+        presenter._catalog_derivation_plan = _derivation_plan()
+        reused = DataManagerRecipePersistenceResult(
+            "environment_1",
+            ("a" * 64,),
+            ("b" * 64,),
+            "collection_1",
+            "c" * 64,
+            (),
+            ("a" * 64, "b" * 64),
+            (),
+            ("d" * 64, "e" * 64),
+            "REUSED_EXISTING",
+        )
+
+        presenter._settle_catalog_recipe_persistence(
+            TaskResult("reuse", "completed", reused),
+            dialog,
+            "environment_1",
+        )
+
+        assert settled == [reused]
+        assert refreshes == ["refresh"]
+        assert len(dialogs) == 1
+        assert dialogs[0][0] == "Recipe Derivation Reuse Result"
+        assert "Reused: 2" in dialogs[0][1]
+        assert "Reused: 1" in dialogs[0][1]
+
+        all_new = DataManagerRecipePersistenceResult(
+            "environment_1",
+            ("a" * 64,),
+            ("b" * 64,),
+            created_recipe_ids=("a" * 64, "b" * 64),
+            new_provenance_ids=("d" * 64, "e" * 64),
+        )
+        presenter._catalog_derivation_plan = _derivation_plan()
+        presenter._settle_catalog_recipe_persistence(
+            TaskResult("new", "completed", all_new),
+            dialog,
+            "environment_1",
+        )
+
+        assert settled == [reused, all_new]
+        assert refreshes == ["refresh", "refresh"]
+        assert len(dialogs) == 1
+    finally:
+        presenter.dispose()
         view.close()
 
 
@@ -899,7 +1576,13 @@ def test_late_recipe_persistence_refreshes_without_resurrecting_closed_dialog() 
         )
         persistence[2](TaskResult(persistence[1], "completed", result))
         assert view.recipe_derivation_dialog() is None
+        product_scan = service.calls[-1]
+        assert product_scan[0] == "scan_product_catalogs"
+        product_scan[2](
+            TaskResult(product_scan[1], "completed", _product_catalog("b"))
+        )
         assert service.calls[-1][0] == "reconcile_status"
+        assert view.recipe_derivation_dialog() is None
     finally:
         view.close()
 
@@ -1049,7 +1732,48 @@ def test_ordinary_dataset_preview_failure_preserves_current_selection() -> None:
         view.close()
 
 
-def test_presenter_routes_renamed_global_recipe_and_artifact_families() -> None:
+def test_presenter_terminal_failures_append_one_history_entry() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication()
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_scan(service)
+        view._operation_surface.clear()
+
+        presenter._submit(
+            "r7_failed_operation",
+            presenter._market_generation,
+            lambda progress, result: service._submit(
+                "r7_failed_operation", result, progress
+            ),
+            lambda result: presenter._report_failure("R7 operation", result),
+        )
+        failed_call = service.calls[-1]
+        failed_call[2](
+            TaskResult(
+                failed_call[1],
+                "failed",
+                error_message="foreground operation failed",
+            )
+        )
+        assert view.status_log_text().count("foreground operation failed") == 1
+
+        def raise_submission(_progress, _result):
+            raise RuntimeError("submission refused")
+
+        presenter._submit(
+            "r7_submission_exception",
+            presenter._market_generation,
+            raise_submission,
+            lambda _result: None,
+        )
+        assert view.status_log_text().count("submission refused") == 1
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_presenter_flattens_recipe_inspection_and_preserves_other_routes() -> None:
     app = QApplication.instance() or QApplication([])
     del app
     view = DataManagerSuiteWindow()
@@ -1058,18 +1782,45 @@ def test_presenter_routes_renamed_global_recipe_and_artifact_families() -> None:
     try:
         _settle_initial_scan(service)
 
-        recipe = SimpleNamespace(recipe_id="r" * 64)
-        view.catalog_row_selected.emit("Recipes", recipe)
+        recipe, recipe_entry = _deletion_values()[:2]
+        initial_fields = tuple(
+            (name, getattr(recipe_entry, name))
+            for name in recipe_entry.__dataclass_fields__
+        )
+        view.set_catalog_inspection(initial_fields)
+        view.catalog_row_selected.emit("Recipes", recipe_entry)
         recipe_call = service.calls[-1]
-        assert recipe_call[0] == ("inspect_recipe", recipe.recipe_id)
+        assert recipe_call[0] == ("inspect_recipe", recipe_entry.recipe_id)
         recipe_call[2](
             TaskResult(
                 recipe_call[1],
                 "completed",
-                SimpleNamespace(recipe_id=recipe.recipe_id, tool_key="rsi"),
+                DataManagerPortableRecipeInspection(recipe_entry, recipe, ()),
             )
         )
-        assert view._catalog_workspace.inspector.rowCount() == 1
+        inspector = view._catalog_workspace.inspector
+        fields = {
+            inspector.item(row, 0).text(): inspector.item(row, 1).text()
+            for row in range(inspector.rowCount())
+        }
+        assert {"entry", "recipe", "provenance"}.isdisjoint(fields)
+        assert {
+            "recipe_id",
+            "tool_key",
+            "tool_version",
+            "kind",
+            "parameters",
+            "input_bindings",
+            "output_names",
+            "valid",
+        } <= fields.keys()
+        assert fields["recipe_id"] == recipe.recipe_id
+        assert fields["tool_key"] == "sma"
+        assert not any(
+            "DataManagerPortableRecipeEntry(" in value
+            or "PortableRecipeV1(" in value
+            for value in fields.values()
+        )
 
         logical_id = "a" * 64
         artifact = SimpleNamespace(
@@ -1092,6 +1843,184 @@ def test_presenter_routes_renamed_global_recipe_and_artifact_families() -> None:
         )
         assert view._catalog_workspace.history.rowCount() == 1
     finally:
+        view.close()
+
+
+def test_presenter_flattens_study_environment_inspection_in_model_order() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication()
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_scan(service)
+        base = _derivation_inspection()
+        environment = replace(
+            base.environment, entry_count=2, portable_with_dependencies_count=1
+        )
+        first = replace(base.entries[0], entry_id="entry_z")
+        second = DataManagerStudyEntryPortability(
+            "entry_a",
+            "SMA of EMA",
+            "calculation",
+            "indicator",
+            "sma",
+            "PORTABLE_WITH_DEPENDENCIES",
+            "Requires EMA",
+            (first.entry_id,),
+            "b" * 64,
+        )
+        inspection = DataManagerStudyEnvironmentInspection(
+            environment, (second, first)
+        )
+        assert inspection.entries == (first, second)
+        view.set_product_catalogs(
+            replace(
+                _product_catalog("a"),
+                study_environments=DataManagerStudyEnvironmentCatalog((environment,)),
+            )
+        )
+        workspace = view._catalog_workspace
+        assert workspace.current_family == "Study Environments"
+        workspace.table.selectRow(0)
+        inspector = workspace.inspector
+        initial_fields = {
+            inspector.item(row, 0).text(): inspector.item(row, 1).text()
+            for row in range(inspector.rowCount())
+        }
+        assert environment.environment_id in initial_fields.values()
+        assert not any(name.startswith("entries[") for name in initial_fields)
+        call = service.calls[-1]
+        assert call[0] == ("inspect_environment", environment.environment_id)
+        call[2](TaskResult(call[1], "completed", inspection))
+
+        fields = {
+            inspector.item(row, 0).text(): inspector.item(row, 1).text()
+            for row in range(inspector.rowCount())
+        }
+        assert "environment" not in fields
+        assert "entries" not in fields
+        environment_names = (
+            "environment_id",
+            "display_name",
+            "description",
+            "origin_market_id",
+            "entry_count",
+            "portable_count",
+            "portable_with_dependencies_count",
+            "market_bound_count",
+            "unsupported_count",
+            "invalid_count",
+            "created_at_utc",
+            "updated_at_utc",
+            "valid",
+            "rejection_reason",
+        )
+        entry_names = (
+            "entry_id",
+            "display_name",
+            "mode",
+            "kind",
+            "tool_key",
+            "status",
+            "reason",
+            "dependency_entry_ids",
+            "recipe_id",
+        )
+        assert tuple(fields) == environment_names + tuple(
+            f"entries[{index}].{name}"
+            for index in (1, 2)
+            for name in entry_names
+        )
+        for name in environment_names:
+            assert fields[name] == format_data_manager_value(
+                name, getattr(environment, name)
+            )
+        for index, entry in enumerate(inspection.entries, start=1):
+            for name in entry_names:
+                field_name = f"entries[{index}].{name}"
+                assert fields[field_name] == format_data_manager_value(
+                    field_name, getattr(entry, name)
+                )
+        assert fields["entries[1].entry_id"] == "entry_z"
+        assert fields["entries[2].entry_id"] == "entry_a"
+        assert fields["entries[2].dependency_entry_ids"] == "('entry_z',)"
+        assert fields["entries[2].recipe_id"] == "b" * 64
+        assert inspector.rowCount() == 32
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_presenter_flattens_empty_study_environment_inspection() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication()
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_scan(service)
+        environment = replace(
+            _derivation_inspection().environment, entry_count=0, portable_count=0
+        )
+        view.catalog_row_selected.emit("Study Environments", environment)
+        call = service.calls[-1]
+        assert call[0] == ("inspect_environment", environment.environment_id)
+        call[2](
+            TaskResult(
+                call[1], "completed", DataManagerStudyEnvironmentInspection(environment, ())
+            )
+        )
+        inspector = view._catalog_workspace.inspector
+        fields = {
+            inspector.item(row, 0).text(): inspector.item(row, 1).text()
+            for row in range(inspector.rowCount())
+        }
+        assert tuple(fields) == tuple(environment.__dataclass_fields__)
+        assert fields["environment_id"] == environment.environment_id
+        assert fields["entry_count"] == "0"
+        assert not any(name.startswith("entries[") for name in fields)
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_study_environment_inspection_failure_preserves_initial_inspector() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication()
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_scan(service)
+        environment = _derivation_inspection().environment
+        view.set_product_catalogs(
+            replace(
+                _product_catalog("a"),
+                study_environments=DataManagerStudyEnvironmentCatalog((environment,)),
+            )
+        )
+        workspace = view._catalog_workspace
+        workspace.table.selectRow(0)
+        inspector = workspace.inspector
+        initial_rows = tuple(
+            (inspector.item(row, 0).text(), inspector.item(row, 1).text())
+            for row in range(inspector.rowCount())
+        )
+        assert len(initial_rows) == 14
+        call = service.calls[-1]
+        assert call[0] == ("inspect_environment", environment.environment_id)
+        call[2](
+            TaskResult(
+                call[1],
+                "failed",
+                error_type="OSError",
+                error_message="Study Environment inspection refused",
+            )
+        )
+        assert tuple(
+            (inspector.item(row, 0).text(), inspector.item(row, 1).text())
+            for row in range(inspector.rowCount())
+        ) == initial_rows
+        assert view.status_text() == "Catalog inspection failed"
+        assert "Study Environment inspection refused" in view.status_log_text()
+        assert presenter.active_task_id is None
+    finally:
+        presenter.dispose()
         view.close()
 
 
@@ -1125,6 +2054,16 @@ def test_direct_artifact_open_create_success_refresh_and_stale_fencing() -> None
         )
         dialog.tool_list.setCurrentRow(sma_row)
 
+        applied = []
+        original_product_catalogs = view.set_product_catalogs
+        original_market_snapshot = view.set_market_snapshot
+        view.set_product_catalogs = lambda value: (
+            applied.append(("catalogs", value)), original_product_catalogs(value)
+        )[1]
+        view.set_market_snapshot = lambda value: (
+            applied.append(("market", value)), original_market_snapshot(value)
+        )[1]
+        service._service = object()
         request = _direct_request()
         view.calculate_artifact_requested.emit(request)
         create_call = service.calls[-1]
@@ -1132,7 +2071,7 @@ def test_direct_artifact_open_create_success_refresh_and_stale_fencing() -> None
         create_call[2](TaskResult(create_call[1], "completed", _direct_result()))
         assert dialog.status_label.text() == f"Root Artifact created: {'d' * 64}"
         refresh_call = service.calls[-1]
-        assert refresh_call[0] == ("direct_catalog", MARKET)
+        assert refresh_call[0] == "scan_product_catalogs"
         surface = view._operation_surface
         detail_values = {
             surface.details.item(row, 0).text(): surface.details.item(row, 1).text()
@@ -1153,9 +2092,26 @@ def test_direct_artifact_open_create_success_refresh_and_stale_fencing() -> None
                 for row in range(surface.details.rowCount())
             ),
         )
-        service._service = object()
+        refreshed = _product_catalog("b")
         refresh_call[2](
-            TaskResult(refresh_call[1], "completed", _direct_catalog())
+            TaskResult(refresh_call[1], "completed", refreshed)
+        )
+        assert applied == [("catalogs", refreshed)]
+        selected_market_refresh = service.calls[-1]
+        assert selected_market_refresh[0] == ("inspect", MARKET)
+        selected_market_refresh[2](
+            TaskResult(
+                selected_market_refresh[1], "completed", MARKET_SNAPSHOT
+            )
+        )
+        assert applied == [
+            ("catalogs", refreshed),
+            ("market", MARKET_SNAPSHOT),
+        ]
+        dialog_refresh = service.calls[-1]
+        assert dialog_refresh[0] == ("direct_catalog", MARKET)
+        dialog_refresh[2](
+            TaskResult(dialog_refresh[1], "completed", _direct_catalog())
         )
         assert (
             surface._name.text(),
@@ -1172,7 +2128,7 @@ def test_direct_artifact_open_create_success_refresh_and_stale_fencing() -> None
         assert service.calls[-1][0] == "reconcile_status"
         reconciliation = service.calls[-1]
         reconciliation[2](
-            TaskResult(reconciliation[1], "completed", _reconciliation("a"))
+            TaskResult(reconciliation[1], "completed", _reconciliation("c"))
         )
         assert service.calls[-1][0] == "scan_product_catalogs"
         assert (surface._name.text(), surface.state, surface._message.text()) == (
@@ -1210,12 +2166,32 @@ def test_closed_direct_artifact_dialog_stays_closed_during_source_refresh() -> N
         dialog = view.artifact_creation_dialog()
         assert dialog is not None and dialog.isVisible()
 
+        surface = view._operation_surface
+        direct_terminal_entries = []
+        settle_operation = view.settle_operation
+
+        def capture_terminal_operation(state, message, details=()):
+            detail_values = dict(details)
+            if detail_values.get("Operation") == "create_direct_artifact":
+                direct_terminal_entries.append((state, message, details))
+            settle_operation(state, message, details)
+
+        view.settle_operation = capture_terminal_operation
         view.calculate_artifact_requested.emit(_direct_request())
         create_call = service.calls[-1]
         create_call[2](TaskResult(create_call[1], "completed", _direct_result()))
+        assert len(direct_terminal_entries) == 1
+        terminal_state, terminal_message, terminal_details = direct_terminal_entries[0]
+        assert terminal_state == "completed"
+        assert terminal_message == "completed"
+        assert dict(terminal_details)["Published"] == "yes"
+        assert "OK | create_direct_artifact | completed" in tuple(
+            line.split("] ", 1)[1] for line in surface.notes_text().splitlines()
+        )
+
         refresh_call = service.calls[-1]
-        assert refresh_call[0] == ("direct_catalog", MARKET)
-        surface = view._operation_surface
+        assert refresh_call[0] == "scan_creation_foundations"
+        assert surface._name.text() == "scan_creation_foundations"
         operation_report = tuple(
             (
                 surface.details.item(row, 0).text(),
@@ -1223,26 +2199,34 @@ def test_closed_direct_artifact_dialog_stays_closed_during_source_refresh() -> N
             )
             for row in range(surface.details.rowCount())
         )
-        assert dict(operation_report)["Published"] == "yes"
+        assert operation_report == ()
 
         dialog.close()
         QApplication.processEvents()
         assert not dialog.isVisible()
         service._service = object()
         refresh_call[2](
-            TaskResult(refresh_call[1], "completed", _direct_catalog())
+            TaskResult(
+                refresh_call[1],
+                "failed",
+                error_message="foundation refresh unavailable",
+            )
         )
 
         assert view.artifact_creation_dialog() is dialog
         assert not dialog.isVisible()
-        assert service.calls[-1][0] == "reconcile_status"
-        assert tuple(
-            (
-                surface.details.item(row, 0).text(),
-                surface.details.item(row, 1).text(),
-            )
+        settled_refresh_details = {
+            surface.details.item(row, 0).text(): surface.details.item(row, 1).text()
             for row in range(surface.details.rowCount())
-        ) == operation_report
+        }
+        assert settled_refresh_details["Operation"] == "scan_creation_foundations"
+        assert settled_refresh_details["State"] == "failed"
+        assert settled_refresh_details["Error type"] == ""
+        assert (
+            settled_refresh_details["Error message"]
+            == "foundation refresh unavailable"
+        )
+        assert settled_refresh_details["Published"] == "no"
     finally:
         view.close()
 
@@ -1328,7 +2312,7 @@ def test_construct_batch_preview_execute_and_closed_window_fencing() -> None:
         assert view.construct_batch_dialog() is dialog
         assert not dialog.isVisible()
         assert dialog.execution_report is None
-        assert service.calls[-1][0] == "reconcile_status"
+        assert service.calls[-1][0] == "scan_product_catalogs"
     finally:
         view.close()
 
@@ -1420,7 +2404,7 @@ def test_construct_batch_success_reports_reviewed_plan_counts_and_refreshes_once
         assert not dialog.execute_button.isEnabled()
         assert view.status_text() == "Construct Batch execution complete"
         assert len(service.calls) == calls_before + 1
-        assert service.calls[-1][0] == "reconcile_status"
+        assert service.calls[-1][0] == "scan_product_catalogs"
     finally:
         view.close()
 
@@ -1463,6 +2447,7 @@ def test_visible_construct_batch_reports_terminal_failure_and_cancellation(
         plan = _batch_plan(request)
         presenter._construct_batch_plan = plan
         presenter._pending_construct_batch_request = request
+        history_before = view._operation_surface.notes_text()
 
         presenter._settle_construct_batch_execution(
             TaskResult("task-batch", status, error_message=error_message),
@@ -1477,7 +2462,15 @@ def test_visible_construct_batch_reports_terminal_failure_and_cancellation(
         assert report.reused_label.isHidden()
         assert "Data Manager Operation panel" in report.details_label.text()
         assert view.status_text() == f"Construct Batch execution {status}"
-        assert view._operation_surface.notes_text() == (error_message or status)
+        assert view._operation_surface.notes_text() == history_before
+        assert tuple(
+            line.split("] ", 1)[1]
+            for line in history_before.splitlines()
+        ) == (
+            "OK | scan_catalog | completed",
+            "OK | inspect_market | completed",
+            "OK | build_construct_batch_catalog | completed",
+        )
     finally:
         view.close()
 
@@ -1513,6 +2506,7 @@ def test_closed_construct_batch_does_not_show_terminal_failure(status) -> None:
         presenter._construct_batch_plan = plan
         dialog.close()
         QApplication.processEvents()
+        history_before = view._operation_surface.notes_text()
 
         presenter._settle_construct_batch_execution(
             TaskResult("task-batch", status, error_message="terminal result"),
@@ -1522,7 +2516,15 @@ def test_closed_construct_batch_does_not_show_terminal_failure(status) -> None:
         assert not dialog.isVisible()
         assert dialog.execution_report is None
         assert view.status_text() == f"Construct Batch execution {status}"
-        assert view._operation_surface.notes_text() == "terminal result"
+        assert view._operation_surface.notes_text() == history_before
+        assert tuple(
+            line.split("] ", 1)[1]
+            for line in history_before.splitlines()
+        ) == (
+            "OK | scan_catalog | completed",
+            "OK | inspect_market | completed",
+            "OK | build_construct_batch_catalog | completed",
+        )
     finally:
         view.close()
 
@@ -1929,7 +2931,15 @@ def test_initial_warmup_failure_is_visible_and_manual_refresh_retries(
         assert presenter._active_task_id is None
         assert presenter._background_refresh_task_id is None
         assert view._operation_surface.state == "failed"
-        assert view._operation_surface.notes_text() == "warm-up failed"
+        history = tuple(
+            line.split("] ", 1)[1]
+            for line in view._operation_surface.notes_text().splitlines()
+        )
+        assert history == (
+            ("OK | Loading Data Manager | completed",)
+            if failed_stage == "catalog"
+            else ()
+        ) + ("ERROR | Loading Data Manager | warm-up failed",)
         expected = (
             "Data Manager catalog loading failed"
             if failed_stage == "catalog"
@@ -1964,6 +2974,98 @@ def test_disposal_during_initial_warmup_cancels_and_fences_late_result() -> None
         assert len(service.calls) == 1
         assert not presenter._initial_warmup_complete
         assert presenter._product_catalogs is None
+    finally:
+        view.close()
+
+
+def test_external_ohlcv_change_after_warmup_forces_silent_background_refresh() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_warmup(service)
+        calls_before = len(service.calls)
+
+        presenter.notify_external_ohlcv_change(MARKET)
+
+        assert len(service.calls) == calls_before + 1
+        assert service.calls[-1][0] == "reconcile_status"
+        assert service.reconcile_forces[-1] is True
+        assert presenter._active_task_id is None
+        assert presenter._background_refresh_task_id == service.calls[-1][1]
+        assert "verifying Data Manager currentness" in view.status_text()
+        assert not any(
+            isinstance(call[0], tuple)
+            and call[0][0] in {"batch_execute", "direct_create"}
+            for call in service.calls[calls_before:]
+        )
+    finally:
+        view.close()
+
+
+def test_external_ohlcv_changes_coalesce_while_background_refresh_runs() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_warmup(service)
+        presenter.notify_external_ohlcv_change(MARKET)
+        running = service.calls[-1]
+
+        presenter.notify_external_ohlcv_change(MARKET)
+        presenter.notify_external_ohlcv_change(MARKET)
+
+        assert service.calls[-1] is running
+        assert presenter._background_refresh_pending
+        assert presenter._background_refresh_pending_force
+        running[2](TaskResult(running[1], "failed", error_message="expected"))
+        assert service.calls[-1][0] == "reconcile_status"
+        assert service.calls[-1] is not running
+        assert service.reconcile_forces == [False, True, True]
+    finally:
+        view.close()
+
+
+def test_external_ohlcv_changes_during_warmup_start_one_forced_catchup() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        assert len(service.calls) == 1
+        presenter.notify_external_ohlcv_change(MARKET)
+        presenter.notify_external_ohlcv_change(MARKET)
+
+        assert len(service.calls) == 1
+        assert presenter._external_ohlcv_change_pending
+        _settle_initial_warmup(service)
+
+        assert [call[0] for call in service.calls] == [
+            "reconcile_status",
+            "scan_product_catalogs",
+            "reconcile_status",
+        ]
+        assert service.reconcile_forces == [False, True]
+        assert not presenter._external_ohlcv_change_pending
+        assert presenter._active_task_id is None
+        assert presenter._background_refresh_task_id == service.calls[-1][1]
+    finally:
+        view.close()
+
+
+def test_external_ohlcv_change_is_validated_and_disposed_presenter_is_unchanged() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        with pytest.raises(TypeError, match="market_id must be a MarketId"):
+            presenter.notify_external_ohlcv_change(object())  # type: ignore[arg-type]
+
+        presenter.dispose()
+        calls_before = tuple(service.calls)
+        status_before = view.status_text()
+        presenter.notify_external_ohlcv_change(MARKET)
+        assert tuple(service.calls) == calls_before
+        assert view.status_text() == status_before
     finally:
         view.close()
 
@@ -2344,6 +3446,113 @@ def test_background_q_disposal_cancels_and_fences_late_result() -> None:
         view.close()
 
 
+def test_write_refresh_applies_catalogs_before_market_and_reconciliation() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    applied = []
+    original_catalogs = view.set_product_catalogs
+    original_market = view.set_market_snapshot
+    view.set_product_catalogs = lambda value: (
+        applied.append(("catalogs", value)), original_catalogs(value)
+    )[1]
+    view.set_market_snapshot = lambda value: (
+        applied.append(("market", value)), original_market(value)
+    )[1]
+    try:
+        _settle_initial_warmup(service)
+        applied.clear()
+        presenter._selected_market = MARKET
+        presenter._market_snapshot = MARKET_SNAPSHOT
+        view.settle_operation(
+            "completed", "Mutation completed", (("Published", "yes"),)
+        )
+        calls_before = len(service.calls)
+
+        presenter._after_write_refresh()
+
+        mutation_scan = service.calls[-1]
+        assert mutation_scan[0] == "scan_product_catalogs"
+        assert len(service.calls) == calls_before + 1
+        refreshed = _product_catalog("b")
+        mutation_scan[2](TaskResult(mutation_scan[1], "completed", refreshed))
+        assert applied == [("catalogs", refreshed)]
+        assert presenter._product_catalogs is refreshed
+        market_scan = service.calls[-1]
+        assert market_scan[0] == ("inspect", MARKET)
+        assert all(
+            call[0] != "reconcile_status"
+            for call in service.calls[calls_before:]
+        )
+
+        market_scan[2](TaskResult(market_scan[1], "completed", MARKET_SNAPSHOT))
+        assert applied == [("catalogs", refreshed), ("market", MARKET_SNAPSHOT)]
+        reconciliation = service.calls[-1]
+        assert reconciliation[0] == "reconcile_status"
+        assert view._operation_surface.state == "completed"
+        assert view._operation_surface.details.item(0, 1).text() == "yes"
+    finally:
+        view.close()
+
+
+def test_write_refresh_supersedes_and_fences_stale_background_task() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        initial = _settle_initial_warmup(service)
+        presenter._refresh_on_timer()
+        stale_reconciliation = service.calls[-1]
+        stale_task_id = stale_reconciliation[1]
+
+        presenter._after_write_refresh()
+
+        mutation_scan = service.calls[-1]
+        assert service.cancelled == [stale_task_id]
+        assert mutation_scan[0] == "scan_product_catalogs"
+        assert mutation_scan[1] != stale_task_id
+        call_count = len(service.calls)
+        stale_reconciliation[2](
+            TaskResult(
+                stale_task_id,
+                "completed",
+                _reconciliation("c"),
+            )
+        )
+        assert len(service.calls) == call_count
+        assert presenter._product_catalogs is initial
+        assert presenter._background_refresh_task_id == mutation_scan[1]
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize(
+    ("result_type", "view_setter"),
+    (
+        (ArtifactCollectionUpdateResult, "set_artifact_update_result"),
+        (DatabaseUpdateResult, "set_database_update_result"),
+    ),
+)
+def test_update_write_uses_central_write_refresh(result_type, view_setter) -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication()
+    presenter = DataManagerSuitePresenter(view, service)
+    refreshed = []
+    presented = []
+    setattr(view, view_setter, lambda value: presented.append(value))
+    presenter._after_write_refresh = lambda: refreshed.append("central")
+    value = object.__new__(result_type)
+    try:
+        presenter._settle_update_write(
+            TaskResult("task-update", "completed", value)
+        )
+
+        assert presented == [value]
+        assert refreshed == ["central"]
+    finally:
+        view.close()
+
+
 def _start_background_market_race(
     view: DataManagerSuiteWindow,
     service: _ControlledApplication,
@@ -2700,24 +3909,18 @@ def test_deleted_recipe_refresh_updates_open_derivation_existing_ids() -> None:
             view, service, recipe_id=recipe.recipe_id
         )
         assert dialog.set_plan(_derivation_plan(recipe_id=recipe.recipe_id))
-        assert dialog.preview_table.item(0, 5).text() == "Existing"
+        assert dialog.preview_table.item(0, 5).text() == "REUSE EXISTING"
 
         view.catalog_delete_recipe_requested.emit(recipe_entry)
         deletion = service.calls[-1]
         deletion[2](TaskResult(deletion[1], "completed", recipe))
-        reconcile = service.calls[-1]
-        assert reconcile[0] == "reconcile_status"
         refreshed = _product_catalog("b")
-        reconcile[2](
-            TaskResult(
-                reconcile[1], "completed", refreshed.latest_reconciliation
-            )
-        )
         product_scan = service.calls[-1]
         assert product_scan[0] == "scan_product_catalogs"
         product_scan[2](TaskResult(product_scan[1], "completed", refreshed))
+        assert service.calls[-1][0] == "reconcile_status"
 
-        assert dialog.preview_table.item(0, 5).text() == "New"
+        assert dialog.preview_table.item(0, 5).text() == "NEW"
     finally:
         view.close()
 
@@ -2738,9 +3941,8 @@ def test_deleted_artifact_refreshes_open_direct_and_batch_catalogs() -> None:
         view.catalog_delete_artifact_requested.emit(artifact_entry)
         deletion = service.calls[-1]
         deletion[2](TaskResult(deletion[1], "completed", artifact_summary))
-        reconcile = service.calls[-1]
-        reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("b")))
         product_scan = service.calls[-1]
+        assert product_scan[0] == "scan_product_catalogs"
         product_scan[2](
             TaskResult(
                 product_scan[1],
@@ -2757,6 +3959,7 @@ def test_deleted_artifact_refreshes_open_direct_and_batch_catalogs() -> None:
         creation_scan[2](
             TaskResult(creation_scan[1], "completed", refreshed_catalog)
         )
+        assert service.calls[-1][0] == "reconcile_status"
 
         assert direct._catalog is refreshed_catalog
         assert batch._catalog is refreshed_catalog
@@ -2856,6 +4059,9 @@ def test_collection_presenter_forwards_exact_recipe_plan_create_and_edit_calls()
         assert preview[0] == ("plan_recipe_collection", roots)
         plan = PortableRecipeGraphPlan(roots, roots, (), (roots,))
         preview[2](TaskResult(preview[1], "completed", plan))
+        lookup = service.calls[-1]
+        assert lookup[0] == ("find_equivalent_recipe_collection", roots)
+        lookup[2](TaskResult(lookup[1], "completed", None))
         dialog.name_input.setText("Collection")
         dialog.description_input.setText("Description")
         dialog.publish_button.click()
@@ -2915,6 +4121,9 @@ def test_collection_presenter_forwards_exact_artifact_plan_and_create_call() -> 
         )
         plan = _plan((ROOT_A,))
         preview[2](TaskResult(preview[1], "completed", plan))
+        lookup = service.calls[-1]
+        assert lookup[0][0] == "find_equivalent_artifact_collection"
+        lookup[2](TaskResult(lookup[1], "completed", None))
         dialog.name_input.setText("Artifact Collection")
         dialog.publish_button.click()
         call = service.calls[-1][0]
@@ -2925,6 +4134,128 @@ def test_collection_presenter_forwards_exact_artifact_plan_and_create_call() -> 
             "",
         )
         assert tuple(item.column_name for item in call[4]) == ("value",)
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_recipe_materialization_presenter_forwards_exact_plan_and_execute_calls() -> None:
+    from tests.gui_test.test_data_manager_catalogs import associated_product_snapshot
+    from tests.gui_test.test_data_manager_recipe_artifact_materialization_dialog import (
+        _plan,
+        _result,
+    )
+
+    snapshot = replace(associated_product_snapshot(), catalog=CATALOG)
+    recipe = snapshot.portable_recipes.recipes[0]
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_warmup(service, snapshot=snapshot)
+        presenter.focus_market(MARKET, source="research")
+        inspect = service.calls[-1]
+        inspect[2](TaskResult(inspect[1], "completed", MARKET_SNAPSHOT))
+
+        view.create_artifact_from_recipe_requested.emit(recipe)
+        dialog = view.recipe_artifact_materialization_dialog()
+        assert dialog is not None and dialog.isVisible()
+        dialog.preview_button.click()
+        preview = service.calls[-1]
+        assert preview[0][0] == "plan_artifact_materialization"
+        request = preview[0][1]
+        assert request.target_market_id == MARKET
+        assert request.root_recipe_ids == (recipe.recipe_id,)
+        assert request.recipe_collection_id is None
+
+        mismatched = _plan(target=MARKET_B)
+        preview[2](TaskResult(preview[1], "completed", mismatched))
+        assert dialog.reviewed_plan is None
+
+        dialog.preview_button.click()
+        preview = service.calls[-1]
+        plan = _plan()
+        preview[2](TaskResult(preview[1], "completed", plan))
+        assert dialog.reviewed_plan is plan
+        lookup = service.calls[-1]
+        assert lookup[0][0] == "find_equivalent_materialized_collection"
+        lookup[2](TaskResult(lookup[1], "completed", None))
+        dialog.execute_button.click()
+        execution = service.calls[-1]
+        assert execution[0] == ("execute_artifact_materialization", plan)
+        execution[2](TaskResult(execution[1], "completed", _result(plan)))
+        assert not any(
+            isinstance(call[0], tuple)
+            and call[0][0] == "create_artifact_collection"
+            for call in service.calls
+        )
+        assert dialog.reviewed_plan is None
+        assert "roots=1" in dialog.result_summary.text()
+        assert any(call[0] == "reconcile_status" for call in service.calls)
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_collection_materialization_preserves_exact_reviewed_provenance() -> None:
+    from tests.gui_test.test_data_manager_catalogs import associated_product_snapshot
+    from tests.gui_test.test_data_manager_recipe_artifact_materialization_dialog import (
+        _plan,
+        _result,
+    )
+
+    snapshot = replace(associated_product_snapshot(), catalog=CATALOG)
+    collection = snapshot.recipe_collections.collections[0]
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_warmup(service, snapshot=snapshot)
+        presenter.focus_market(MARKET, source="research")
+        inspect = service.calls[-1]
+        inspect[2](TaskResult(inspect[1], "completed", MARKET_SNAPSHOT))
+
+        view.create_artifacts_from_recipe_collection_requested.emit(collection)
+        dialog = view.recipe_artifact_materialization_dialog()
+        assert dialog is not None
+        dialog.preview_button.click()
+        preview = service.calls[-1]
+        request = preview[0][1]
+        assert request.recipe_collection_id == collection.collection_id
+        assert request.recipe_collection_revision_id == collection.revision_id
+        plan = _plan(collection=True)
+        preview[2](TaskResult(preview[1], "completed", plan))
+        lookup = service.calls[-1]
+        assert lookup[0][0] == "find_equivalent_materialized_collection"
+        lookup[2](TaskResult(lookup[1], "completed", None))
+        dialog.create_collection_checkbox.setChecked(True)
+        dialog.collection_name_input.setText("Materialized Collection")
+        outputs = dialog.selected_outputs()
+        dialog.execute_button.click()
+        execution = service.calls[-1]
+        execution[2](TaskResult(execution[1], "completed", _result(plan)))
+
+        publication = service.calls[-1]
+        assert publication[0] == (
+            "create_artifact_collection",
+            _result(plan),
+            "Materialized Collection",
+            "",
+            collection.collection_id,
+            collection.revision_id,
+            outputs,
+        )
+        publication[2](
+            TaskResult(
+                publication[1],
+                "failed",
+                error_type="ArtifactCollectionError",
+                error_message="publication refused",
+            )
+        )
+        assert "Artifacts complete" in dialog.result_summary.text()
+        assert "publication refused" in dialog.result_summary.text()
+        assert any(call[0] == "reconcile_status" for call in service.calls)
     finally:
         presenter.dispose()
         view.close()
@@ -2957,6 +4288,7 @@ def test_collection_presenter_forwards_exact_immutable_edit_calls() -> None:
         assert dialog is not None
         plan = recipe_plan()
         assert dialog.set_plan(plan)
+        assert dialog.set_collection_prediction(plan, None)
         dialog.description_input.setText("Updated")
         dialog.publish_button.click()
         assert service.calls[-1][0] == (
@@ -2983,6 +4315,7 @@ def test_collection_presenter_forwards_exact_immutable_edit_calls() -> None:
         assert dialog is not None
         plan = artifact_plan(revision.root_logical_artifact_ids)
         assert dialog.set_plan(plan)
+        assert dialog.set_collection_prediction(plan, None)
         dialog.description_input.setText("Updated")
         dialog.publish_button.click()
         call = service.calls[-1][0]
@@ -2996,6 +4329,367 @@ def test_collection_presenter_forwards_exact_immutable_edit_calls() -> None:
         assert call[5] == dialog.selected_outputs()
         assert call[6] == dialog.presentation_order()
         assert call[7] == revision.revision_id
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_collection_inspection_uses_exact_revisions_and_failure_authority() -> None:
+    from leonardo.data_manager import ArtifactCollectionValidation
+    from tests.gui_test.test_data_manager_collection_inspection_dialog import (
+        _artifact_metadata,
+        _artifact_revision,
+        ROOT_ARTIFACT_ID,
+        ROOT_RECIPE_ID,
+        SUPPORT_ARTIFACT_ID,
+        SUPPORT_RECIPE_ID,
+    )
+    from tests.gui_test.test_data_manager_recipe_collection_dialog import (
+        _inspection,
+        _recipe,
+        _snapshot,
+        ROOT_ID,
+        SUPPORT_ID,
+    )
+
+    snapshot = _snapshot(_recipe(ROOT_ID, "ema"), _recipe(SUPPORT_ID, "sma"))
+    inspection = _inspection()
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    recipe_shown: list[tuple[object, object]] = []
+    artifact_shown: list[tuple[object, object, object]] = []
+    view.show_recipe_collection_inspection = (
+        lambda value, recipes: recipe_shown.append((value, recipes))
+    )
+    view.show_artifact_collection_inspection = (
+        lambda revision, validation, metadata: artifact_shown.append(
+            (revision, validation, metadata)
+        )
+    )
+    try:
+        _settle_initial_warmup(service, snapshot=snapshot)
+        view.inspect_recipe_collection_requested.emit(inspection.collection)
+        call = service.calls[-1]
+        assert call[0] == (
+            "inspect_recipe_collection",
+            inspection.collection.collection_id,
+            inspection.collection.revision_id,
+        )
+        call[2](TaskResult(call[1], "completed", inspection))
+        assert recipe_shown[0][0] is inspection
+        assert tuple(item.recipe_id for item in recipe_shown[0][1]) == (
+            SUPPORT_ID,
+            ROOT_ID,
+        )
+
+        revision = _artifact_revision()
+        validation = ArtifactCollectionValidation(
+            revision.collection_id,
+            revision.revision_id,
+            True,
+            True,
+            (),
+            0,
+            3_600_000,
+            2,
+            2,
+        )
+        metadata = (
+            _artifact_metadata(
+                SUPPORT_ARTIFACT_ID, SUPPORT_RECIPE_ID, "sma"
+            ),
+            _artifact_metadata(ROOT_ARTIFACT_ID, ROOT_RECIPE_ID, "ema"),
+        )
+        view.inspect_artifact_collection_requested.emit(revision)
+        call = service.calls[-1]
+        assert call[0] == (
+            "inspect_artifact_collection_details",
+            revision.collection_id,
+            revision.revision_id,
+        )
+        call[2](TaskResult(call[1], "completed", (revision, validation, metadata)))
+        assert artifact_shown == [(revision, validation, metadata)]
+
+        view.inspect_artifact_collection_requested.emit(revision)
+        call = service.calls[-1]
+        call[2](
+            TaskResult(
+                call[1],
+                "failed",
+                error_type="DataManagerOperationError",
+                error_message="inspection refused",
+            )
+        )
+        assert "Artifact Collection inspection failed" in view.status_text()
+        assert "inspection refused" in view.status_log_text()
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_recipe_collection_inspection_fails_closed_for_missing_member() -> None:
+    from tests.gui_test.test_data_manager_recipe_collection_dialog import (
+        _inspection,
+        _recipe,
+        _snapshot,
+        ROOT_ID,
+    )
+
+    snapshot = _snapshot(_recipe(ROOT_ID, "ema"))
+    inspection = _inspection()
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    shown: list[object] = []
+    view.show_recipe_collection_inspection = lambda *values: shown.append(values)
+    try:
+        _settle_initial_warmup(service, snapshot=snapshot)
+        history_before = view.status_log_text().splitlines()
+        view.inspect_recipe_collection_requested.emit(inspection.collection)
+        call = service.calls[-1]
+        call[2](TaskResult(call[1], "completed", inspection))
+        assert shown == []
+        assert "Recipe Collection inspection failed" in view.status_text()
+        history_after = view.status_log_text().splitlines()
+        assert history_after[:-1] == history_before
+        assert history_after[-1].split("] ", 1)[1] == (
+            "OK | inspect_recipe_collection_details | completed"
+        )
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_duplicate_maintenance_refuses_artifact_scan_without_selected_dataset() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        _settle_initial_warmup(service)
+        call_count = len(service.calls)
+        view.duplicate_maintenance_requested.emit("artifacts")
+        assert len(service.calls) == call_count
+        assert "requires a selected accepted dataset" in view.status_text()
+        assert view.duplicate_maintenance_preflight_dialog() is None
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_duplicate_maintenance_uses_preflight_then_background_scan_without_refresh() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    domain = DUPLICATE_MAINTENANCE_DOMAINS["recipes"]
+    preflight = DuplicateMaintenancePreflight(domain, 25)
+    scan_result = DuplicateMaintenanceScanResult(
+        preflight,
+        datetime(2026, 8, 20, tzinfo=UTC),
+        25,
+        (),
+    )
+    try:
+        _settle_initial_warmup(service)
+        view.duplicate_maintenance_requested.emit("recipes")
+        prepare = service.calls[-1]
+        assert prepare[0] == (
+            "prepare_duplicate_maintenance",
+            domain,
+            None,
+        )
+        assert view.duplicate_maintenance_preflight_dialog() is None
+
+        prepare[2](TaskResult(prepare[1], "completed", preflight))
+        dialog = view.duplicate_maintenance_preflight_dialog()
+        assert dialog is not None
+        assert dialog.preflight == preflight
+        dialog.scan_button.click()
+        scan = service.calls[-1]
+        assert scan[0] == ("scan_duplicate_maintenance", preflight)
+        service.progress_callbacks[scan[1]](
+            TaskProgress(scan[1], "Scanning Recipes 12 / 25", 12, 25)
+        )
+        assert view._operation_surface.progress.value() == 12
+
+        call_count = len(service.calls)
+        scan[2](TaskResult(scan[1], "completed", scan_result))
+        assert len(service.calls) == call_count
+        results = view.duplicate_maintenance_results_dialog()
+        assert results is not None
+        assert results.result is scan_result
+        assert "scan complete" in view.status_text()
+        assert not any(
+            call[0] == "reconcile_status" for call in service.calls[call_count:]
+        )
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_duplicate_maintenance_does_not_show_stale_selected_market_result() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    domain = DUPLICATE_MAINTENANCE_DOMAINS["artifacts"]
+    preflight = DuplicateMaintenancePreflight(
+        domain,
+        0,
+        MARKET,
+        _fingerprint(),
+    )
+    result = DuplicateMaintenanceScanResult(
+        preflight,
+        datetime(2026, 8, 20, tzinfo=UTC),
+        0,
+        (),
+    )
+    try:
+        _settle_initial_warmup(service)
+        presenter.focus_market(MARKET, source="research")
+        inspect = service.calls[-1]
+        inspect[2](TaskResult(inspect[1], "completed", MARKET_SNAPSHOT))
+
+        view.duplicate_maintenance_requested.emit("artifacts")
+        prepare = service.calls[-1]
+        assert prepare[0] == (
+            "prepare_duplicate_maintenance",
+            domain,
+            MARKET,
+        )
+        prepare[2](TaskResult(prepare[1], "completed", preflight))
+        dialog = view.duplicate_maintenance_preflight_dialog()
+        assert dialog is not None
+        dialog.scan_button.click()
+        scan = service.calls[-1]
+
+        presenter._selected_market = MARKET_B
+        presenter._market_generation += 1
+        scan[2](TaskResult(scan[1], "completed", result))
+        assert view.duplicate_maintenance_results_dialog() is None
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_duplicate_purge_requires_confirmation_submits_once_and_refreshes() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    domain = DUPLICATE_MAINTENANCE_DOMAINS["recipe_collections"]
+    candidate = DuplicateMaintenanceCandidate(
+        "prc_22222222222222222222222222222222",
+        "SAFE",
+        "younger equivalent",
+    )
+    scan = DuplicateMaintenanceScanResult(
+        DuplicateMaintenancePreflight(domain, 2),
+        datetime(2026, 8, 20, tzinfo=UTC),
+        2,
+        (
+            DuplicateMaintenanceGroup(
+                domain,
+                "prc_11111111111111111111111111111111",
+                (candidate,),
+                "Equivalent semantics",
+            ),
+        ),
+    )
+    purge = DuplicateMaintenancePurgeResult(
+        scan,
+        datetime(2026, 8, 21, tzinfo=UTC),
+        (
+            DuplicateMaintenancePurgeDetail(
+                domain,
+                candidate.object_id,
+                scan.groups[0].canonical_id,
+                "PURGED",
+                "deleted",
+            ),
+        ),
+    )
+    try:
+        _settle_initial_warmup(service)
+        view.show_duplicate_maintenance_results(scan)
+        results = view.duplicate_maintenance_results_dialog()
+        view.confirm_duplicate_maintenance_purge = lambda _scan: False
+        call_count = len(service.calls)
+        results.purge_button.click()
+        assert len(service.calls) == call_count
+        assert view.status_text() == "Duplicate purge cancelled"
+
+        view.confirm_duplicate_maintenance_purge = lambda _scan: True
+        results.purge_button.click()
+        call = service.calls[-1]
+        assert call[0] == ("purge_duplicate_maintenance", scan)
+        service.progress_callbacks[call[1]](
+            TaskProgress(
+                call[1], "Purging Recipe Collections duplicates 1 / 1", 1, 1
+            )
+        )
+        assert view._operation_surface.progress.value() == 1
+        call[2](TaskResult(call[1], "completed", purge))
+
+        projected = view.duplicate_maintenance_results_dialog()
+        assert projected is not results
+        assert projected.result is purge
+        assert projected.windowTitle() == "Duplicate Maintenance Complete"
+        assert any(item[0] == "reconcile_status" for item in service.calls)
+        assert view.status_text() == "Duplicate Maintenance purge complete"
+    finally:
+        presenter.dispose()
+        view.close()
+
+
+def test_duplicate_purge_no_deletion_does_not_trigger_mutation_refresh() -> None:
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    domain = DUPLICATE_MAINTENANCE_DOMAINS["recipe_collections"]
+    candidate = DuplicateMaintenanceCandidate(
+        "prc_22222222222222222222222222222222",
+        "SAFE",
+        "younger equivalent",
+    )
+    scan = DuplicateMaintenanceScanResult(
+        DuplicateMaintenancePreflight(domain, 2),
+        datetime(2026, 8, 20, tzinfo=UTC),
+        2,
+        (
+            DuplicateMaintenanceGroup(
+                domain,
+                "prc_11111111111111111111111111111111",
+                (candidate,),
+                "Equivalent semantics",
+            ),
+        ),
+    )
+    purge = DuplicateMaintenancePurgeResult(
+        scan,
+        datetime(2026, 8, 21, tzinfo=UTC),
+        (
+            DuplicateMaintenancePurgeDetail(
+                domain,
+                candidate.object_id,
+                scan.groups[0].canonical_id,
+                "SKIPPED STALE",
+                "candidate changed",
+            ),
+        ),
+    )
+    try:
+        _settle_initial_warmup(service)
+        view.show_duplicate_maintenance_results(scan)
+        view.confirm_duplicate_maintenance_purge = lambda _scan: True
+        call_count = len(service.calls)
+        view.duplicate_maintenance_results_dialog().purge_button.click()
+        call = service.calls[-1]
+        call[2](TaskResult(call[1], "completed", purge))
+
+        assert not any(
+            item[0] == "reconcile_status" for item in service.calls[call_count + 1 :]
+        )
+        assert view.status_text() == "Duplicate Maintenance completed with no deletions"
     finally:
         presenter.dispose()
         view.close()

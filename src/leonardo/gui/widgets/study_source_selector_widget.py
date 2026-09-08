@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from PySide6.QtCore import Signal
@@ -42,12 +43,23 @@ class StudySourceSelectorWidget(QWidget):
         catalog: StudySetupCatalog,
         schema: tuple[str, ...] = (),
         parent: QWidget | None = None,
+        *,
+        role_labels: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(parent)
         if not isinstance(catalog, StudySetupCatalog):
             raise TypeError("catalog must be StudySetupCatalog")
         self.setObjectName("research.study_source_selector")
         self._catalog = catalog
+        self._role_labels = dict(role_labels or {})
+        if any(
+            not isinstance(role, str)
+            or not role
+            or not isinstance(label, str)
+            or not label
+            for role, label in self._role_labels.items()
+        ):
+            raise ValueError("role_labels must contain non-empty text pairs")
         self._schema: tuple[str, ...] = ()
         self._rows: list[_SourceRow] = []
         self._layout = QVBoxLayout(self)
@@ -153,7 +165,10 @@ class StudySourceSelectorWidget(QWidget):
         container.setObjectName(f"research.study_source_selector.row.{index}")
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        label = QLabel(role.replace("_", " ").title(), container)
+        label = QLabel(
+            self._role_labels.get(role, role.replace("_", " ").title()),
+            container,
+        )
         label.setObjectName(f"research.study_source_selector.row.{index}.role")
         kind = QComboBox(container)
         kind.setObjectName(f"research.study_source_selector.row.{index}.kind")

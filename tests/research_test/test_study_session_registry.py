@@ -16,7 +16,11 @@ from leonardo.research import (
 )
 from leonardo.financial_tools import FinancialToolCalculationResult
 
-from tests.research_test.test_study_execution import accepted_context, apply_attempt
+from tests.research_test.test_study_execution import (
+    accepted_context,
+    apply_attempt,
+    research_service,
+)
 from tests.research_test.test_study_projection import resident
 
 
@@ -29,7 +33,7 @@ def _open_session(dataset):
 
 def test_duplicate_same_configuration_studies_keep_distinct_ids(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open_session(dataset)
 
     for _ in range(2):
@@ -48,7 +52,7 @@ def test_duplicate_same_configuration_studies_keep_distinct_ids(tmp_path: Path) 
 
 def test_resident_refresh_reprojects_without_recalculation(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open_session(dataset)
     attempt = session.begin_study_apply()
     prepared = service.prepare_calculation(
@@ -69,7 +73,7 @@ def test_resident_refresh_reprojects_without_recalculation(tmp_path: Path) -> No
 
 def test_dataset_generation_reset_clears_studies_and_rejects_late_apply(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open_session(dataset)
     late_attempt = session.begin_study_apply()
     prepared = service.prepare_calculation(
@@ -84,7 +88,7 @@ def test_dataset_generation_reset_clears_studies_and_rejects_late_apply(tmp_path
 
 def test_dependency_aware_removal_and_save_link_same_study(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open_session(dataset)
     source_attempt = session.begin_study_apply()
     source_prepared = service.prepare_calculation(
@@ -122,7 +126,7 @@ def test_dependency_aware_removal_and_save_link_same_study(tmp_path: Path) -> No
 
 def test_forged_middle_timestamp_is_rejected_without_resident(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open_session(dataset)
     attempt = session.begin_study_apply()
     prepared = service.prepare_calculation(
@@ -152,7 +156,7 @@ def test_registered_source_must_match_session_and_complete_timeline(
     tmp_path: Path, forgery: str
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open_session(dataset)
     source = service.prepare_calculation(
         apply_attempt(dataset),

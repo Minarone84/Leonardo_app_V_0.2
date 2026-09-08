@@ -95,6 +95,15 @@ class StudyEnvironmentManagerDialog(QDialog):
             if mode == "load"
             else "Manage Study Environments"
         )
+        self.setStyleSheet(
+            "QRadioButton::indicator {"
+            " background-color: #111827; border: 1px solid #9CA3AF;"
+            " width: 13px; height: 13px; border-radius: 7px;"
+            "}"
+            "QRadioButton::indicator:checked {"
+            " background-color: #9CA3AF; border: 1px solid #D1D5DB;"
+            "}"
+        )
         self._summaries = tuple(summaries)
         self._environment: StudyEnvironmentV1 | None = None
         self._report: StudyEnvironmentCompatibilityReport | None = None

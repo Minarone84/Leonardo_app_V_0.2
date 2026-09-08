@@ -27,7 +27,7 @@ def test_preview_dialog_renders_dynamic_read_only_cells_and_no_path() -> None:
         table = dialog.findChild(QTableWidget, "data_manager_preview.table.values")
         assert table.columnCount() == 2
         assert table.horizontalHeaderItem(0).text() == "Timestamp"
-        assert table.item(0, 0).text() == "2026-08-09 17:42:17 UTC"
+        assert table.item(0, 0).text() == "2026-08-09 19:42:17 CEST (+02:00)"
         assert table.item(0, 1).text() == "2.5"
         assert table.editTriggers() == QTableWidget.EditTrigger.NoEditTriggers
         assert "path" not in " ".join(

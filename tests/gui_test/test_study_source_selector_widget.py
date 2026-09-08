@@ -130,6 +130,42 @@ def test_braid_mid_is_fixed_while_trap_area_mid_remains_optional(tmp_path: Path)
     assert not trap_area._add.isHidden()
 
 
+def test_delta_uses_contextual_labels_without_changing_canonical_roles(
+    tmp_path: Path,
+) -> None:
+    QApplication.instance() or QApplication([])
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    catalog = ResearchStudySetupService(
+        artifacts, StudyEnvironmentStore(tmp_path / "env")
+    ).build_catalog(dataset, ())
+    delta = StudySourceSelectorWidget(
+        catalog,
+        source_role_schema("delta"),
+        role_labels={"fast": "Minuend", "slow": "Subtrahend"},
+    )
+    assert tuple(
+        row.container.findChild(QLabel).text() for row in delta._rows
+    ) == ("Minuend", "Subtrahend")
+    delta.select_option("fast", catalog.ohlcv_sources[3])
+    delta.select_option("slow", catalog.ohlcv_sources[0])
+    assert tuple(selection.role for selection in delta.selections()) == (
+        "fast",
+        "slow",
+    )
+
+    for tool_key, labels in (
+        ("braids", ("Fast", "Mid", "Slow")),
+        ("braid_instability", ("Fast", "Mid", "Slow")),
+        ("trap_area", ("Fast", "Slow")),
+    ):
+        selector = StudySourceSelectorWidget(
+            catalog, source_role_schema(tool_key)
+        )
+        assert tuple(
+            row.container.findChild(QLabel).text() for row in selector._rows
+        ) == labels
+
+
 def test_utc_has_four_mandatory_stable_generic_role_rows(tmp_path: Path) -> None:
     QApplication.instance() or QApplication([])
     dataset, artifacts, _frame = accepted_context(tmp_path)

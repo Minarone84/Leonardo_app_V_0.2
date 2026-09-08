@@ -5,19 +5,31 @@ from __future__ import annotations
 import json
 import os
 import stat
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from leonardo.financial_tools import get_financial_tool_spec
+
+from .identity import (
+    ObjectSemanticKey,
+    compute_portable_recipe_id,
+    portable_recipe_object_semantic_key,
+)
 from .models import (
     PortableRecipeCollectionHeadV1,
     PortableRecipeCollectionRevisionV1,
+    PortableRecipeDependencyV1,
+    PortableRecipeOHLCVInputV1,
+    PortableRecipeOriginV1,
+    PortableRecipePersistenceMetadataV1,
     PortableRecipeProvenanceV1,
     PortableRecipeV1,
     PortableRecipeValidationError,
+    canonical_json_bytes,
 )
 from .planner import PortableRecipeGraphPlanner
 
@@ -41,6 +53,14 @@ class PortableRecipeSummary:
     ohlcv_input_count: int
     valid: bool = True
     rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PortableRecipeSemanticRecord:
+    persisted_recipe_id: str
+    canonical_current_recipe_id: str
+    semantic_key: bytes
+    canonical_recipe: PortableRecipeV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,13 +101,77 @@ class PortableRecipeStore:
             raise TypeError("recipe must be a PortableRecipeV1")
         path = self._recipe_path(recipe.recipe_id)
         with self._lock:
-            self._write_immutable(path, recipe.canonical_json_bytes())
+            if path.exists():
+                self._write_immutable(path, recipe.canonical_json_bytes())
+                return recipe
+            metadata = PortableRecipePersistenceMetadataV1(
+                recipe.recipe_id, self._now(), ()
+            )
+            self._write_new_recipe_with_metadata(recipe, metadata)
+        return recipe
+
+    def persist_recipe(
+        self,
+        recipe: PortableRecipeV1,
+        *,
+        origin_kind: str,
+        origin_details: Mapping[str, str],
+    ) -> PortableRecipeV1:
+        """Persist or reuse a Recipe and atomically record one known origin."""
+
+        if not isinstance(recipe, PortableRecipeV1):
+            raise TypeError("recipe must be a PortableRecipeV1")
+        path = self._recipe_path(recipe.recipe_id)
+        with self._lock:
+            recorded_at = self._now()
+            origin = PortableRecipeOriginV1.build(
+                origin_kind=origin_kind,
+                origin_recorded_at_utc=recorded_at,
+                details=origin_details,
+            )
+            if path.exists():
+                self._write_immutable(path, recipe.canonical_json_bytes())
+                self._record_recipe_origin_locked(recipe.recipe_id, origin)
+                return recipe
+            metadata = PortableRecipePersistenceMetadataV1(
+                recipe.recipe_id, recorded_at, (origin,)
+            )
+            self._write_new_recipe_with_metadata(recipe, metadata)
         return recipe
 
     def load_recipe(self, recipe_id: str) -> PortableRecipeV1:
         path = self._recipe_path(recipe_id)
         with self._lock:
             return self._load_model(path, PortableRecipeV1)
+
+    def load_persistence_metadata(
+        self, recipe_id: str
+    ) -> PortableRecipePersistenceMetadataV1 | None:
+        """Return authoritative persistence metadata without migrating legacy data."""
+
+        self._validate_sha(recipe_id, "recipe_id")
+        with self._lock:
+            self._load_recipe_semantics(self._recipe_path(recipe_id))
+            return self._load_persistence_metadata_locked(recipe_id)
+
+    def record_recipe_origin(
+        self,
+        recipe_id: str,
+        *,
+        origin_kind: str,
+        origin_details: Mapping[str, str],
+    ) -> PortableRecipePersistenceMetadataV1:
+        """Merge one meaningful origin without changing Recipe identity or age."""
+
+        self._validate_sha(recipe_id, "recipe_id")
+        with self._lock:
+            self._load_recipe_semantics(self._recipe_path(recipe_id))
+            origin = PortableRecipeOriginV1.build(
+                origin_kind=origin_kind,
+                origin_recorded_at_utc=self._now(),
+                details=origin_details,
+            )
+            return self._record_recipe_origin_locked(recipe_id, origin)
 
     def list_recipe_summaries(self) -> tuple[PortableRecipeSummary, ...]:
         root = self._root_dir / "recipes"
@@ -124,6 +208,88 @@ class PortableRecipeStore:
                 sorted(summaries, key=lambda item: (item.kind, item.tool_key, item.recipe_id))
             )
 
+    def inspect_recipe_semantics(
+        self, recipe_id: str
+    ) -> PortableRecipeSemanticRecord:
+        """Read one current or historical Recipe through canonical semantics."""
+
+        path = self._recipe_path(recipe_id)
+        with self._lock:
+            record = self._load_recipe_semantics(path)
+            semantic_key = self._recipe_semantic_key(
+                record.canonical_recipe,
+                {},
+                set(),
+                persisted_recipe_id=record.persisted_recipe_id,
+            )
+            return PortableRecipeSemanticRecord(
+                record.persisted_recipe_id,
+                record.canonical_current_recipe_id,
+                semantic_key,
+                record.canonical_recipe,
+            )
+
+    def semantic_key_for_recipe(
+        self,
+        recipe: PortableRecipeV1,
+        *,
+        recipes: Mapping[str, PortableRecipeV1] | None = None,
+    ) -> ObjectSemanticKey:
+        """Return the shared semantic key for a candidate Recipe graph."""
+
+        if not isinstance(recipe, PortableRecipeV1):
+            raise TypeError("recipe must be a PortableRecipeV1")
+        with self._lock:
+            return self._recipe_semantic_key(recipe, dict(recipes or {}), set())
+
+    def find_equivalent_recipe(
+        self,
+        recipe: PortableRecipeV1,
+        *,
+        recipes: Mapping[str, PortableRecipeV1] | None = None,
+    ) -> PortableRecipeV1 | None:
+        """Return the deterministic valid semantic winner without publishing."""
+
+        requested_key = self.semantic_key_for_recipe(recipe, recipes=recipes)
+        candidates: list[PortableRecipeV1] = []
+        for summary in self.list_recipe_summaries():
+            if not summary.valid:
+                continue
+            try:
+                current = self.load_recipe(summary.recipe_id)
+                if self.semantic_key_for_recipe(current) == requested_key:
+                    candidates.append(current)
+            except (FileNotFoundError, PortableRecipeStoreError):
+                continue
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item.recipe_id)
+
+    def recipe_deletion_blockers(self, recipe_id: str) -> tuple[str, ...]:
+        """Return exact Recipe and Collection references blocking deletion."""
+
+        self._validate_sha(recipe_id, "recipe_id")
+        with self._lock:
+            self.inspect_recipe_semantics(recipe_id)
+            blockers: list[str] = []
+            for candidate in self._all_recipe_semantics_for_deletion_proof():
+                if candidate.persisted_recipe_id == recipe_id:
+                    continue
+                if any(
+                    dependency.recipe_id == recipe_id
+                    for dependency in candidate.canonical_recipe.dependencies
+                ):
+                    blockers.append(
+                        f"Recipe {candidate.persisted_recipe_id}"
+                    )
+            for revision in self._all_collection_revisions_for_recipe_reference_proof():
+                if recipe_id in revision.member_recipe_ids:
+                    blockers.append(
+                        f"Recipe Collection {revision.collection_id} "
+                        f"revision {revision.revision_id}"
+                    )
+            return tuple(blockers)
+
     def save_provenance(
         self, provenance: PortableRecipeProvenanceV1
     ) -> PortableRecipeProvenanceV1:
@@ -134,6 +300,20 @@ class PortableRecipeStore:
             raise PortableRecipeStoreError("provenance Recipe does not exist")
         path = self._provenance_path(provenance.recipe_id, provenance.provenance_id)
         with self._lock:
+            self._record_recipe_origin_locked(
+                provenance.recipe_id,
+                PortableRecipeOriginV1.build(
+                    origin_kind="study_environment",
+                    origin_recorded_at_utc=self._now(),
+                    details={
+                        "environment_id": provenance.study_environment_id,
+                        "environment_content_hash": (
+                            provenance.study_environment_content_hash
+                        ),
+                        "entry_id": provenance.study_entry_id,
+                    },
+                ),
+            )
             self._write_immutable(path, provenance.canonical_json_bytes())
         return provenance
 
@@ -147,6 +327,8 @@ class PortableRecipeStore:
             self._require_safe_directory(root)
             values: list[PortableRecipeProvenanceV1] = []
             for path in sorted(root.glob("*.json")):
+                if path.name == "metadata.json":
+                    continue
                 item = self._load_model(path, PortableRecipeProvenanceV1)
                 if item.recipe_id != recipe_id or item.provenance_id != path.stem:
                     raise PortableRecipeStoreError("provenance identity does not match path")
@@ -161,20 +343,42 @@ class PortableRecipeStore:
         member_recipe_ids: Sequence[str],
     ) -> PortableRecipeCollectionRevisionV1:
         with self._lock:
+            canonical_members = self._validate_collection_request_members(
+                root_recipe_ids, member_recipe_ids
+            )
+            existing = self._find_equivalent_current_collection(
+                root_recipe_ids, canonical_members
+            )
+            if existing is not None:
+                return existing
             collection_id = self._new_collection_id()
-            self._validate_collection_members(root_recipe_ids, member_recipe_ids)
             created_at = self._now()
             revision = PortableRecipeCollectionRevisionV1.build(
                 collection_id=collection_id,
                 display_name=display_name,
                 description=description,
                 root_recipe_ids=root_recipe_ids,
-                member_recipe_ids=member_recipe_ids,
+                member_recipe_ids=canonical_members,
                 previous_revision_id=None,
                 created_at_utc=created_at,
             )
             self._publish_revision(revision, updated_at_utc=created_at)
             return revision
+
+    def find_equivalent_collection(
+        self,
+        root_recipe_ids: Sequence[str],
+        member_recipe_ids: Sequence[str],
+    ) -> PortableRecipeCollectionRevisionV1 | None:
+        """Return the current oldest semantic winner without publishing."""
+
+        with self._lock:
+            canonical_members = self._validate_collection_request_members(
+                root_recipe_ids, member_recipe_ids
+            )
+            return self._find_equivalent_current_collection(
+                root_recipe_ids, canonical_members
+            )
 
     def update_collection(
         self,
@@ -195,14 +399,21 @@ class PortableRecipeStore:
                 raise PortableRecipeStoreError(
                     "Recipe Collection changed since it was selected"
                 )
-            self._validate_collection_members(root_recipe_ids, member_recipe_ids)
+            canonical_members = self._validate_collection_request_members(
+                root_recipe_ids, member_recipe_ids
+            )
+            existing = self._find_equivalent_current_collection(
+                root_recipe_ids, canonical_members
+            )
+            if existing is not None and existing.collection_id != collection_id:
+                return existing
             created_at = self._now()
             revision = PortableRecipeCollectionRevisionV1.build(
                 collection_id=collection_id,
                 display_name=display_name,
                 description=description,
                 root_recipe_ids=root_recipe_ids,
-                member_recipe_ids=member_recipe_ids,
+                member_recipe_ids=canonical_members,
                 previous_revision_id=current.revision_id,
                 created_at_utc=created_at,
             )
@@ -295,24 +506,38 @@ class PortableRecipeStore:
         recipe_id: str,
         *,
         before_delete: Callable[[], None] | None = None,
+        canonical_winner_id: str | None = None,
     ) -> PortableRecipeV1:
         with self._lock:
-            recipe = self.load_recipe(recipe_id)
-            for candidate in self._all_recipes_for_deletion_proof():
-                if candidate.recipe_id == recipe_id:
-                    continue
-                if any(
-                    dependency.recipe_id == recipe_id
-                    for dependency in candidate.dependencies
-                ):
+            if canonical_winner_id is None:
+                recipe = self.load_recipe(recipe_id)
+            else:
+                self._validate_sha(canonical_winner_id, "canonical_winner_id")
+                if recipe_id == canonical_winner_id:
                     raise PortableRecipeStoreError(
-                        "portable Recipe is referenced by another Recipe"
+                        "duplicate Recipe candidate equals canonical winner"
                     )
-            for revision in self._all_collection_revisions_for_deletion_proof():
-                if recipe_id in revision.member_recipe_ids:
+                candidate = self.inspect_recipe_semantics(recipe_id)
+                winner = self.inspect_recipe_semantics(canonical_winner_id)
+                if candidate.semantic_key != winner.semantic_key:
                     raise PortableRecipeStoreError(
-                        "portable Recipe is referenced by a Recipe Collection"
+                        "duplicate Recipe semantic identity changed"
                     )
+                recipe = candidate.canonical_recipe
+
+            blockers = self.recipe_deletion_blockers(recipe_id)
+            if any(
+                item.startswith("Recipe ")
+                and not item.startswith("Recipe Collection ")
+                for item in blockers
+            ):
+                raise PortableRecipeStoreError(
+                    "portable Recipe is referenced by another Recipe"
+                )
+            if blockers:
+                raise PortableRecipeStoreError(
+                    "portable Recipe is referenced by a Recipe Collection"
+                )
 
             provenance_dir = self._root_dir / "recipe_provenance" / recipe_id
             provenance_paths = self._provenance_paths_for_deletion(
@@ -330,6 +555,59 @@ class PortableRecipeStore:
             self._remove_empty_directory(self._root_dir / "recipes")
             self._remove_empty_directory(self._root_dir)
             return recipe
+
+    def _write_new_recipe_with_metadata(
+        self,
+        recipe: PortableRecipeV1,
+        metadata: PortableRecipePersistenceMetadataV1,
+    ) -> None:
+        recipe_path = self._recipe_path(recipe.recipe_id)
+        metadata_path = self._persistence_metadata_path(recipe.recipe_id)
+        self._write_immutable(recipe_path, recipe.canonical_json_bytes())
+        try:
+            self._write_immutable(metadata_path, metadata.canonical_json_bytes())
+        except (OSError, PortableRecipeValidationError):
+            recipe_path.unlink()
+            self._remove_empty_directory(self._root_dir / "recipes")
+            self._remove_empty_directory(
+                self._root_dir / "recipe_provenance" / recipe.recipe_id
+            )
+            self._remove_empty_directory(self._root_dir / "recipe_provenance")
+            self._remove_empty_directory(self._root_dir)
+            raise
+
+    def _record_recipe_origin_locked(
+        self, recipe_id: str, origin: PortableRecipeOriginV1
+    ) -> PortableRecipePersistenceMetadataV1:
+        current = self._load_persistence_metadata_locked(recipe_id)
+        if current is None:
+            current = PortableRecipePersistenceMetadataV1(recipe_id, None, ())
+        if any(item.origin_id == origin.origin_id for item in current.origins):
+            return current
+        updated = PortableRecipePersistenceMetadataV1(
+            recipe_id,
+            current.first_persisted_at_utc,
+            (*current.origins, origin),
+        )
+        self._write_mutable(
+            self._persistence_metadata_path(recipe_id),
+            updated.canonical_json_bytes(),
+        )
+        return updated
+
+    def _load_persistence_metadata_locked(
+        self, recipe_id: str
+    ) -> PortableRecipePersistenceMetadataV1 | None:
+        path = self._persistence_metadata_path(recipe_id)
+        if not path.exists() and not _is_link(path):
+            self._require_root_if_present()
+            return None
+        metadata = self._load_model(path, PortableRecipePersistenceMetadataV1)
+        if metadata.recipe_id != recipe_id:
+            raise PortableRecipeStoreError(
+                "Recipe persistence metadata identity does not match path"
+            )
+        return metadata
 
     def delete_collection(
         self,
@@ -376,10 +654,12 @@ class PortableRecipeStore:
             head.canonical_json_bytes(),
         )
 
-    def _all_recipes_for_deletion_proof(self) -> tuple[PortableRecipeV1, ...]:
+    def _all_recipe_semantics_for_deletion_proof(
+        self,
+    ) -> tuple[PortableRecipeSemanticRecord, ...]:
         root = self._root_dir / "recipes"
         self._require_safe_directory(root)
-        values: list[PortableRecipeV1] = []
+        values: list[PortableRecipeSemanticRecord] = []
         for path in sorted(root.iterdir(), key=lambda item: item.name):
             if (
                 _is_link(path)
@@ -391,11 +671,125 @@ class PortableRecipeStore:
                     "unexpected portable Recipe persistence shape"
                 )
             self._validate_sha(path.stem, "recipe_id")
-            value = self._load_model(path, PortableRecipeV1)
-            if value.recipe_id != path.stem:
-                raise PortableRecipeStoreError("Recipe ID does not match file name")
-            values.append(value)
+            values.append(self._load_recipe_semantics(path))
         return tuple(values)
+
+    def _load_recipe_semantics(self, path: Path) -> PortableRecipeSemanticRecord:
+        self._require_safe_file(path)
+        try:
+            raw = path.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+        except FileNotFoundError:
+            raise
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PortableRecipeStoreError("invalid portable Recipe JSON") from exc
+        expected_fields = {
+            "schema_version",
+            "object_type",
+            "recipe_id",
+            "tool_key",
+            "tool_version",
+            "kind",
+            "parameters",
+            "output_names",
+            "ohlcv_inputs",
+            "dependencies",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected_fields:
+            raise PortableRecipeStoreError(
+                "portable Recipe JSON does not match its persisted schema"
+            )
+        persisted_recipe_id = payload["recipe_id"]
+        self._validate_sha(persisted_recipe_id, "recipe_id")
+        if persisted_recipe_id != path.stem:
+            raise PortableRecipeStoreError("Recipe ID does not match file name")
+        try:
+            if not isinstance(payload["ohlcv_inputs"], list) or not isinstance(
+                payload["dependencies"], list
+            ):
+                raise PortableRecipeValidationError(
+                    "Recipe sources must be JSON arrays"
+                )
+            ohlcv_inputs = tuple(
+                PortableRecipeOHLCVInputV1.from_dict(item)
+                for item in payload["ohlcv_inputs"]
+            )
+            dependencies = tuple(
+                PortableRecipeDependencyV1.from_dict(item)
+                for item in payload["dependencies"]
+            )
+            canonical_recipe_id = compute_portable_recipe_id(
+                tool_key=payload["tool_key"],
+                tool_version=payload["tool_version"],
+                kind=payload["kind"],
+                parameters=payload["parameters"],
+                output_names=payload["output_names"],
+                ohlcv_inputs=ohlcv_inputs,
+                dependencies=dependencies,
+                schema_version=payload["schema_version"],
+                object_type=payload["object_type"],
+            )
+            current_payload = dict(payload)
+            current_payload["recipe_id"] = canonical_recipe_id
+            canonical_recipe = PortableRecipeV1.from_dict(current_payload)
+            persisted_payload = canonical_recipe.to_dict()
+            persisted_payload["recipe_id"] = persisted_recipe_id
+            if raw != canonical_json_bytes(persisted_payload):
+                raise PortableRecipeStoreError(
+                    "portable Recipe JSON bytes are not canonical"
+                )
+        except PortableRecipeStoreError:
+            raise
+        except (TypeError, ValueError, PortableRecipeValidationError) as exc:
+            raise PortableRecipeStoreError(
+                "portable Recipe JSON does not match its persisted schema"
+            ) from exc
+        return PortableRecipeSemanticRecord(
+            persisted_recipe_id,
+            canonical_recipe_id,
+            b"",
+            canonical_recipe,
+        )
+
+    def _recipe_semantic_key(
+        self,
+        recipe: PortableRecipeV1,
+        recipes: dict[str, PortableRecipeV1],
+        active: set[str],
+        *,
+        persisted_recipe_id: str | None = None,
+    ) -> ObjectSemanticKey:
+        identity = persisted_recipe_id or recipe.recipe_id
+        if identity in active:
+            raise PortableRecipeStoreError(
+                "portable Recipe semantic dependency graph contains a cycle"
+            )
+        active.add(identity)
+
+        def dependency_key(recipe_id: str) -> ObjectSemanticKey:
+            dependency = recipes.get(recipe_id)
+            dependency_persisted_id: str | None = None
+            if dependency is None:
+                record = self._load_recipe_semantics(self._recipe_path(recipe_id))
+                dependency = record.canonical_recipe
+                dependency_persisted_id = record.persisted_recipe_id
+            return self._recipe_semantic_key(
+                dependency,
+                recipes,
+                active,
+                persisted_recipe_id=dependency_persisted_id,
+            )
+
+        try:
+            return portable_recipe_object_semantic_key(
+                recipe,
+                dependency_key,
+                implicit_ohlcv_inputs=tuple(
+                    item.name for item in get_financial_tool_spec(recipe.tool_key).data_inputs
+                ),
+            )
+        finally:
+            active.remove(identity)
 
     def _all_collection_revisions_for_deletion_proof(
         self,
@@ -418,6 +812,23 @@ class PortableRecipeStore:
                     "portable Recipe Collection revisions do not match head"
                 )
             values.extend(revisions)
+        return tuple(values)
+
+    def _all_collection_revisions_for_recipe_reference_proof(
+        self,
+    ) -> tuple[PortableRecipeCollectionRevisionV1, ...]:
+        root = self._root_dir / "recipe_collections"
+        if not root.exists() and not _is_link(root):
+            return ()
+        self._require_safe_directory(root)
+        values: list[PortableRecipeCollectionRevisionV1] = []
+        for path in sorted(root.iterdir(), key=lambda item: item.name):
+            if _is_link(path) or not path.is_dir():
+                raise PortableRecipeStoreError(
+                    "unexpected portable Recipe Collection persistence shape"
+                )
+            self._validate_collection_id(path.name)
+            values.extend(self._preflight_collection_directory(path))
         return tuple(values)
 
     def _preflight_collection_directory(
@@ -472,12 +883,19 @@ class PortableRecipeStore:
                 raise PortableRecipeStoreError(
                     "unexpected portable Recipe provenance persistence shape"
                 )
-            self._validate_sha(path.stem, "provenance_id")
-            value = self._load_model(path, PortableRecipeProvenanceV1)
-            if value.recipe_id != recipe_id or value.provenance_id != path.stem:
-                raise PortableRecipeStoreError(
-                    "provenance identity does not match path"
-                )
+            if path.name == "metadata.json":
+                value = self._load_model(path, PortableRecipePersistenceMetadataV1)
+                if value.recipe_id != recipe_id:
+                    raise PortableRecipeStoreError(
+                        "Recipe persistence metadata identity does not match path"
+                    )
+            else:
+                self._validate_sha(path.stem, "provenance_id")
+                value = self._load_model(path, PortableRecipeProvenanceV1)
+                if value.recipe_id != recipe_id or value.provenance_id != path.stem:
+                    raise PortableRecipeStoreError(
+                        "provenance identity does not match path"
+                    )
         return paths
 
     def _remove_empty_directory(self, path: Path) -> None:
@@ -496,6 +914,55 @@ class PortableRecipeStore:
                 "Collection members must match the canonical graph planner result"
             )
 
+    def _validate_collection_request_members(
+        self, root_recipe_ids: Sequence[str], member_recipe_ids: Sequence[str]
+    ) -> tuple[str, ...]:
+        requested_members = tuple(member_recipe_ids)
+        plan = PortableRecipeGraphPlanner(self.load_recipe).plan(root_recipe_ids)
+        if (
+            len(requested_members) != len(plan.member_recipe_ids)
+            or frozenset(requested_members) != frozenset(plan.member_recipe_ids)
+        ):
+            raise PortableRecipeStoreError(
+                "Collection members must match the canonical graph planner result"
+            )
+        return plan.member_recipe_ids
+
+    def _collection_semantic_key(
+        self, root_recipe_ids: Sequence[str], member_recipe_ids: Sequence[str]
+    ) -> frozenset[ObjectSemanticKey]:
+        del root_recipe_ids
+        return frozenset(
+            self.inspect_recipe_semantics(recipe_id).semantic_key
+            for recipe_id in member_recipe_ids
+        )
+
+    def _find_equivalent_current_collection(
+        self, root_recipe_ids: Sequence[str], member_recipe_ids: Sequence[str]
+    ) -> PortableRecipeCollectionRevisionV1 | None:
+        requested_key = self._collection_semantic_key(
+            root_recipe_ids, member_recipe_ids
+        )
+        candidates: list[
+            tuple[datetime, str, PortableRecipeCollectionRevisionV1]
+        ] = []
+        for summary in self.list_collection_summaries():
+            if not summary.valid or summary.created_at_utc is None:
+                continue
+            try:
+                revision = self.load_collection(summary.collection_id)
+            except (FileNotFoundError, PortableRecipeStoreError):
+                continue
+            if self._collection_semantic_key(
+                revision.root_recipe_ids, revision.member_recipe_ids
+            ) == requested_key:
+                candidates.append(
+                    (summary.created_at_utc, summary.collection_id, revision)
+                )
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: (item[0], item[1]))[2]
+
     def _recipe_path(self, recipe_id: str) -> Path:
         self._validate_sha(recipe_id, "recipe_id")
         return self._root_dir / "recipes" / f"{recipe_id}.json"
@@ -504,6 +971,10 @@ class PortableRecipeStore:
         self._validate_sha(recipe_id, "recipe_id")
         self._validate_sha(provenance_id, "provenance_id")
         return self._root_dir / "recipe_provenance" / recipe_id / f"{provenance_id}.json"
+
+    def _persistence_metadata_path(self, recipe_id: str) -> Path:
+        self._validate_sha(recipe_id, "recipe_id")
+        return self._root_dir / "recipe_provenance" / recipe_id / "metadata.json"
 
     def _collection_dir(self, collection_id: str) -> Path:
         self._validate_collection_id(collection_id)

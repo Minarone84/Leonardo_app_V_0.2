@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import QMessageBox
 
-from leonardo.artifacts import ManagedArtifactSummary
+from leonardo.artifacts import ArtifactMetadataV1, ManagedArtifactSummary
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.data import MarketId
 from leonardo.data_manager import (
@@ -21,9 +22,11 @@ from leonardo.data_manager import (
     DataManagerArtifactEntry,
     DataManagerArtifactValidation,
     DataManagerCatalogSnapshot,
+    DataManagerDatasetEntry,
     DataManagerFocusRequest,
     DataManagerMarketSnapshot,
     DataManagerManagedArtifactEntry,
+    DataManagerPortableRecipeInspection,
     DataManagerPortableRecipeEntry,
     DataManagerPreview,
     DataManagerProductCatalogSnapshot,
@@ -36,12 +39,19 @@ from leonardo.data_manager import (
     DataManagerRecipeCollectionEntry,
     DataManagerRecipeCollectionInspection,
     ArtifactCollectionRevisionV1,
+    ArtifactCollectionValidation,
     ArtifactCollectionUpdatePlan,
     ArtifactCollectionUpdateResult,
     ArtifactCollectionOutputV1,
     DatabaseUpdatePlan,
     DatabaseUpdateResult,
     DatabaseReadiness,
+    DatabaseContentAdditionPlan,
+    DataManagerDatabaseCatalogEntry,
+    DatabaseRevisionManifestV2,
+    DatabaseSeedCreationPlan,
+    DatabaseSeedV1,
+    SeedOnlyDatabaseCreationPlan,
 )
 from leonardo.recipes import (
     PortableRecipeCollectionRevisionV1,
@@ -49,7 +59,13 @@ from leonardo.recipes import (
     PortableRecipeV1,
 )
 from leonardo.data_manager.creation_models import ArtifactCollectionSelectionPlan
-from leonardo.data_manager.models import DataManagerDeletionResult
+from leonardo.data_manager.models import (
+    DataManagerDeletionResult,
+    DuplicateMaintenancePreflight,
+    DuplicateMaintenancePurgeResult,
+    DuplicateMaintenanceScanResult,
+    duplicate_maintenance_domain,
+)
 from leonardo.data_manager.direct_artifact import (
     DataManagerDirectArtifactCatalog,
     DataManagerDirectArtifactRequest,
@@ -138,6 +154,7 @@ class DataManagerSuitePresenter(QObject):
         self._market_generation = 0
         self._pending_focus: DataManagerFocusRequest | None = None
         self._preview_dialogs: set[DataManagerPreviewDialog] = set()
+        self._reuse_result_dialogs: set[QMessageBox] = set()
         self._disposed = False
         self._creation_seed = None
         self._base_plan: DataManagerArtifactMaterializationPlan | None = None
@@ -162,9 +179,11 @@ class DataManagerSuitePresenter(QObject):
         self._background_refresh_pending_force = False
         self._background_evidence_signature: str | None = None
         self._initial_warmup_complete = False
+        self._external_ohlcv_change_pending = False
         self._background_deferred_catalogs: (
             DataManagerProductCatalogSnapshot | None
         ) = None
+        self._background_deferred_catalogs_refresh_selected_market = False
         self._background_selected_market_refresh_pending: MarketId | None = None
         self._artifact_update_plan: ArtifactCollectionUpdatePlan | None = None
         self._database_update_plan: DatabaseUpdatePlan | None = None
@@ -210,6 +229,20 @@ class DataManagerSuitePresenter(QObject):
         if self._active_task_id is not None:
             return
         self._refresh_legacy_catalog()
+
+    def notify_external_ohlcv_change(self, market_id: MarketId) -> None:
+        if not isinstance(market_id, MarketId):
+            raise TypeError("market_id must be a MarketId")
+        if self._disposed:
+            return
+        self._view.set_status(
+            f"OHLCV evidence changed for {market_id.as_key()}; "
+            "verifying Data Manager currentness"
+        )
+        if not self._initial_warmup_complete:
+            self._external_ohlcv_change_pending = True
+            return
+        self._request_background_refresh(force=True)
 
     def _refresh_legacy_catalog(self) -> None:
         self._catalog_generation += 1
@@ -331,6 +364,48 @@ class DataManagerSuitePresenter(QObject):
             return
         self._apply_or_defer_background_catalogs(result.value)
 
+    def _start_mutation_product_scan(self) -> None:
+        background_task_id = self._background_refresh_task_id
+        self._background_refresh_generation += 1
+        generation = self._background_refresh_generation
+        self._background_refresh_task_id = None
+        self._background_refresh_stage = None
+        self._background_refresh_pending = False
+        self._background_refresh_pending_force = False
+        self._background_deferred_catalogs = None
+        self._background_deferred_catalogs_refresh_selected_market = False
+        self._background_selected_market_refresh_pending = None
+        self._background_evidence_signature = None
+        self._background_refresh_pending = True
+        if background_task_id is not None:
+            self._service.cancel(background_task_id)
+        self._submit_background_task(
+            "mutation_product_scan",
+            generation,
+            lambda result: self._settle_mutation_product_scan(result, generation),
+            lambda result: self._service.submit_scan_product_catalogs(
+                progress_callback=lambda _progress: None,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+        )
+
+    def _settle_mutation_product_scan(
+        self, result: TaskResult, generation: int
+    ) -> None:
+        if not self._background_result_is_current(
+            result, generation, "mutation_product_scan"
+        ):
+            return
+        if result.status != "completed" or not isinstance(
+            result.value, DataManagerProductCatalogSnapshot
+        ):
+            self._finish_background_refresh()
+            return
+        self._apply_or_defer_background_catalogs(
+            result.value, refresh_selected_market=True
+        )
+
     def _submit_background_task(
         self,
         stage: str,
@@ -370,11 +445,18 @@ class DataManagerSuitePresenter(QObject):
         )
 
     def _apply_or_defer_background_catalogs(
-        self, snapshot: DataManagerProductCatalogSnapshot
+        self,
+        snapshot: DataManagerProductCatalogSnapshot,
+        *,
+        refresh_selected_market: bool = False,
     ) -> None:
         if self._active_task_id is not None:
             self._background_deferred_catalogs = snapshot
-            self._finish_background_refresh()
+            self._background_deferred_catalogs_refresh_selected_market = (
+                refresh_selected_market
+            )
+            self._background_refresh_task_id = None
+            self._background_refresh_stage = None
             return
         old = self._product_catalogs
         market = self._selected_market
@@ -397,8 +479,8 @@ class DataManagerSuitePresenter(QObject):
         self._revalidate_plan_contexts()
         if (
             market is None
-            or old_slice == new_slice
             or snapshot.catalog.accepted_market(market) is None
+            or (not refresh_selected_market and old_slice == new_slice)
         ):
             self._finish_background_refresh()
             return
@@ -415,8 +497,15 @@ class DataManagerSuitePresenter(QObject):
             return
         snapshot = self._background_deferred_catalogs
         if snapshot is not None:
+            refresh_selected_market = (
+                self._background_deferred_catalogs_refresh_selected_market
+            )
             self._background_deferred_catalogs = None
-            self._apply_or_defer_background_catalogs(snapshot)
+            self._background_deferred_catalogs_refresh_selected_market = False
+            self._apply_or_defer_background_catalogs(
+                snapshot,
+                refresh_selected_market=refresh_selected_market,
+            )
             if self._background_refresh_task_id is not None:
                 return
         market = self._background_selected_market_refresh_pending
@@ -583,6 +672,11 @@ class DataManagerSuitePresenter(QObject):
         self._background_refresh_stage = None
         if self._disposed:
             return
+        if self._active_task_id is not None and (
+            self._background_deferred_catalogs is not None
+            or self._background_selected_market_refresh_pending is not None
+        ):
+            return
         if self._background_refresh_pending:
             force = self._background_refresh_pending_force
             self._background_refresh_pending = False
@@ -638,6 +732,9 @@ class DataManagerSuitePresenter(QObject):
             self._background_evidence_signature = (
                 result.value.latest_reconciliation.evidence_signature
             )
+            if self._external_ohlcv_change_pending:
+                self._external_ohlcv_change_pending = False
+                self._request_background_refresh(force=True)
             return
         self._report_failure("Data Manager catalog loading", result)
 
@@ -686,7 +783,9 @@ class DataManagerSuitePresenter(QObject):
         self._background_refresh_pending = False
         self._background_refresh_pending_force = False
         self._background_deferred_catalogs = None
+        self._background_deferred_catalogs_refresh_selected_market = False
         self._background_selected_market_refresh_pending = None
+        self._external_ohlcv_change_pending = False
         self._background_refresh_generation += 1
         if task_id is not None:
             self._service.cancel(task_id)
@@ -695,6 +794,15 @@ class DataManagerSuitePresenter(QObject):
         for dialog in tuple(self._preview_dialogs):
             dialog.close()
         self._preview_dialogs.clear()
+        for dialog in tuple(self._reuse_result_dialogs):
+            dialog.close()
+        self._reuse_result_dialogs.clear()
+        for dialog in (
+            self._view.duplicate_maintenance_preflight_dialog(),
+            self._view.duplicate_maintenance_results_dialog(),
+        ):
+            if dialog is not None:
+                dialog.close()
 
     def _wire(self) -> None:
         self._view.refresh_requested.connect(self.refresh)
@@ -737,11 +845,29 @@ class DataManagerSuitePresenter(QObject):
         self._view.edit_recipe_collection_requested.connect(
             self._open_recipe_collection_edit
         )
+        self._view.create_artifact_from_recipe_requested.connect(
+            self._open_recipe_artifact_materialization
+        )
+        self._view.create_artifacts_from_recipe_collection_requested.connect(
+            self._open_recipe_artifact_materialization
+        )
+        self._view.recipe_artifact_materialization_preview_requested.connect(
+            self._preview_recipe_artifact_materialization
+        )
+        self._view.recipe_artifact_materialization_execute_requested.connect(
+            self._execute_recipe_artifact_materialization
+        )
         self._view.create_artifact_collection_requested.connect(
             self._open_artifact_collection_create
         )
         self._view.edit_artifact_collection_requested.connect(
             self._open_artifact_collection_edit
+        )
+        self._view.inspect_recipe_collection_requested.connect(
+            self._open_recipe_collection_inspection
+        )
+        self._view.inspect_artifact_collection_requested.connect(
+            self._open_artifact_collection_inspection
         )
         self._view.recipe_collection_preview_requested.connect(
             self._preview_recipe_collection
@@ -773,13 +899,609 @@ class DataManagerSuitePresenter(QObject):
         self._view.catalog_delete_artifact_collection_requested.connect(
             self._delete_catalog_artifact_collection
         )
+        self._view.duplicate_maintenance_requested.connect(
+            self._prepare_duplicate_maintenance
+        )
+        self._view.duplicate_maintenance_scan_requested.connect(
+            self._scan_duplicate_maintenance
+        )
+        self._view.duplicate_maintenance_purge_requested.connect(
+            self._purge_duplicate_maintenance
+        )
         self._view.recipe_derivation_preview_requested.connect(
             self._preview_recipe_derivation
         )
         self._view.recipe_derivation_create_requested.connect(
             self._create_recipe_derivation
         )
+        self._view.create_database_seed_requested.connect(
+            self._open_database_seed_creation
+        )
+        self._view.create_seed_only_database_requested.connect(
+            self._open_seed_only_database_creation
+        )
+        self._view.add_database_artifacts_requested.connect(
+            lambda value: self._open_database_content(value, "artifacts")
+        )
+        self._view.add_database_collection_requested.connect(
+            lambda value: self._open_database_content(value, "collection")
+        )
+        self._view.database_content_preview_requested.connect(
+            self._preview_database_content
+        )
+        self._view.database_content_add_requested.connect(
+            self._execute_database_content
+        )
+        self._view.database_seed_preview_requested.connect(
+            self._preview_database_seed_creation
+        )
+        self._view.database_seed_create_requested.connect(
+            self._execute_database_seed_creation
+        )
+        self._view.seed_only_database_preview_requested.connect(
+            self._preview_seed_only_database_creation
+        )
+        self._view.seed_only_database_create_requested.connect(
+            self._execute_seed_only_database_creation
+        )
         self._view.closing.connect(self.dispose)
+
+    def _open_database_seed_creation(self) -> None:
+        dataset = self._view.accepted_target_dataset()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(dataset, DataManagerDatasetEntry)
+        ):
+            return
+        self._view.show_database_seed_dialog(dataset)
+
+    def _open_seed_only_database_creation(self, selected_seed: object) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or (
+                selected_seed is not None
+                and not isinstance(selected_seed, DatabaseSeedV1)
+            )
+        ):
+            return
+        self._view.show_database_creation_dialog(
+            snapshot,
+            selected_seed=selected_seed,
+        )
+
+    def _open_database_content(self, value: object, mode: str) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or not isinstance(value, DataManagerDatabaseCatalogEntry)
+            or value.current_manifest is None
+            or mode not in {"artifacts", "collection"}
+        ):
+            return
+        self._view.show_database_content_dialog(value, snapshot, mode=mode)
+
+    def _preview_database_content(
+        self, mode: str, database_id: str, selected_ids: object
+    ) -> None:
+        dialog = self._view.database_content_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or dialog.mode != mode
+            or not isinstance(selected_ids, tuple)
+            or not selected_ids
+        ):
+            return
+        context = dialog.context_key
+        if mode == "artifacts":
+            submit = lambda progress, result: (
+                self._service.submit_plan_database_artifact_addition(
+                    database_id,
+                    selected_ids,
+                    progress_callback=progress,
+                    result_callback=result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                )
+            )
+        elif mode == "collection" and len(selected_ids) == 1:
+            submit = lambda progress, result: (
+                self._service.submit_plan_database_collection_addition(
+                    database_id,
+                    selected_ids[0],
+                    progress_callback=progress,
+                    result_callback=result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                )
+            )
+        else:
+            return
+        self._submit(
+            "plan_database_content_addition",
+            self._catalog_generation,
+            submit,
+            lambda result: self._settle_database_content_preview(
+                result, dialog, context
+            ),
+        )
+
+    def _settle_database_content_preview(
+        self, result: TaskResult, dialog: object, context: tuple[object, ...]
+    ) -> None:
+        current = self._view.database_content_dialog()
+        if current is not dialog or current.context_key != context:
+            return
+        if result.status == "completed" and isinstance(
+            result.value, DatabaseContentAdditionPlan
+        ):
+            current.set_plan(result.value)
+            return
+        message = result.error_message or result.error_type or result.status
+        current.invalidate_preview(str(message))
+        self._report_failure("Database content Preview", result)
+
+    def _execute_database_content(self, value: object) -> None:
+        dialog = self._view.database_content_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not isinstance(value, DatabaseContentAdditionPlan)
+            or dialog.reviewed_plan != value
+        ):
+            return
+        context = dialog.context_key
+        self._submit(
+            "execute_database_content_addition",
+            self._catalog_generation,
+            lambda progress, result: (
+                self._service.submit_execute_database_content_addition(
+                    value,
+                    progress_callback=progress,
+                    result_callback=result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                )
+            ),
+            lambda result: self._settle_database_content_execution(
+                result, dialog, context
+            ),
+        )
+
+    def _settle_database_content_execution(
+        self, result: TaskResult, dialog: object, context: tuple[object, ...]
+    ) -> None:
+        current = self._view.database_content_dialog()
+        if result.status == "completed" and isinstance(
+            result.value, DatabaseRevisionManifestV2
+        ):
+            if current is dialog and current.context_key == context:
+                current.invalidate_preview(
+                    "Database content revision published; refreshing catalogs."
+                )
+            self._after_write_refresh()
+            return
+        if current is dialog and current.context_key == context:
+            message = result.error_message or result.error_type or result.status
+            current.invalidate_preview(str(message))
+        self._report_failure("Database content addition", result)
+
+    def _preview_database_seed_creation(self, values: object) -> None:
+        dialog = self._view.database_seed_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not isinstance(values, dict)
+        ):
+            return
+        context = dialog.context_key
+        market = values.get("market_id")
+        if not isinstance(market, MarketId):
+            dialog.set_result("Accepted dataset context is unavailable.")
+            return
+        self._submit(
+            "plan_database_seed_creation",
+            self._market_generation,
+            lambda progress, result: self._service.submit_plan_database_seed_creation(
+                market,
+                values.get("display_name", ""),
+                description=values.get("description", ""),
+                selected_ohlcv_columns=tuple(
+                    values.get("selected_ohlcv_columns") or ()
+                ),
+                selected_range_start_ms=values.get("selected_range_start_ms"),
+                selected_range_end_ms=values.get("selected_range_end_ms"),
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_database_seed_preview(
+                result, dialog, context
+            ),
+        )
+
+    def _settle_database_seed_preview(
+        self, result: TaskResult, dialog: object, context: tuple[object, ...]
+    ) -> None:
+        current = self._view.database_seed_dialog()
+        if current is not dialog or current.context_key != context:
+            return
+        if result.status == "completed" and isinstance(
+            result.value, DatabaseSeedCreationPlan
+        ):
+            current.set_plan(result.value)
+            return
+        message = result.error_message or result.error_type or result.status
+        current.invalidate_preview(str(message))
+        self._report_failure("Database Seed preview", result)
+
+    def _execute_database_seed_creation(self, value: object) -> None:
+        dialog = self._view.database_seed_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not isinstance(value, DatabaseSeedCreationPlan)
+            or dialog.reviewed_plan != value
+        ):
+            return
+        context = dialog.context_key
+        self._submit(
+            "execute_database_seed_creation",
+            self._market_generation,
+            lambda progress, result: self._service.submit_execute_database_seed_creation(
+                value,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_database_seed_creation(
+                result, dialog, context
+            ),
+        )
+
+    def _settle_database_seed_creation(
+        self, result: TaskResult, dialog: object, context: tuple[object, ...]
+    ) -> None:
+        if result.status == "completed" and isinstance(result.value, DatabaseSeedV1):
+            self._creation_seed = result.value
+            current = self._view.database_seed_dialog()
+            if current is dialog and current.context_key == context:
+                current.consume_plan()
+                current.set_result(f"Database Seed created: {result.value.seed_id}")
+            self._after_write_refresh()
+            return
+        current = self._view.database_seed_dialog()
+        if current is dialog and current.context_key == context:
+            message = result.error_message or result.error_type or result.status
+            current.invalidate_preview(str(message))
+        self._report_failure("Database Seed creation", result)
+
+    def _preview_seed_only_database_creation(self, values: object) -> None:
+        dialog = self._view.database_creation_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not isinstance(values, dict)
+        ):
+            return
+        seed_id = values.get("seed_id")
+        if not isinstance(seed_id, str) or not seed_id:
+            dialog.set_result("Select a Database Seed.")
+            return
+        context = dialog.context_key
+        self._submit(
+            "plan_seed_only_database_creation",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_plan_seed_only_database_creation(
+                seed_id,
+                values.get("display_name", ""),
+                description=values.get("description", ""),
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_seed_only_database_preview(
+                result, dialog, context
+            ),
+        )
+
+    def _settle_seed_only_database_preview(
+        self, result: TaskResult, dialog: object, context: tuple[object, ...]
+    ) -> None:
+        current = self._view.database_creation_dialog()
+        if current is not dialog or current.context_key != context:
+            return
+        if result.status == "completed" and isinstance(
+            result.value, SeedOnlyDatabaseCreationPlan
+        ):
+            current.set_plan(result.value)
+            return
+        message = result.error_message or result.error_type or result.status
+        current.invalidate_preview(str(message))
+        self._report_failure("Seed-only Database preview", result)
+
+    def _execute_seed_only_database_creation(self, value: object) -> None:
+        dialog = self._view.database_creation_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not isinstance(value, SeedOnlyDatabaseCreationPlan)
+            or dialog.reviewed_plan != value
+        ):
+            return
+        context = dialog.context_key
+        self._submit(
+            "execute_seed_only_database_creation",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_execute_seed_only_database_creation(
+                value,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_seed_only_database_creation(
+                result, dialog, context
+            ),
+        )
+
+    def _settle_seed_only_database_creation(
+        self, result: TaskResult, dialog: object, context: tuple[object, ...]
+    ) -> None:
+        if result.status == "completed" and isinstance(
+            result.value, DatabaseRevisionManifestV2
+        ):
+            current = self._view.database_creation_dialog()
+            if current is dialog and current.context_key == context:
+                current.consume_plan()
+                current.set_result(
+                    "Database created: "
+                    f"{result.value.database_id} / {result.value.revision_id}"
+                )
+            self._after_write_refresh()
+            return
+        current = self._view.database_creation_dialog()
+        if current is dialog and current.context_key == context:
+            message = result.error_message or result.error_type or result.status
+            current.invalidate_preview(str(message))
+        self._report_failure("Seed-only Database creation", result)
+
+    def _open_recipe_artifact_materialization(self, value: object) -> None:
+        snapshot = self._product_catalogs
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or snapshot is None
+            or not isinstance(
+                value,
+                (DataManagerPortableRecipeEntry, DataManagerRecipeCollectionEntry),
+            )
+            or not value.valid
+            or self._view.selected_market_id() is None
+        ):
+            return
+        self._view.show_recipe_artifact_materialization_dialog(value, snapshot)
+
+    def _preview_recipe_artifact_materialization(self, request: object) -> None:
+        dialog = self._view.recipe_artifact_materialization_dialog()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or not isinstance(request, DataManagerArtifactMaterializationRequest)
+            or request != dialog.current_request()
+        ):
+            return
+        self._submit(
+            "plan_recipe_artifact_materialization",
+            self._market_generation,
+            lambda progress, result: self._service.submit_plan_artifact_materialization(
+                request,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_artifact_materialization_plan(
+                result, dialog, request
+            ),
+        )
+
+    def _settle_recipe_artifact_materialization_plan(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        expected_request: DataManagerArtifactMaterializationRequest,
+    ) -> None:
+        dialog = self._view.recipe_artifact_materialization_dialog()
+        if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
+            return
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerArtifactMaterializationPlan)
+            and expected_request == dialog.current_request()
+            and dialog.set_plan(result.value)
+        ):
+            plan = result.value
+            outputs = dialog.selected_outputs()
+            self._submit(
+                "find_equivalent_materialized_artifact_collection",
+                self._market_generation,
+                lambda progress, lookup_result: self._service.submit_find_equivalent_artifact_collection_for_materialization(
+                    plan,
+                    outputs,
+                    progress_callback=progress,
+                    result_callback=lookup_result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                ),
+                lambda lookup_result: self._settle_materialized_collection_prediction(
+                    lookup_result, expected_dialog, plan, outputs
+                ),
+            )
+            return
+        self._report_failure("Artifact materialization Preview", result)
+
+    def _settle_materialized_collection_prediction(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        plan: DataManagerArtifactMaterializationPlan,
+        expected_outputs: tuple[ArtifactCollectionOutputV1, ...],
+    ) -> None:
+        dialog = self._view.recipe_artifact_materialization_dialog()
+        if (
+            dialog is not expected_dialog
+            or dialog is None
+            or not dialog.isVisible()
+            or not dialog.reviewed_plan_matches(plan)
+            or dialog.selected_outputs() != expected_outputs
+        ):
+            return
+        if result.status == "completed" and (
+            result.value is None
+            or isinstance(result.value, ArtifactCollectionRevisionV1)
+        ):
+            dialog.set_collection_prediction(plan, result.value)
+            return
+        self._report_failure("Artifact Collection reuse Preview", result)
+
+    def _execute_recipe_artifact_materialization(
+        self,
+        plan: object,
+        create_collection: bool,
+        display_name: str,
+        description: str,
+        selected_outputs: object,
+    ) -> None:
+        dialog = self._view.recipe_artifact_materialization_dialog()
+        outputs = tuple(selected_outputs) if isinstance(selected_outputs, tuple) else ()
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or dialog is None
+            or not dialog.isVisible()
+            or not isinstance(plan, DataManagerArtifactMaterializationPlan)
+            or plan.blocked
+            or not dialog.reviewed_plan_matches(plan)
+            or type(create_collection) is not bool
+            or outputs != dialog.selected_outputs()
+        ):
+            return
+        self._submit(
+            "execute_recipe_artifact_materialization",
+            self._market_generation,
+            lambda progress, result: self._service.submit_execute_artifact_materialization(
+                plan,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_artifact_materialization(
+                result,
+                dialog,
+                plan,
+                create_collection,
+                display_name,
+                description,
+                outputs,
+            ),
+        )
+
+    def _settle_recipe_artifact_materialization(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        plan: DataManagerArtifactMaterializationPlan,
+        create_collection: bool,
+        display_name: str,
+        description: str,
+        selected_outputs: tuple[ArtifactCollectionOutputV1, ...],
+    ) -> None:
+        dialog = self._view.recipe_artifact_materialization_dialog()
+        if not (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerArtifactMaterializationResult)
+        ):
+            if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+                self._report_failure("Artifact materialization", result)
+            return
+        materialization = result.value
+        if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+            dialog.settle_materialization_success(materialization)
+        if not create_collection:
+            self._show_artifact_reuse_result(materialization)
+            self._after_write_refresh()
+            return
+        existing_collection_ids = frozenset(
+            item.collection_id
+            for item in (
+                ()
+                if self._product_catalogs is None
+                else self._product_catalogs.artifact_collections
+            )
+        )
+        self._submit(
+            "create_artifact_collection_from_materialization",
+            self._market_generation,
+            lambda progress, collection_result: self._service.submit_create_artifact_collection(
+                materialization,
+                display_name,
+                description=description,
+                source_recipe_collection_id=plan.source_recipe_collection_id,
+                source_recipe_collection_revision_id=(
+                    plan.source_recipe_collection_revision_id
+                ),
+                selected_outputs=selected_outputs,
+                progress_callback=progress,
+                result_callback=collection_result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda collection_result: self._settle_materialized_artifact_collection(
+                collection_result,
+                expected_dialog,
+                materialization,
+                existing_collection_ids,
+            ),
+        )
+
+    def _settle_materialized_artifact_collection(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        materialization: DataManagerArtifactMaterializationResult,
+        existing_collection_ids: frozenset[str],
+    ) -> None:
+        dialog = self._view.recipe_artifact_materialization_dialog()
+        if (
+            result.status == "completed"
+            and isinstance(result.value, ArtifactCollectionRevisionV1)
+        ):
+            outcome = (
+                "REUSED_EXISTING"
+                if result.value.collection_id in existing_collection_ids
+                else "CREATED"
+            )
+            if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+                dialog.settle_collection_success(result.value, outcome=outcome)
+            self._show_artifact_reuse_result(
+                materialization,
+                collection=(result.value if outcome == "REUSED_EXISTING" else None),
+            )
+            self._after_write_refresh()
+            return
+        if dialog is expected_dialog and dialog is not None and dialog.isVisible():
+            message = result.error_message or result.error_type or result.status
+            dialog.settle_collection_failure(str(message))
+            self._report_failure("Artifact Collection publication", result)
+        self._after_write_refresh()
 
     def _open_recipe_collection_create(self) -> None:
         snapshot = self._product_catalogs
@@ -840,6 +1562,127 @@ class DataManagerSuitePresenter(QObject):
             return
         self._report_failure("Recipe Collection inspection", result)
 
+    def _open_recipe_collection_inspection(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerRecipeCollectionEntry)
+            or not value.valid
+        ):
+            return
+        collection_id = value.collection_id
+        revision_id = value.revision_id
+        self._submit(
+            "inspect_recipe_collection_details",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_inspect_recipe_collection(
+                collection_id,
+                revision_id,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_recipe_collection_inspection(
+                result, collection_id, revision_id
+            ),
+        )
+
+    def _settle_recipe_collection_inspection(
+        self,
+        result: TaskResult,
+        collection_id: str,
+        revision_id: str,
+    ) -> None:
+        snapshot = self._product_catalogs
+        if not (
+            result.status == "completed"
+            and isinstance(result.value, DataManagerRecipeCollectionInspection)
+            and result.value.collection.collection_id == collection_id
+            and result.value.collection.revision_id == revision_id
+            and result.value.collection.valid
+            and snapshot is not None
+        ):
+            self._report_failure("Recipe Collection inspection", result)
+            return
+        recipes_by_id = {
+            item.recipe_id: item for item in snapshot.portable_recipes.recipes
+        }
+        if any(
+            recipe_id not in recipes_by_id
+            for recipe_id in result.value.member_recipe_ids
+        ):
+            self._report_failure(
+                "Recipe Collection inspection",
+                TaskResult(
+                    result.task_id,
+                    "failed",
+                    error_type="DataManagerOperationError",
+                    error_message=(
+                        "Recipe Collection member is missing from the current "
+                        "portable Recipe catalog"
+                    ),
+                ),
+            )
+            return
+        recipe_entries = tuple(
+            recipes_by_id[recipe_id]
+            for recipe_id in result.value.member_recipe_ids
+        )
+        self._view.show_recipe_collection_inspection(
+            result.value, recipe_entries
+        )
+
+    def _open_artifact_collection_inspection(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, ArtifactCollectionRevisionV1)
+            or value.validation_state != "valid"
+        ):
+            return
+        collection_id = value.collection_id
+        revision_id = value.revision_id
+        self._submit(
+            "inspect_artifact_collection_details",
+            self._catalog_generation,
+            lambda progress, result: (
+                self._service.submit_inspect_artifact_collection_details(
+                    collection_id,
+                    revision_id,
+                    progress_callback=progress,
+                    result_callback=result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                )
+            ),
+            lambda result: self._settle_artifact_collection_inspection(
+                result, collection_id, revision_id
+            ),
+        )
+
+    def _settle_artifact_collection_inspection(
+        self,
+        result: TaskResult,
+        collection_id: str,
+        revision_id: str,
+    ) -> None:
+        value = result.value
+        if (
+            result.status == "completed"
+            and isinstance(value, tuple)
+            and len(value) == 3
+            and isinstance(value[0], ArtifactCollectionRevisionV1)
+            and isinstance(value[1], ArtifactCollectionValidation)
+            and isinstance(value[2], tuple)
+            and all(isinstance(item, ArtifactMetadataV1) for item in value[2])
+            and value[0].collection_id == collection_id
+            and value[0].revision_id == revision_id
+            and value[1].collection_id == collection_id
+            and value[1].revision_id == revision_id
+        ):
+            self._view.show_artifact_collection_inspection(*value)
+            return
+        self._report_failure("Artifact Collection inspection", result)
+
     def _preview_recipe_collection(self, root_recipe_ids: object) -> None:
         dialog = self._view.recipe_collection_dialog()
         roots = tuple(root_recipe_ids) if isinstance(root_recipe_ids, tuple) else ()
@@ -881,8 +1724,44 @@ class DataManagerSuitePresenter(QObject):
             and result.value.root_recipe_ids == expected_roots
             and dialog.set_plan(result.value)
         ):
+            plan = result.value
+            self._submit(
+                "find_equivalent_recipe_collection",
+                self._catalog_generation,
+                lambda progress, lookup_result: self._service.submit_find_equivalent_recipe_collection(
+                    expected_roots,
+                    progress_callback=progress,
+                    result_callback=lookup_result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                ),
+                lambda lookup_result: self._settle_recipe_collection_prediction(
+                    lookup_result, expected_dialog, plan
+                ),
+            )
             return
         self._report_failure("Recipe Collection Preview", result)
+
+    def _settle_recipe_collection_prediction(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        plan: PortableRecipeGraphPlan,
+    ) -> None:
+        dialog = self._view.recipe_collection_dialog()
+        if (
+            dialog is not expected_dialog
+            or dialog is None
+            or not dialog.isVisible()
+            or dialog.reviewed_plan is not plan
+        ):
+            return
+        if result.status == "completed" and (
+            result.value is None
+            or isinstance(result.value, PortableRecipeCollectionRevisionV1)
+        ):
+            dialog.set_collection_prediction(plan, result.value)
+            return
+        self._report_failure("Recipe Collection reuse Preview", result)
 
     def _create_recipe_collection(
         self,
@@ -901,6 +1780,14 @@ class DataManagerSuitePresenter(QObject):
             or not dialog.reviewed_plan_matches(roots)
         ):
             return
+        existing_collection_ids = frozenset(
+            item.collection_id
+            for item in (
+                ()
+                if self._product_catalogs is None
+                else self._product_catalogs.recipe_collections.collections
+            )
+        )
         self._submit(
             "create_recipe_collection_from_catalog",
             self._catalog_generation,
@@ -913,7 +1800,9 @@ class DataManagerSuitePresenter(QObject):
                 callback_dispatcher=self._dispatcher.dispatch,
             ),
             lambda result: self._settle_recipe_collection_publish(
-                result, dialog
+                result,
+                dialog,
+                existing_collection_ids=existing_collection_ids,
             ),
         )
 
@@ -951,20 +1840,54 @@ class DataManagerSuitePresenter(QObject):
                 callback_dispatcher=self._dispatcher.dispatch,
             ),
             lambda result: self._settle_recipe_collection_publish(
-                result, dialog
+                result,
+                dialog,
+                selected_collection_id=collection_id,
             ),
         )
 
     def _settle_recipe_collection_publish(
-        self, result: TaskResult, expected_dialog: object
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        *,
+        existing_collection_ids: frozenset[str] = frozenset(),
+        selected_collection_id: str | None = None,
     ) -> None:
         dialog = self._view.recipe_collection_dialog()
         if (
             result.status == "completed"
             and isinstance(result.value, DataManagerRecipeCollectionInspection)
         ):
+            collection = result.value.collection
+            reused = (
+                collection.collection_id in existing_collection_ids
+                or (
+                    selected_collection_id is not None
+                    and collection.collection_id != selected_collection_id
+                )
+            )
+            outcome = (
+                "REUSED_EXISTING"
+                if reused
+                else "UPDATED" if selected_collection_id is not None else "CREATED"
+            )
             if dialog is expected_dialog and dialog is not None and dialog.isVisible():
-                dialog.settle_success(result.value)
+                dialog.settle_success(result.value, outcome=outcome)
+            if reused:
+                self._view.set_status(
+                    "Reused existing Recipe Collection: "
+                    f"{collection.display_name} [{collection.collection_id}]"
+                )
+                self._show_reuse_result(
+                    "Recipe Collection Reused",
+                    (
+                        "Reused existing Recipe Collection",
+                        f"Name: {collection.display_name}",
+                        f"Collection ID: {collection.collection_id}",
+                        f"Revision ID: {collection.revision_id}",
+                    ),
+                )
             self._after_write_refresh()
             return
         if dialog is expected_dialog and dialog is not None and dialog.isVisible():
@@ -1044,8 +1967,52 @@ class DataManagerSuitePresenter(QObject):
             and result.value.root_logical_artifact_ids == expected_roots
             and dialog.set_plan(result.value)
         ):
+            plan = result.value
+            outputs = dialog.selected_outputs()
+            order = dialog.presentation_order()
+            self._submit(
+                "find_equivalent_artifact_collection",
+                self._catalog_generation,
+                lambda progress, lookup_result: self._service.submit_find_equivalent_artifact_collection_from_selection(
+                    plan,
+                    outputs,
+                    order,
+                    progress_callback=progress,
+                    result_callback=lookup_result,
+                    callback_dispatcher=self._dispatcher.dispatch,
+                ),
+                lambda lookup_result: self._settle_artifact_collection_prediction(
+                    lookup_result, expected_dialog, plan, outputs, order
+                ),
+            )
             return
         self._report_failure("Artifact Collection Preview", result)
+
+    def _settle_artifact_collection_prediction(
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        plan: ArtifactCollectionSelectionPlan,
+        expected_outputs: tuple[ArtifactCollectionOutputV1, ...],
+        expected_order: tuple[str, ...],
+    ) -> None:
+        dialog = self._view.artifact_collection_dialog()
+        if (
+            dialog is not expected_dialog
+            or dialog is None
+            or not dialog.isVisible()
+            or not dialog.reviewed_plan_matches(plan)
+            or dialog.selected_outputs() != expected_outputs
+            or dialog.presentation_order() != expected_order
+        ):
+            return
+        if result.status == "completed" and (
+            result.value is None
+            or isinstance(result.value, ArtifactCollectionRevisionV1)
+        ):
+            dialog.set_collection_prediction(plan, result.value)
+            return
+        self._report_failure("Artifact Collection reuse Preview", result)
 
     def _create_artifact_collection_from_selection(
         self,
@@ -1067,6 +2034,14 @@ class DataManagerSuitePresenter(QObject):
             or outputs != dialog.selected_outputs()
         ):
             return
+        existing_collection_ids = frozenset(
+            item.collection_id
+            for item in (
+                ()
+                if self._product_catalogs is None
+                else self._product_catalogs.artifact_collections
+            )
+        )
         self._submit(
             "create_artifact_collection_from_selection",
             self._catalog_generation,
@@ -1080,7 +2055,9 @@ class DataManagerSuitePresenter(QObject):
                 callback_dispatcher=self._dispatcher.dispatch,
             ),
             lambda result: self._settle_artifact_collection_publish(
-                result, dialog
+                result,
+                dialog,
+                existing_collection_ids=existing_collection_ids,
             ),
         )
 
@@ -1126,24 +2103,79 @@ class DataManagerSuitePresenter(QObject):
                 callback_dispatcher=self._dispatcher.dispatch,
             ),
             lambda result: self._settle_artifact_collection_publish(
-                result, dialog
+                result,
+                dialog,
+                selected_collection_id=collection_id,
             ),
         )
 
     def _settle_artifact_collection_publish(
-        self, result: TaskResult, expected_dialog: object
+        self,
+        result: TaskResult,
+        expected_dialog: object,
+        *,
+        existing_collection_ids: frozenset[str] = frozenset(),
+        selected_collection_id: str | None = None,
     ) -> None:
         dialog = self._view.artifact_collection_dialog()
         if (
             result.status == "completed"
             and isinstance(result.value, ArtifactCollectionRevisionV1)
         ):
+            reused = (
+                result.value.collection_id in existing_collection_ids
+                or (
+                    selected_collection_id is not None
+                    and result.value.collection_id != selected_collection_id
+                )
+            )
+            outcome = (
+                "REUSED_EXISTING"
+                if reused
+                else "UPDATED" if selected_collection_id is not None else "CREATED"
+            )
             if dialog is expected_dialog and dialog is not None and dialog.isVisible():
-                dialog.settle_success(result.value)
+                dialog.settle_success(result.value, outcome=outcome)
+            if reused:
+                self._view.set_status(
+                    "Reused existing Artifact Collection: "
+                    f"{result.value.display_name} [{result.value.collection_id}]"
+                )
+                self._show_reuse_result(
+                    "Artifact Collection Reused",
+                    (
+                        "Reused existing Artifact Collection",
+                        f"Name: {result.value.display_name}",
+                        f"Collection ID: {result.value.collection_id}",
+                        f"Revision ID: {result.value.revision_id}",
+                    ),
+                )
+            self._apply_published_artifact_collection_to_catalogs(result.value)
             self._after_write_refresh()
             return
         if dialog is expected_dialog and dialog is not None and dialog.isVisible():
             self._report_failure("Artifact Collection publication", result)
+
+    def _apply_published_artifact_collection_to_catalogs(
+        self,
+        revision: ArtifactCollectionRevisionV1,
+    ) -> None:
+        if self._disposed or self._product_catalogs is None:
+            return
+        if not isinstance(revision, ArtifactCollectionRevisionV1):
+            raise TypeError("revision must be an ArtifactCollectionRevisionV1")
+        current = tuple(
+            item
+            for item in self._product_catalogs.artifact_collections
+            if item.collection_id != revision.collection_id
+        )
+        updated = replace(
+            self._product_catalogs,
+            artifact_collections=(*current, revision),
+        )
+        self._product_catalogs = updated
+        self._view.set_product_catalogs(updated)
+        self._revalidate_plan_contexts()
 
     def _open_recipe_derivation(self, value: object) -> None:
         if (
@@ -1302,6 +2334,30 @@ class DataManagerSuitePresenter(QObject):
                 and dialog.isVisible()
             ):
                 dialog.settle_success(result.value)
+            if (
+                result.value.reused_recipe_ids
+                or result.value.collection_outcome == "REUSED_EXISTING"
+            ):
+                lines = [
+                    "Operation completed using existing objects.",
+                    "",
+                    "Recipes",
+                    f"Created: {len(result.value.created_recipe_ids)}",
+                    f"Reused: {len(result.value.reused_recipe_ids)}",
+                ]
+                if result.value.collection_outcome != "NONE":
+                    lines.extend(
+                        (
+                            "",
+                            "Recipe Collection",
+                            "Reused: 1"
+                            if result.value.collection_outcome == "REUSED_EXISTING"
+                            else "Created: 1",
+                        )
+                    )
+                self._show_reuse_result(
+                    "Recipe Derivation Reuse Result", tuple(lines)
+                )
             self._after_write_refresh()
             return
         if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
@@ -1408,11 +2464,8 @@ class DataManagerSuitePresenter(QObject):
             dialog = self._view.artifact_creation_dialog()
             if dialog is not None:
                 dialog.settle_success(result.value)
-            self._submit_direct_artifact_catalog(
-                expected_market,
-                preserve_configuration=True,
-                preserve_report=True,
-            )
+            self._show_artifact_reuse_result(result.value.materialization)
+            self._after_write_refresh()
             return
         self._report_failure("Direct Artifact creation", result)
 
@@ -1853,7 +2906,14 @@ class DataManagerSuitePresenter(QObject):
 
     def _settle_catalog_inspection(self, result: TaskResult) -> None:
         if result.status == "completed":
-            self._view.set_catalog_inspection(_object_fields(result.value))
+            value = result.value
+            if isinstance(value, DataManagerPortableRecipeInspection):
+                fields = _object_fields(value.entry)
+            elif isinstance(value, DataManagerStudyEnvironmentInspection):
+                fields = _study_environment_inspection_fields(value)
+            else:
+                fields = _object_fields(value)
+            self._view.set_catalog_inspection(fields)
             return
         self._report_failure("Catalog inspection", result)
 
@@ -2037,7 +3097,7 @@ class DataManagerSuitePresenter(QObject):
             self._artifact_update_plan = None
             self._view.clear_update_artifact_plan()
             self._view.set_status("Update publication completed; refreshing reconciliation")
-            self._request_background_refresh(force=False)
+            self._after_write_refresh()
             return
         if result.status == "completed" and isinstance(
             result.value, DatabaseUpdateResult
@@ -2046,7 +3106,7 @@ class DataManagerSuitePresenter(QObject):
             self._database_update_plan = None
             self._view.clear_update_database_plan()
             self._view.set_status("Update publication completed; refreshing reconciliation")
-            self._request_background_refresh(force=False)
+            self._after_write_refresh()
             return
         self._report_failure("Update publication", result)
 
@@ -2892,8 +3952,7 @@ class DataManagerSuitePresenter(QObject):
 
     def _after_write_refresh(self) -> None:
         if self._supports_product_catalogs():
-            self._background_evidence_signature = None
-            self._request_background_refresh(force=False)
+            self._start_mutation_product_scan()
         else:
             self._scan_creation_foundations()
 
@@ -2941,8 +4000,8 @@ class DataManagerSuitePresenter(QObject):
         readiness = self._database_readiness
         database_identity = database_id or display_name or "New Database"
         coverage = (
-            f"{readiness.first_usable_timestamp_ms} - "
-            f"{readiness.last_usable_timestamp_ms}"
+            f"{format_utc_timestamp_ms(readiness.first_usable_timestamp_ms)} - "
+            f"{format_utc_timestamp_ms(readiness.last_usable_timestamp_ms)}"
         )
         if not self._view.confirm_database_publication(
             database_identity=database_identity,
@@ -3388,6 +4447,215 @@ class DataManagerSuitePresenter(QObject):
             ),
         )
 
+    def _prepare_duplicate_maintenance(self, domain_key: str) -> None:
+        if self._disposed or self._active_task_id is not None:
+            return
+        try:
+            domain = duplicate_maintenance_domain(domain_key)
+        except (TypeError, ValueError) as error:
+            self._view.set_status(str(error))
+            return
+        market = self._selected_market if domain.requires_market else None
+        if domain.requires_market and (
+            market is None
+            or self._catalog is None
+            or self._catalog.accepted_market(market) is None
+        ):
+            self._view.set_status(
+                f"{domain.display_name} duplicate maintenance requires "
+                "a selected accepted dataset"
+            )
+            return
+        generation = (
+            self._market_generation
+            if domain.requires_market
+            else self._catalog_generation
+        )
+        operation = (
+            "duplicate_maintenance_preflight_market"
+            if domain.requires_market
+            else "duplicate_maintenance_preflight_global"
+        )
+        self._submit(
+            operation,
+            generation,
+            lambda progress, result: self._service.submit_prepare_duplicate_maintenance(
+                domain,
+                market,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected_domain=domain, expected_market=market: (
+                self._settle_duplicate_maintenance_preflight(
+                    result, expected_domain.key, expected_market
+                )
+            ),
+            display_operation="Duplicate Maintenance preflight",
+        )
+
+    def _settle_duplicate_maintenance_preflight(
+        self,
+        result: TaskResult,
+        expected_domain_key: str,
+        expected_market: MarketId | None,
+    ) -> None:
+        if result.status != "completed" or not isinstance(
+            result.value, DuplicateMaintenancePreflight
+        ):
+            self._report_failure("Duplicate Maintenance preflight", result)
+            return
+        preflight = result.value
+        if (
+            preflight.domain.key != expected_domain_key
+            or preflight.market_id != expected_market
+            or (
+                preflight.domain.requires_market
+                and expected_market != self._selected_market
+            )
+        ):
+            return
+        self._view.show_duplicate_maintenance_preflight(preflight)
+        self._view.set_status("Duplicate Maintenance preflight ready")
+
+    def _scan_duplicate_maintenance(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DuplicateMaintenancePreflight)
+        ):
+            return
+        preflight = value
+        if (
+            preflight.domain.requires_market
+            and preflight.market_id != self._selected_market
+        ):
+            self._view.set_status(
+                "Duplicate Maintenance scope changed; open a new preflight"
+            )
+            return
+        generation = (
+            self._market_generation
+            if preflight.domain.requires_market
+            else self._catalog_generation
+        )
+        operation = (
+            "duplicate_maintenance_scan_market"
+            if preflight.domain.requires_market
+            else "duplicate_maintenance_scan_global"
+        )
+        self._submit(
+            operation,
+            generation,
+            lambda progress, result: self._service.submit_scan_duplicate_maintenance(
+                preflight,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=preflight: (
+                self._settle_duplicate_maintenance_scan(result, expected)
+            ),
+            display_operation=(
+                f"Scanning {preflight.domain.display_name} duplicates"
+            ),
+        )
+
+    def _settle_duplicate_maintenance_scan(
+        self,
+        result: TaskResult,
+        expected: DuplicateMaintenancePreflight,
+    ) -> None:
+        if result.status != "completed" or not isinstance(
+            result.value, DuplicateMaintenanceScanResult
+        ):
+            self._report_failure("Duplicate Maintenance scan", result)
+            return
+        scan = result.value
+        if scan.preflight != expected:
+            return
+        if (
+            expected.domain.requires_market
+            and expected.market_id != self._selected_market
+        ):
+            self._view.set_status(
+                "Duplicate Maintenance result is stale; run a new scan"
+            )
+            return
+        self._view.show_duplicate_maintenance_results(scan)
+        self._view.set_status("Duplicate Maintenance scan complete")
+
+    def _purge_duplicate_maintenance(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DuplicateMaintenanceScanResult)
+        ):
+            return
+        if value.safe_to_purge == 0:
+            self._view.set_status("Duplicate Maintenance has no safe purge candidates")
+            return
+        if (
+            value.preflight.domain.requires_market
+            and value.preflight.market_id != self._selected_market
+        ):
+            self._view.set_status(
+                "Duplicate Maintenance scope changed; run a new scan"
+            )
+            return
+        if not self._view.confirm_duplicate_maintenance_purge(value):
+            self._view.set_status("Duplicate purge cancelled")
+            return
+        self._submit(
+            "duplicate_maintenance_purge",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_purge_duplicate_maintenance(
+                value,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result, expected=value: self._settle_duplicate_maintenance_purge(
+                result, expected
+            ),
+            display_operation=(
+                f"Purging {value.preflight.domain.display_name} safe duplicates"
+            ),
+        )
+
+    def _settle_duplicate_maintenance_purge(
+        self,
+        result: TaskResult,
+        expected: DuplicateMaintenanceScanResult,
+    ) -> None:
+        if result.status != "completed" or not isinstance(
+            result.value, DuplicateMaintenancePurgeResult
+        ):
+            self._report_failure("Duplicate Maintenance purge", result)
+            return
+        purge = result.value
+        if purge.scan != expected:
+            return
+        if purge.purged:
+            self._after_write_refresh()
+        if (
+            expected.preflight.domain.requires_market
+            and expected.preflight.market_id != self._selected_market
+        ):
+            self._view.invalidate_duplicate_maintenance_results()
+            self._view.set_status(
+                "Duplicate purge completed; result belongs to the prior dataset scope"
+            )
+            return
+        self._view.show_duplicate_maintenance_purge_result(purge)
+        if purge.purged == purge.candidates_requested:
+            message = "Duplicate Maintenance purge complete"
+        elif purge.purged:
+            message = "Duplicate Maintenance purge partially completed"
+        else:
+            message = "Duplicate Maintenance completed with no deletions"
+        self._view.set_status(message)
+
     def _submit(
         self,
         operation: str,
@@ -3449,12 +4717,23 @@ class DataManagerSuitePresenter(QObject):
                 "delete_managed_artifact",
                 "delete_artifact_collection",
                 "inspect_recipe_collection_for_edit",
+                "inspect_recipe_collection_details",
+                "inspect_artifact_collection_details",
                 "plan_recipe_collection",
+                "find_equivalent_recipe_collection",
                 "create_recipe_collection_from_catalog",
                 "update_recipe_collection_from_catalog",
                 "plan_artifact_collection_selection",
+                "find_equivalent_artifact_collection",
                 "create_artifact_collection_from_selection",
                 "edit_artifact_collection_from_selection",
+                "duplicate_maintenance_preflight_global",
+                "duplicate_maintenance_scan_global",
+                "duplicate_maintenance_purge",
+                "plan_seed_only_database_creation",
+                "execute_seed_only_database_creation",
+                "plan_database_content_addition",
+                "execute_database_content_addition",
             }:
                 current = generation == self._catalog_generation
             else:
@@ -3481,7 +4760,6 @@ class DataManagerSuitePresenter(QObject):
             self._active_operation = None
             self._view.set_busy(False)
             self._view.set_status(f"{operation_label} submission failed")
-            self._view.append_status(f"{type(error).__name__}: {error}")
             self._view.settle_operation(
                 "failed", f"{type(error).__name__}: {error}"
             )
@@ -3639,7 +4917,48 @@ class DataManagerSuitePresenter(QObject):
     def _report_failure(self, label: str, result: TaskResult) -> None:
         message = result.error_message or result.error_type or result.status
         self._view.set_status(f"{label} {result.status}")
-        self._view.append_status(str(message))
+
+    def _show_artifact_reuse_result(
+        self,
+        result: DataManagerArtifactMaterializationResult,
+        *,
+        collection: ArtifactCollectionRevisionV1 | None = None,
+    ) -> None:
+        if not result.reused_artifact_ids and collection is None:
+            return
+        lines = [
+            "Operation completed using existing objects.",
+            "",
+            "Artifacts",
+            f"Created: {len(result.created_artifact_ids)}",
+            f"Advanced: {len(result.advanced_logical_artifact_ids)}",
+            f"Reused Current: {len(result.reused_artifact_ids)}",
+        ]
+        if collection is not None:
+            lines.extend(
+                (
+                    "",
+                    "Artifact Collection",
+                    "Reused: 1",
+                    f"Name: {collection.display_name}",
+                    f"Collection ID: {collection.collection_id}",
+                )
+            )
+        self._show_reuse_result("Artifact Reuse Result", tuple(lines))
+
+    def _show_reuse_result(self, title: str, lines: tuple[str, ...]) -> None:
+        if self._disposed:
+            return
+        dialog = QMessageBox(QMessageBox.Icon.Information, title, "\n".join(lines))
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.setModal(True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.setParent(self._view, dialog.windowFlags())
+        self._reuse_result_dialogs.add(dialog)
+        dialog.finished.connect(
+            lambda _code, value=dialog: self._reuse_result_dialogs.discard(value)
+        )
+        dialog.show()
 
     def _settle_market_unavailable(
         self, result: TaskResult, expected_market: MarketId
@@ -3723,6 +5042,16 @@ def _object_fields(value: object) -> tuple[tuple[str, object], ...]:
     return (("value", value),)
 
 
+def _study_environment_inspection_fields(
+    value: DataManagerStudyEnvironmentInspection,
+) -> tuple[tuple[str, object], ...]:
+    return _object_fields(value.environment) + tuple(
+        (f"entries[{index}].{name}", field_value)
+        for index, entry in enumerate(value.entries, start=1)
+        for name, field_value in _object_fields(entry)
+    )
+
+
 def _collection_rows(value: object) -> tuple[tuple[str, ...], ...]:
     roots = set(getattr(value, "root_logical_artifact_ids", ()))
     order = {
@@ -3750,6 +5079,8 @@ def _operation_details(
         "create_recipe_collection",
         "update_recipe_collection",
         "create_database_seed",
+        "execute_database_seed_creation",
+        "execute_seed_only_database_creation",
         "delete_seed",
         "materialize_base_artifacts",
         "execute_batch_artifacts",

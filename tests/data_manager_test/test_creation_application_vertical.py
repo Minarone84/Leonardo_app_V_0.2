@@ -193,9 +193,14 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         assert batch_collection is not None
         assert batch_collection.previous_revision_id == collection.revision_id
         assert batch_materialization.root_logical_artifact_ids
-        assert _recipe_persistence_bytes(
+        recipe_state_after_batch = _recipe_persistence_bytes(
             app.portable_recipe_store.root_dir
-        ) == recipe_state_before_batch
+        )
+        assert all(
+            recipe_state_after_batch[path] == contents
+            for path, contents in recipe_state_before_batch.items()
+        )
+        assert len(recipe_state_after_batch) == len(recipe_state_before_batch) + 2
         batch_root = next(
             item
             for item in batch_materialization.managed_artifacts
@@ -207,8 +212,19 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         ).metadata.recipe
         batch_semantic_id = batch_plan.branch_recipe_ids[0]
         assert batch_root.portable_recipe_id == batch_semantic_id
-        with pytest.raises(FileNotFoundError):
-            app.portable_recipe_store.load_recipe(batch_semantic_id)
+        batch_collection_member = next(
+            member
+            for member in batch_collection.members
+            if member.version_key.artifact_id == batch_root.artifact_id
+        )
+        assert batch_collection_member.portable_recipe_id == batch_semantic_id
+        persisted_batch_recipe = app.portable_recipe_store.load_recipe(
+            batch_semantic_id
+        )
+        assert dict(persisted_batch_recipe.parameters) == {"order": 1}
+        assert persisted_batch_recipe.dependencies[0].recipe_id == (
+            root.portable_recipe_id
+        )
 
         inspected, validation = _completed(
             application.submit_inspect_artifact_collection,
@@ -216,6 +232,22 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         )
         assert inspected == batch_collection
         assert validation.valid and validation.database_ready
+        detailed_revision, detailed_validation, detailed_metadata = _completed(
+            application.submit_inspect_artifact_collection_details,
+            collection.collection_id,
+            batch_collection.revision_id,
+        )
+        assert detailed_revision == batch_collection
+        assert detailed_validation == validation
+        assert tuple(item.artifact_id for item in detailed_metadata) == tuple(
+            member.version_key.artifact_id for member in batch_collection.members
+        )
+        batch_detail = next(
+            item
+            for item in detailed_metadata
+            if item.artifact_id == batch_root.artifact_id
+        )
+        assert batch_detail.recipe.parameters == batch_root_recipe.parameters
         assert _completed(
             application.submit_validate_artifact_collection,
             collection.collection_id,
@@ -356,8 +388,9 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
             MARKET, batch_root.artifact_id
         )
         assert restarted_batch_root.metadata.recipe == batch_root_recipe
-        with pytest.raises(FileNotFoundError):
-            restarted.portable_recipe_store.load_recipe(batch_semantic_id)
+        assert restarted.portable_recipe_store.load_recipe(
+            batch_semantic_id
+        ) == persisted_batch_recipe
         assert _completed(application.submit_load_database_seed, seed.seed_id) == seed
         assert _completed(
             application.submit_load_artifact_collection, collection.collection_id

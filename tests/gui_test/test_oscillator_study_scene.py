@@ -716,11 +716,6 @@ def test_smi_auto_bounds_empty_flat_nan_breaks_and_hidden_output() -> None:
             ("close__ang",),
         ),
         (
-            "braids",
-            "braids",
-            ("sma_14_ema_14_hma_14",),
-        ),
-        (
             "braid-instability",
             "braid_instability",
             ("sma_14_ema_14_hma_14_inst_5",),
@@ -766,6 +761,37 @@ def test_all_canonical_construct_oscillators_use_auto_bounds_without_guides(
     assert scene.axis_low < 1.0
     assert scene.axis_high > float(len(output_names) + 2)
     assert scene.guides == ()
+    assert scene.reference_levels == ()
+
+
+def test_braids_uses_intrinsic_six_level_reference_scale_without_guides() -> None:
+    presentation = _multi_presentation(
+        "braids",
+        ("sma_14_ema_14_hma_14",),
+        tool_key="braids",
+    )
+    scene = build_oscillator_scene(
+        _multi_projection("braids", ("sma_14_ema_14_hma_14",)),
+        presentation,
+        _viewport(),
+        SceneRect(0.0, 0.0, 500.0, 120.0),
+    )
+
+    assert (scene.axis_low, scene.axis_high) == (0.5, 6.5)
+    assert tuple(level.value for level in scene.reference_levels) == (
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+    )
+    assert all(level.line_width == 0.5 for level in scene.reference_levels)
+    assert scene.guides == ()
+    assert presentation.guide_styles == {}
+    assert tuple(strip.output_name for strip in scene.line_strips) == (
+        "sma_14_ema_14_hma_14",
+    )
 
 
 @pytest.mark.parametrize(
@@ -809,6 +835,7 @@ def test_native_oscillator_axis_policies_remain_unchanged(
         assert scene.axis_low < -10.0
         assert scene.axis_high > 30.0
     assert tuple(guide.value for guide in scene.guides) == guide_values
+    assert scene.reference_levels == ()
 
 
 @pytest.mark.parametrize(

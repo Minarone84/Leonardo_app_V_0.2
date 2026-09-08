@@ -10,7 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QProgressBar
 
 from leonardo.core.app import LeonardoApp
@@ -254,6 +254,14 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         save_environment_action.trigger()
         _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
         cancelled_dialog = presenter._environment_save_dialogs[slot_id]
+        environment_records = tuple(
+            item
+            for item in context.window_registry.list_windows()
+            if item.window_id.startswith("research.environment_save")
+        )
+        assert tuple(
+            (item.window_id, item.status) for item in environment_records
+        ) == (("research.environment_save", "open"),)
         cancelled_dialog.reject()
         _wait_until(
             lambda: slot_id not in presenter._environment_save_dialogs
@@ -265,19 +273,125 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
         closed_dialog = presenter._environment_save_dialogs[slot_id]
         assert closed_dialog is not cancelled_dialog
+        environment_records = tuple(
+            item
+            for item in context.window_registry.list_windows()
+            if item.window_id.startswith("research.environment_save")
+        )
+        assert tuple(
+            (item.window_id, item.status) for item in environment_records
+        ) == (("research.environment_save", "open"),)
         closed_dialog.close()
         _wait_until(
             lambda: slot_id not in presenter._environment_save_dialogs
             and not presenter._setup_task_ids
             and save_environment_action.isEnabled()
         )
+        assert next(
+            item
+            for item in context.window_registry.list_windows()
+            if item.window_id == "research.environment_save"
+        ).status == "closed"
+
+        second_slot_id, second_chart = presenter._create_restored_chart(market_id)
+        second_chart.open_dataset(market_id)
+        _wait_until(
+            lambda: second_chart.session.dataset is not None
+            and not second_chart.is_busy
+        )
+        second_chart.submit_study_calculation(
+            StudyExecutionRequest("ema", {"period": 20})
+        )
+        _wait_until(
+            lambda: len(second_chart.session.studies) == 1
+            and not second_chart.is_busy
+        )
+        window.workspace.set_active_slot(second_slot_id)
+        qapp.processEvents()
+        assert presenter._active_presenter() is second_chart
+        save_environment_action.trigger()
+        _wait_until(
+            lambda: second_slot_id in presenter._environment_save_dialogs
+        )
+        second_dialog = presenter._environment_save_dialogs[second_slot_id]
+        assert second_dialog._source_chart.currentData().slot_id == second_slot_id
+        environment_records = tuple(
+            item
+            for item in context.window_registry.list_windows()
+            if item.window_id.startswith("research.environment_save")
+        )
+        assert tuple(
+            (item.window_id, item.status) for item in environment_records
+        ) == (("research.environment_save", "open"),)
+        save_environment_action.trigger()
+        assert (
+            presenter._environment_save_dialogs[second_slot_id]
+            is second_dialog
+        )
+        assert len(
+            tuple(
+                item
+                for item in context.window_registry.list_windows()
+                if item.window_id == "research.environment_save"
+            )
+        ) == 1
+        second_dialog.close()
+        _wait_until(
+            lambda: second_slot_id not in presenter._environment_save_dialogs
+        )
+        assert next(
+            item
+            for item in context.window_registry.list_windows()
+            if item.window_id == "research.environment_save"
+        ).status == "closed"
+        presenter._close_chart(second_slot_id)
+        window.workspace.set_active_slot(slot_id)
+        qapp.processEvents()
+        assert presenter._active_presenter() is chart
+
         save_environment_action.trigger()
         _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
         environment_dialog = presenter._environment_save_dialogs[slot_id]
+        assert environment_dialog._source_chart.count() == 1
         environment_dialog._name.setText("Threshold Environment")
+        assert environment_dialog.current_intent().slot_id == slot_id
+        save_environment_action.trigger()
+        assert presenter._environment_save_dialogs[slot_id] is environment_dialog
         environment_dialog._save.click()
         _wait_until(lambda: not presenter._setup_task_ids)
         environment_summary = app.research_study_setup_domain.list_environments()[0]
+
+        save_environment_action.trigger()
+        _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
+        rename_dialog = presenter._environment_save_dialogs[slot_id]
+        rename_dialog._update.setChecked(True)
+        assert (
+            rename_dialog._existing.currentData()
+            == environment_summary.environment_id
+        )
+        rename_dialog._name.setText("Renamed Threshold Environment")
+        rename_dialog._save.click()
+        _wait_until(lambda: not presenter._setup_task_ids)
+        renamed_summaries = app.research_study_setup_domain.list_environments()
+        assert len(renamed_summaries) == 1
+        assert (
+            renamed_summaries[0].environment_id
+            == environment_summary.environment_id
+        )
+        assert renamed_summaries[0].display_name == "Renamed Threshold Environment"
+
+        save_environment_action.trigger()
+        _wait_until(lambda: slot_id in presenter._environment_save_dialogs)
+        stale_dialog = presenter._environment_save_dialogs[slot_id]
+        stale_dialog._name.setText("Stale Source Environment")
+        stale_dialog._session_id = "stale_session"
+        stale_dialog._save.click()
+        assert stale_dialog.isVisible()
+        assert "no longer ready" in stale_dialog._validation.text()
+        assert not presenter._setup_task_ids
+        stale_dialog.reject()
+        _wait_until(lambda: slot_id not in presenter._environment_save_dialogs)
+
         environment = app.research_study_setup_domain.load_environment(
             environment_summary.environment_id
         )
@@ -408,6 +522,69 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
             )
         ) == 1
 
+        assert presenter._current_workspace_snapshot_id is None
+        assert presenter._assigned_notebook_id is None
+        assert app.research_workspace_snapshot_domain.list_snapshots() == ()
+        window.action_for_text("Notebook Manager...").trigger()
+        _wait_until(
+            lambda: presenter._notebook_manager is not None
+            and presenter._notebook_task_id is None
+            and not presenter._snapshot_task_ids
+        )
+        independent_notebook_manager = presenter._notebook_manager
+        assert independent_notebook_manager.isVisible()
+        assert independent_notebook_manager.assignments == ()
+        independent_notebook_manager._create.click()
+        qapp.processEvents()
+        independent_editor = presenter._notebook_editor
+        assert independent_editor is not None
+        assert independent_editor.isVisible()
+        assert presenter._notebook_manager is independent_notebook_manager
+        independent_editor._name.setText("Independent Notebook")
+        independent_editor._save.click()
+        _wait_until(
+            lambda: presenter._notebook_task_id is None
+            and independent_editor.notebook_id is not None
+            and any(
+                summary.notebook_id == independent_editor.notebook_id
+                for summary in independent_notebook_manager.summaries
+            )
+            and not presenter._snapshot_task_ids
+        )
+        notebook_id = independent_editor.notebook_id
+        assert notebook_id is not None
+        assert app.research_notebook_store.load(notebook_id).notebook_id == notebook_id
+        assert presenter._current_workspace_snapshot_id is None
+        assert presenter._assigned_notebook_id is None
+        assert app.research_workspace_snapshot_domain.list_snapshots() == ()
+        assert independent_notebook_manager.assignments == ()
+        independent_editor._close.click()
+        _wait_until(lambda: presenter._notebook_editor is None)
+        notebook_row = next(
+            index
+            for index, summary in enumerate(independent_notebook_manager.summaries)
+            if summary.notebook_id == notebook_id
+        )
+        independent_notebook_manager._list.item(notebook_row).setCheckState(
+            Qt.CheckState.Checked
+        )
+        independent_notebook_manager._open.click()
+        _wait_until(
+            lambda: presenter._notebook_editor is not None
+            and presenter._notebook_editor.notebook_id == notebook_id
+        )
+        qapp.processEvents()
+        reopened_independent_editor = presenter._notebook_editor
+        assert reopened_independent_editor is not independent_editor
+        assert reopened_independent_editor.isVisible()
+        assert presenter._notebook_manager is independent_notebook_manager
+        assert independent_notebook_manager.isVisible()
+        assert presenter._current_workspace_snapshot_id is None
+        assert presenter._assigned_notebook_id is None
+        presenter._close_notebook_editor()
+        independent_notebook_manager.close()
+        _wait_until(lambda: presenter._notebook_manager is None)
+
         window.action_for_text("Save Workspace...").trigger()
         _wait_until(lambda: presenter._snapshot_save_dialog is not None)
         snapshot_dialog = presenter._snapshot_save_dialog
@@ -424,6 +601,31 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
             .presentation.guide_styles[-1]
             .value
         ) == 25.0
+
+        window.action_for_text("Notebook Manager...").trigger()
+        _wait_until(
+            lambda: presenter._notebook_manager is not None
+            and presenter._notebook_task_id is None
+            and not presenter._snapshot_task_ids
+        )
+        post_save_notebook_manager = presenter._notebook_manager
+        assert tuple(
+            assignment.snapshot_id
+            for assignment in post_save_notebook_manager.assignments
+        ) == (snapshot.snapshot_id,)
+        post_save_notebook_manager._create.click()
+        post_save_editor = presenter._notebook_editor
+        assert post_save_editor is not None
+        assert post_save_editor.notebook_id is None
+        post_save_draft = post_save_editor.current_draft()
+        assert post_save_draft.display_name == "Untitled Notebook"
+        assert tuple(page.market_id for page in post_save_draft.pages) == (
+            snapshot.charts[0].market_id,
+        )
+        assert snapshot.notebook_id is None
+        presenter._close_notebook_editor()
+        post_save_notebook_manager.close()
+        _wait_until(lambda: presenter._notebook_manager is None)
 
         window.action_for_text("Load Workspace...").trigger()
         _wait_until(
@@ -543,17 +745,29 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         window.action_for_text("Notebook Manager...").trigger()
         _wait_until(lambda: presenter._notebook_manager is not None)
         notebook_manager = presenter._notebook_manager
-        notebook_manager._create.click()
-        editor = presenter._notebook_editor
-        assert editor is not None
-        assert editor.is_current_valid
-        editor._save.click()
         _wait_until(
-            lambda: presenter._notebook_task_id is None
-            and editor.notebook_id is not None
+            lambda: any(
+                summary.notebook_id == notebook_id
+                for summary in notebook_manager.summaries
+            )
+            and presenter._notebook_task_id is None
+            and not presenter._snapshot_task_ids
         )
-        notebook_id = editor.notebook_id
-        assert app.research_notebook_store.load(notebook_id).notebook_id == notebook_id
+        notebook_row = next(
+            index
+            for index, summary in enumerate(notebook_manager.summaries)
+            if summary.notebook_id == notebook_id
+        )
+        notebook_manager._list.item(notebook_row).setCheckState(
+            Qt.CheckState.Checked
+        )
+        notebook_manager._open.click()
+        _wait_until(
+            lambda: presenter._notebook_editor is not None
+            and presenter._notebook_editor.notebook_id == notebook_id
+        )
+        editor = presenter._notebook_editor
+        assert editor.isVisible()
 
         window.action_for_text("Notebook Manager...").trigger()
         assert presenter._notebook_manager is notebook_manager
@@ -590,7 +804,7 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
             blocked_assign,
         )
         notebook_manager._assignment_table.setCurrentCell(0, 0)
-        assert notebook_manager._selected_notebook.text() == "Untitled Notebook"
+        assert notebook_manager._selected_notebook.text() == "Independent Notebook"
         assert notebook_manager._target_workspace.text() == "Threshold Workspace"
         assert notebook_manager._current_assignment.text() == "Unassigned"
         assert notebook_manager._assignment_action.text() == "Assign Notebook"
@@ -649,6 +863,14 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
             app.research_workspace_notebook_link_domain,
             "delete_notebook_with_reference_cleanup",
             blocked_delete,
+        )
+        notebook_row = next(
+            index
+            for index, summary in enumerate(notebook_manager.summaries)
+            if summary.notebook_id == notebook_id
+        )
+        notebook_manager._list.item(notebook_row).setCheckState(
+            Qt.CheckState.Checked
         )
         notebook_manager._delete.click()
         assert deletion_entered.wait(5.0)

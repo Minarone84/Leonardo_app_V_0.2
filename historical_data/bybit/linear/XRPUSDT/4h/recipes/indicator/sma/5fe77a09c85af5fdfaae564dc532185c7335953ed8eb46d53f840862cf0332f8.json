@@ -1,0 +1,23 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-09-07T15:43:32.563248Z",
+  "description": "",
+  "display_name": "sma",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "sma_100"
+  ],
+  "parameters": {
+    "period": 100
+  },
+  "recipe_id": "5fe77a09c85af5fdfaae564dc532185c7335953ed8eb46d53f840862cf0332f8",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "sma"
+}

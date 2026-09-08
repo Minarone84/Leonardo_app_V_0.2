@@ -69,11 +69,17 @@ class ResearchNotebookManagerDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("research.notebook_manager_dialog")
         self.setWindowTitle("Notebook Manager")
+        self._busy = False
         self._summaries: tuple[ResearchNotebookSummary, ...] = ()
         self._assignments: tuple[ResearchNotebookSnapshotAssignment, ...] = ()
         self._list = QListWidget(self)
         self._list.setObjectName(
             "research.notebook_manager_dialog.list.notebooks"
+        )
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._selection_instruction = QLabel("Select one Notebook", self)
+        self._selection_instruction.setObjectName(
+            "research.notebook_manager_dialog.label.selection_instruction"
         )
         self._name = QLineEdit(self)
         self._name.setObjectName("research.notebook_manager_dialog.edit.name")
@@ -173,17 +179,18 @@ class ResearchNotebookManagerDialog(QDialog):
         actions.addWidget(self._delete)
         actions.addWidget(self._close)
         layout = QVBoxLayout(self)
+        layout.addWidget(self._selection_instruction)
         layout.addWidget(self._list)
         layout.addLayout(form)
         layout.addWidget(self._pages)
         layout.addWidget(self._assignment_table)
         layout.addLayout(assignment_context)
         layout.addLayout(actions)
-        self._list.currentRowChanged.connect(self._selection_changed)
+        self._list.itemChanged.connect(lambda _item: self._selection_changed())
         self._assignment_table.currentCellChanged.connect(
             lambda *_args: self._sync_assignment_state()
         )
-        self._refresh.clicked.connect(self.refresh_requested.emit)
+        self._refresh.clicked.connect(self._request_refresh)
         self._create.clicked.connect(self.create_requested.emit)
         self._open.clicked.connect(self._emit_open)
         self._assignment_action.clicked.connect(self._activate_assignment_action)
@@ -204,34 +211,30 @@ class ResearchNotebookManagerDialog(QDialog):
     def set_summaries(
         self, summaries: tuple[ResearchNotebookSummary, ...]
     ) -> None:
-        selected_id = None
-        selected = self._selected()
-        if selected is not None:
-            selected_id = selected.notebook_id
+        checked_ids = self._checked_notebook_ids()
         values = tuple(summaries)
         if not all(isinstance(item, ResearchNotebookSummary) for item in values):
             raise TypeError("summaries must contain ResearchNotebookSummary values")
         self._summaries = values
+        self._list.blockSignals(True)
         self._list.clear()
         for summary in values:
             label = summary.display_name or summary.notebook_id
             if not summary.valid:
                 label = f"{label} (invalid)"
             item = QListWidgetItem(label)
-            item.setData(256, summary.notebook_id)
+            item.setData(Qt.ItemDataRole.UserRole, summary.notebook_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if summary.notebook_id in checked_ids
+                else Qt.CheckState.Unchecked
+            )
             self._list.addItem(item)
-        selected_row = next(
-            (
-                index
-                for index, summary in enumerate(values)
-                if summary.notebook_id == selected_id
-            ),
-            0 if values else -1,
-        )
-        if selected_row >= 0:
-            self._list.setCurrentRow(selected_row)
-        else:
-            self._selection_changed(-1)
+        self._list.clearSelection()
+        self._list.setCurrentRow(-1)
+        self._list.blockSignals(False)
+        self._selection_changed()
         self._rebuild_assignment_table()
         resize_table_columns_to_contents(self._pages)
 
@@ -250,11 +253,39 @@ class ResearchNotebookManagerDialog(QDialog):
         self._assignments = values
         self._rebuild_assignment_table(selected_snapshot_id)
 
-    def _selected(self) -> ResearchNotebookSummary | None:
-        row = self._list.currentRow()
-        return self._summaries[row] if 0 <= row < len(self._summaries) else None
+    def set_busy(self, busy: bool) -> None:
+        self._busy = bool(busy)
+        self._refresh.setEnabled(not self._busy)
+        self._create.setEnabled(not self._busy)
+        self._selection_changed()
 
-    def _selection_changed(self, _row: int) -> None:
+    def _checked_notebook_ids(self) -> tuple[str, ...]:
+        return tuple(
+            notebook_id
+            for row in range(self._list.count())
+            if self._list.item(row).checkState() == Qt.CheckState.Checked
+            and isinstance(
+                notebook_id := self._list.item(row).data(
+                    Qt.ItemDataRole.UserRole
+                ),
+                str,
+            )
+        )
+
+    def _selected(self) -> ResearchNotebookSummary | None:
+        checked_ids = self._checked_notebook_ids()
+        if len(checked_ids) != 1:
+            return None
+        return next(
+            (
+                summary
+                for summary in self._summaries
+                if summary.notebook_id == checked_ids[0]
+            ),
+            None,
+        )
+
+    def _selection_changed(self) -> None:
         summary = self._selected()
         if summary is None:
             self._name.clear()
@@ -286,10 +317,20 @@ class ResearchNotebookManagerDialog(QDialog):
                 f"{summary.point_of_interest_count} POI(s)"
             )
         )
-        self._open.setEnabled(summary.valid)
-        self._delete.setEnabled(True)
+        self._open.setEnabled(summary.valid and not self._busy)
+        self._delete.setEnabled(not self._busy)
         self._sync_assignment_state()
         resize_table_columns_to_contents(self._assignment_table)
+
+    def _request_refresh(self) -> None:
+        self._list.blockSignals(True)
+        for row in range(self._list.count()):
+            self._list.item(row).setCheckState(Qt.CheckState.Unchecked)
+        self._list.clearSelection()
+        self._list.setCurrentRow(-1)
+        self._list.blockSignals(False)
+        self._selection_changed()
+        self.refresh_requested.emit()
 
     def _rebuild_assignment_table(
         self, selected_snapshot_id: str | None = None
@@ -359,25 +400,24 @@ class ResearchNotebookManagerDialog(QDialog):
     def _sync_assignment_state(self) -> None:
         summary = self._selected()
         assignment = self._selected_assignment()
-        self._selected_notebook.setText(
-            "None selected"
-            if summary is None
-            else summary.display_name or summary.notebook_id
-        )
-        self._target_workspace.setText(
-            "None selected"
-            if assignment is None
-            else assignment.snapshot_display_name
-        )
-        self._current_assignment.setText(
-            "None selected"
-            if assignment is None
-            else (
-                "Unassigned"
-                if assignment.notebook_id is None
-                else self._notebook_display_name(assignment.notebook_id)
+        if summary is None:
+            self._selected_notebook.clear()
+            self._target_workspace.clear()
+            self._current_assignment.clear()
+        else:
+            self._selected_notebook.setText(
+                summary.display_name or summary.notebook_id
             )
-        )
+            if assignment is None:
+                self._target_workspace.clear()
+                self._current_assignment.clear()
+            else:
+                self._target_workspace.setText(assignment.snapshot_display_name)
+                self._current_assignment.setText(
+                    "Unassigned"
+                    if assignment.notebook_id is None
+                    else self._notebook_display_name(assignment.notebook_id)
+                )
         valid = summary is not None and summary.valid and assignment is not None
         if not valid or assignment.notebook_id is None:
             text = "Assign Notebook"
@@ -386,7 +426,7 @@ class ResearchNotebookManagerDialog(QDialog):
         else:
             text = "Replace Assignment"
         self._assignment_action.setText(text)
-        self._assignment_action.setEnabled(valid)
+        self._assignment_action.setEnabled(valid and not self._busy)
 
     def _activate_assignment_action(self) -> None:
         summary = self._selected()

@@ -1,0 +1,52 @@
+{
+  "analysis_filename": null,
+  "analysis_sha256": null,
+  "artifact_id": "483444e7f2b8c5ea2f11df86df7f8545d759381ca8453f6c4754e24ac4d6926e",
+  "created_at_utc": "2026-09-07T15:43:32.563248Z",
+  "first_timestamp_ms": 1620892800000,
+  "last_timestamp_ms": 1788753600000,
+  "recipe": {
+    "bindings": {},
+    "created_at_utc": "2026-09-07T15:43:32.563248Z",
+    "description": "",
+    "display_name": "sma",
+    "kind": "indicator",
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "XRPUSDT",
+      "timeframe": "4h"
+    },
+    "output_names": [
+      "sma_70"
+    ],
+    "parameters": {
+      "period": 70
+    },
+    "recipe_id": "b1cc21a02254c5970eb4fc5fe44ebb7f10ca7492cfcb444aafa5791bfa3bb601",
+    "schema_version": "1.0",
+    "source_artifacts": [],
+    "tool_key": "sma"
+  },
+  "row_count": 11658,
+  "schema_version": "1.0",
+  "source_ohlcv": {
+    "csv_sha256": "172cec3437a7c65e1955fb2fbe811f104c529db5e789724e8225c33a11d11b4e",
+    "first_timestamp_ms": 1620892800000,
+    "last_timestamp_ms": 1788753600000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "XRPUSDT",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 11658,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "03646e2e4da3d63eed00a3dd386408585b05a57457b3dc15311c7db54c56705c",
+    "validation_status": "ok"
+  },
+  "values_filename": "values.csv",
+  "values_sha256": "b28b3a737299ac5a513c54eb056068318f924f2c78bae48d026b400371ad8828"
+}

@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.gui.presenters.research_chart_presenter import (
@@ -48,6 +47,7 @@ from leonardo.gui.windows.study_environment_manager_dialog import (
 from leonardo.gui.windows.study_environment_save_dialog import (
     StudyEnvironmentSaveDialog,
     StudyEnvironmentSaveIntent,
+    StudyEnvironmentSourceChart,
 )
 from leonardo.gui.windows.study_style_dialog import StudyStyleDialog, StudyStylePatch
 from leonardo.gui.windows.workspace_snapshot_manager_dialog import (
@@ -718,6 +718,12 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._view.set_notebook_actions_state(
             bool(self._notebook_service and not notebook_busy),
         )
+        if isinstance(
+            self._notebook_manager, ResearchNotebookManagerDialog
+        ):
+            self._notebook_manager.set_busy(
+                notebook_busy or self._notebook_link_operation_token is not None
+            )
         self._view.set_clear_research_suite_enabled(
             not self._clear_suite_conflict_active()
         )
@@ -785,32 +791,30 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._refresh_command_actions()
 
     def _open_save_environment(self) -> None:
-        presenter = self._active_presenter()
         service = self._study_setup_service
-        if (
-            service is None
-            or presenter is None
-            or presenter.is_busy
-            or presenter.environment_apply_active
-            or presenter.session.dataset is None
-            or not presenter.session.studies
-        ):
+        if service is None:
             return
-        existing = self._environment_save_dialogs.get(presenter.slot_id)
+        existing = next(iter(self._environment_save_dialogs.values()), None)
         if existing is not None:
             self._show_dialog(existing)
             return
+        presenter = self._active_presenter()
+        candidates = self._environment_source_charts()
+        if presenter is None or not any(
+            source.slot_id == presenter.slot_id
+            and source.session_id == presenter.session.session_id
+            for source in candidates
+        ):
+            return
         slot_id = presenter.slot_id
         session_id = presenter.session.session_id
-        studies = presenter.session.studies
-        presentations = presenter.session.study_presentations()
         self._submit_setup_task(
             lambda callback: service.submit_list_environments(
                 result_callback=callback,
                 callback_dispatcher=self._dispatch,
             ),
             lambda result: self._open_environment_save_result(
-                result, slot_id, session_id, studies, presentations
+                result, slot_id, session_id
             ),
         )
 
@@ -819,10 +823,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         result: TaskResult,
         slot_id: int,
         session_id: str,
-        studies,
-        presentations,
     ) -> None:
-        presenter = self._chart_presenters.get(slot_id)
+        candidates = self._environment_source_charts()
         if (
             result.status != "completed"
             or not isinstance(result.value, tuple)
@@ -830,29 +832,37 @@ class RestoredResearchLifecyclePresenter(QObject):
                 isinstance(item, StudyEnvironmentSummary)
                 for item in result.value
             )
-            or presenter is None
-            or presenter.session.session_id != session_id
+            or not any(
+                source.slot_id == slot_id and source.session_id == session_id
+                for source in candidates
+            )
         ):
             return
-        existing = self._environment_save_dialogs.get(slot_id)
+        existing = next(iter(self._environment_save_dialogs.values()), None)
         if existing is not None:
             self._show_dialog(existing)
             return
+        source = next(
+            item
+            for item in candidates
+            if item.slot_id == slot_id and item.session_id == session_id
+        )
         dialog = StudyEnvironmentSaveDialog(
-            slot_id, session_id, tuple(studies), result.value, self._view
+            slot_id,
+            session_id,
+            source.studies,
+            result.value,
+            self._view,
+            source_charts=candidates,
         )
         self._environment_save_dialogs[slot_id] = dialog
-        dialog.save_requested.connect(
-            lambda intent: self._save_environment_intent(
-                intent, tuple(studies), tuple(presentations)
-            )
-        )
+        dialog.save_requested.connect(self._save_environment_intent)
         dialog.finished.connect(
             lambda _code: self._forget_environment_save_dialog(slot_id, dialog)
         )
         self._track_window(
             dialog,
-            f"research.environment_save.{slot_id}",
+            "research.environment_save",
             "Save Study Environment",
         )
         dialog.show()
@@ -860,18 +870,28 @@ class RestoredResearchLifecyclePresenter(QObject):
     def _save_environment_intent(
         self,
         intent: StudyEnvironmentSaveIntent,
-        studies,
-        presentations,
     ) -> None:
         service = self._study_setup_service
         presenter = self._chart_presenters.get(intent.slot_id)
+        studies = () if presenter is None else presenter.session.studies
         if (
             service is None
             or presenter is None
+            or presenter.is_disposed
+            or presenter.is_busy
+            or presenter.environment_apply_active
             or presenter.session.session_id != intent.session_id
             or presenter.session.dataset is None
+            or not studies
+            or tuple(study.study_id for study in studies)
+            != tuple(study_id for study_id, _metadata in intent.metadata_overrides)
         ):
+            self._reject_environment_save(
+                "Source Chart changed or is no longer ready; "
+                "Study Environment was not saved."
+            )
             return
+        presentations = presenter.session.study_presentations()
         try:
             draft = service._service.build_environment(
                 presenter.session.dataset,
@@ -883,7 +903,11 @@ class RestoredResearchLifecyclePresenter(QObject):
                 metadata_overrides=dict(intent.metadata_overrides),
             )
         except (TypeError, ValueError) as error:
-            self._append_activity(f"Study Environment build failed: {error}")
+            message = f"Study Environment build failed: {error}"
+            self._append_activity(message)
+            dialog = next(iter(self._environment_save_dialogs.values()), None)
+            if dialog is not None:
+                dialog.show_save_failure(message)
             return
         if intent.mode == "create":
             submit = lambda callback: service.submit_create_environment(
@@ -904,6 +928,54 @@ class RestoredResearchLifecyclePresenter(QObject):
                 result, intent.slot_id, intent.session_id
             ),
         )
+
+    def _environment_source_charts(
+        self,
+    ) -> tuple[StudyEnvironmentSourceChart, ...]:
+        sources = []
+        for presenter in self._chart_presenters.values():
+            dataset = presenter.session.dataset
+            if (
+                presenter.is_disposed
+                or presenter.is_busy
+                or presenter.environment_apply_active
+                or dataset is None
+                or not presenter.session.studies
+            ):
+                continue
+            position = self._view.workspace.shell_state.placement_for(
+                presenter.slot_id
+            ).workspace_position
+            market = dataset.market_id
+            sources.append(
+                (
+                    position,
+                    StudyEnvironmentSourceChart(
+                        presenter.slot_id,
+                        presenter.session.session_id,
+                        " | ".join(
+                            (
+                                f"Position {position}",
+                                market.exchange,
+                                market.market_type,
+                                market.symbol,
+                                market.timeframe,
+                            )
+                        ),
+                        presenter.session.studies,
+                    ),
+                )
+            )
+        return tuple(
+            source
+            for _position, source in sorted(sources, key=lambda item: item[0])
+        )
+
+    def _reject_environment_save(self, message: str) -> None:
+        self._append_activity(message)
+        dialog = next(iter(self._environment_save_dialogs.values()), None)
+        if dialog is not None:
+            dialog.show_save_failure(message)
 
     def _environment_save_result(
         self, result: TaskResult, slot_id: int, session_id: str
@@ -1346,7 +1418,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         )
 
     def _open_save_snapshot(self) -> None:
-        if self._snapshot_service is None or self._snapshot_restore is not None:
+        if self._snapshot_service is None:
             return
         if self._snapshot_save_dialog is not None:
             self._show_dialog(self._snapshot_save_dialog)
@@ -1354,7 +1426,9 @@ class RestoredResearchLifecyclePresenter(QObject):
         try:
             capture = self._capture_snapshot_workspace()
         except RuntimeError as error:
-            self._append_activity(f"Workspace Snapshot capture blocked: {error}")
+            message = f"Workspace Snapshot capture blocked: {error}"
+            self._append_activity(message)
+            QMessageBox.warning(self._view, "Save Workspace", message)
             return
         self._submit_snapshot_task(
             lambda callback: self._snapshot_service.submit_list_snapshots(
@@ -1429,6 +1503,8 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._assigned_notebook_id = result.value.notebook_id
             self._sync_notebook_assignment()
             self._append_activity("Workspace Snapshot saved.")
+            if self._notebook_manager is not None:
+                self._refresh_notebook_manager(self._notebook_manager)
             return
         self._append_activity(
             "Workspace Snapshot save failed: "
@@ -1673,6 +1749,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._current_workspace_snapshot_id = result.value.snapshot_id
         self._assigned_notebook_id = result.value.notebook_id
         self._sync_notebook_assignment()
+        if self._notebook_manager is not None:
+            self._refresh_notebook_manager(self._notebook_manager)
 
     def _delete_snapshot_manager_selection(
         self, dialog: WorkspaceSnapshotManagerDialog, snapshot_id: str
@@ -1708,6 +1786,8 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._assigned_notebook_id = None
             self._sync_notebook_assignment()
         self._refresh_snapshot_manager(dialog)
+        if self._notebook_manager is not None:
+            self._refresh_notebook_manager(self._notebook_manager)
 
     def _restore_snapshot_workspace(
         self,
@@ -2190,8 +2270,10 @@ class RestoredResearchLifecyclePresenter(QObject):
         if (
             self._notebook_service is None
             or self._snapshot_service is None
-            or self._notebook_task_id is not None
         ):
+            return
+        if self._notebook_task_id is not None:
+            self._append_activity("Notebook operation is already in progress.")
             return
         if self._notebook_manager is not None:
             self._show_dialog(self._notebook_manager)
@@ -2476,6 +2558,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         self, action: str, notebook_id: str | None
     ) -> None:
         if self._notebook_task_id is not None:
+            self._append_activity("Notebook operation is already in progress.")
             return
         editor = self._notebook_editor
         if editor is not None and editor.is_dirty:
@@ -2502,10 +2585,15 @@ class RestoredResearchLifecyclePresenter(QObject):
             return
         if action == "new":
             self._close_notebook_editor()
-            pages = tuple(
-                ResearchNotebookPageV1(presenter.session.dataset.market_id)
+            markets = {
+                presenter.session.dataset.market_id.as_key(): (
+                    presenter.session.dataset.market_id
+                )
                 for presenter in self._chart_presenters.values()
                 if presenter.session.dataset is not None
+            }
+            pages = tuple(
+                ResearchNotebookPageV1(markets[key]) for key in sorted(markets)
             )
             self._open_notebook_editor(
                 draft=ResearchNotebookDraft(
@@ -2624,6 +2712,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._sync_notebook_assignment()
         self._refresh_command_actions()
         editor.show()
+        editor.raise_()
+        editor.activateWindow()
         self._refresh_notebook_annotations()
 
     def _request_notebook_transition_close(
@@ -2747,6 +2837,7 @@ class RestoredResearchLifecyclePresenter(QObject):
             )
             return
         if self._notebook_task_id is not None:
+            self._append_activity("Notebook operation is already in progress.")
             return
         editor = self._notebook_editor
         if editor is not None and editor.notebook_id == notebook_id:
@@ -4290,8 +4381,9 @@ class RestoredResearchLifecyclePresenter(QObject):
 
     @staticmethod
     def _close_and_delete_dialog(dialog: QDialog) -> None:
+        if not dialog.isVisible():
+            dialog.show()
         dialog.close()
-        QApplication.sendEvent(dialog, QCloseEvent())
         dialog.deleteLater()
 
     def _on_horizontal_pan(self, source_slot_id: int) -> None:
@@ -4358,9 +4450,13 @@ class RestoredResearchLifecyclePresenter(QObject):
 
     def _submit_snapshot_task(self, submit, settled) -> None:
         task_ref: list[str] = []
+        early_result: list[TaskResult] = []
 
         def callback(result: TaskResult) -> None:
-            task_id = task_ref[0] if task_ref else result.task_id
+            if not task_ref:
+                early_result.append(result)
+                return
+            task_id = task_ref[0]
             self._snapshot_task_ids.discard(task_id)
             self._refresh_command_actions()
             if not self._disposed:
@@ -4368,16 +4464,26 @@ class RestoredResearchLifecyclePresenter(QObject):
 
         submission = submit(callback)
         task_ref.append(submission.task_id)
-        self._snapshot_task_ids.add(submission.task_id)
-        self._refresh_command_actions()
+        if early_result:
+            result = early_result.pop(0)
+            self._refresh_command_actions()
+            if not self._disposed:
+                settled(result)
+        else:
+            self._snapshot_task_ids.add(submission.task_id)
+            self._refresh_command_actions()
 
     def _submit_notebook_task(self, submit, settled) -> None:
         if self._notebook_task_id is not None:
             return
         task_ref: list[str] = []
+        early_result: list[TaskResult] = []
 
         def callback(result: TaskResult) -> None:
-            task_id = task_ref[0] if task_ref else result.task_id
+            if not task_ref:
+                early_result.append(result)
+                return
+            task_id = task_ref[0]
             if task_id != self._notebook_task_id:
                 return
             self._notebook_task_id = None
@@ -4387,8 +4493,14 @@ class RestoredResearchLifecyclePresenter(QObject):
 
         submission = submit(callback)
         task_ref.append(submission.task_id)
-        self._notebook_task_id = submission.task_id
-        self._refresh_command_actions()
+        if early_result:
+            result = early_result.pop(0)
+            self._refresh_command_actions()
+            if not self._disposed:
+                settled(result)
+        else:
+            self._notebook_task_id = submission.task_id
+            self._refresh_command_actions()
 
     def _track_window(
         self, window: object, window_id: str, title: str

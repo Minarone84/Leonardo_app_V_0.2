@@ -9,7 +9,7 @@ from leonardo.research import (
     StudyExecutionRequest,
 )
 
-from tests.research_test.test_study_execution import accepted_context
+from tests.research_test.test_study_execution import accepted_context, research_service
 from tests.research_test.test_study_projection import resident
 
 
@@ -35,7 +35,7 @@ def _accept(session, service, dataset, tool_key="sma", parameters=None):
 def test_session_accepts_and_clears_study_presentation_atomically(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
     session = _open(dataset)
-    study = _accept(session, ResearchStudyService(artifacts), dataset)
+    study = _accept(session, research_service(tmp_path, artifacts), dataset)
     assert session.study_presentations()[0].study_id == study.study_id
     assert session.study_manager_entries()[0].pane_label == "Price"
 
@@ -46,7 +46,7 @@ def test_session_accepts_and_clears_study_presentation_atomically(tmp_path: Path
 
 def test_style_and_visibility_survive_resident_refresh_and_save(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _open(dataset)
     study = _accept(session, service, dataset, parameters={"period": 3})
     presentation = session.study_presentations()[0]

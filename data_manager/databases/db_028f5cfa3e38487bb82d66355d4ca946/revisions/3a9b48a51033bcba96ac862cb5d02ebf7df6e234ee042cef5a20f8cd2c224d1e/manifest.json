@@ -1,0 +1,50 @@
+{
+  "collection_sources": [],
+  "column_count": 5,
+  "column_mapping": {
+    "close": "close",
+    "high": "high",
+    "low": "low",
+    "open": "open",
+    "ts_ms": "ts_ms"
+  },
+  "created_at_utc": "2026-09-08T07:53:20.040722Z",
+  "database_id": "db_028f5cfa3e38487bb82d66355d4ca946",
+  "dependency_edges": [],
+  "description": "This is a test database for XRP 4h",
+  "display_name": "XRP_DATABASE_TEST_A",
+  "first_timestamp_ms": 1620892800000,
+  "last_timestamp_ms": 1788753600000,
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "members": [],
+  "object_type": "database_revision",
+  "previous_revision_id": null,
+  "revision_id": "3a9b48a51033bcba96ac862cb5d02ebf7df6e234ee042cef5a20f8cd2c224d1e",
+  "row_count": 11658,
+  "schema_version": "2.0",
+  "seed_id": "seed_c9f489e8c5b449bc888669f49509a2f9",
+  "selected_outputs": [],
+  "source_ohlcv": {
+    "csv_sha256": "172cec3437a7c65e1955fb2fbe811f104c529db5e789724e8225c33a11d11b4e",
+    "first_timestamp_ms": 1620892800000,
+    "last_timestamp_ms": 1788753600000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "XRPUSDT",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 11658,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "03646e2e4da3d63eed00a3dd386408585b05a57457b3dc15311c7db54c56705c",
+    "validation_status": "ok"
+  },
+  "values_sha256": "ab60a7cee1b23c24259a341224dc38a2c4b6fbfc41f0cc60fdcc486a85030c59"
+}

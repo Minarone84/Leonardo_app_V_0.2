@@ -201,10 +201,17 @@ class _FakeMaintenanceService:
         event = TaskProgress(task_id, message, current=0, total=1)
         dispatcher(lambda: progress(event))
 
-    def emit_validation_success(self) -> None:
+    def emit_validation_success(self, *, publication_changed: bool = True) -> None:
         _, result_callback, dispatcher = self.callbacks["task-validation"]
         self.validation_status = "ok"
         result = _validation_result(self.tmp_path, self.market, persistence="committed")
+        if not publication_changed:
+            result = MaintenanceValidationResult(
+                report=result.report,
+                sidecar=result.sidecar,
+                sidecar_published=True,
+                publication_changed=False,
+            )
         dispatcher(
             lambda: result_callback(
                 TaskResult("task-validation", "completed", value=result)
@@ -435,7 +442,12 @@ def test_presenter_discovers_validates_and_refreshes(
 ) -> None:
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
-    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    notifications = []
+    presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
+        window,
+        service,
+        on_canonical_ohlcv_evidence_changed=notifications.append,
+    )
     try:
         datasets = window.table_for_id("datasets")
         assert datasets.rowCount() == 1
@@ -473,6 +485,7 @@ def test_presenter_discovers_validates_and_refreshes(
         assert datasets.item(0, 5).text() == "ok"
         assert window.status_text().startswith("Accepted")
         assert window.button_for_id("validate").isEnabled()
+        assert notifications == [service.market]
     finally:
         window.close()
 
@@ -484,13 +497,19 @@ def test_presenter_plans_confirms_executes_and_refreshes_repair(
 ) -> None:
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
-    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    notifications = []
+    presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
+        window,
+        service,
+        on_canonical_ohlcv_evidence_changed=notifications.append,
+    )
     monkeypatch.setattr(window, "confirm_repair", lambda _summary: True)
     try:
         window.button_for_id("plan_repair").click()
         assert presenter.active_task_id == "task-plan"
         plan = service.emit_plan()
         QCoreApplication.processEvents()
+        assert notifications == []
 
         assert presenter.repair_plan == plan
         assert window.table_for_id("repair").rowCount() == 1
@@ -507,6 +526,7 @@ def test_presenter_plans_confirms_executes_and_refreshes_repair(
         assert datasets.item(0, 5).text() == "ok"
         assert window.status_text().startswith("Repair accepted")
         assert not window.button_for_id("execute_repair").isEnabled()
+        assert notifications == [service.market]
     finally:
         window.close()
 
@@ -518,7 +538,12 @@ def test_presenter_reports_source_invalid_provider_repair(
 ) -> None:
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
-    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    notifications = []
+    presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
+        window,
+        service,
+        on_canonical_ohlcv_evidence_changed=notifications.append,
+    )
     monkeypatch.setattr(window, "confirm_repair", lambda _summary: True)
     try:
         window.button_for_id("plan_repair").click()
@@ -537,6 +562,7 @@ def test_presenter_reports_source_invalid_provider_repair(
         assert "anchors=120000" in window.status_text()
         assert "no local correction applied" in window.status_text()
         assert not window.button_for_id("execute_repair").isEnabled()
+        assert notifications == [service.market]
     finally:
         window.close()
 
@@ -548,7 +574,12 @@ def test_presenter_confirms_deletes_and_removes_dataset_row(
 ) -> None:
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
-    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    notifications = []
+    presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
+        window,
+        service,
+        on_canonical_ohlcv_evidence_changed=notifications.append,
+    )
     monkeypatch.setattr(window, "confirm_deletion", lambda **_kwargs: True)
     try:
         assert window.button_for_id("delete").isEnabled()
@@ -566,6 +597,7 @@ def test_presenter_confirms_deletes_and_removes_dataset_row(
         assert window.table_for_id("datasets").rowCount() == 0
         assert window.status_text().startswith("Deleted")
         assert not window.button_for_id("delete").isEnabled()
+        assert notifications == [service.market]
     finally:
         window.close()
 
@@ -579,7 +611,12 @@ def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
     service.evidence_state = "sidecar_missing"
     service.sidecar_exists = False
     window = OhlcvMaintenanceWindow()
-    presenter = OhlcvMaintenancePresenter(window, service)  # type: ignore[arg-type]
+    notifications = []
+    presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
+        window,
+        service,
+        on_canonical_ohlcv_evidence_changed=notifications.append,
+    )
     monkeypatch.setattr(
         window,
         "confirm_sidecar_reconstruction",
@@ -609,5 +646,38 @@ def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
         assert evidence_values["Evidence state"] == "complete"
         assert window.status_text().startswith("Sidecar created and accepted")
         assert not window.button_for_id("reconstruct_sidecar").isEnabled()
+        assert notifications == [service.market]
+    finally:
+        window.close()
+
+
+def test_presenter_does_not_notify_for_unchanged_failed_or_cancelled_validation(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    service = _FakeMaintenanceService(tmp_path)
+    window = OhlcvMaintenanceWindow()
+    notifications = []
+    presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
+        window,
+        service,
+        on_canonical_ohlcv_evidence_changed=notifications.append,
+    )
+    try:
+        window.button_for_id("validate").click()
+        service.emit_validation_success(publication_changed=False)
+        QCoreApplication.processEvents()
+
+        for status in ("failed", "cancelled"):
+            window.button_for_id("validate").click()
+            _, result_callback, dispatcher = service.callbacks["task-validation"]
+            dispatcher(
+                lambda status=status: result_callback(
+                    TaskResult("task-validation", status, error_message=status)
+                )
+            )
+            QCoreApplication.processEvents()
+
+        assert notifications == []
     finally:
         window.close()

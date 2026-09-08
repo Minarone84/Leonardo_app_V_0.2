@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
+    QDialog,
     QPushButton,
     QStatusBar,
     QTextEdit,
@@ -25,6 +26,7 @@ from leonardo.gui.action_observer import GuiActionObserver
 from leonardo.gui.widgets import SuiteNavigationDonut
 from leonardo.gui.windows.shell_widgets import apply_identity
 from leonardo.gui.windows.runtime_manager_window import RuntimeManagerWindow
+from leonardo.gui.windows.settings_dialog import LeonardoSettingsDialog
 
 
 MAIN_WINDOW_ID = "main_window.window"
@@ -45,6 +47,8 @@ RuntimeSnapshotProvider = Callable[[], object]
 ShellActionIntentCallback = Callable[[str], str | None]
 DownloadActionIntentCallback = ShellActionIntentCallback
 MainWindowCloseCallback = Callable[[], None]
+SettingsDialogFactory = Callable[[QWidget], QDialog]
+DisplayTimeZoneChangedCallback = Callable[[], None]
 _DOWNLOAD_SHELL_ACTION_IDS = frozenset(
     (
         "main_window.download_data",
@@ -113,6 +117,8 @@ class LeonardoMainWindow(QMainWindow):
         on_ohlcv_maintenance_requested: DownloadActionIntentCallback | None = None,
         on_suite_shell_requested: ShellActionIntentCallback | None = None,
         on_close_requested: MainWindowCloseCallback | None = None,
+        settings_dialog_factory: SettingsDialogFactory | None = None,
+        on_display_time_zone_changed: DisplayTimeZoneChangedCallback | None = None,
         username: str = "admin-dev",
         version_label: str = "v0.2",
     ) -> None:
@@ -139,6 +145,12 @@ class LeonardoMainWindow(QMainWindow):
             raise TypeError("on_suite_shell_requested must be callable")
         if on_close_requested is not None and not callable(on_close_requested):
             raise TypeError("on_close_requested must be callable")
+        if settings_dialog_factory is not None and not callable(settings_dialog_factory):
+            raise TypeError("settings_dialog_factory must be callable")
+        if on_display_time_zone_changed is not None and not callable(
+            on_display_time_zone_changed
+        ):
+            raise TypeError("on_display_time_zone_changed must be callable")
         self.close_requested_locally = False
         self._actions: dict[str, QAction] = {}
         self._menus: dict[str, QMenu] = {}
@@ -153,6 +165,12 @@ class LeonardoMainWindow(QMainWindow):
         self._on_ohlcv_maintenance_requested = on_ohlcv_maintenance_requested
         self._on_suite_shell_requested = on_suite_shell_requested
         self._on_close_requested = on_close_requested
+        self._settings_dialog_factory = (
+            LeonardoSettingsDialog
+            if settings_dialog_factory is None
+            else settings_dialog_factory
+        )
+        self._on_display_time_zone_changed = on_display_time_zone_changed
         self._username = _string_or_fallback(username, "admin-dev")
         self._version_label = _string_or_fallback(version_label, "v0.2")
         self._central_message_label: QLabel | None = None
@@ -762,9 +780,17 @@ class LeonardoMainWindow(QMainWindow):
         return window
 
     def _open_settings_inspector_window(self) -> None:
-        self.statusBar().showMessage(
-            "Appearance settings are not implemented in the reset baseline."
-        )
+        dialog = self._settings_dialog_factory(self)
+        result = dialog.exec()
+        if result != QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage("Settings cancelled.")
+            return
+        if not dialog.display_time_zone_changed:
+            self.statusBar().showMessage("Settings unchanged.")
+            return
+        if self._on_display_time_zone_changed is not None:
+            self._on_display_time_zone_changed()
+        self.statusBar().showMessage("Display time zone updated.")
 
 
 def _string_or_fallback(value: object, fallback: str) -> str:

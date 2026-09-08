@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from PySide6.QtCore import QObject, Qt, Signal
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
+from leonardo.data import MarketId
 from leonardo.gui.windows.ohlcv_maintenance_window import (
     MaintenanceDatasetRow,
     MaintenanceIssueRow,
@@ -51,10 +52,14 @@ class OhlcvMaintenancePresenter(QObject):
         self,
         view: OhlcvMaintenanceWindow,
         maintenance_service: OHLCVMaintenanceApplicationService,
+        on_canonical_ohlcv_evidence_changed: Callable[[MarketId], None] | None = None,
     ) -> None:
         super().__init__(view)
         self._view = view
         self._maintenance = maintenance_service
+        self._on_canonical_ohlcv_evidence_changed = (
+            on_canonical_ohlcv_evidence_changed
+        )
         self._dispatcher = _QtCallbackDispatcher(self)
         self._datasets: tuple[MaintenanceDatasetSummary, ...] = ()
         self._repair_plan: MaintenanceRepairPlan | None = None
@@ -396,6 +401,7 @@ class OhlcvMaintenancePresenter(QObject):
                 self._view.set_issue_rows(())
                 self._view.set_repair_summary("")
                 self._view.set_status(_deletion_result_text(result))
+                self._notify_canonical_evidence_changed(result.plan.market_id)
                 self._refresh_after_result(None)
                 return
             if isinstance(task_result.value, MaintenanceSidecarReconstructionPlan):
@@ -410,6 +416,7 @@ class OhlcvMaintenancePresenter(QObject):
                     tuple(_issue_row(item) for item in result.validation.report.issues)
                 )
                 self._view.set_status(_sidecar_reconstruction_result_text(result))
+                self._notify_changed_validation(result.validation)
                 self._refresh_after_result(selected_key)
                 return
             if isinstance(task_result.value, MaintenanceValidationResult):
@@ -430,6 +437,7 @@ class OhlcvMaintenancePresenter(QObject):
                     self._sidecar_reconstruction_candidates.discard(market_key)
                 self._view.set_issue_rows(tuple(_issue_row(item) for item in result.report.issues))
                 self._view.set_status(_validation_status_text(result))
+                self._notify_changed_validation(result)
                 self._refresh_after_result(selected_key)
                 return
             if isinstance(task_result.value, MaintenanceRepairPlan):
@@ -445,6 +453,7 @@ class OhlcvMaintenancePresenter(QObject):
                 self._view.set_repair_summary(_repair_result_text(result))
                 self._view.set_status(_repair_result_text(result))
                 self._clear_repair_plan(keep_summary=True)
+                self._notify_changed_validation(result.validation)
                 self._refresh_after_result(selected_key)
                 return
         if task_result.status == "cancelled":
@@ -457,6 +466,17 @@ class OhlcvMaintenancePresenter(QObject):
             f"{task_result.error_type or 'Error'}: {message}"
         )
         self._refresh_after_result(selected_key)
+
+    def _notify_changed_validation(
+        self, result: MaintenanceValidationResult
+    ) -> None:
+        if result.sidecar_published and result.publication_changed:
+            self._notify_canonical_evidence_changed(result.report.market_id)
+
+    def _notify_canonical_evidence_changed(self, market_id: MarketId) -> None:
+        callback = self._on_canonical_ohlcv_evidence_changed
+        if callback is not None:
+            callback(market_id)
 
     def _render_repair_plan(self, plan: MaintenanceRepairPlan) -> None:
         self._repair_plan = plan

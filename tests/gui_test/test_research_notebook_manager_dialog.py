@@ -11,7 +11,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -63,23 +65,76 @@ def _valid_summary(notebook_id: str, display_name: str) -> ResearchNotebookSumma
     )
 
 
+def _set_checked(
+    dialog: ResearchNotebookManagerDialog, row: int, checked: bool = True
+) -> None:
+    dialog._list.item(row).setCheckState(
+        Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+    )
+
+
 def test_manager_valid_and_invalid_selection_enablement() -> None:
     QApplication.instance() or QApplication([])
     dialog = ResearchNotebookManagerDialog((_summary(True), _summary(False)))
+    notebook_list = dialog.findChild(
+        QListWidget, "research.notebook_manager_dialog.list.notebooks"
+    )
+    instruction = dialog.findChild(
+        QLabel, "research.notebook_manager_dialog.label.selection_instruction"
+    )
     open_button = dialog.findChild(
         QPushButton, "research.notebook_manager_dialog.button.open"
     )
     delete_button = dialog.findChild(
         QPushButton, "research.notebook_manager_dialog.button.delete"
     )
+    assert instruction.text() == "Select one Notebook"
+    assert notebook_list.selectionMode() == QAbstractItemView.NoSelection
+    assert notebook_list.currentRow() == -1
+    assert all(
+        notebook_list.item(row).checkState() == Qt.CheckState.Unchecked
+        for row in range(notebook_list.count())
+    )
+    assert dialog._name.text() == ""
+    assert dialog._description.text() == ""
+    assert dialog._pages.rowCount() == 0
+    assert dialog._selected_notebook.text() == ""
+    assert dialog._target_workspace.text() == ""
+    assert dialog._current_assignment.text() == ""
+    assert not open_button.isEnabled()
+    assert not delete_button.isEnabled()
+    assert not dialog._assignment_action.isEnabled()
+    assert dialog._create.isEnabled()
+
+    _set_checked(dialog, 0)
+    assert dialog._name.text() == "Valid"
+    assert dialog._description.text() == "description"
+    assert dialog._pages.rowCount() == 1
     assert open_button.isEnabled()
     assert delete_button.isEnabled()
-    dialog.findChild(
-        __import__("PySide6.QtWidgets", fromlist=["QListWidget"]).QListWidget,
-        "research.notebook_manager_dialog.list.notebooks",
-    ).setCurrentRow(1)
+
+    _set_checked(dialog, 1)
+    assert dialog._name.text() == ""
+    assert dialog._description.text() == ""
+    assert dialog._pages.rowCount() == 0
+    assert dialog._selected_notebook.text() == ""
+    assert dialog._target_workspace.text() == ""
+    assert dialog._current_assignment.text() == ""
+    assert not open_button.isEnabled()
+    assert not delete_button.isEnabled()
+    assert not dialog._assignment_action.isEnabled()
+
+    _set_checked(dialog, 1, False)
+    assert dialog._name.text() == "Valid"
+    assert open_button.isEnabled()
+    assert delete_button.isEnabled()
+
+    _set_checked(dialog, 0, False)
+    _set_checked(dialog, 1)
+    assert dialog._validation.text() == "invalid JSON"
     assert not open_button.isEnabled()
     assert delete_button.isEnabled()
+    assert not dialog._assignment_action.isEnabled()
 
 
 def test_manager_new_notebook_is_always_available_and_emits_once() -> None:
@@ -108,6 +163,52 @@ def test_manager_new_notebook_is_always_available_and_emits_once() -> None:
     button.click()
 
     assert emitted.count() == 1
+
+
+def test_manager_disables_mutation_controls_while_notebook_work_is_busy() -> None:
+    QApplication.instance() or QApplication([])
+    dialog = ResearchNotebookManagerDialog((_summary(True),))
+    _set_checked(dialog, 0)
+
+    dialog.set_busy(True)
+
+    assert not dialog._refresh.isEnabled()
+    assert not dialog._create.isEnabled()
+    assert not dialog._open.isEnabled()
+    assert not dialog._delete.isEnabled()
+    assert not dialog._assignment_action.isEnabled()
+    assert dialog._close.isEnabled()
+
+    dialog.set_busy(False)
+
+    assert dialog._refresh.isEnabled()
+    assert dialog._create.isEnabled()
+    assert dialog._open.isEnabled()
+    assert dialog._delete.isEnabled()
+
+
+def test_manager_user_refresh_clears_checked_notebook_selection() -> None:
+    QApplication.instance() or QApplication([])
+    first = _valid_summary("notebook_one", "Notebook One")
+    second = _valid_summary("notebook_two", "Notebook Two")
+    dialog = ResearchNotebookManagerDialog((first, second))
+    emitted = QSignalSpy(dialog.refresh_requested)
+    _set_checked(dialog, 0)
+    dialog.set_summaries((second, first))
+    assert dialog._selected().notebook_id == "notebook_one"
+
+    dialog._refresh.click()
+
+    assert emitted.count() == 1
+    assert dialog._checked_notebook_ids() == ()
+    assert dialog._list.currentRow() == -1
+    assert dialog._name.text() == ""
+    assert dialog._description.text() == ""
+    assert dialog._pages.rowCount() == 0
+    assert dialog._selected_notebook.text() == ""
+    assert not dialog._open.isEnabled()
+    assert not dialog._delete.isEnabled()
+    assert not dialog._assignment_action.isEnabled()
 
 
 def test_manager_assignment_table_and_explicit_context() -> None:
@@ -151,12 +252,14 @@ def test_manager_assignment_table_and_explicit_context() -> None:
     assert table.currentRow() == -1
     assert table.item(0, 0).data(Qt.UserRole) == "workspace_one"
     assert table.item(0, 1).data(Qt.UserRole) == "workspace_one"
-    assert selected.text() == "Notebook One"
-    assert target.text() == "None selected"
-    assert current.text() == "None selected"
+    assert selected.text() == ""
+    assert target.text() == ""
+    assert current.text() == ""
     assert action.text() == "Assign Notebook"
     assert not action.isEnabled()
 
+    _set_checked(dialog, 0)
+    assert selected.text() == "Notebook One"
     table.setCurrentCell(0, 0)
     assert target.text() == "Workspace One"
     assert current.text() == "Unassigned"
@@ -187,6 +290,7 @@ def test_manager_assign_replace_and_unassign_actions(monkeypatch) -> None:
             AssertionError("unassigned Workspace must not require confirmation")
         ),
     )
+    _set_checked(dialog, 0)
     table.setCurrentCell(0, 0)
     action.click()
     assert assigned.count() == 1
@@ -275,6 +379,7 @@ def test_manager_delete_requires_explicit_confirmation(monkeypatch) -> None:
         lambda *_args, **_kwargs: next(answers),
     )
 
+    _set_checked(dialog, 0)
     delete_button.click()
     delete_button.click()
 

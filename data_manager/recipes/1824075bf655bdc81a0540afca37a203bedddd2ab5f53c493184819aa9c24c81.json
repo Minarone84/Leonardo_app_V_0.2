@@ -1,0 +1,28 @@
+{
+  "dependencies": [
+    {
+      "output_name": "ema_7",
+      "recipe_id": "49945dda637de9af6e2192cb2109f9ee4d5a0467b020b335ecff17fafeb8d3af",
+      "role": "slow"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [
+    {
+      "column_name": "close",
+      "role": "fast"
+    }
+  ],
+  "output_names": [
+    "close_research_slow_delta"
+  ],
+  "parameters": {
+    "eps": 1e-12,
+    "mode": "abs"
+  },
+  "recipe_id": "1824075bf655bdc81a0540afca37a203bedddd2ab5f53c493184819aa9c24c81",
+  "schema_version": "1.0",
+  "tool_key": "delta",
+  "tool_version": "1.0"
+}

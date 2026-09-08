@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -33,6 +35,7 @@ from leonardo.gui.data_manager.table_presentation import (
     format_utc_timestamp_ms,
     resize_data_manager_table,
 )
+from leonardo.gui.window_geometry import apply_initial_window_size
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
@@ -106,11 +109,14 @@ class DataManagerArtifactCollectionDialog(QDialog):
         self._fixed_market_id: MarketId | None = None
         self._selected_root_ids: tuple[str, ...] = ()
         self._reviewed_plan: ArtifactCollectionSelectionPlan | None = None
+        self._equivalent_collection: ArtifactCollectionRevisionV1 | None = None
+        self._prediction_ready = False
         self._preserved_output_rows: tuple[_OutputMappingRow, ...] = ()
         self._collection_id: str | None = None
         self._expected_revision_id: str | None = None
         self._busy = False
         self._populating = False
+        self._workspace_splitters_initialized = False
 
         apply_identity(
             self,
@@ -119,10 +125,32 @@ class DataManagerArtifactCollectionDialog(QDialog):
         )
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        apply_initial_window_size(
+            self,
+            parent=parent,
+            width_fraction=0.75,
+            height_fraction=0.75,
+        )
 
         root = QVBoxLayout(self)
-        metadata = QGroupBox("Collection", self)
+        root.setSpacing(10)
+        workspace = QSplitter(Qt.Orientation.Horizontal, self)
+        apply_identity(
+            workspace,
+            "data_manager.artifact_collection.splitter.workspace",
+            object_type="splitter",
+        )
+        workspace.setChildrenCollapsible(False)
+
+        left_workspace = QWidget(workspace)
+        left_layout = QVBoxLayout(left_workspace)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        metadata = QGroupBox("Collection", left_workspace)
         metadata_layout = QFormLayout(metadata)
+        metadata_layout.setContentsMargins(12, 24, 12, 12)
+        metadata_layout.setVerticalSpacing(8)
         self.name_input = QLineEdit(metadata)
         self.name_input.setObjectName("data_manager.artifact_collection.input.name")
         self.description_input = QLineEdit(metadata)
@@ -134,11 +162,17 @@ class DataManagerArtifactCollectionDialog(QDialog):
         metadata_layout.addRow("Name", self.name_input)
         metadata_layout.addRow("Description", self.description_input)
         metadata_layout.addRow(self.market_label)
-        root.addWidget(metadata)
+        metadata_size_policy = metadata.sizePolicy()
+        metadata_size_policy.setVerticalPolicy(QSizePolicy.Policy.Fixed)
+        metadata.setSizePolicy(metadata_size_policy)
+        left_layout.addWidget(metadata)
 
-        available = QGroupBox("Artifact roots", self)
+        available = QGroupBox("Artifact roots", left_workspace)
         available_layout = QVBoxLayout(available)
+        available_layout.setContentsMargins(12, 24, 12, 12)
+        available_layout.setSpacing(10)
         controls = QHBoxLayout()
+        controls.setSpacing(10)
         controls.addWidget(QLabel("Scope", available))
         self.dataset_scope = QComboBox(available)
         apply_identity(
@@ -170,10 +204,27 @@ class DataManagerArtifactCollectionDialog(QDialog):
         self.artifact_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.artifact_table.itemChanged.connect(self._on_artifact_item_changed)
         available_layout.addWidget(self.artifact_table)
-        root.addWidget(available, 1)
+        available_size_policy = available.sizePolicy()
+        available_size_policy.setVerticalPolicy(QSizePolicy.Policy.Expanding)
+        available.setSizePolicy(available_size_policy)
+        left_layout.addWidget(available, 1)
+        left_size_policy = left_workspace.sizePolicy()
+        left_size_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        left_workspace.setSizePolicy(left_size_policy)
+        workspace.addWidget(left_workspace)
 
-        preview = QGroupBox("Preview", self)
+        right_workspace = QSplitter(Qt.Orientation.Vertical, workspace)
+        apply_identity(
+            right_workspace,
+            "data_manager.artifact_collection.splitter.right",
+            object_type="splitter",
+        )
+        right_workspace.setChildrenCollapsible(False)
+
+        preview = QGroupBox("Preview", right_workspace)
         preview_layout = QVBoxLayout(preview)
+        preview_layout.setContentsMargins(12, 24, 12, 12)
+        preview_layout.setSpacing(10)
         self.preview_table = configure_table(
             QTableWidget(preview),
             object_id="data_manager.artifact_collection.table.preview",
@@ -188,10 +239,12 @@ class DataManagerArtifactCollectionDialog(QDialog):
             "data_manager.artifact_collection.label.preview_status"
         )
         preview_layout.addWidget(self.preview_summary)
-        root.addWidget(preview, 1)
+        right_workspace.addWidget(preview)
 
-        outputs = QGroupBox("Output Mapping", self)
+        outputs = QGroupBox("Output Mapping", right_workspace)
         outputs_layout = QVBoxLayout(outputs)
+        outputs_layout.setContentsMargins(12, 24, 12, 12)
+        outputs_layout.setSpacing(10)
         self.output_table = configure_table(
             QTableWidget(outputs),
             object_id="data_manager.artifact_collection.table.outputs",
@@ -207,6 +260,7 @@ class DataManagerArtifactCollectionDialog(QDialog):
         self.output_table.itemChanged.connect(self._on_output_item_changed)
         outputs_layout.addWidget(self.output_table)
         ordering = QHBoxLayout()
+        ordering.setSpacing(10)
         self.move_up_button = QPushButton("Move Up", outputs)
         self.move_up_button.setObjectName(
             "data_manager.artifact_collection.action.move_up"
@@ -219,9 +273,22 @@ class DataManagerArtifactCollectionDialog(QDialog):
         ordering.addWidget(self.move_down_button)
         ordering.addStretch(1)
         outputs_layout.addLayout(ordering)
-        root.addWidget(outputs, 1)
+        right_workspace.addWidget(outputs)
+        right_workspace.setStretchFactor(0, 1)
+        right_workspace.setStretchFactor(1, 1)
+        right_size_policy = right_workspace.sizePolicy()
+        right_size_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        right_workspace.setSizePolicy(right_size_policy)
+        workspace.addWidget(right_workspace)
+        workspace.setStretchFactor(0, 1)
+        workspace.setStretchFactor(1, 1)
+        self.workspace_splitter = workspace
+        self.right_splitter = right_workspace
+        self.left_workspace = left_workspace
+        root.addWidget(workspace, 1)
 
         actions = QHBoxLayout()
+        actions.setSpacing(10)
         actions.addStretch(1)
         self.preview_button = QPushButton("Preview", self)
         self.preview_button.setObjectName(
@@ -251,6 +318,16 @@ class DataManagerArtifactCollectionDialog(QDialog):
         self.name_input.textChanged.connect(self._sync_controls)
         self.description_input.textChanged.connect(self._sync_controls)
         self.configure_create(snapshot, browsing_market_id=browsing_market_id)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._workspace_splitters_initialized:
+            return
+        self._workspace_splitters_initialized = True
+        horizontal_extent = max(1, self.workspace_splitter.width())
+        vertical_extent = max(1, self.right_splitter.height())
+        self.workspace_splitter.setSizes((horizontal_extent, horizontal_extent))
+        self.right_splitter.setSizes((vertical_extent, vertical_extent))
 
     @property
     def collection_id(self) -> str | None:
@@ -377,12 +454,53 @@ class DataManagerArtifactCollectionDialog(QDialog):
         previous = self._preserved_output_rows or self._output_rows()
         self._preserved_output_rows = ()
         self._reviewed_plan = plan
+        self._equivalent_collection = None
+        self._prediction_ready = False
         self._populate_preview(plan)
         self._populate_outputs_from_plan(plan, previous)
         self.preview_summary.setText(
             f"Preview ready: {len(plan.root_logical_artifact_ids)} ROOT; "
-            f"{len(plan.support_logical_artifact_ids)} SUPPORT"
+            f"{len(plan.support_logical_artifact_ids)} SUPPORT; "
+            "checking Collection reuse..."
         )
+        self._sync_controls()
+        return True
+
+    def set_collection_prediction(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        equivalent: ArtifactCollectionRevisionV1 | None,
+    ) -> bool:
+        if plan is not self._reviewed_plan:
+            return False
+        if equivalent is not None and not isinstance(
+            equivalent, ArtifactCollectionRevisionV1
+        ):
+            raise TypeError(
+                "equivalent must be an ArtifactCollectionRevisionV1 or None"
+            )
+        self._equivalent_collection = equivalent
+        self._prediction_ready = True
+        lines = [
+            f"Preview ready: {len(plan.root_logical_artifact_ids)} ROOT; "
+            f"{len(plan.support_logical_artifact_ids)} SUPPORT"
+        ]
+        if equivalent is None or equivalent.collection_id == self._collection_id:
+            lines.append(
+                "Result: UPDATE COLLECTION"
+                if self._collection_id is not None
+                else "Result: NEW COLLECTION"
+            )
+        else:
+            lines.extend(
+                (
+                    "Result: REUSE EXISTING COLLECTION",
+                    f"Existing Name: {equivalent.display_name}",
+                    f"Collection ID: {equivalent.collection_id}",
+                    f"Revision ID: {equivalent.revision_id}",
+                )
+            )
+        self.preview_summary.setText("\n".join(lines))
         self._sync_controls()
         return True
 
@@ -412,16 +530,30 @@ class DataManagerArtifactCollectionDialog(QDialog):
     def presentation_order(self) -> tuple[str, ...]:
         return tuple(item.column_name for item in self._output_rows() if item.included)
 
-    def settle_success(self, revision: ArtifactCollectionRevisionV1) -> None:
+    def settle_success(
+        self,
+        revision: ArtifactCollectionRevisionV1,
+        *,
+        outcome: str = "UPDATED",
+    ) -> None:
+        if outcome not in {"CREATED", "UPDATED", "REUSED_EXISTING"}:
+            raise ValueError("invalid Artifact Collection outcome")
         self.configure_edit(
             revision,
             self._snapshot,
             browsing_market_id=self._browsing_market_id,
         )
-        self.preview_summary.setText("Artifact Collection published successfully.")
+        self.preview_summary.setText(
+            f"Artifact Collection {outcome.replace('_', ' ').lower()} successfully.\n"
+            f"Name: {revision.display_name}\n"
+            f"Collection ID: {revision.collection_id}\n"
+            f"Revision ID: {revision.revision_id}"
+        )
 
     def invalidate_preview(self, message: str = "Preview required.") -> None:
         self._reviewed_plan = None
+        self._equivalent_collection = None
+        self._prediction_ready = False
         self.preview_table.setRowCount(0)
         self.preview_summary.setText(message)
         self._sync_controls()
@@ -715,6 +847,9 @@ class DataManagerArtifactCollectionDialog(QDialog):
 
     def _on_output_item_changed(self, item: QTableWidgetItem) -> None:
         if not self._populating and item.column() in {0, 3}:
+            self._equivalent_collection = None
+            self._prediction_ready = False
+            self.preview_summary.setText("Output mapping changed. Preview again.")
             self._sync_controls()
 
     def _move_output(self, offset: int) -> None:
@@ -729,6 +864,9 @@ class DataManagerArtifactCollectionDialog(QDialog):
             return
         rows[row], rows[target] = rows[target], rows[row]
         self._set_output_rows(tuple(rows))
+        self._equivalent_collection = None
+        self._prediction_ready = False
+        self.preview_summary.setText("Output mapping changed. Preview again.")
         self.output_table.selectRow(target)
 
     def _emit_preview(self) -> None:
@@ -793,6 +931,7 @@ class DataManagerArtifactCollectionDialog(QDialog):
             and description == description.strip()
             and plan is not None
             and self.reviewed_plan_matches(plan)
+            and self._prediction_ready
             and self._output_mapping_is_valid()
             and (self._collection_id is None or bool(self._expected_revision_id))
         )

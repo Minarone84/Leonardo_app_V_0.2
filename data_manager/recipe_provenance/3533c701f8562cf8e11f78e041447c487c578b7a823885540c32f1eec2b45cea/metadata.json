@@ -1,0 +1,32 @@
+{
+  "first_persisted_at_utc": "2026-09-06T10:52:11.081052+00:00",
+  "object_type": "portable_recipe_persistence_metadata",
+  "origins": [
+    {
+      "details": {
+        "entry_id": "entry_003",
+        "environment_content_hash": "d5c953f5a969fb1c1201889a75866610bce90b40663a41cb4904a11cbaa24e95",
+        "environment_id": "env_8f33ee9296ed4f0cb81248aca517f101"
+      },
+      "object_type": "portable_recipe_origin",
+      "origin_id": "9297ffc662e271f4359805f7a95df5000d0daa4258b3c38bebca947aa0ada589",
+      "origin_kind": "study_environment",
+      "origin_recorded_at_utc": "2026-09-07T12:33:52.661662+00:00",
+      "schema_version": "1.0"
+    },
+    {
+      "details": {
+        "entry_id": "entry_002",
+        "environment_content_hash": "2c9be9e4cb2aec9453ae9999e24d1731da4c82d4efd124e3c4cfb52876ef19f7",
+        "environment_id": "env_ebb2c7dadc91450c947ae8e0b95ff8b2"
+      },
+      "object_type": "portable_recipe_origin",
+      "origin_id": "c103dfdae8e0be192342f84c72870599120773bd2cb8c89ca104ae59300f7cca",
+      "origin_kind": "study_environment",
+      "origin_recorded_at_utc": "2026-09-06T10:52:11.081052+00:00",
+      "schema_version": "1.0"
+    }
+  ],
+  "recipe_id": "3533c701f8562cf8e11f78e041447c487c578b7a823885540c32f1eec2b45cea",
+  "schema_version": "1.0"
+}

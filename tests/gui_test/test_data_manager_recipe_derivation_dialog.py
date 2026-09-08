@@ -9,7 +9,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QGroupBox, QProgressBar
+from PySide6.QtWidgets import (
+    QApplication,
+    QFormLayout,
+    QGroupBox,
+    QProgressBar,
+    QSizePolicy,
+)
 
 from leonardo.data import MarketId
 from leonardo.data_manager import (
@@ -92,6 +98,13 @@ def _plan(
         "execution_stages": (),
         "warnings": (),
         "blockers": blockers,
+        "recipe_actions": (
+            (ROOT_RECIPE_ID, "NEW"),
+            (SUPPORT_RECIPE_ID, "NEW"),
+        ),
+        "equivalent_collection_id": None,
+        "equivalent_collection_revision_id": None,
+        "equivalent_collection_name": "",
     }
     for name, item in attributes.items():
         object.__setattr__(value, name, item)
@@ -134,20 +147,46 @@ def test_all_entries_are_visible_with_exact_root_selectability_and_reasons(qapp)
         dialog.close()
 
 
-def test_initial_size_collection_height_and_normal_resize(qapp) -> None:
+def test_initial_size_group_clearance_table_stretch_and_normal_resize(qapp) -> None:
     dialog = DataManagerRecipeDerivationDialog(_inspection())
     try:
         screen = dialog.screen() or qapp.primaryScreen()
         available = screen.availableGeometry()
         assert dialog.width() == int(available.width() * 0.40)
-        assert dialog.height() == int(available.height() * 0.60)
+        assert abs(dialog.height() - int(available.height() * 0.78)) <= 1
 
-        collection = next(
-            group
-            for group in dialog.findChildren(QGroupBox)
-            if group.title() == "Recipe Collection"
-        )
+        groups = {
+            group.title(): group for group in dialog.findChildren(QGroupBox)
+        }
+        expected = {
+            "Study Environment",
+            "Study roots",
+            "Preview",
+            "Recipe Collection",
+        }
+        assert expected <= groups.keys()
+        for title in expected:
+            layout = groups[title].layout()
+            assert layout.contentsMargins().top() >= 24
+            spacing = (
+                layout.verticalSpacing()
+                if isinstance(layout, QFormLayout)
+                else layout.spacing()
+            )
+            assert 8 <= spacing <= 10
+
+        collection = groups["Recipe Collection"]
         assert collection.minimumHeight() >= collection.sizeHint().height() + 12
+        root = dialog.layout()
+        for title, table in (
+            ("Study roots", dialog.study_table),
+            ("Preview", dialog.preview_table),
+        ):
+            assert root.stretch(root.indexOf(groups[title])) == 1
+            assert (
+                table.sizePolicy().verticalPolicy()
+                == QSizePolicy.Policy.Expanding
+            )
 
         resized = dialog.size()
         dialog.resize(resized.width() + 20, resized.height() + 20)
@@ -223,13 +262,38 @@ def test_preview_projects_root_support_new_existing_and_blockers(qapp) -> None:
         assert tuple(
             dialog.preview_table.item(row, 5).text()
             for row in range(dialog.preview_table.rowCount())
-        ) == ("Existing", "New")
+        ) == ("REUSE EXISTING", "NEW")
+        assert "Recipes considered: 2" in dialog.status_label.text()
+        assert "New Recipes: 1" in dialog.status_label.text()
+        assert "Existing Recipes reused: 1" in dialog.status_label.text()
         assert dialog.create_button.isEnabled()
 
         dialog.invalidate_preview()
         assert dialog.set_plan(_plan(blockers=("Canonical blocker",)))
         assert dialog.blockers_label.text() == "Canonical blocker"
         assert not dialog.create_button.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_optional_collection_preview_reports_existing_winner(qapp) -> None:
+    dialog = DataManagerRecipeDerivationDialog(_inspection())
+    plan = _plan()
+    object.__setattr__(
+        plan, "equivalent_collection_id", "prc_11111111111111111111111111111111"
+    )
+    object.__setattr__(plan, "equivalent_collection_revision_id", "d" * 64)
+    object.__setattr__(plan, "equivalent_collection_name", "Persisted Winner")
+    try:
+        _select_root(dialog)
+        dialog.collection_checkbox.setChecked(True)
+        dialog.collection_name.setText("Different requested name")
+        assert dialog.set_plan(plan)
+        assert "Recipe Collection: REUSE EXISTING COLLECTION" in (
+            dialog.status_label.text()
+        )
+        assert "Existing Name: Persisted Winner" in dialog.status_label.text()
+        assert "prc_11111111111111111111111111111111" in dialog.status_label.text()
     finally:
         dialog.close()
 
@@ -267,6 +331,11 @@ def test_root_change_collection_controls_and_success_invalidate_preview(qapp) ->
                 (SUPPORT_RECIPE_ID,),
                 "collection_1",
                 "d" * 64,
+                (ROOT_RECIPE_ID,),
+                (SUPPORT_RECIPE_ID,),
+                (),
+                (),
+                "CREATED",
             )
         )
         assert "Recipes created/reused successfully" in dialog.status_label.text()
@@ -315,7 +384,7 @@ def test_success_recipe_ids_are_immediately_projected_as_existing(qapp) -> None:
         assert tuple(
             dialog.preview_table.item(row, 5).text()
             for row in range(dialog.preview_table.rowCount())
-        ) == ("New", "New")
+        ) == ("NEW", "NEW")
 
         dialog.settle_success(
             DataManagerRecipePersistenceResult(
@@ -333,6 +402,6 @@ def test_success_recipe_ids_are_immediately_projected_as_existing(qapp) -> None:
         assert tuple(
             dialog.preview_table.item(row, 5).text()
             for row in range(dialog.preview_table.rowCount())
-        ) == ("Existing", "Existing")
+        ) == ("REUSE EXISTING", "REUSE EXISTING")
     finally:
         dialog.close()

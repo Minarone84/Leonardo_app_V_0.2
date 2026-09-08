@@ -1,0 +1,23 @@
+{
+  "dependencies": [
+    {
+      "output_name": "sma_100",
+      "recipe_id": "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be",
+      "role": "source_1"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "research_source_1_ang_pct_span_10"
+  ],
+  "parameters": {
+    "unit": "deg",
+    "window": 10
+  },
+  "recipe_id": "c98cf6b88d0203a274acb47b5ce1a168d32d4ccb84ca3bbff8ea93b1cba73723",
+  "schema_version": "1.0",
+  "tool_key": "percent_span_angle",
+  "tool_version": "1.0"
+}

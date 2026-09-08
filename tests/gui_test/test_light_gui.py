@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,10 +11,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
+from leonardo.data import MarketId
 from leonardo.gui.composition import GuiCompositionRoot
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.window_tracking import GuiWindowTracker
@@ -153,6 +155,44 @@ def test_composition_opens_and_tracks_windows(qapp: QApplication, tmp_path: Path
         app.shutdown()
 
 
+def test_composition_routes_ohlcv_change_only_to_existing_data_manager(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    app = LeonardoApp(_config(tmp_path))
+    app.startup()
+    composition = GuiCompositionRoot(app.context)
+    main = composition.create_main_window()
+    market = MarketId("bybit", "linear", "BTCUSDT", "1m")
+    received = []
+    try:
+        main.action_for_id("main_window.ohlcv_maintenance").trigger()
+        QCoreApplication.processEvents()
+        maintenance = composition.ohlcv_maintenance_presenter
+        assert maintenance is not None
+        callback = maintenance._on_canonical_ohlcv_evidence_changed
+        assert callback is not None
+
+        callback(market)
+        assert composition.data_manager_suite_presenter is None
+
+        data_manager = SimpleNamespace(
+            is_disposed=False,
+            notify_external_ohlcv_change=received.append,
+        )
+        composition._data_manager_suite_presenter = data_manager
+        callback(market)
+        assert received == [market]
+
+        data_manager.is_disposed = True
+        callback(market)
+        assert received == [market]
+    finally:
+        main.close()
+        QCoreApplication.processEvents()
+        app.shutdown()
+
+
 def test_runtime_manager_renders_direct_snapshot(qapp: QApplication, tmp_path: Path) -> None:
     app = LeonardoApp(_config(tmp_path))
     app.startup()
@@ -202,3 +242,77 @@ def test_theme_loads_and_applies(qapp: QApplication) -> None:
     assert theme.identity.theme_id == "leonardo_jarvish_cockpit"
     apply_theme_stylesheet(qapp, theme)
     assert qapp.styleSheet()
+
+
+@pytest.mark.parametrize(
+    ("result", "changed", "expected_calls", "expected_status"),
+    (
+        (QDialog.DialogCode.Rejected, False, 0, "Settings cancelled."),
+        (QDialog.DialogCode.Accepted, False, 0, "Settings unchanged."),
+        (QDialog.DialogCode.Accepted, True, 1, "Display time zone updated."),
+    ),
+)
+def test_settings_action_uses_injected_dialog_and_exact_change_callback(
+    qapp: QApplication,
+    result: QDialog.DialogCode,
+    changed: bool,
+    expected_calls: int,
+    expected_status: str,
+) -> None:
+    created: list[QDialog] = []
+    callbacks: list[bool] = []
+
+    class InjectedSettingsDialog(QDialog):
+        @property
+        def display_time_zone_changed(self) -> bool:
+            return changed
+
+        def exec(self) -> int:
+            return int(result)
+
+    def factory(parent: QWidget) -> InjectedSettingsDialog:
+        dialog = InjectedSettingsDialog(parent)
+        created.append(dialog)
+        return dialog
+
+    window = LeonardoMainWindow(
+        settings_dialog_factory=factory,
+        on_display_time_zone_changed=lambda: callbacks.append(True),
+    )
+    try:
+        window.action_for_id("main_window.open_settings_inspector").trigger()
+        assert len(created) == 1
+        assert callbacks == [True] * expected_calls
+        assert window.statusBar().currentMessage() == expected_status
+    finally:
+        window.close()
+
+
+def test_settings_dependencies_require_callables(qapp: QApplication) -> None:
+    with pytest.raises(TypeError, match="settings_dialog_factory must be callable"):
+        LeonardoMainWindow(settings_dialog_factory=object())
+    with pytest.raises(
+        TypeError, match="on_display_time_zone_changed must be callable"
+    ):
+        LeonardoMainWindow(on_display_time_zone_changed=object())
+
+
+def test_composition_display_time_change_refreshes_only_live_data_manager(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    app = LeonardoApp(_config(tmp_path))
+    composition = GuiCompositionRoot(app.context)
+    composition._on_display_time_zone_changed()
+
+    refreshes: list[bool] = []
+    composition._data_manager_suite_presenter = SimpleNamespace(
+        is_disposed=False,
+        refresh=lambda: refreshes.append(True),
+    )
+    composition._on_display_time_zone_changed()
+    assert refreshes == [True]
+
+    composition._data_manager_suite_presenter.is_disposed = True
+    composition._on_display_time_zone_changed()
+    assert refreshes == [True]

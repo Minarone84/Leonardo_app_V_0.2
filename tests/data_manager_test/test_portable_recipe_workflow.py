@@ -15,7 +15,9 @@ from leonardo.recipes import (
     PortableRecipeGraphPlanner,
     PortableRecipeOHLCVInputV1,
     PortableRecipeStore,
+    PortableRecipeV1,
     build_portable_recipe,
+    compute_portable_recipe_id,
 )
 from leonardo.research import (
     StudyEnvironmentDraft,
@@ -207,9 +209,61 @@ def test_recipe_read_projection_preserves_canonical_input_binding_order(
         "fast=OHLCV.close",
         f"slow=Recipe[{dependency_id}].rsi_14",
     )
+    assert "fast" not in projected_by_tool["delta"].parameters
+    assert "slow" not in projected_by_tool["delta"].parameters
     assert {item.recipe_id for item in projected_by_tool.values()} == {
         item.recipe_id for item in plan.recipes
     }
+
+
+def test_recipe_catalog_projects_legacy_selector_residue_as_input_metadata(
+    tmp_path: Path,
+) -> None:
+    service, _environments, recipes = _domain(tmp_path)
+    sma = build_portable_recipe(
+        tool_key="sma",
+        kind="indicator",
+        parameters={"period": 14},
+        output_names=("sma_14",),
+    )
+    dependency = PortableRecipeDependencyV1(
+        "source_1", sma.recipe_id, "sma_14"
+    )
+    parameters = {"n": 3, "source_columns": "close"}
+    recipe_id = compute_portable_recipe_id(
+        tool_key="angle_momentum",
+        tool_version="1.0",
+        kind="construct",
+        parameters=parameters,
+        output_names=("sma_14_ang_mtm_3",),
+        ohlcv_inputs=(),
+        dependencies=(dependency,),
+    )
+    legacy = PortableRecipeV1.from_dict(
+        {
+            "schema_version": "1.0",
+            "object_type": "portable_recipe",
+            "recipe_id": recipe_id,
+            "tool_key": "angle_momentum",
+            "tool_version": "1.0",
+            "kind": "construct",
+            "parameters": parameters,
+            "output_names": ["sma_14_ang_mtm_3"],
+            "ohlcv_inputs": [],
+            "dependencies": [dependency.to_dict()],
+        }
+    )
+    recipes.save_recipe(sma)
+    recipes.save_recipe(legacy)
+
+    projected = {
+        item.recipe_id: item for item in service.scan_portable_recipes().recipes
+    }[legacy.recipe_id]
+    assert dict(projected.parameters) == {"n": 3}
+    assert projected.input_bindings == (
+        f"source_1=Recipe[{sma.recipe_id}].sma_14",
+    )
+    assert dict(recipes.load_recipe(legacy.recipe_id).parameters) == parameters
 
 
 @pytest.mark.parametrize(

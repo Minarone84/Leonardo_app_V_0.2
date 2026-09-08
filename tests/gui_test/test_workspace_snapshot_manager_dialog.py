@@ -16,6 +16,34 @@ from leonardo.research.workspace_snapshot import (
 )
 
 
+RADIO_STYLE = (
+    "QRadioButton::indicator {"
+    " background-color: #111827; border: 1px solid #9CA3AF;"
+    " width: 13px; height: 13px; border-radius: 7px;"
+    "}"
+    "QRadioButton::indicator:checked {"
+    " background-color: #9CA3AF; border: 1px solid #D1D5DB;"
+    "}"
+)
+
+
+@pytest.mark.parametrize("mode", ("load", "manage"))
+def test_manager_owns_visible_append_replace_radio_style(mode):
+    QApplication.instance() or QApplication([])
+    dialog = WorkspaceSnapshotManagerDialog((), mode=mode)
+
+    assert dialog.styleSheet() == RADIO_STYLE
+    assert dialog.append_radio.text() == "Append"
+    assert dialog.replace_radio.text() == "Replace"
+    assert dialog.append_radio.isChecked()
+    assert not dialog.replace_radio.isChecked()
+
+    dialog.replace_radio.setChecked(True)
+
+    assert dialog.replace_radio.isChecked()
+    assert not dialog.append_radio.isChecked()
+
+
 def test_manager_lists_invalid_snapshot_for_delete_only():
     QApplication.instance() or QApplication([])
     invalid = ResearchWorkspaceSnapshotSummary(

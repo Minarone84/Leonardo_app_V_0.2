@@ -1,8 +1,9 @@
 # Leonardo V2 Data Manager Suite
 
-**Status:** Task 1064 closed after final combined native smoke; Data Manager
-completion continues through Tasks 1065-1067
-**Updated:** 2026-08-17
+**Status:** Task 1064 closed; Task 1065 lifecycle work accepted; Task 1066
+functional lifecycle work implemented and awaiting final closure correction plus
+combined native smoke; Database Build finalization follows in Task 1067
+**Updated:** 2026-09-05
 **Primary implementation:** `src/leonardo/data_manager/`,
 `src/leonardo/recipes/`, `src/leonardo/artifacts/`,
 `src/leonardo/gui/data_manager/`, the Data Manager presenter, and Data Manager
@@ -43,12 +44,15 @@ Current implementation status:
 | Responsive and maximized Suite layout | Implemented and accepted |
 | Typed Catalog and Select Dataset sorting | Implemented and accepted |
 | Task 1064 | **CLOSED** after final combined native smoke |
-| Task 1065 - Study Environment to Recipes | Pending |
-| Task 1066 - Recipes / Recipe Collection to Artifacts + Collection lineage | Pending |
-| Task 1067 - final catalog-driven integration / Data Manager closure | Pending |
+| Task 1065 lifecycle work | Implemented and accepted |
+| Task 1066 functional lifecycle work | Implemented; final closure correction and combined native smoke pending |
+| Database update logic | Implemented |
+| Task 1067 - Database Build Finalization | Future work; not started |
 
-Task 1064 is closed. This does not close the complete Data Manager workplan;
-Tasks 1065, 1066, and 1067 remain.
+Task 1064 is closed and Task 1065 is incorporated into the accepted current
+Data Manager lifecycle. Task 1066 is not closed until its final correction and
+combined native smoke pass. Database Build finalization is the next major Data
+Manager-area work after Task 1066 closure.
 
 ## 2. Scope and ownership
 
@@ -159,9 +163,48 @@ A `PortableRecipeV1` contains the semantic calculation definition:
 - canonical OHLCV input roles;
 - dependency roles, Recipe identities, and dependency outputs.
 
-The Recipe identity is content-derived. It does not include one origin market or
-one Study Environment. Origin relationships are stored separately as provenance.
-Dynamic Binning is explicitly excluded from portable Recipes.
+Recipes are global semantic instructions. Semantic equality is:
+
+```text
+same tool
++ same semantic parameters
++ same actual direct inputs
+= same Recipe
+```
+
+Recipe semantic equality does not include `MarketId`, OHLCV fingerprint,
+origin or provenance, Study Environment, Study ID, Artifact ID, Recipe display
+metadata, or timestamps. Equivalent dependency graphs are resolved semantically
+rather than by dependency Recipe ID alone.
+
+Execution-only selectors are normalized from new portable Recipe persistence
+when actual source information is already represented by `ohlcv_inputs` and
+`dependencies`. Legacy Recipes remain readable and are not rewritten merely for
+normalization. Dynamic Binning is explicitly excluded from portable Recipes.
+
+All current publication routes use the same global portable Recipe authority:
+
+```text
+Saved Study Environment
+Research explicit Save
+Data Manager Artifact creation
+```
+
+Research Apply is transient only. Research explicit Save publishes a managed
+Artifact and creates or reuses the global portable Recipe. The Research
+saved-link Artifact identity namespace is distinct from the portable Recipe ID.
+
+Recipe-owned persistence metadata records `recipe_id`, immutable
+`first_persisted_at_utc`, and separate origin records. Supported origins are
+`study_environment`, `research_save`, and `data_manager_artifact`. Provenance
+does not affect Recipe semantic equality. For newly persisted Recipes,
+`first_persisted_at_utc` is authoritative and immutable on reuse.
+
+Legacy Recipes without trustworthy first-persisted age remain
+`LEGACY AGE UNKNOWN`; Leonardo does not infer authoritative age from filesystem
+timestamps. When historical duplicate age cannot prove the canonical oldest
+Recipe, Duplicate Maintenance reports `REVIEW REQUIRED` and performs no
+automatic purge.
 
 ### 5.3 Recipe Collections
 
@@ -178,6 +221,18 @@ A Recipe Collection revision records:
 A mutable head selects the current immutable revision. Historical revisions
 remain loadable.
 
+Recipe Collections are global semantic sets of Recipes:
+
+```text
+same set of semantic Recipes
+= same Recipe Collection
+```
+
+Names, descriptions, IDs, timestamps, origins, and ordering do not define
+Collection semantic equality. Data Manager supports Create, Edit, Inspect, and
+Delete Recipe Collection. Deleting a Recipe Collection does not delete member
+Recipes. Artifact-domain objects do not block Recipe Collection deletion.
+
 ### 5.4 Managed Artifacts
 
 A managed Artifact has two distinct identities:
@@ -189,6 +244,13 @@ A managed Artifact has two distinct identities:
 Artifact publication creates new immutable versions and advances the logical
 head. Existing versions are not edited in place.
 
+Artifacts are bound to one canonical `MarketId` and one exact OHLCV
+fingerprint. Within that exact dataframe, semantic Artifact identity includes
+the tool, semantic parameters, and actual inputs. Artifacts carry embedded
+execution and lineage evidence and remain independently valid if a global
+portable Recipe later becomes unavailable. Loading an existing managed Artifact
+does not require portable Recipe persistence as a runtime dependency.
+
 ### 5.5 Artifact Collections
 
 An Artifact Collection revision records the exact market-specific Artifact graph
@@ -198,6 +260,13 @@ evidence.
 
 Required support members remain locked. User-editable output selection and
 Database column ordering must still produce a complete, unique, valid revision.
+
+Artifact Collections are semantic sets of Artifacts within one exact OHLCV
+fingerprint. Data Manager supports Create, Edit, Inspect, and Delete Artifact
+Collection. Successful publication is immediately projected into the current
+Data Manager catalog, with background reconciliation following as verification.
+Deleting an Artifact Collection does not delete member Artifacts. A Database
+dependency may legitimately block Artifact Collection deletion.
 
 ### 5.6 Database Seeds and Databases
 
@@ -305,9 +374,10 @@ Last Data UTC
 Details
 ```
 
-Timestamps are rendered in human-readable UTC. Columns are sized from their
-headers and visible contents. Horizontal scrolling is used when the complete
-content exceeds the viewport.
+Persisted timestamps remain UTC. GUI timestamps are rendered through the
+configured display-time policy. Columns are sized from their headers and
+visible contents. Horizontal scrolling is used when the complete content
+exceeds the viewport.
 
 Accepted and rejected entries remain visible. `Select` is enabled only when the
 chosen row is accepted and has a valid canonical `MarketId`.
@@ -403,6 +473,13 @@ selector opens.
 
 Changing the active market invalidates stale creation or update context. The GUI
 does not submit execution using a plan prepared for another market.
+
+### 7.8 Display timezone
+
+Timestamp storage remains UTC. The default GUI display timezone is
+`Europe/Rome`, implemented through the canonical helper
+`src/leonardo/gui/display_time.py`. Display conversion does not change persisted
+timestamp meaning.
 
 ## 8. Catalogs tab
 
@@ -508,7 +585,25 @@ completed, `New`, and `Reuse Current`; that report closes independently while
 the Batch window remains open. Successful execution invalidates Preview, so a
 new Preview is required before another Execute.
 
+### 8.3 Duplicate Maintenance
+
+Duplicate Maintenance covers Recipes, Recipe Collections, Artifacts, and
+Artifact Collections. Recipe and Recipe Collection scans are global. Artifact
+and Artifact Collection scans are constrained to the selected `MarketId` and
+exact OHLCV fingerprint.
+
+The workflow uses explicit preflight, a read-only background scan, a results UI,
+safe purge, stale fencing, and dependency or blocker checks. No duplicate scan
+or purge runs at startup. Historical managed Artifact versions are immutable
+history and are not treated as duplicate current Artifacts.
+
 ## 9. Creation workflow
+
+The current historical Database creation workflow still contains stages that
+overlap completed Recipe, Artifact, and Collection responsibilities. Task 1067
+will audit and simplify that overlap as part of Database Build Finalization. The
+final Task 1067 workflow is not defined here, and Database Seed remains part of
+the documented current implementation pending that audit.
 
 The Create Database tab is an explicit nine-stage workspace:
 
@@ -693,6 +788,11 @@ preserving prior revisions.
 Artifact updates never mutate old Database revisions. Database updates never
 trigger hidden Artifact updates.
 
+Database definitions, immutable revisions, readiness validation, currentness,
+update planning, append, rebuild, stale fencing, and revision publication are
+implemented. Database update logic is implemented. The remaining major
+Database work is Database creation/build finalization under Task 1067.
+
 ## 12. Initialization and reconciliation lifecycle
 
 ### 12.1 Deterministic first-open warm-up
@@ -729,6 +829,11 @@ drives the required market and catalog refresh. Late-result fencing,
 coalescing, and pending `MarketId` catch-up prevent stale or duplicate results
 from replacing current state. Successful publication may trigger background
 synchronization while its foreground terminal report remains visible.
+
+Every successful mutation immediately refreshes the relevant Data Manager
+catalog and any affected currently open Data Manager child window. Background
+reconciliation then verifies the newly projected state; it is not the first
+presentation of a successful foreground mutation.
 
 ## 13. Operations and cancellation
 
@@ -767,6 +872,15 @@ window tracker.
 |---|---|---|
 | Data Manager Suite | `data_manager_suite.window` | Single instance, reused and focused |
 | Select OHLCV Dataset | `data_manager.dataset_selector.window` | One per Suite, reused and closed with Suite |
+| Create Artifact | `data_manager.artifact_creation.window` | One per Suite, reused and closed with Suite |
+| Batch Constructs | `data_manager.construct_batch.window` | One per Suite, reused and closed with Suite |
+| Derive Recipes | `data_manager.recipe_derivation.window` | One per Suite, reused and closed with Suite |
+| Recipe Collection management | `data_manager.recipe_collection.window` | One per Suite, reused across create/edit and closed with Suite |
+| Artifact Collection management | `data_manager.artifact_collection.window` | One per Suite, reused across create/edit and closed with Suite |
+| Collection Inspection | `data_manager.collection_inspection.dialog` | One per Suite, reused across Recipe and Artifact Collections and closed with Suite |
+| Recipe Artifact Materialization | `data_manager.recipe_artifact_materialization.window` | One per Suite, reused and closed with Suite |
+| Duplicate Maintenance preflight | `data_manager.duplicate_maintenance.preflight.dialog` | One per Suite and closed with Suite |
+| Duplicate Maintenance results | `data_manager.duplicate_maintenance.results.dialog` | One per Suite and closed with Suite |
 
 Bounded previews and confirmation dialogs are child windows. The Dataset Search
 Help dialog is a reusable modal child of the selector and cannot outlive it.
@@ -800,9 +914,20 @@ operation only; it does not move the persisted head.
 
 Destructive actions remain explicit and backend-gated.
 
-Current GUI actions include Artifact and Recipe deletion where the canonical
-service permits deletion. Referenced or in-use objects may be refused by the
-backend.
+Current GUI actions cover Recipes, Recipe Collections, complete managed Artifact
+lineages, and Artifact Collections. Explicit confirmation precedes every
+deletion, and the authoritative backend may refuse a genuine dependency.
+
+Deleting an object removes metadata or persistence owned exclusively by that
+object. Deleting a Collection does not delete its members. Dependency domains
+remain distinct:
+
+- Recipe deletion follows Recipe-domain dependency rules.
+- Recipe Collection deletion follows Recipe-domain and portable-store rules
+  only; Artifact-domain references do not block it.
+- managed Artifact deletion follows Artifact-lineage, Artifact Collection, and
+  Database dependencies where applicable.
+- Artifact Collection deletion follows Database dependencies where applicable.
 
 There is no dataset deletion from Data Manager, no automatic repair, no silent
 rebuild, and no command that updates every product indiscriminately.
@@ -812,18 +937,17 @@ confirmation submits no operation.
 
 ## 17. Completion and workplan position
 
-Task 1064 is **CLOSED** after the final combined native smoke.
+Task 1064 is **CLOSED**. Task 1065 is completed and incorporated into the
+accepted current Data Manager lifecycle. Task 1066 functional implementation is
+complete; final closure awaits Task 1066-R4 validation and the combined native
+Data Manager smoke. Task 1067 is future Database Build Finalization and has not
+started.
 
-Remaining Data Manager work is limited here to the accepted task identities:
-
-```text
-1065 - Study Environment → Recipes
-1066 - Recipes / Recipe Collection → Artifacts + Collection lineage
-1067 - final catalog-driven integration / Data Manager closure
-```
-
-This document does not define or anticipate detailed semantics for Tasks
-1065-1067. The Data Manager Area is not yet closed.
+The following Task 1066 lifecycle areas must not be reopened without a concrete
+regression: Recipes, Recipe Collections, Artifacts, Artifact Collections,
+Direct Artifact creation, Batch Constructs, Duplicate Maintenance,
+deletion/metadata ownership, refresh/reconciliation, window/runtime integration,
+and Database update logic.
 
 ## 18. Validation and acceptance
 
@@ -845,9 +969,10 @@ Automated validation covers:
 - deterministic first-open warm-up and autonomous background reconciliation;
 - responsive Suite layout and central Catalog typed sorting.
 
-Task 1064's final combined native smoke passed. Future Data Manager functional
-acceptance continues through Tasks 1065, 1066, and 1067. The current smoke
-authority is
+Task 1064's final combined native smoke passed. Task 1066 functional lifecycle
+implementation is complete, but Task 1066 remains open until this closure
+correction and the combined native Data Manager smoke pass. Task 1067 Database
+Build Finalization has not started. The current smoke authority is
 [`LIGHT_V2_APPLICATION_SMOKE.md`](../gui_docs/LIGHT_V2_APPLICATION_SMOKE.md).
 
 ## 19. Primary source map

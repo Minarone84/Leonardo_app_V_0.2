@@ -17,7 +17,7 @@ from leonardo.research import (
     StudyUserMetadata,
     StudyValidationError,
 )
-from tests.research_test.test_study_execution import accepted_context
+from tests.research_test.test_study_execution import accepted_context, research_service
 from tests.research_test.test_study_projection import resident
 from tests.research_test.test_study_artifact_apply_save import (
     _artifact_input,
@@ -69,7 +69,7 @@ def _edit(service, session, study_id, request):
 
 def test_unsaved_edit_replaces_same_study_and_reconciles_style(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _session(dataset)
     original = _apply(
         service, session, StudyExecutionRequest("sma", {"period": 3})
@@ -115,7 +115,7 @@ def test_edit_preserves_display_name_and_user_metadata_at_both_boundaries(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _session(dataset)
     metadata = StudyUserMetadata(
         important=True,
@@ -250,7 +250,7 @@ def test_saved_and_artifact_loaded_edits_leave_artifacts_immutable(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _session(dataset)
     study = _apply(
         service, session, StudyExecutionRequest("sma", {"period": 3})
@@ -311,7 +311,7 @@ def test_artifact_dependency_edit_request_reconstructs_canonical_source(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _session(dataset)
     source = _apply(
         service, session, StudyExecutionRequest("sma", {"period": 3})
@@ -375,7 +375,7 @@ def test_edit_dependency_fencing_mutual_exclusion_and_failure_safety(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     session = _session(dataset)
     source = _apply(
         service, session, StudyExecutionRequest("sma", {"period": 3})
@@ -457,7 +457,7 @@ def test_utc_artifact_edit_reconstruction_preserves_four_ordered_roles(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     peaks = prepare(service, dataset, "peaks_troughs")
     peaks_saved = service.save_study(
         _save_attempt(peaks), dataset, peaks, (peaks,)
@@ -512,7 +512,7 @@ def test_mixed_implicit_ohlcv_and_artifact_roles_reconstruct_in_order(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     slow = prepare(service, dataset, "sma", parameters={"period": 3})
     slow_saved = service.save_study(
         _save_attempt(slow), dataset, slow, (slow,)

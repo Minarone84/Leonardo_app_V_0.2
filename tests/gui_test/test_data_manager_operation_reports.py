@@ -8,26 +8,85 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QTextEdit
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QFormLayout,
+    QLabel,
+    QMessageBox,
+    QScrollArea,
+    QSizePolicy,
+    QTextEdit,
+)
 
 from leonardo.data import MarketId
+from leonardo.gui.data_manager import operations as operation_module
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
 from tests.gui_test.test_data_manager_catalogs import empty_product_snapshot
 
 
-def test_operation_surface_owns_context_status_message_and_conditional_notes() -> None:
+def test_operation_surface_owns_current_report_history_and_readable_layout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operation_module,
+        "_operation_history_timestamp",
+        lambda: "2026-09-05 18:12:04",
+    )
     app = QApplication.instance() or QApplication([])
     del app
     window = DataManagerSuiteWindow()
     try:
+        window.show()
+        QApplication.processEvents()
         surface = window._operation_surface
         assert surface is not None
+        assert surface.layout().contentsMargins().top() >= 18
+        assert surface.details.maximumHeight() > 130
+        assert (
+            surface.details.sizePolicy().verticalPolicy()
+            == QSizePolicy.Policy.Expanding
+        )
         assert {
             label.text() for label in surface.findChildren(QLabel)
         }.issuperset({"Operation", "Task ID", "State", "Context", "Status", "Message"})
         assert surface.findChild(QLabel, "data_manager.operation.context") is not None
         assert surface.findChild(QLabel, "data_manager.operation.status") is not None
         assert surface.findChild(QLabel, "data_manager.operation.message") is not None
+        notes = surface.findChild(QLabel, "data_manager.operation.notes")
+        assert notes is not None
+        notes_scroll = next(
+            scroll
+            for scroll in surface.findChildren(QScrollArea)
+            if scroll.widget() is notes
+        )
+        assert notes_scroll.minimumHeight() == 160
+        assert notes_scroll.maximumHeight() == 200
+        assert notes_scroll.isVisible()
+        assert not notes.isHidden()
+        assert surface.notes_text() == ""
+        value_labels = tuple(
+            surface.findChild(QLabel, object_id)
+            for object_id in (
+                "data_manager.operation.name",
+                "data_manager.operation.task_id",
+                "data_manager.operation.state",
+                "data_manager.operation.context",
+                "data_manager.operation.status",
+                "data_manager.operation.message",
+            )
+        )
+        assert all(label is not None for label in value_labels)
+        assert all(label.minimumHeight() >= 30 for label in value_labels)
+        assert all(label.margin() >= 5 for label in value_labels)
+        form = surface.findChild(QFormLayout)
+        assert form is not None
+        form_labels = tuple(form.labelForField(label) for label in value_labels)
+        assert all(isinstance(label, QLabel) for label in form_labels)
+        assert all(label.minimumHeight() >= 30 for label in form_labels)
+        assert all(label.margin() >= 5 for label in form_labels)
+        assert surface.details.verticalHeader().minimumSectionSize() >= 32
+        assert surface.details.verticalHeader().defaultSectionSize() >= 32
 
         window._set_selection_details("Loading accepted dataset...")
         window.set_status("Market inspection ready")
@@ -42,13 +101,48 @@ def test_operation_surface_owns_context_status_message_and_conditional_notes() -
 
         window.set_status("Market inspection ready")
         window.append_status("diagnostic one")
-        notes = surface.findChild(QLabel, "data_manager.operation.notes")
         assert notes is not None and not notes.isHidden()
+        assert (
+            notes_scroll.verticalScrollBarPolicy()
+            == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        assert not notes_scroll.isHidden()
+        assert surface.notes_text() == (
+            "[2026-09-05 18:12:04] INFO | diagnostic one"
+        )
         window.append_status("diagnostic two")
-        assert surface.notes_text() == "diagnostic one\ndiagnostic two"
-        assert window.status_log_text() == "diagnostic one\ndiagnostic two"
+        assert surface.notes_text() == (
+            "[2026-09-05 18:12:04] INFO | diagnostic one\n"
+            "[2026-09-05 18:12:04] INFO | diagnostic two"
+        )
+        assert window.status_log_text() == surface.notes_text()
+        long_note = "\n".join(f"diagnostic line {index}" for index in range(40))
+        window.append_status(long_note)
+        QApplication.processEvents()
+        assert surface.notes_text().endswith(long_note)
+        assert notes_scroll.widget() is notes
+        assert notes_scroll.verticalScrollBar().maximum() > 0
 
-        surface.settle("failed", "diagnostic failure", (("Published", "no"),))
+        surface.begin("create_direct_artifact")
+        surface.settle("completed", "completed")
+        completed_line = (
+            "[2026-09-05 18:12:04] OK | create_direct_artifact | completed"
+        )
+        assert surface.notes_text().splitlines().count(completed_line) == 1
+
+        surface.begin("delete_portable_recipe")
+        surface.settle(
+            "failed",
+            "Portable Recipe is referenced by a Recipe Collection",
+            (("Published", "no"),),
+        )
+        failure_line = (
+            "[2026-09-05 18:12:04] ERROR | delete_portable_recipe | "
+            "Portable Recipe is referenced by a Recipe Collection"
+        )
+        assert surface.notes_text().splitlines().count(failure_line) == 1
+        assert surface.state == "failed"
+        assert surface.details.item(0, 1).text() == "no"
         surface.clear()
         assert surface.state == "idle"
         assert surface.findChild(QLabel, "data_manager.operation.name").text() == "None"
@@ -59,7 +153,8 @@ def test_operation_surface_owns_context_status_message_and_conditional_notes() -
         assert surface.progress.maximum() == 1
         assert surface.progress.value() == 0
         assert surface.notes_text() == ""
-        assert notes.isHidden()
+        assert not notes.isHidden()
+        assert notes_scroll.isVisible()
         assert surface.context_text() == "Loading accepted dataset..."
         assert surface.status_text() == "Market inspection ready"
         assert surface.findChild(QTextEdit) is None
@@ -123,8 +218,8 @@ def test_structured_update_results_populate_and_survive_catalog_refresh() -> Non
         assert table.item(0, 7).text() == "c" * 64
         assert table.item(0, 8).text() == "a" * 64
         assert table.item(0, 1).text().endswith("sma_20->signal")
-        assert table.item(0, 2).text() == "1970-01-01 00:00:01 UTC"
-        assert table.item(0, 3).text() == "1970-01-01 00:00:02 UTC"
+        assert table.item(0, 2).text() == "1970-01-01 01:00:01 CET (+01:00)"
+        assert table.item(0, 3).text() == "1970-01-01 01:00:02 CET (+01:00)"
         window.set_product_catalogs(empty_product_snapshot())
         assert table.item(0, 7).text() == "c" * 64
 
@@ -155,8 +250,8 @@ def test_structured_update_results_populate_and_survive_catalog_refresh() -> Non
             "collection_revision_id": "c" * 64,
             "rows": "100",
             "columns": "3",
-            "First TS": "1970-01-01 00:00:01 UTC",
-            "Last TS": "1970-01-01 00:00:02 UTC",
+            "First TS": "1970-01-01 01:00:01 CET (+01:00)",
+            "Last TS": "1970-01-01 01:00:02 CET (+01:00)",
             "values_hash": "f" * 64,
         }
     finally:

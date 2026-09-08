@@ -17,6 +17,7 @@ from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.data import MarketId
 from leonardo.financial_tools import resolve_output_names, resolve_parameters
 from leonardo.gui.composition import GuiCompositionRoot
+from leonardo.gui.data_manager.table_presentation import format_utc_timestamp_ms
 from leonardo.recipes import build_portable_recipe
 
 from tests.artifacts_test.test_artifact_service_roundtrip import _accepted_dataset
@@ -282,8 +283,8 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
             for row in range(readiness.rowCount())
         }
         assert "Coverage" not in readiness_values
-        assert readiness_values["First TS"].endswith(" UTC")
-        assert readiness_values["Last TS"].endswith(" UTC")
+        assert readiness_values["First TS"].endswith("CET (+01:00)")
+        assert readiness_values["Last TS"].endswith("CET (+01:00)")
         revision_input = window._creation_controls[
             "data_manager.creation.input.collection_revision"
         ]
@@ -316,6 +317,10 @@ def test_real_gui_creation_workflow_survives_restart(tmp_path) -> None:
         assert publication_evidence[-1]["row_count"] > 0
         assert publication_evidence[-1]["column_count"] > 0
         assert publication_evidence[-1]["selected_columns"]
+        assert publication_evidence[-1]["coverage"] == (
+            f"{format_utc_timestamp_ms(presenter._database_readiness.first_usable_timestamp_ms)} - "
+            f"{format_utc_timestamp_ms(presenter._database_readiness.last_usable_timestamp_ms)}"
+        )
         window.confirm_database_publication = lambda **_details: True
         window.button_for_id("data_manager.button.creation.build").click()
         _settle(presenter)

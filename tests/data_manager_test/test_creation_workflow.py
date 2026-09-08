@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -8,7 +9,10 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from leonardo.artifacts import ArtifactService, ArtifactSourceRefV1
+from leonardo.artifacts import (
+    ArtifactService,
+    ArtifactSourceRefV1,
+)
 from leonardo.data import MarketId
 from leonardo.data_manager import (
     DataManagerApplicationService,
@@ -20,7 +24,12 @@ from leonardo.data_manager import (
     DataManagerCreationStore,
     DataManagerService,
 )
-from leonardo.data_manager.creation_models import BatchArtifactSource
+from leonardo.data_manager.creation_models import (
+    ArtifactCollectionHeadV1,
+    BatchArtifactSource,
+    canonical_json_bytes,
+    deterministic_hash,
+)
 from leonardo.data_manager.direct_artifact import DataManagerDirectArtifactSource
 from leonardo.data_manager.construct_batch import visible_output_names
 from leonardo.data_manager.construct_sources import list_construct_source_signals
@@ -154,6 +163,66 @@ def _persistence_bytes(root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def _collection_revision_like(
+    service: DataManagerService,
+    source,
+    *,
+    collection_id: str,
+    display_name: str | None = None,
+    description: str | None = None,
+    created_at_utc: datetime | None = None,
+    source_ohlcv=None,
+):
+    created = source.created_at_utc if created_at_utc is None else created_at_utc
+    return service._creation._build_collection_revision(
+        collection_id=collection_id,
+        display_name=source.display_name if display_name is None else display_name,
+        description=source.description if description is None else description,
+        market_id=source.market_id,
+        roots=source.root_logical_artifact_ids,
+        supports=source.support_logical_artifact_ids,
+        members=source.members,
+        edges=source.dependency_edges,
+        selected_outputs=source.selected_outputs,
+        presentation_order=source.presentation_order,
+        source_recipe_collection_id=source.source_recipe_collection_id,
+        source_recipe_collection_revision_id=(
+            source.source_recipe_collection_revision_id
+        ),
+        source_ohlcv=source.source_ohlcv if source_ohlcv is None else source_ohlcv,
+        first_timestamp_ms=source.first_timestamp_ms,
+        last_timestamp_ms=source.last_timestamp_ms,
+        previous_revision_id=None,
+        created_at_utc=created,
+        revised_at_utc=created,
+    )
+
+
+def _persist_legacy_collection(
+    store: DataManagerCreationStore, revision
+) -> None:
+    collection_dir = (
+        store.root_dir / "artifact_collections" / revision.collection_id
+    )
+    revision_path = (
+        collection_dir / "revisions" / f"{revision.revision_id}.json"
+    )
+    store._write_immutable(revision_path, revision.canonical_json_bytes())
+    head = ArtifactCollectionHeadV1(
+        revision.collection_id, revision.revision_id, revision.revised_at_utc
+    )
+    store._write_atomic(
+        collection_dir / "head.json", canonical_json_bytes(head.to_dict())
+    )
+
+
+def _collection_with_validation_state(revision, state: str):
+    payload = revision.to_dict(include_revision_id=False)
+    payload["validation_state"] = state
+    payload["revision_id"] = deterministic_hash(payload)
+    return type(revision).from_dict(payload)
 
 
 def test_collection_revisions_are_immutable_and_reload_after_restart(tmp_path: Path) -> None:
@@ -642,6 +711,8 @@ def test_batch_branch_reuses_artifact_and_can_advance_collection(tmp_path: Path)
     )
     recipes.save_recipe(transient_recipe)
     recipe_bytes = _persistence_bytes(recipes.root_dir)
+    metadata_before = recipes.load_persistence_metadata(transient_recipe.recipe_id)
+    assert metadata_before is not None
 
     plan = service.plan_batch_artifacts(request)
     assert not plan.blocked
@@ -655,10 +726,31 @@ def test_batch_branch_reuses_artifact_and_can_advance_collection(tmp_path: Path)
     )
     assert len(revised.selected_outputs) == len(collection.selected_outputs) + 1
     assert revised.selected_outputs[-1].column_name == requested[0]
-    assert _persistence_bytes(recipes.root_dir) == recipe_bytes
+    persisted_after = _persistence_bytes(recipes.root_dir)
+    metadata_path = (
+        f"recipe_provenance/{transient_recipe.recipe_id}/metadata.json"
+    )
+    assert {
+        path: content
+        for path, content in persisted_after.items()
+        if path != metadata_path
+    } == {
+        path: content
+        for path, content in recipe_bytes.items()
+        if path != metadata_path
+    }
+    metadata_after = recipes.load_persistence_metadata(transient_recipe.recipe_id)
+    assert metadata_after is not None
+    assert (
+        metadata_after.first_persisted_at_utc
+        == metadata_before.first_persisted_at_utc
+    )
+    assert {item.origin_kind for item in metadata_after.origins} == {
+        "data_manager_artifact"
+    }
     replay = service.plan_batch_artifacts(request)
     assert replay.reusable_recipe_ids == plan.recipe_ids
-    assert _persistence_bytes(recipes.root_dir) == recipe_bytes
+    assert _persistence_bytes(recipes.root_dir) == persisted_after
 
 
 def test_raw_ohlc_batch_materializes_with_native_bindings_and_no_fake_lineage(
@@ -694,8 +786,11 @@ def test_raw_ohlc_batch_materializes_with_native_bindings_and_no_fake_lineage(
     assert result.root_logical_artifact_ids
     assert dict(recipe.bindings) == {"source": "close"}
     assert recipe.source_artifacts == ()
-    with pytest.raises(FileNotFoundError):
-        recipes.load_recipe(plan.branch_recipe_ids[0])
+    persisted = recipes.load_recipe(plan.branch_recipe_ids[0])
+    assert dict(persisted.parameters) == {"order": 1}
+    assert tuple(
+        (item.role, item.column_name) for item in persisted.ohlcv_inputs
+    ) == (("source", "close"),)
     replay = service.plan_batch_artifacts(request)
     assert replay.branch_recipe_ids == plan.branch_recipe_ids
     assert replay.branch_reuse_current == (True,)
@@ -744,8 +839,15 @@ def test_mixed_raw_and_artifact_batch_preserves_exact_artifact_lineage(
     ) == (("slow", sma.artifact_id, sma.output_names[0]),)
     assert recipe.parameters["fast"] == "close"
     assert recipe.parameters["slow"] == "__research_slow"
-    with pytest.raises(FileNotFoundError):
-        recipes.load_recipe(plan.branch_recipe_ids[0])
+    persisted = recipes.load_recipe(plan.branch_recipe_ids[0])
+    assert dict(persisted.parameters) == {"eps": 1e-12, "mode": "abs"}
+    assert tuple(
+        (item.role, item.column_name) for item in persisted.ohlcv_inputs
+    ) == (("fast", "close"),)
+    assert tuple(
+        (item.role, item.recipe_id, item.output_name)
+        for item in persisted.dependencies
+    ) == (("slow", sma_recipe.recipe_id, sma.output_names[0]),)
 
 
 def test_raw_ohlc_batch_rejects_changed_fingerprint_before_artifact_publication(
@@ -885,7 +987,9 @@ def test_all_authorized_batch_constructs_plan_and_materialize(
         ),),
         destination="new_collection",
     )
-    recipe_bytes = _persistence_bytes(recipes.root_dir)
+    recipe_ids_before = {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    }
 
     plan = service.plan_batch_artifacts(request)
     assert not plan.blocked
@@ -893,7 +997,9 @@ def test_all_authorized_batch_constructs_plan_and_materialize(
     assert result.root_logical_artifact_ids
     assert collection is not None
     assert collection.root_logical_artifact_ids == result.root_logical_artifact_ids
-    assert _persistence_bytes(recipes.root_dir) == recipe_bytes
+    assert {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    } == recipe_ids_before | {plan.branch_recipe_ids[0]}
     if tool_key in {"braids", "braid_instability"}:
         root = next(
             item
@@ -913,7 +1019,7 @@ def test_all_authorized_batch_constructs_plan_and_materialize(
         )
 
 
-def test_batch_plan_reuses_exact_current_artifact_and_individual_outputs_do_not_collide(
+def test_batch_plan_publishes_global_recipes_and_individual_outputs_do_not_collide(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     market, service, artifacts, recipes = _domain(tmp_path)
@@ -940,15 +1046,9 @@ def test_batch_plan_reuses_exact_current_artifact_and_individual_outputs_do_not_
     request = BatchArtifactRequest(
         market, base.source_ohlcv, branches, "individual"
     )
-    recipe_bytes = _persistence_bytes(recipes.root_dir)
-
-    def reject_recipe_authority(*_args, **_kwargs):
-        raise AssertionError("Batch Artifact creation consulted Recipe authority")
-
-    monkeypatch.setattr(recipes, "save_recipe", reject_recipe_authority)
-    monkeypatch.setattr(recipes, "load_recipe", reject_recipe_authority)
-    monkeypatch.setattr(recipes, "list_recipe_summaries", reject_recipe_authority)
-    monkeypatch.setattr(service._recipe_planner, "plan", reject_recipe_authority)
+    recipe_ids_before = {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    }
     publications = []
     publish = artifacts.publish_managed_artifact_graph
     monkeypatch.setattr(
@@ -967,7 +1067,10 @@ def test_batch_plan_reuses_exact_current_artifact_and_individual_outputs_do_not_
     assert len(result.root_logical_artifact_ids) == 2
     assert len(publications) == 1
     assert len(publications[0]) == 2
-    assert _persistence_bytes(recipes.root_dir) == recipe_bytes
+    recipe_ids_after = {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    }
+    assert recipe_ids_after == recipe_ids_before | set(plan.branch_recipe_ids)
     versions_before_replay = {
         logical_id: artifacts.list_artifact_versions(market, logical_id)
         for logical_id in result.root_logical_artifact_ids
@@ -989,7 +1092,9 @@ def test_batch_plan_reuses_exact_current_artifact_and_individual_outputs_do_not_
         for logical_id in result.root_logical_artifact_ids
     } == versions_before_replay
     assert len(publications) == 1
-    assert _persistence_bytes(recipes.root_dir) == recipe_bytes
+    assert {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    } == recipe_ids_after
 
 
 @pytest.mark.parametrize("tool_key", ("braids", "braid_instability"))
@@ -1025,7 +1130,9 @@ def test_batch_preserves_mixed_raw_ohlc_and_saved_artifact_sources(
     request = BatchArtifactRequest(
         market, expected_source, (branch,), "individual"
     )
-    recipe_bytes = _persistence_bytes(recipes.root_dir)
+    recipe_ids_before = {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    }
 
     plan = service.plan_batch_artifacts(request)
     assert not plan.blocked
@@ -1067,7 +1174,9 @@ def test_batch_preserves_mixed_raw_ohlc_and_saved_artifact_sources(
             support.output_names[0],
         ),
     )
-    assert _persistence_bytes(recipes.root_dir) == recipe_bytes
+    assert {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    } == recipe_ids_before | {plan.branch_recipe_ids[0]}
 
 
 def test_batch_multi_root_deduplicates_shared_support_and_publishes_once(
@@ -1627,17 +1736,301 @@ def test_database_revisions_retain_exact_old_snapshots_and_protect_seed(tmp_path
         service.delete_database_seed(seed.seed_id)
 
 
-def test_shared_artifact_versions_are_referenced_not_copied(tmp_path: Path) -> None:
+def test_semantically_equivalent_collection_reuses_shared_artifact_versions(
+    tmp_path: Path,
+) -> None:
     _market, service, _artifacts, recipes = _domain(tmp_path)
     sma = _leaf("sma", {"period": 3})
     result = _materialize(service, recipes, sma)
     first = service.create_artifact_collection(result, "First")
-    second = service.create_artifact_collection(result, "Second")
+    values = service._creation._collection_values_from_materialization(result, None)
+    assert service.creation_store.find_equivalent_collection(
+        market_id=values["market_id"],
+        source_ohlcv=values["source_ohlcv"],
+        root_logical_artifact_ids=values["roots"],
+        support_logical_artifact_ids=values["supports"],
+        members=values["members"],
+        selected_outputs=values["selected_outputs"],
+        presentation_order=values["presentation_order"],
+    ) == first
+    artifact_bytes = _persistence_bytes(tmp_path / "historical")
+    service.creation_store._token_factory = lambda: pytest.fail(
+        "equivalent Create must not allocate a Collection identity"
+    )
 
+    second = service.create_artifact_collection(
+        result, "Second", description="requested metadata"
+    )
+
+    assert second == first
     assert first.members == second.members
-    assert first.collection_id != second.collection_id
+    assert first.collection_id == second.collection_id
+    assert first.revision_id == second.revision_id
+    assert second.display_name == "First"
+    assert second.description == ""
+    assert service.creation_store.list_collection_ids() == (first.collection_id,)
+    assert _persistence_bytes(tmp_path / "historical") == artifact_bytes
     collection_root = service.creation_store.root_dir / "artifact_collections"
     assert not any(path.name == "values.csv" for path in collection_root.rglob("*"))
+
+
+def test_selection_create_reuses_equivalent_root_and_member_order(
+    tmp_path: Path,
+) -> None:
+    market, service, _artifacts, recipes = _domain(tmp_path)
+    result = _materialize(
+        service,
+        recipes,
+        _leaf("sma", {"period": 3}),
+        _leaf("ema", {"period": 3}),
+    )
+    roots = result.root_logical_artifact_ids
+    first_plan = service.plan_artifact_collection_selection(market, roots)
+    outputs = tuple(
+        ArtifactCollectionOutputV1(
+            logical_id,
+            next(
+                item for item in first_plan.members
+                if item.version_key.logical_artifact_id == logical_id
+            ).output_names[0],
+            f"feature_{index}",
+        )
+        for index, logical_id in enumerate(sorted(roots), start=1)
+    )
+    first = service.create_artifact_collection_from_selection(
+        first_plan, "First", selected_outputs=outputs
+    )
+    reversed_plan = service.plan_artifact_collection_selection(
+        market, tuple(reversed(roots))
+    )
+
+    reused = service.create_artifact_collection_from_selection(
+        reversed_plan,
+        "Different name",
+        description="different description",
+        selected_outputs=outputs,
+    )
+
+    assert reused == first
+    assert reversed_plan.root_logical_artifact_ids != (
+        first_plan.root_logical_artifact_ids
+    )
+    assert reversed_plan.members != first_plan.members
+    assert service.creation_store.list_collection_ids() == (first.collection_id,)
+
+
+def test_collection_semantics_ignore_member_version_output_and_order(
+    tmp_path: Path,
+) -> None:
+    market, service, artifacts, recipes = _domain(tmp_path)
+    result = _materialize(
+        service,
+        recipes,
+        _leaf("sma", {"period": 3}),
+        _leaf("ema", {"period": 3}),
+    )
+    plan = service.plan_artifact_collection_selection(
+        market, result.root_logical_artifact_ids
+    )
+    outputs = tuple(
+        ArtifactCollectionOutputV1(
+            member.version_key.logical_artifact_id,
+            member.output_names[0],
+            f"feature_{index}",
+        )
+        for index, member in enumerate(plan.members, start=1)
+    )
+    original = service.create_artifact_collection_from_selection(
+        plan, "Original", selected_outputs=outputs
+    )
+    remapped = (
+        replace(outputs[0], column_name="remapped_feature"),
+        *outputs[1:],
+    )
+    mapping_variant = service.create_artifact_collection_from_selection(
+        plan, "Mapping variant", selected_outputs=remapped
+    )
+    order_variant = service.create_artifact_collection_from_selection(
+        plan, "Order variant", selected_outputs=tuple(reversed(outputs))
+    )
+
+    logical_id = plan.root_logical_artifact_ids[0]
+    _advance_same_source(service, artifacts, logical_id)
+    advanced_plan = service.plan_artifact_collection_selection(
+        market, plan.root_logical_artifact_ids
+    )
+    advanced_outputs = tuple(
+        ArtifactCollectionOutputV1(
+            item.version_key.logical_artifact_id,
+            item.output_names[0],
+            outputs[index].column_name,
+        )
+        for index, item in enumerate(advanced_plan.members)
+    )
+    version_variant = service.create_artifact_collection_from_selection(
+        advanced_plan, "Version variant", selected_outputs=advanced_outputs
+    )
+
+    assert len(
+        {
+            original.collection_id,
+            mapping_variant.collection_id,
+            order_variant.collection_id,
+            version_variant.collection_id,
+        }
+    ) == 1
+    assert mapping_variant == original
+    assert order_variant == original
+    assert version_variant == original
+
+
+def test_collection_semantics_include_source_and_ignore_recipe_collection_provenance(
+    tmp_path: Path,
+) -> None:
+    _market, service, _artifacts, recipes = _domain(tmp_path)
+    result = _materialize(service, recipes, _leaf("sma", {"period": 3}))
+    first = service.create_artifact_collection(
+        result,
+        "First",
+        source_recipe_collection_id="prc_" + "a" * 32,
+        source_recipe_collection_revision_id="1" * 64,
+    )
+    reused = service.create_artifact_collection(
+        result,
+        "Different provenance",
+        source_recipe_collection_id="prc_" + "b" * 32,
+        source_recipe_collection_revision_id="2" * 64,
+    )
+    changed_source = replace(first.source_ohlcv, csv_sha256="f" * 64)
+    source_variant = service.creation_store.create_collection_revision(
+        market_id=first.market_id,
+        source_ohlcv=changed_source,
+        root_logical_artifact_ids=first.root_logical_artifact_ids,
+        support_logical_artifact_ids=first.support_logical_artifact_ids,
+        members=first.members,
+        selected_outputs=first.selected_outputs,
+        presentation_order=first.presentation_order,
+        revision_factory=lambda collection_id: _collection_revision_like(
+            service,
+            first,
+            collection_id=collection_id,
+            source_ohlcv=changed_source,
+        ),
+    )
+
+    assert reused == first
+    assert reused.source_recipe_collection_id == "prc_" + "a" * 32
+    assert source_variant.collection_id != first.collection_id
+    assert source_variant.source_ohlcv == changed_source
+
+
+def test_collection_revision_collision_reuses_oldest_peer_without_mutation(
+    tmp_path: Path,
+) -> None:
+    market, service, _artifacts, recipes = _domain(tmp_path)
+    result = _materialize(service, recipes, _leaf("sma", {"period": 3}))
+    plan = service.plan_artifact_collection_selection(
+        market, result.root_logical_artifact_ids
+    )
+    oldest = service.create_artifact_collection_from_selection(plan, "Oldest")
+    younger = _collection_revision_like(
+        service,
+        oldest,
+        collection_id="ac_" + "f" * 32,
+        display_name="Younger duplicate",
+        created_at_utc=oldest.created_at_utc + timedelta(microseconds=1),
+    )
+    _persist_legacy_collection(service.creation_store, younger)
+
+    reused = service.edit_artifact_collection_from_selection(
+        younger.collection_id,
+        plan,
+        display_name="Requested metadata",
+        description="must not publish",
+        expected_revision_id=younger.revision_id,
+    )
+
+    assert reused == oldest
+    assert service.load_artifact_collection(oldest.collection_id) == oldest
+    assert service.load_artifact_collection(younger.collection_id) == younger
+    assert service.list_artifact_collection_revisions(younger.collection_id) == (
+        younger,
+    )
+
+    assert service.revise_artifact_collection(
+        younger.collection_id, description="still no publication"
+    ) == oldest
+    assert service.add_artifact_collection_branches(
+        younger.collection_id, result
+    ) == oldest
+    assert service.list_artifact_collection_revisions(younger.collection_id) == (
+        younger,
+    )
+
+    revised_oldest = service.edit_artifact_collection_from_selection(
+        oldest.collection_id,
+        plan,
+        display_name="Oldest updated",
+        expected_revision_id=oldest.revision_id,
+    )
+    assert revised_oldest.collection_id == oldest.collection_id
+    assert revised_oldest.revision_id != oldest.revision_id
+    assert service.load_artifact_collection(younger.collection_id) == younger
+
+
+def test_collection_oldest_winner_uses_collection_id_tie_break_and_skips_stale(
+    tmp_path: Path,
+) -> None:
+    market, service, _artifacts, recipes = _domain(tmp_path)
+    result = _materialize(service, recipes, _leaf("sma", {"period": 3}))
+    values = service._creation._collection_values_from_materialization(
+        result, None
+    )
+    template = service._creation._build_collection_revision(
+        collection_id="ac_" + "f" * 32,
+        display_name="Template",
+        description="",
+        source_recipe_collection_id=None,
+        source_recipe_collection_revision_id=None,
+        previous_revision_id=None,
+        created_at_utc=service._creation._clock(),
+        revised_at_utc=service._creation._clock(),
+        **values,
+    )
+    lexical_winner = _collection_revision_like(
+        service,
+        template,
+        collection_id="ac_" + "1" * 32,
+        display_name="Lexical winner",
+    )
+    lexical_loser = _collection_revision_like(
+        service,
+        template,
+        collection_id="ac_" + "2" * 32,
+        display_name="Lexical loser",
+    )
+    stale = _collection_with_validation_state(
+        _collection_revision_like(
+            service,
+            template,
+            collection_id="ac_" + "0" * 32,
+            display_name="Stale",
+            created_at_utc=template.created_at_utc - timedelta(seconds=1),
+        ),
+        "stale",
+    )
+    for revision in (lexical_loser, stale, lexical_winner):
+        _persist_legacy_collection(service.creation_store, revision)
+
+    reused = service.create_artifact_collection(result, "Requested")
+
+    assert reused == lexical_winner
+    assert reused.market_id == market
+    assert service.creation_store.list_collection_ids() == (
+        stale.collection_id,
+        lexical_winner.collection_id,
+        lexical_loser.collection_id,
+    )
 
 
 def test_import_and_store_construction_create_no_runtime_directories(tmp_path: Path) -> None:

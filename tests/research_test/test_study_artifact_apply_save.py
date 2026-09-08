@@ -12,6 +12,7 @@ from leonardo.financial_tools import (
     FinancialToolCalculationResult,
     calculate_financial_tool,
 )
+from leonardo.recipes import PortableRecipeStore, PortableRecipeStoreError
 from leonardo.research import (
     RESEARCH_FINANCIAL_TOOL_SPECS,
     ResearchStudyService,
@@ -29,6 +30,7 @@ from tests.research_test.test_study_execution import (
     apply_attempt,
     prepare,
     publish_accepted_frame,
+    research_service,
 )
 from tests.research_test.test_study_projection import resident
 
@@ -46,9 +48,11 @@ def _save_attempt(study) -> StudySaveAttempt:
 
 def test_apply_writes_nothing_and_save_uses_exact_stored_result(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service = ResearchStudyService(artifacts, recipes)
     live = prepare(service, dataset, "sma", parameters={"period": 3})
     assert artifacts.list_artifacts(dataset.market_id) == ()
+    assert recipes.list_recipe_summaries() == ()
 
     outcome = service.save_study(
         _save_attempt(live), dataset, live, (live,), description="Task 1017"
@@ -62,13 +66,289 @@ def test_apply_writes_nothing_and_save_uses_exact_stored_result(tmp_path: Path) 
         outcome.saved_link.artifact_id,
     )
     assert loaded.frame.equals(live.result.to_frame().reset_index(drop=True))
+    assert outcome.saved_link.recipe_id == loaded.metadata.recipe.recipe_id
+    summaries = recipes.list_recipe_summaries()
+    assert len(summaries) == 1
+    recipe = recipes.load_recipe(summaries[0].recipe_id)
+    assert recipe.tool_key == "sma"
+    assert dict(recipe.parameters) == {"period": 3}
+    assert tuple(
+        (item.role, item.column_name) for item in recipe.ohlcv_inputs
+    ) == (("close", "close"),)
+    assert recipe.dependencies == ()
+    metadata = recipes.load_persistence_metadata(recipe.recipe_id)
+    assert metadata is not None
+    assert metadata.first_persisted_at_utc is not None
+    assert tuple(item.origin_kind for item in metadata.origins) == (
+        "research_save",
+    )
+
+    linked = service.prepare_artifact(
+        apply_attempt(dataset, study_id=live.study_id),
+        dataset,
+        StudyArtifactRequest(
+            outcome.saved_link.kind,
+            outcome.saved_link.tool_key,
+            outcome.saved_link.artifact_id,
+        ),
+    ).study
+    service.save_study(_save_attempt(linked), dataset, linked, (linked,))
+    repeated = recipes.load_persistence_metadata(recipe.recipe_id)
+    assert repeated == metadata
+
+
+def test_raw_angle_momentum_recipe_uses_actual_source_without_selector_residue(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service = ResearchStudyService(artifacts, recipes)
+    study = prepare(
+        service,
+        dataset,
+        "angle_momentum",
+        parameters={"n": 3},
+        sources=(
+            StudyInputSource("source_1", "ohlcv", column_name="close"),
+        ),
+    )
+
+    service.save_study(_save_attempt(study), dataset, study, (study,))
+
+    summary = recipes.list_recipe_summaries()[0]
+    recipe = recipes.load_recipe(summary.recipe_id)
+    assert dict(recipe.parameters) == {"n": 3}
+    assert tuple(
+        (item.role, item.column_name) for item in recipe.ohlcv_inputs
+    ) == (("source_1", "close"),)
+    assert recipe.dependencies == ()
+
+
+def test_repeated_save_reuses_artifact_and_global_recipe(tmp_path: Path) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service = ResearchStudyService(artifacts, recipes)
+    study = prepare(service, dataset, "sma", parameters={"period": 20})
+
+    first = service.save_study(_save_attempt(study), dataset, study, (study,))
+    linked = replace(study, saved_link=first.saved_link)
+    repeated = service.save_study(
+        _save_attempt(linked), dataset, linked, (linked,)
+    )
+
+    assert repeated.created is False
+    assert repeated.saved_link == first.saved_link
+    assert len(artifacts.list_artifacts(dataset.market_id)) == 1
+    assert len(recipes.list_recipe_summaries()) == 1
+
+
+def test_same_recipe_is_reused_across_different_ohlcv_truth(tmp_path: Path) -> None:
+    root_a = tmp_path / "dataset_a"
+    root_b = tmp_path / "dataset_b"
+    dataset_a, artifacts_a, frame = accepted_context(root_a)
+    changed = _changed_frame(frame)
+    csv_path, csv_hash = publish_accepted_frame(
+        root_b, changed, dataset_a.market_id
+    )
+    dataset_b = replace(
+        dataset_a,
+        csv_path=csv_path,
+        file_sha256=csv_hash,
+        open=tuple(float(value) for value in changed.open),
+        high=tuple(float(value) for value in changed.high),
+        low=tuple(float(value) for value in changed.low),
+        close=tuple(float(value) for value in changed.close),
+        volume=tuple(float(value) for value in changed.volume),
+    )
+    artifacts_b = type(artifacts_a)(root_b)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service_a = ResearchStudyService(artifacts_a, recipes)
+    service_b = ResearchStudyService(artifacts_b, recipes)
+
+    study_a = prepare(service_a, dataset_a, "sma", parameters={"period": 20})
+    study_b = prepare(service_b, dataset_b, "sma", parameters={"period": 20})
+    saved_a = service_a.save_study(
+        _save_attempt(study_a), dataset_a, study_a, (study_a,)
+    )
+    saved_b = service_b.save_study(
+        _save_attempt(study_b), dataset_b, study_b, (study_b,)
+    )
+
+    assert saved_a.saved_link.artifact_id != saved_b.saved_link.artifact_id
+    assert len(recipes.list_recipe_summaries()) == 1
+    assert len(artifacts_a.list_artifacts(dataset_a.market_id)) == 1
+    assert len(artifacts_b.list_artifacts(dataset_b.market_id)) == 1
+
+
+def test_dependent_and_multilevel_studies_publish_semantic_recipe_graph(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service = ResearchStudyService(artifacts, recipes)
+    sma = prepare(service, dataset, "sma", parameters={"period": 14})
+    sma_saved = service.save_study(_save_attempt(sma), dataset, sma, (sma,))
+    linked_sma = replace(sma, saved_link=sma_saved.saved_link)
+    derivative = prepare(
+        service,
+        dataset,
+        "derivative",
+        parameters={"order": 1},
+        sources=(
+            StudyInputSource(
+                "source", "study", study_id=sma.study_id, output_name="sma_14"
+            ),
+        ),
+        studies=(linked_sma,),
+    )
+    derivative_saved = service.save_study(
+        _save_attempt(derivative),
+        dataset,
+        derivative,
+        (linked_sma, derivative),
+    )
+    linked_derivative = replace(
+        derivative, saved_link=derivative_saved.saved_link
+    )
+    momentum = prepare(
+        service,
+        dataset,
+        "angle_momentum",
+        parameters={"n": 3},
+        sources=(
+            StudyInputSource(
+                "source_1",
+                "study",
+                study_id=derivative.study_id,
+                output_name=derivative.result.output_names[0],
+            ),
+        ),
+        studies=(linked_sma, linked_derivative),
+    )
+    service.save_study(
+        _save_attempt(momentum),
+        dataset,
+        momentum,
+        (linked_sma, linked_derivative, momentum),
+    )
+
+    by_tool = {
+        item.tool_key: recipes.load_recipe(item.recipe_id)
+        for item in recipes.list_recipe_summaries()
+    }
+    assert set(by_tool) == {"sma", "derivative", "angle_momentum"}
+    assert by_tool["derivative"].dependencies == (
+        type(by_tool["derivative"].dependencies[0])(
+            "source", by_tool["sma"].recipe_id, "sma_14"
+        ),
+    )
+    assert by_tool["angle_momentum"].dependencies[0].recipe_id == by_tool[
+        "derivative"
+    ].recipe_id
+    assert by_tool["angle_momentum"].dependencies[0].role == "source_1"
+    assert dict(by_tool["angle_momentum"].parameters) == {"n": 3}
+    assert by_tool["angle_momentum"].ohlcv_inputs == ()
+
+
+def test_artifact_and_mixed_inputs_publish_actual_semantic_bindings(
+    tmp_path: Path,
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service = ResearchStudyService(artifacts, recipes)
+    sources = {
+        key: prepare(service, dataset, key, parameters={"period": 3})
+        for key in ("sma", "ema", "hma")
+    }
+    saved = {
+        key: service.save_study(_save_attempt(study), dataset, study, (study,))
+        for key, study in sources.items()
+    }
+    delta = prepare(
+        service,
+        dataset,
+        "delta",
+        sources=(
+            StudyInputSource("fast", "ohlcv", column_name="close"),
+            _artifact_input("slow", saved["sma"], "sma_3"),
+        ),
+    )
+    service.save_study(_save_attempt(delta), dataset, delta, (delta,))
+    braids = prepare(
+        service,
+        dataset,
+        "braids",
+        sources=tuple(
+            _artifact_input(role, saved[key], f"{key}_3")
+            for role, key in zip(
+                ("fast", "mid", "slow"),
+                ("sma", "ema", "hma"),
+                strict=True,
+            )
+        ),
+    )
+    service.save_study(_save_attempt(braids), dataset, braids, (braids,))
+
+    by_tool = {
+        item.tool_key: recipes.load_recipe(item.recipe_id)
+        for item in recipes.list_recipe_summaries()
+    }
+    assert tuple(
+        (item.role, item.column_name) for item in by_tool["delta"].ohlcv_inputs
+    ) == (("fast", "close"),)
+    assert tuple(item.role for item in by_tool["delta"].dependencies) == (
+        "slow",
+    )
+    assert tuple(item.role for item in by_tool["braids"].dependencies) == (
+        "fast",
+        "mid",
+        "slow",
+    )
+    assert dict(by_tool["delta"].parameters) == {"eps": 1e-12, "mode": "abs"}
+    assert set(dict(by_tool["braids"].parameters)) == {"tie_policy"}
+
+
+def test_recipe_publication_failure_removes_only_new_artifact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    dataset, artifacts, _frame = accepted_context(tmp_path)
+    recipes = PortableRecipeStore(tmp_path / "data_manager")
+    service = ResearchStudyService(artifacts, recipes)
+    study = prepare(service, dataset, "sma", parameters={"period": 20})
+
+    def fail(_recipe, *, origin_kind, origin_details):
+        del origin_kind, origin_details
+        raise PortableRecipeStoreError("expected publication failure")
+
+    monkeypatch.setattr(recipes, "persist_recipe", fail)
+    with pytest.raises(PortableRecipeStoreError, match="expected publication failure"):
+        service.save_study(_save_attempt(study), dataset, study, (study,))
+    assert artifacts.list_artifacts(dataset.market_id) == ()
+
+    existing = artifacts.save_calculation(
+        dataset.market_id,
+        study.result,
+        display_name=study.display_name,
+    )
+    linked = service.prepare_artifact(
+        apply_attempt(dataset),
+        dataset,
+        StudyArtifactRequest(
+            "indicator", "sma", existing.metadata.artifact_id
+        ),
+    ).study
+    with pytest.raises(PortableRecipeStoreError, match="expected publication failure"):
+        service.save_study(_save_attempt(linked), dataset, linked, (linked,))
+    assert tuple(
+        item.artifact_id for item in artifacts.list_artifacts(dataset.market_id)
+    ) == (existing.metadata.artifact_id,)
 
 
 def test_loaded_artifact_apply_never_calculates_and_projects_equally(
     tmp_path: Path, monkeypatch
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     live = prepare(service, dataset, "sma", parameters={"period": 3})
     saved = service.save_study(_save_attempt(live), dataset, live, (live,))
 
@@ -100,7 +380,7 @@ def test_loaded_artifact_apply_never_calculates_and_projects_equally(
 
 def test_transient_dependency_blocks_then_durable_lineage_succeeds(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     source = prepare(service, dataset, "sma", parameters={"period": 3})
     dependent = prepare(
         service,
@@ -151,7 +431,7 @@ def test_transient_dependency_blocks_then_durable_lineage_succeeds(tmp_path: Pat
 
 def test_cancellation_before_persistence_writes_nothing(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     study = prepare(service, dataset, "sma", parameters={"period": 3})
     cancelled = Event()
     cancelled.set()
@@ -184,7 +464,7 @@ def test_changed_same_timeline_artifact_is_rejected_for_apply_and_source(
         dataset.market_id,
         calculate_financial_tool("sma", changed, {"period": 3}),
     )
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     request = StudyArtifactRequest(
         "indicator", "sma", saved.metadata.artifact_id
     )
@@ -211,7 +491,7 @@ def test_changed_same_timeline_artifact_is_rejected_for_apply_and_source(
 
 def test_stale_live_study_save_removes_only_new_artifact(tmp_path: Path) -> None:
     dataset, artifacts, frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     live = prepare(service, dataset, "sma", parameters={"period": 3})
     publish_accepted_frame(tmp_path, _changed_frame(frame), dataset.market_id)
 
@@ -224,7 +504,7 @@ def test_stale_live_study_save_removes_only_new_artifact(tmp_path: Path) -> None
 
 def test_already_linked_artifact_must_equal_exact_study_truth(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     live = prepare(service, dataset, "sma", parameters={"period": 3})
     outcome = service.save_study(_save_attempt(live), dataset, live, (live,))
     forged_frame = live.result.to_frame()
@@ -248,7 +528,7 @@ def test_cross_session_same_id_saved_source_cannot_be_substituted(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     source = prepare(service, dataset, "sma", parameters={"period": 3})
     dependent = prepare(
         service,
@@ -282,7 +562,7 @@ def test_cross_session_same_id_saved_source_cannot_be_substituted(
 
 def test_artifact_display_name_fallback_and_override(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     live = prepare(service, dataset, "sma", parameters={"period": 3})
     saved = artifacts.save_calculation(
         dataset.market_id,
@@ -332,7 +612,7 @@ def _braid_result(tool_key: str, frame, mid_values=None):
 
 def test_legitimate_artifact_source_selector_families_still_pass(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     sources = {
         key: prepare(service, dataset, key, parameters={"period": 3})
         for key in ("sma", "ema", "hma")
@@ -416,7 +696,7 @@ def test_persisted_missing_categorical_and_nested_lineage_are_rejected(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     sma = prepare(service, dataset, "sma", parameters={"period": 3})
     derivative = prepare(
         service,
@@ -503,7 +783,7 @@ def test_validate_then_load_source_change_is_rejected(
 ) -> None:
     root = tmp_path / use
     dataset, artifacts, frame = accepted_context(root)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     source = prepare(service, dataset, "sma", parameters={"period": 3})
     saved = service.save_study(_save_attempt(source), dataset, source, (source,))
     linked = replace(source, saved_link=saved.saved_link)
@@ -543,7 +823,7 @@ def test_post_save_current_race_removes_exact_artifact_and_retains_recipe(
     tmp_path: Path, monkeypatch
 ) -> None:
     dataset, artifacts, frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     study = prepare(service, dataset, "sma", parameters={"period": 3})
     original = artifacts.save_calculation
 
@@ -564,7 +844,7 @@ def test_linked_save_requires_exact_recipe_id_and_durable_source_refs(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     sma = prepare(service, dataset, "sma", parameters={"period": 3})
     saved_sma = service.save_study(_save_attempt(sma), dataset, sma, (sma,))
     linked_sma = replace(sma, saved_link=saved_sma.saved_link)
@@ -609,7 +889,7 @@ def test_malformed_persisted_braids_reject_apply_save_source_and_nested_lineage(
     tmp_path: Path, tool_key: str, selectors: str
 ) -> None:
     dataset, artifacts, frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     refs = ()
     mid_values = None
     if selectors == "mixed":
@@ -688,7 +968,7 @@ def test_malformed_persisted_braids_reject_apply_save_source_and_nested_lineage(
 
 def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     source_studies = {
         key: prepare(service, dataset, key, parameters={"period": 3})
         for key in ("sma", "ema", "hma")
@@ -703,7 +983,8 @@ def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path)
     )
 
     completed: set[str] = set()
-    for tool_key in ALL_FINANCIAL_TOOL_SPECS:
+    research_keys = tuple(spec.key for spec in RESEARCH_FINANCIAL_TOOL_SPECS)
+    for tool_key in research_keys:
         sources: tuple[StudyInputSource, ...] = ()
         if tool_key in {"derivative", "angle"}:
             sources = (StudyInputSource("source", "ohlcv", column_name="close"),)
@@ -724,7 +1005,7 @@ def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path)
                 StudyInputSource("fast", "ohlcv", column_name="high"),
                 StudyInputSource("slow", "ohlcv", column_name="low"),
             )
-        elif tool_key in {"dynamic_binning", "percent_span_angle", "angle_momentum"}:
+        elif tool_key in {"percent_span_angle", "angle_momentum"}:
             sources = (StudyInputSource("source_1", "ohlcv", column_name="close"),)
         elif tool_key == "universal_trend_classifier":
             sources = (
@@ -764,14 +1045,14 @@ def test_all_26_tools_save_apply_exact_frame_and_idempotent_save(tmp_path: Path)
         assert repeated.created is False
         completed.add(tool_key)
 
-    assert completed == set(ALL_FINANCIAL_TOOL_SPECS)
+    assert completed == set(research_keys)
 
 
 def test_all_25_research_tools_save_apply_exact_payload_and_idempotent_save(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     source_studies = {
         key: prepare(service, dataset, key, parameters={"period": 3})
         for key in ("sma", "ema", "hma")
@@ -872,7 +1153,7 @@ def test_utc_four_role_artifact_lineage_saves_loads_and_reapplies(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    service = ResearchStudyService(artifacts)
+    service = research_service(tmp_path, artifacts)
     peaks = prepare(service, dataset, "peaks_troughs")
     peaks_saved = service.save_study(
         _save_attempt(peaks), dataset, peaks, (peaks,)

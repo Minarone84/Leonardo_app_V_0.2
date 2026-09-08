@@ -1411,7 +1411,13 @@ class ResearchChartPresenter:
         interaction = self._interaction
         if dataset is None or viewport is None or interaction is None or self.is_busy:
             raise RuntimeError("chart must be idle with an accepted dataset and viewport")
-        center_timestamp = self._session.timestamp_for_global_index(viewport.center_index)
+        snapshot_center_index = min(
+            max(viewport.center_index, 0),
+            dataset.row_count - 1,
+        )
+        center_timestamp = self._session.timestamp_for_global_index(
+            snapshot_center_index
+        )
         if center_timestamp is None:
             raise RuntimeError("viewport center timestamp is unavailable")
         scale = interaction.price_scale

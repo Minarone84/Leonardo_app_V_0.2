@@ -27,6 +27,36 @@ from leonardo.research import (
 FIXTURE = Path(__file__).parent / "fixtures" / "task_1021_study_setup_environment_input.json"
 
 
+RADIO_STYLE = (
+    "QRadioButton::indicator {"
+    " background-color: #111827; border: 1px solid #9CA3AF;"
+    " width: 13px; height: 13px; border-radius: 7px;"
+    "}"
+    "QRadioButton::indicator:checked {"
+    " background-color: #9CA3AF; border: 1px solid #D1D5DB;"
+    "}"
+)
+
+
+@pytest.mark.parametrize("mode", ("load", "manage"))
+def test_manager_owns_visible_append_replace_radio_style(mode) -> None:
+    QApplication.instance() or QApplication([])
+    dialog = StudyEnvironmentManagerDialog(
+        (), (StudyEnvironmentTarget(1, "session", "Chart 1"),), mode=mode
+    )
+
+    assert dialog.styleSheet() == RADIO_STYLE
+    assert dialog._append.text() == "Append"
+    assert dialog._replace.text() == "Replace"
+    assert dialog._append.isChecked()
+    assert not dialog._replace.isChecked()
+
+    dialog._replace.setChecked(True)
+
+    assert dialog._replace.isChecked()
+    assert not dialog._append.isChecked()
+
+
 def test_manager_lists_invalid_rows_and_enables_apply_only_after_compatibility() -> None:
     QApplication.instance() or QApplication([])
     environment = StudyEnvironmentV1.from_dict(

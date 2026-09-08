@@ -1,0 +1,200 @@
+{
+  "collection_sources": [
+    {
+      "collection_id": "ac_8adf3ac0b82f41b1bff3a529a0846064",
+      "revision_id": "4dbc57744da5a35f9550195ee7e90d8f39dcb7edbf051c0429bee3511b9d3bc1"
+    }
+  ],
+  "column_count": 13,
+  "column_mapping": {
+    "close": "close",
+    "fast_vwap": "fast_vwap",
+    "high": "high",
+    "low": "low",
+    "open": "open",
+    "research_fast_research_mid_research_slow": "research_fast_research_mid_research_slow",
+    "research_fast_research_mid_research_slow_compression": "research_fast_research_mid_research_slow_compression",
+    "research_fast_research_mid_research_slow_width": "research_fast_research_mid_research_slow_width",
+    "research_source_1_ang_pct_span_10": "research_source_1_ang_pct_span_10",
+    "slow_vwap": "slow_vwap",
+    "sma_100": "sma_100",
+    "ts_ms": "ts_ms",
+    "vwap_color": "vwap_color"
+  },
+  "created_at_utc": "2026-09-08T14:55:57.281424Z",
+  "database_id": "db_028f5cfa3e38487bb82d66355d4ca946",
+  "dependency_edges": [
+    {
+      "dependency_logical_artifact_id": "17a065834462ae49680858941515f7e229922ea595fb3967930e05e8e997ee4a",
+      "dependent_logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_name": "sma_70",
+      "role": "fast"
+    },
+    {
+      "dependency_logical_artifact_id": "1bdb6e6863e9d07e15d18cc6ddba33a8a31db86727ecd9b4efd069465aa674e3",
+      "dependent_logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_name": "sma_90",
+      "role": "mid"
+    },
+    {
+      "dependency_logical_artifact_id": "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+      "dependent_logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_name": "sma_100",
+      "role": "slow"
+    },
+    {
+      "dependency_logical_artifact_id": "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+      "dependent_logical_artifact_id": "f0a8e6329bb18f720ebeb2731cb2a8e1e218b30cfa5e0f66c027689236d98be1",
+      "output_name": "sma_100",
+      "role": "source_1"
+    }
+  ],
+  "description": "This is a test database for XRP 4h",
+  "display_name": "XRP_DATABASE_TEST_A",
+  "first_timestamp_ms": 1622448000000,
+  "last_timestamp_ms": 1788753600000,
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "members": [
+    {
+      "artifact_id": "483444e7f2b8c5ea2f11df86df7f8545d759381ca8453f6c4754e24ac4d6926e",
+      "kind": "indicator",
+      "logical_artifact_id": "17a065834462ae49680858941515f7e229922ea595fb3967930e05e8e997ee4a",
+      "output_names": [
+        "sma_70"
+      ],
+      "portable_recipe_id": "ea06bc23617e16fb24e25b861fa5311436ee78210e6e75bd9f544a187e45bec2",
+      "tool_key": "sma",
+      "values_sha256": "b28b3a737299ac5a513c54eb056068318f924f2c78bae48d026b400371ad8828"
+    },
+    {
+      "artifact_id": "d1aa37bf64bc3ea7ae86255c510d7f8bfd506ef6200284b317c6f9da538e33aa",
+      "kind": "indicator",
+      "logical_artifact_id": "1bdb6e6863e9d07e15d18cc6ddba33a8a31db86727ecd9b4efd069465aa674e3",
+      "output_names": [
+        "sma_90"
+      ],
+      "portable_recipe_id": "6ff2a5148f51953aff0072d5cd19a65ba800c0e381ebe96c66f676441d0bbe6f",
+      "tool_key": "sma",
+      "values_sha256": "045551022bb4c50e9bcfba7e386e810604d8d093ae971805b56d139eea1a0305"
+    },
+    {
+      "artifact_id": "6c6648f37cd58a2f0b627be719c0ea55ce9946ef957c6eca571442113bbd1c56",
+      "kind": "indicator",
+      "logical_artifact_id": "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+      "output_names": [
+        "sma_100"
+      ],
+      "portable_recipe_id": "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be",
+      "tool_key": "sma",
+      "values_sha256": "57f91da55ec8770f5700bb82408648b0d80b1ea6b681545972fde6ee35743ae1"
+    },
+    {
+      "artifact_id": "62a3ca2d0edafffed13aafa19b1351a87b2f2a09ccaaac97771c85bfbd43a5ca",
+      "kind": "construct",
+      "logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_names": [
+        "research_fast_research_mid_research_slow",
+        "research_fast_research_mid_research_slow_width",
+        "research_fast_research_mid_research_slow_compression"
+      ],
+      "portable_recipe_id": "6d014328aeb1e0ab89c01a7e688a48a6a01ea0703fda72516edbd8ee99fcde64",
+      "tool_key": "braids",
+      "values_sha256": "4e1eae3626ac7edf90faaab15f218c0a3912c277a40172458428fee29d6caa2c"
+    },
+    {
+      "artifact_id": "ffef635a5f1c77304a425a4e09b8ab850afa43f4e489de4a98cf70b466e3e3a3",
+      "kind": "construct",
+      "logical_artifact_id": "f0a8e6329bb18f720ebeb2731cb2a8e1e218b30cfa5e0f66c027689236d98be1",
+      "output_names": [
+        "research_source_1_ang_pct_span_10"
+      ],
+      "portable_recipe_id": "c98cf6b88d0203a274acb47b5ce1a168d32d4ccb84ca3bbff8ea93b1cba73723",
+      "tool_key": "percent_span_angle",
+      "values_sha256": "95aafb795ef8c3c56123b1381fe416f06582434e2f4f2c7a428236bbf2230297"
+    },
+    {
+      "artifact_id": "69e70654beb1f317ea96c8ce77c029ac9b90f988cadef6b7acba21c02459cc5c",
+      "kind": "indicator",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_names": [
+        "fast_vwap",
+        "slow_vwap",
+        "vwap_color"
+      ],
+      "portable_recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+      "tool_key": "hck",
+      "values_sha256": "6cbb20ace4a70b720fbc3272c7d40f67d5345384bb53dd86e9e0afd049e8bfb8"
+    }
+  ],
+  "object_type": "database_revision",
+  "previous_revision_id": "20a51fd5e1614c083196929009570d51b32e40a99f6db4c972015d338c353e94",
+  "revision_id": "245f194f6fb8ff5a51fea91566e846c4b909fa603a6c5daa89e3aeffa2b9bcb2",
+  "row_count": 11550,
+  "schema_version": "2.0",
+  "seed_id": "seed_c9f489e8c5b449bc888669f49509a2f9",
+  "selected_outputs": [
+    {
+      "column_name": "research_fast_research_mid_research_slow",
+      "logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_name": "research_fast_research_mid_research_slow"
+    },
+    {
+      "column_name": "research_fast_research_mid_research_slow_width",
+      "logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_name": "research_fast_research_mid_research_slow_width"
+    },
+    {
+      "column_name": "research_fast_research_mid_research_slow_compression",
+      "logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+      "output_name": "research_fast_research_mid_research_slow_compression"
+    },
+    {
+      "column_name": "research_source_1_ang_pct_span_10",
+      "logical_artifact_id": "f0a8e6329bb18f720ebeb2731cb2a8e1e218b30cfa5e0f66c027689236d98be1",
+      "output_name": "research_source_1_ang_pct_span_10"
+    },
+    {
+      "column_name": "sma_100",
+      "logical_artifact_id": "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+      "output_name": "sma_100"
+    },
+    {
+      "column_name": "fast_vwap",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_name": "fast_vwap"
+    },
+    {
+      "column_name": "slow_vwap",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_name": "slow_vwap"
+    },
+    {
+      "column_name": "vwap_color",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_name": "vwap_color"
+    }
+  ],
+  "source_ohlcv": {
+    "csv_sha256": "172cec3437a7c65e1955fb2fbe811f104c529db5e789724e8225c33a11d11b4e",
+    "first_timestamp_ms": 1620892800000,
+    "last_timestamp_ms": 1788753600000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "XRPUSDT",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 11658,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "03646e2e4da3d63eed00a3dd386408585b05a57457b3dc15311c7db54c56705c",
+    "validation_status": "ok"
+  },
+  "values_sha256": "624992266201f0368c44ace67f8c7ed03a53c0190047f7aef1ca3c82e2032625"
+}

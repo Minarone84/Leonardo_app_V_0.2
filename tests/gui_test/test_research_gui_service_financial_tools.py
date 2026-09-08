@@ -10,11 +10,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from leonardo.artifacts import ArtifactService
 from leonardo.core.core_runner import TaskResult, TaskSubmission
 from leonardo.gui.research import ResearchSuiteWindow, RestoredResearchLifecyclePresenter
+from leonardo.recipes import PortableRecipeStore
 from leonardo.research import (
     DatasetCatalogReport,
     RESEARCH_FINANCIAL_TOOL_SPECS,
@@ -85,7 +86,10 @@ class ControlledStudySetupService(ResearchStudySetupApplicationService):
 
 class ControlledStudyService(ResearchStudyApplicationService):
     def __init__(self, root: Path) -> None:
-        self._engine = ResearchStudyService(ArtifactService(root))
+        self._engine = ResearchStudyService(
+            ArtifactService(root),
+            PortableRecipeStore(root / "data_manager"),
+        )
         self.pending: dict[str, tuple[str, object, object, tuple, object, Callable, Callable | None]] = {}
         self.cancel_counts: dict[str, int] = {}
         self.submissions: list[tuple[str, object]] = []
@@ -343,6 +347,23 @@ def test_real_catalog_availability_tracking_reuse_and_phase_gates(tmp_path: Path
         dialog.saved_artifact_table.item(0, 0).setCheckState(
             Qt.CheckState.Checked
         )
+        for row in range(dialog.tool_list.count()):
+            if dialog.tool_list.item(row).text() == "Delta":
+                dialog.tool_list.setCurrentRow(row)
+                break
+        assert tuple(
+            row.container.findChild(QLabel).text()
+            for row in dialog.source_selector._rows
+        ) == ("Minuend", "Subtrahend")
+        dialog.source_selector.select_option(
+            "fast", dialog._catalog.ohlcv_sources[3]
+        )
+        dialog.source_selector.select_option(
+            "slow", dialog._catalog.ohlcv_sources[0]
+        )
+        assert tuple(
+            selection.role for selection in dialog.source_selector.selections()
+        ) == ("fast", "slow")
         for row in range(dialog.tool_list.count()):
             if dialog.tool_list.item(row).text() == "RSI":
                 dialog.tool_list.setCurrentRow(row)

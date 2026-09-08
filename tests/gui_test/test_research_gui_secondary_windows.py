@@ -318,13 +318,23 @@ def test_notebook_manager_assignment_projection_and_intents(
         assert table.item(0, 1).data(Qt.ItemDataRole.UserRole) == (
             "dev_snapshot_primary"
         )
-        assert selected_notebook.text() == "BTC Market Review"
-        assert target_workspace.text() == "None selected"
-        assert current_assignment.text() == "None selected"
+        assert all(
+            notebook_list.item(row).checkState() == Qt.CheckState.Unchecked
+            for row in range(notebook_list.count())
+        )
+        assert selected_notebook.text() == ""
+        assert target_workspace.text() == ""
+        assert current_assignment.text() == ""
         assert assignment_action.text() == "Assign Notebook"
         assert not assignment_action.isEnabled()
 
-        notebook_list.setCurrentRow(1)
+        eth_notebook = next(
+            notebook_list.item(row)
+            for row in range(notebook_list.count())
+            if notebook_list.item(row).data(Qt.ItemDataRole.UserRole)
+            == "dev_notebook_eth_notes"
+        )
+        eth_notebook.setCheckState(Qt.CheckState.Checked)
         table.setCurrentCell(1, 0)
         assign_spy = QSignalSpy(dialog.assign_requested)
         assert selected_notebook.text() == "ETH Research Notes"
@@ -404,6 +414,16 @@ def test_notebook_delete_confirmation_lists_assigned_snapshots(
     monkeypatch.setattr(QMessageBox, "question", confirm)
     deleted = QSignalSpy(dialog.delete_requested)
     try:
+        notebook_list = dialog.findChild(
+            QListWidget, "research.notebook_manager_dialog.list.notebooks"
+        )
+        market_review = next(
+            notebook_list.item(row)
+            for row in range(notebook_list.count())
+            if notebook_list.item(row).data(Qt.ItemDataRole.UserRole)
+            == "dev_notebook_market_review"
+        )
+        market_review.setCheckState(Qt.CheckState.Checked)
         dialog.findChild(
             QPushButton, "research.notebook_manager_dialog.button.delete"
         ).click()

@@ -1,0 +1,36 @@
+{
+  "created_at_utc": "2026-09-07T10:23:29.487541+00:00",
+  "file_sha256": "172cec3437a7c65e1955fb2fbe811f104c529db5e789724e8225c33a11d11b4e",
+  "first_timestamp_ms": 1620892800000,
+  "last_timestamp_ms": 1788753600000,
+  "lineage": {
+    "canonical_validation": {
+      "error_count": 0,
+      "issue_codes": [],
+      "status": "ok",
+      "validator": "canonical_ohlcv_v1",
+      "warning_count": 0
+    },
+    "canonical_validation_status": "unknown",
+    "download_mode": "new_download",
+    "file_mtime_ns": 1788776612982282100,
+    "file_size": 625594,
+    "pages_written": 12,
+    "planned_end_ms": 1788753600000,
+    "planned_start_ms": 1620892800000,
+    "preliminary_validation_status": "ok"
+  },
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "persistence_status": "committed",
+  "row_count": 11658,
+  "schema_version": "1.0",
+  "source": "bybit",
+  "updated_at_utc": "2026-09-07T10:25:08.925787+00:00",
+  "validation_status": "ok",
+  "warnings": []
+}

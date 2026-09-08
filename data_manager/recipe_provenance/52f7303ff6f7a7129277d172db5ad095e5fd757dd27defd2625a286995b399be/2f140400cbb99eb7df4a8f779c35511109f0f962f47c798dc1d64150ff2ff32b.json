@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "provenance_id": "2f140400cbb99eb7df4a8f779c35511109f0f962f47c798dc1d64150ff2ff32b",
+  "recipe_id": "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "SMA",
+  "study_entry_id": "entry_003",
+  "study_environment_content_hash": "4c86175d8eec93d1e57ca6b7a652c965c40f3e94b4e8f36a87fa80700b67fde1",
+  "study_environment_display_name": "XRP_TEST_C",
+  "study_environment_id": "env_6ac010a438604d4d90b50d7a00ad5cbd",
+  "study_environment_updated_at_utc": "2026-09-07T11:46:56.227366+00:00"
+}

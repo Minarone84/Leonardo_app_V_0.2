@@ -27,17 +27,21 @@ from leonardo.data_manager import (
     ArtifactCollectionRevisionV1,
     DataManagerArtifactCurrentness,
     DataManagerCatalogSnapshot,
+    DataManagerDatasetEntry,
     DataManagerManagedArtifactEntry,
     DataManagerManagedArtifactCatalog,
     DataManagerPortableRecipeEntry,
     DataManagerPortableRecipeCatalog,
     DataManagerProductCatalogSnapshot,
     DataManagerCollectionCurrentness,
+    DataManagerDatabaseCatalogEntry,
+    DataManagerDatabaseCurrentness,
     DataManagerRecipeCollectionEntry,
     DataManagerRecipeCollectionCatalog,
     DataManagerReconciliationSnapshot,
     DataManagerStudyEnvironmentCatalog,
     DataManagerStudyEnvironmentEntry,
+    DatabaseDefinitionV1,
 )
 from leonardo.gui.data_manager.catalogs import CATALOG_FAMILIES, _COLUMNS
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
@@ -218,6 +222,20 @@ def sortable_artifact_snapshot() -> DataManagerProductCatalogSnapshot:
     )
 
 
+def _database_entry(
+    currentness: DataManagerDatabaseCurrentness | None,
+) -> DataManagerDatabaseCatalogEntry:
+    definition = DatabaseDefinitionV1(
+        "db_" + "1" * 32,
+        "Research Database",
+        "",
+        MARKET_B,
+        "seed_" + "2" * 32,
+        datetime(2026, 8, 9, tzinfo=UTC),
+    )
+    return DataManagerDatabaseCatalogEntry(definition, None, 1, currentness)
+
+
 def _environment(
     environment_id: str,
     display_name: str,
@@ -355,6 +373,63 @@ def test_collection_actions_are_contextual_exact_and_busy_fenced() -> None:
 
         workspace.set_collection_actions_enabled(False)
         assert all(not button.isEnabled() for button in actions.values())
+    finally:
+        window.close()
+
+
+def test_recipe_materialization_actions_require_exact_source_and_dataset() -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    window = DataManagerSuiteWindow()
+    workspace = window._catalog_workspace
+    snapshot = associated_product_snapshot()
+    recipe_values: list[object] = []
+    collection_values: list[object] = []
+    workspace.create_artifact_from_recipe_requested.connect(recipe_values.append)
+    workspace.create_artifacts_from_recipe_collection_requested.connect(
+        collection_values.append
+    )
+    try:
+        workspace.set_snapshot(snapshot)
+        window.set_catalog(
+            DataManagerCatalogSnapshot(
+                (DataManagerDatasetEntry(MARKET_A, True, 1, 0, 0),)
+            )
+        )
+        assert workspace.create_artifact_from_recipe_button.objectName() == (
+            "data_manager.catalogs.action.create_artifact_from_recipe"
+        )
+        assert (
+            workspace.create_artifacts_from_recipe_collection_button.objectName()
+            == "data_manager.catalogs.action.create_artifacts_from_recipe_collection"
+        )
+
+        workspace.select_family("Recipes")
+        assert not workspace.create_artifact_from_recipe_button.isHidden()
+        assert not workspace.create_artifact_from_recipe_button.isEnabled()
+        assert not workspace.create_artifact_from_recipe_button.isEnabled()
+        assert window.select_market(MARKET_A, emit_selection=False)
+        assert not workspace.create_artifact_from_recipe_button.isEnabled()
+        workspace.table.selectRow(0)
+        assert workspace.create_artifact_from_recipe_button.isEnabled()
+        recipe = workspace._visible_values[0]
+        workspace.create_artifact_from_recipe_button.click()
+        assert recipe_values == [recipe]
+
+        workspace.select_family("Recipe Collections")
+        assert not workspace.create_artifacts_from_recipe_collection_button.isHidden()
+        assert not workspace.create_artifacts_from_recipe_collection_button.isEnabled()
+        workspace.table.selectRow(0)
+        collection = workspace._visible_values[0]
+        assert workspace.create_artifacts_from_recipe_collection_button.isEnabled()
+        workspace.create_artifacts_from_recipe_collection_button.click()
+        assert collection_values == [collection]
+
+        workspace.set_materialization_actions_enabled(False)
+        assert not workspace.create_artifacts_from_recipe_collection_button.isEnabled()
+        workspace.select_family("Artifacts")
+        assert workspace.create_artifact_from_recipe_button.isHidden()
+        assert workspace.create_artifacts_from_recipe_collection_button.isHidden()
     finally:
         window.close()
 
@@ -678,6 +753,135 @@ def test_recipe_and_collection_catalogs_are_global_and_not_market_duplicated() -
         window.close()
 
 
+def test_recipe_catalog_resolves_dependency_inputs_without_changing_row_identity() -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+
+    def recipe(
+        recipe_id: str,
+        tool_key: str,
+        parameters: dict[str, object],
+        output_names: tuple[str, ...],
+        input_bindings: tuple[str, ...],
+    ) -> DataManagerPortableRecipeEntry:
+        dependency_count = sum("=Recipe[" in item for item in input_bindings)
+        return DataManagerPortableRecipeEntry(
+            recipe_id,
+            tool_key,
+            "1.0",
+            "construct" if dependency_count else "indicator",
+            parameters,
+            output_names,
+            input_bindings,
+            dependency_count,
+            len(input_bindings) - dependency_count,
+            (),
+            (),
+            (),
+            0,
+        )
+
+    sma_id = "1" * 64
+    ema_id = "2" * 64
+    rsi_id = "3" * 64
+    missing_id = "f" * 64
+    recipes = (
+        recipe(sma_id, "sma", {"period": 20}, ("sma",), ("source=OHLCV.close",)),
+        recipe(ema_id, "ema", {"period": 30}, ("ema",), ("source=OHLCV.close",)),
+        recipe(rsi_id, "rsi", {"period": 14}, ("rsi",), ("source=OHLCV.close",)),
+        recipe(
+            "4" * 64,
+            "derivative",
+            {"period": 1},
+            ("derivative",),
+            (f"source=Recipe[{sma_id}].sma",),
+        ),
+        recipe(
+            "5" * 64,
+            "derivative",
+            {"period": 1},
+            ("derivative",),
+            (f"source=Recipe[{ema_id}].ema",),
+        ),
+        recipe(
+            "6" * 64,
+            "delta",
+            {},
+            ("delta",),
+            (
+                f"minuend=Recipe[{sma_id}].sma",
+                f"subtrahend=Recipe[{ema_id}].ema",
+            ),
+        ),
+        recipe(
+            "7" * 64,
+            "delta",
+            {},
+            ("delta",),
+            (
+                f"minuend=Recipe[{ema_id}].ema",
+                f"subtrahend=Recipe[{sma_id}].sma",
+            ),
+        ),
+        recipe(
+            "8" * 64,
+            "angle_momentum",
+            {"period": 5},
+            ("angle_momentum",),
+            (f"source=Recipe[{rsi_id}].rsi",),
+        ),
+        recipe(
+            "9" * 64,
+            "angle_momentum",
+            {"period": 5},
+            ("angle_momentum",),
+            (f"source=Recipe[{sma_id}].sma",),
+        ),
+        recipe(
+            "a" * 64,
+            "derivative",
+            {"period": 1},
+            ("derivative",),
+            (f"source=Recipe[{missing_id}].value",),
+        ),
+    )
+    snapshot = replace(
+        empty_product_snapshot(),
+        portable_recipes=DataManagerPortableRecipeCatalog(recipes),
+    )
+    window = DataManagerSuiteWindow()
+    try:
+        workspace = window._catalog_workspace
+        window.set_product_catalogs(snapshot)
+        workspace.select_family("Recipes")
+        recipe_ids = _column_values(workspace, "Recipe ID")
+        inputs = dict(
+            zip(recipe_ids, _column_values(workspace, "Inputs"), strict=True)
+        )
+
+        assert len(recipe_ids) == len(recipes) == len(set(recipe_ids))
+        assert inputs[sma_id] == "source=OHLCV.close"
+        assert inputs["4" * 64] == "source=sma(period=20).sma"
+        assert inputs["5" * 64] == "source=ema(period=30).ema"
+        assert inputs["4" * 64] != inputs["5" * 64]
+        assert inputs["6" * 64] == (
+            "minuend=sma(period=20).sma, subtrahend=ema(period=30).ema"
+        )
+        assert inputs["7" * 64] == (
+            "minuend=ema(period=30).ema, subtrahend=sma(period=20).sma"
+        )
+        assert inputs["6" * 64] != inputs["7" * 64]
+        assert inputs["8" * 64] == "source=rsi(period=14).rsi"
+        assert inputs["9" * 64] == "source=sma(period=20).sma"
+        assert inputs["8" * 64] != inputs["9" * 64]
+        assert inputs["a" * 64] == f"source=Recipe[{missing_id}].value"
+        assert _COLUMNS["Recipes"] == (
+            "Tool", "Inputs", "Parameters", "Outputs", "State", "Recipe ID",
+        )
+    finally:
+        window.close()
+
+
 def test_scoped_artifact_families_use_exact_market_and_scope_visibility() -> None:
     app = QApplication.instance() or QApplication([])
     del app
@@ -711,7 +915,7 @@ def test_scoped_artifact_families_use_exact_market_and_scope_visibility() -> Non
 
 def test_product_catalog_column_schemas_are_exact_and_artifact_outputs_are_last() -> None:
     assert _COLUMNS["Recipes"] == (
-        "Tool", "Parameters", "Inputs", "Outputs", "State", "Recipe ID",
+        "Tool", "Inputs", "Parameters", "Outputs", "State", "Recipe ID",
     )
     assert _COLUMNS["Recipe Collections"] == (
         "Name", "Roots", "Members", "Dependency Edges", "Execution Stages",
@@ -719,7 +923,7 @@ def test_product_catalog_column_schemas_are_exact_and_artifact_outputs_are_last(
     )
     assert _COLUMNS["Artifacts"] == (
         "Exchange", "Market Type", "Asset", "Timeframe", "Tool", "Kind",
-        "Rows", "First TS", "Last TS", "Created", "State",
+        "Rows", "First TS", "Last TS", "Created", "State", "Currentness",
         "Previous Artifact ID", "Outputs",
     )
     assert "Logical ID" not in _COLUMNS["Artifacts"]
@@ -733,15 +937,179 @@ def test_product_catalog_column_schemas_are_exact_and_artifact_outputs_are_last(
         assert columns[:4] == ("Exchange", "Market Type", "Asset", "Timeframe")
         assert "Market" not in columns
         assert "Coverage" not in columns
-        assert "Currentness" not in columns
+        assert "Currentness" in columns
         assert "Origin Markets" not in columns
 
 
-def test_catalog_created_updated_and_coverage_timestamps_are_utc_seconds() -> None:
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("CURRENT", "CURRENT"),
+        ("APPEND_AVAILABLE", "UPDATE AVAILABLE"),
+        ("HISTORICAL_SOURCE_CHANGED", "UPDATE AVAILABLE"),
+        ("BLOCKED_BY_DEPENDENCY", "BLOCKED"),
+        ("INVALID", "INVALID"),
+        (None, "VERIFYING"),
+    ),
+)
+def test_artifact_currentness_uses_reconciliation_projection(
+    status: str | None,
+    expected: str,
+) -> None:
+    window = DataManagerSuiteWindow()
+    try:
+        snapshot = associated_product_snapshot()
+        row = snapshot.latest_reconciliation.artifacts[0]
+        reconciliation = replace(
+            snapshot.latest_reconciliation,
+            artifacts=(
+                ()
+                if status is None
+                else (replace(row, status=status, reasons=("artifact reason",)),)
+            ),
+        )
+        window.set_product_catalogs(
+            replace(snapshot, latest_reconciliation=reconciliation)
+        )
+        workspace = window._catalog_workspace
+        workspace.set_selected_market(MARKET_B)
+        workspace.select_family("Artifacts")
+
+        assert _column_values(workspace, "State") == ("valid",)
+        assert _column_values(workspace, "Currentness") == (expected,)
+        workspace.table.selectRow(0)
+        inspector = {
+            workspace.inspector.item(index, 0).text(): workspace.inspector.item(
+                index, 1
+            ).text()
+            for index in range(workspace.inspector.rowCount())
+        }
+        if status is not None:
+            assert inspector["currentness.status"] == status
+            assert "artifact reason" in inspector["currentness.reasons"]
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("CURRENT", "CURRENT"),
+        ("MEMBERS_REQUIRE_UPDATE", "UPDATE AVAILABLE"),
+        ("PARTIALLY_ALIGNED", "UPDATE AVAILABLE"),
+        ("BLOCKED_BY_DEPENDENCY", "BLOCKED"),
+        ("SOURCE_INVALID", "INVALID"),
+        (None, "VERIFYING"),
+    ),
+)
+def test_artifact_collection_currentness_uses_reconciliation_projection(
+    status: str | None,
+    expected: str,
+) -> None:
+    window = DataManagerSuiteWindow()
+    try:
+        snapshot = associated_product_snapshot()
+        row = snapshot.latest_reconciliation.collections[0]
+        reconciliation = replace(
+            snapshot.latest_reconciliation,
+            collections=(
+                ()
+                if status is None
+                else (replace(row, status=status, reasons=("collection reason",)),)
+            ),
+        )
+        window.set_product_catalogs(
+            replace(snapshot, latest_reconciliation=reconciliation)
+        )
+        workspace = window._catalog_workspace
+        workspace.set_selected_market(MARKET_B)
+        workspace.select_family("Artifact Collections")
+
+        assert _column_values(workspace, "State") == ("valid",)
+        assert _column_values(workspace, "Currentness") == (expected,)
+        workspace.table.selectRow(0)
+        inspector = {
+            workspace.inspector.item(index, 0).text(): workspace.inspector.item(
+                index, 1
+            ).text()
+            for index in range(workspace.inspector.rowCount())
+        }
+        if status is not None:
+            assert inspector["currentness.status"] == status
+            assert "collection reason" in inspector["currentness.reasons"]
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("CURRENT", "CURRENT"),
+        ("UPDATE_AVAILABLE", "UPDATE AVAILABLE"),
+        ("REBUILD_REQUIRED", "UPDATE AVAILABLE"),
+        ("WAITING_FOR_ARTIFACT_UPDATE", "BLOCKED"),
+        ("SOURCE_INVALID", "INVALID"),
+        (None, "VERIFYING"),
+    ),
+)
+def test_database_currentness_uses_reconciliation_projection(
+    status: str | None,
+    expected: str,
+) -> None:
+    window = DataManagerSuiteWindow()
+    try:
+        snapshot = associated_product_snapshot()
+        currentness = (
+            None
+            if status is None
+            else DataManagerDatabaseCurrentness(
+                "db_" + "1" * 32,
+                "3" * 64,
+                MARKET_B,
+                status,
+                TIMESTAMP_MS,
+                TIMESTAMP_MS,
+                TIMESTAMP_MS,
+                0,
+                True,
+                ("database reason",),
+            )
+        )
+        reconciliation = replace(
+            snapshot.latest_reconciliation,
+            databases=() if currentness is None else (currentness,),
+        )
+        window.set_product_catalogs(
+            replace(
+                snapshot,
+                databases=(_database_entry(currentness),),
+                latest_reconciliation=reconciliation,
+            )
+        )
+        workspace = window._catalog_workspace
+        workspace.select_family("Databases")
+
+        assert _column_values(workspace, "State") == ("valid",)
+        assert _column_values(workspace, "Currentness") == (expected,)
+        workspace.table.selectRow(0)
+        inspector = {
+            workspace.inspector.item(index, 0).text(): workspace.inspector.item(
+                index, 1
+            ).text()
+            for index in range(workspace.inspector.rowCount())
+        }
+        if status is not None:
+            assert inspector["currentness.status"] == status
+            assert "database reason" in inspector["currentness.reasons"]
+    finally:
+        window.close()
+
+
+def test_catalog_created_updated_and_coverage_timestamps_use_display_time() -> None:
     app = QApplication.instance() or QApplication([])
     del app
     window = DataManagerSuiteWindow()
-    expected = "2026-08-09 17:42:17 UTC"
+    expected = "2026-08-09 19:42:17 CEST (+02:00)"
     try:
         workspace = window._catalog_workspace
         window.set_product_catalogs(associated_product_snapshot())
@@ -802,15 +1170,15 @@ def test_catalog_header_typed_sorting_and_per_family_state() -> None:
         assert _column_values(workspace, "Rows") == ("2", "10", "100")
         _click_header(workspace, "First TS")
         assert _column_values(workspace, "First TS") == (
-            "1970-01-01 00:00:00 UTC",
-            "1970-01-01 01:00:00 UTC",
-            "1970-01-01 02:00:00 UTC",
+            "1970-01-01 01:00:00 CET (+01:00)",
+            "1970-01-01 02:00:00 CET (+01:00)",
+            "1970-01-01 03:00:00 CET (+01:00)",
         )
         _click_header(workspace, "First TS")
         assert _column_values(workspace, "First TS") == (
-            "1970-01-01 02:00:00 UTC",
-            "1970-01-01 01:00:00 UTC",
-            "1970-01-01 00:00:00 UTC",
+            "1970-01-01 03:00:00 CET (+01:00)",
+            "1970-01-01 02:00:00 CET (+01:00)",
+            "1970-01-01 01:00:00 CET (+01:00)",
         )
 
         workspace.set_snapshot(associated_product_snapshot())
@@ -883,5 +1251,71 @@ def test_catalog_sort_preserves_artifact_selection_inspector_scope_and_refresh()
         workspace.set_snapshot(refreshed)
         assert _column_values(workspace, "Rows") == ("2", "10", "100")
         assert workspace._selected_value().logical_artifact_id == "c" * 64
+    finally:
+        window.close()
+
+
+def test_collection_inspection_action_is_contextual_exact_and_busy_fenced() -> None:
+    window = DataManagerSuiteWindow()
+    snapshot = associated_product_snapshot()
+    recipe_emitted: list[object] = []
+    artifact_emitted: list[object] = []
+    try:
+        workspace = window._catalog_workspace
+        workspace.inspect_recipe_collection_requested.connect(
+            recipe_emitted.append
+        )
+        workspace.inspect_artifact_collection_requested.connect(
+            artifact_emitted.append
+        )
+        window.set_product_catalogs(snapshot)
+        button = workspace.inspect_collection_button
+        assert button.objectName() == (
+            "data_manager.catalogs.action.inspect_collection"
+        )
+
+        for family in CATALOG_FAMILIES:
+            workspace.select_family(family)
+            assert button.isVisibleTo(workspace) is (
+                family in {"Recipe Collections", "Artifact Collections"}
+            )
+
+        workspace.select_family("Recipe Collections")
+        assert not button.isEnabled()
+        recipe = workspace._visible_values[0]
+        workspace.table.selectRow(0)
+        assert button.isEnabled()
+        button.click()
+        assert recipe_emitted == [recipe]
+        assert artifact_emitted == []
+
+        workspace.set_collection_actions_enabled(False)
+        assert not button.isEnabled()
+        workspace.set_collection_actions_enabled(True)
+        assert button.isEnabled()
+
+        workspace.dataset_scope.setCurrentIndex(
+            workspace.dataset_scope.findData("all")
+        )
+        workspace.select_family("Artifact Collections")
+        artifact = workspace._visible_values[0]
+        workspace.table.selectRow(0)
+        assert button.isEnabled()
+        button.click()
+        assert artifact_emitted == [artifact]
+
+        invalid = _artifact_collection(
+            MARKET_A,
+            collection_id="artifact_collection_invalid",
+            revision_id="3" * 64,
+            name="Invalid",
+        )
+        object.__setattr__(invalid, "validation_state", "invalid")
+        window.set_product_catalogs(
+            replace(snapshot, artifact_collections=(invalid,))
+        )
+        workspace.select_family("Artifact Collections")
+        workspace.table.selectRow(0)
+        assert not button.isEnabled()
     finally:
         window.close()

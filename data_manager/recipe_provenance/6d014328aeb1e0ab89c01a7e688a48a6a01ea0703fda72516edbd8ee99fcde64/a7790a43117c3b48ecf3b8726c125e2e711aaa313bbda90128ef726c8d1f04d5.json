@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "provenance_id": "a7790a43117c3b48ecf3b8726c125e2e711aaa313bbda90128ef726c8d1f04d5",
+  "recipe_id": "6d014328aeb1e0ab89c01a7e688a48a6a01ea0703fda72516edbd8ee99fcde64",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "Braids",
+  "study_entry_id": "entry_004",
+  "study_environment_content_hash": "4c86175d8eec93d1e57ca6b7a652c965c40f3e94b4e8f36a87fa80700b67fde1",
+  "study_environment_display_name": "XRP_TEST_C",
+  "study_environment_id": "env_6ac010a438604d4d90b50d7a00ad5cbd",
+  "study_environment_updated_at_utc": "2026-09-07T11:46:56.227366+00:00"
+}

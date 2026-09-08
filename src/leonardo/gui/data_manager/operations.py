@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -17,7 +22,12 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.gui.data_manager.table_presentation import resize_data_manager_table
+from leonardo.gui.display_time import format_display_datetime
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
+
+
+def _operation_history_timestamp() -> str:
+    return format_display_datetime(datetime.now(UTC))[:19]
 
 
 class DataManagerOperationSurface(QGroupBox):
@@ -44,7 +54,6 @@ class DataManagerOperationSurface(QGroupBox):
             self._notes.textInteractionFlags()
             | Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self._notes.hide()
         for widget, object_id in (
             (self._name, "data_manager.operation.name"),
             (self._task_id, "data_manager.operation.task_id"),
@@ -69,7 +78,26 @@ class DataManagerOperationSurface(QGroupBox):
             columns=("Field", "Value"),
             labels=("Field", "Value"),
         )
-        self.details.setMaximumHeight(130)
+        self.details.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.details.verticalHeader().setMinimumSectionSize(32)
+        self.details.verticalHeader().setDefaultSectionSize(32)
+        self._notes_scroll = QScrollArea(self)
+        self._notes_scroll.setWidgetResizable(True)
+        self._notes_scroll.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
+        )
+        self._notes_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._notes_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._notes_scroll.setMinimumHeight(160)
+        self._notes_scroll.setMaximumHeight(200)
+        self._notes_scroll.setWidget(self._notes)
 
         self.cancel_button = QPushButton("Cancel", self)
         apply_identity(
@@ -95,15 +123,34 @@ class DataManagerOperationSurface(QGroupBox):
         form.addRow("Context", self._context)
         form.addRow("Status", self._status)
         form.addRow("Message", self._message)
+        for field_widget in (
+            self._name,
+            self._task_id,
+            self._state,
+            self._context,
+            self._status,
+            self._message,
+        ):
+            field_widget.setMinimumHeight(30)
+            field_widget.setMargin(5)
+            label_widget = form.labelForField(field_widget)
+            if isinstance(label_widget, QLabel):
+                label_widget.setMinimumHeight(30)
+                label_widget.setMargin(5)
+        form.setVerticalSpacing(2)
         buttons = QHBoxLayout()
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.clear_button)
         buttons.addStretch(1)
         layout = QVBoxLayout(self)
+        margins = layout.contentsMargins()
+        layout.setContentsMargins(
+            margins.left(), max(18, margins.top()), margins.right(), margins.bottom()
+        )
         layout.addLayout(form)
         layout.addWidget(self.progress)
-        layout.addWidget(self.details)
-        layout.addWidget(self._notes)
+        layout.addWidget(self.details, 1)
+        layout.addWidget(self._notes_scroll)
         layout.addLayout(buttons)
         self.cancel_button.setEnabled(False)
 
@@ -165,11 +212,22 @@ class DataManagerOperationSurface(QGroupBox):
             self.details.setItem(row, 0, QTableWidgetItem(name))
             self.details.setItem(row, 1, QTableWidgetItem(value))
         resize_data_manager_table(self.details)
+        level = {
+            "completed": "OK",
+            "failed": "ERROR",
+            "cancelled": "CANCELLED",
+        }.get(state, state.upper())
+        entry = (
+            f"[{_operation_history_timestamp()}] {level} | "
+            f"{self._name.text()} | {message}"
+        )
+        current = self._notes.text()
+        self._notes.setText(f"{current}\n{entry}" if current else entry)
 
     def append(self, message: str) -> None:
+        entry = f"[{_operation_history_timestamp()}] INFO | {message}"
         current = self._notes.text()
-        self._notes.setText(f"{current}\n{message}" if current else message)
-        self._notes.setVisible(bool(self._notes.text()))
+        self._notes.setText(f"{current}\n{entry}" if current else entry)
 
     def clear(self) -> None:
         self._name.setText("None")
@@ -180,6 +238,5 @@ class DataManagerOperationSurface(QGroupBox):
         self.progress.setValue(0)
         self.details.setRowCount(0)
         self._notes.clear()
-        self._notes.hide()
         self.cancel_button.setEnabled(False)
         self.clear_requested.emit()

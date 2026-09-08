@@ -1,0 +1,16 @@
+{
+  "dependencies": [],
+  "kind": "indicator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "ema_7"
+  ],
+  "parameters": {
+    "period": 7
+  },
+  "recipe_id": "49945dda637de9af6e2192cb2109f9ee4d5a0467b020b335ecff17fafeb8d3af",
+  "schema_version": "1.0",
+  "tool_key": "ema",
+  "tool_version": "1.0"
+}

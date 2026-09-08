@@ -21,6 +21,11 @@ from .models import (
     DataManagerArtifactMaterializationPlan,
     DataManagerArtifactMaterializationRequest,
     DataManagerArtifactMaterializationResult,
+    DuplicateMaintenanceDomain,
+    DuplicateMaintenancePreflight,
+    DuplicateMaintenancePurgeResult,
+    DuplicateMaintenanceScanResult,
+    duplicate_maintenance_domain,
 )
 from .direct_artifact import (
     DataManagerDirectArtifactRequest,
@@ -30,6 +35,9 @@ from .creation_models import (
     ArtifactCollectionSelectionPlan,
     BatchArtifactPlan,
     BatchArtifactRequest,
+    DatabaseContentAdditionPlan,
+    DatabaseSeedCreationPlan,
+    SeedOnlyDatabaseCreationPlan,
 )
 from .service import DataManagerService
 from .update_models import ArtifactCollectionUpdatePlan, DatabaseUpdatePlan
@@ -556,6 +564,27 @@ class DataManagerApplicationService:
             callback_dispatcher=callback_dispatcher,
         )
 
+    def submit_find_equivalent_recipe_collection(
+        self,
+        root_recipe_ids: tuple[str, ...],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.find_equivalent_recipe_collection",
+            task_name="Data Manager Recipe Collection reuse lookup",
+            start_message="Checking Recipe Collection reuse",
+            completed_message="Recipe Collection reuse lookup ready",
+            work=lambda _reporter, _gate: (
+                self._service.find_equivalent_recipe_collection(root_recipe_ids)
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
     def submit_update_recipe_collection(
         self,
         collection_id: str,
@@ -821,6 +850,111 @@ class DataManagerApplicationService:
             callback_dispatcher=callback_dispatcher,
         )
 
+    def submit_prepare_duplicate_maintenance(
+        self,
+        domain: DuplicateMaintenanceDomain | str,
+        market_id: MarketId | None = None,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        exact_domain = duplicate_maintenance_domain(domain)
+        return self._submit(
+            operation="data_manager.duplicate_maintenance_preflight",
+            task_name=(
+                f"Data Manager {exact_domain.display_name} duplicate maintenance "
+                "preflight"
+            ),
+            start_message=(
+                f"Preparing {exact_domain.display_name} duplicate maintenance"
+            ),
+            completed_message="Duplicate maintenance preflight ready",
+            work=lambda _reporter, _gate: self._service.prepare_duplicate_maintenance(
+                exact_domain, market_id
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"domain": exact_domain.key},
+        )
+
+    def submit_scan_duplicate_maintenance(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(preflight, DuplicateMaintenancePreflight):
+            raise TypeError("preflight must be a DuplicateMaintenancePreflight")
+
+        def scan(reporter: ProgressReporter, gate: _CancellationGate):
+            return self._service.scan_duplicate_maintenance(
+                preflight,
+                progress=lambda current, total, message: reporter.report(
+                    message, current=current, total=total
+                ),
+                cancellation_requested=gate.is_cancelled,
+            )
+
+        return self._submit(
+            operation="data_manager.duplicate_maintenance_scan",
+            task_name=(
+                f"Data Manager {preflight.domain.display_name} duplicate "
+                "maintenance scan"
+            ),
+            start_message=(
+                f"Scanning {preflight.domain.display_name} duplicate candidates"
+            ),
+            completed_message="Duplicate maintenance scan complete",
+            work=scan,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"domain": preflight.domain.key},
+        )
+
+    def submit_purge_duplicate_maintenance(
+        self,
+        scan: DuplicateMaintenanceScanResult,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(scan, DuplicateMaintenanceScanResult):
+            raise TypeError("scan must be a DuplicateMaintenanceScanResult")
+
+        def purge(
+            reporter: ProgressReporter, gate: _CancellationGate
+        ) -> DuplicateMaintenancePurgeResult:
+            return self._service.purge_duplicate_maintenance(
+                scan,
+                progress=lambda current, total, message: reporter.report(
+                    message, current=current, total=total
+                ),
+                cancellation_requested=gate.is_cancelled,
+                before_delete=gate.begin_destructive,
+            )
+
+        return self._submit(
+            operation="data_manager.duplicate_maintenance_purge",
+            task_name=(
+                f"Data Manager {scan.preflight.domain.display_name} duplicate purge"
+            ),
+            start_message=(
+                f"Purging {scan.preflight.domain.display_name} safe duplicates"
+            ),
+            completed_message="Duplicate maintenance purge complete",
+            work=purge,
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"domain": scan.preflight.domain.key},
+        )
+
     def submit_list_managed_artifact_versions(
         self,
         market_id: MarketId,
@@ -860,26 +994,142 @@ class DataManagerApplicationService:
         result_callback: ResultCallback | None = None,
         callback_dispatcher: CallbackDispatcher | None = None,
     ) -> TaskSubmission:
+        def work(_reporter, gate):
+            plan = self._service.plan_database_seed_creation(
+                market_id,
+                display_name,
+                description=description,
+                selected_ohlcv_columns=selected_ohlcv_columns,
+                selected_range_start_ms=selected_range_start_ms,
+                selected_range_end_ms=selected_range_end_ms,
+            )
+            return self._service.execute_database_seed_creation(
+                plan,
+                cancellation_requested=gate.is_cancelled,
+                before_publish=gate.begin_destructive,
+            )
+
         return self._market_submit(
             market_id,
             operation="data_manager.create_database_seed",
             task_name=f"Data Manager Database Seed {display_name}",
             start_message="Creating Database Seed",
             completed_message="Database Seed created",
-            work=lambda _reporter, gate: (
-                gate.begin_destructive(),
-                self._service.create_database_seed(
-                    market_id,
-                    display_name,
-                    description=description,
-                    selected_ohlcv_columns=selected_ohlcv_columns,
-                    selected_range_start_ms=selected_range_start_ms,
-                    selected_range_end_ms=selected_range_end_ms,
-                ),
-            )[1],
+            work=work,
             progress_callback=progress_callback,
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_plan_database_seed_creation(
+        self,
+        market_id: MarketId,
+        display_name: str,
+        *,
+        description: str = "",
+        selected_ohlcv_columns: tuple[str, ...] = (
+            "open", "high", "low", "close", "volume"
+        ),
+        selected_range_start_ms: int | None = None,
+        selected_range_end_ms: int | None = None,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            market_id,
+            operation="data_manager.plan_database_seed_creation",
+            task_name=f"Data Manager Database Seed preview {display_name}",
+            start_message="Planning Database Seed",
+            completed_message="Database Seed preview ready",
+            work=lambda _reporter, _gate: self._service.plan_database_seed_creation(
+                market_id,
+                display_name,
+                description=description,
+                selected_ohlcv_columns=selected_ohlcv_columns,
+                selected_range_start_ms=selected_range_start_ms,
+                selected_range_end_ms=selected_range_end_ms,
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_execute_database_seed_creation(
+        self,
+        plan: DatabaseSeedCreationPlan,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            plan.seed.market_id,
+            operation="data_manager.execute_database_seed_creation",
+            task_name=f"Data Manager Database Seed creation {plan.seed.display_name}",
+            start_message="Publishing Database Seed",
+            completed_message="Database Seed created",
+            work=lambda _reporter, gate: self._service.execute_database_seed_creation(
+                plan,
+                cancellation_requested=gate.is_cancelled,
+                before_publish=gate.begin_destructive,
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"plan_id": plan.plan_id, "seed_id": plan.seed.seed_id},
+        )
+
+    def submit_plan_seed_only_database_creation(
+        self,
+        seed_id: str,
+        display_name: str,
+        *,
+        description: str = "",
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.plan_seed_only_database_creation",
+            task_name=f"Data Manager Seed-only Database preview {display_name}",
+            start_message="Planning Seed-only Database",
+            completed_message="Seed-only Database preview ready",
+            work=lambda _reporter, _gate: (
+                self._service.plan_seed_only_database_creation(
+                    seed_id, display_name, description=description
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"seed_id": seed_id},
+        )
+
+    def submit_execute_seed_only_database_creation(
+        self,
+        plan: SeedOnlyDatabaseCreationPlan,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.execute_seed_only_database_creation",
+            task_name=f"Data Manager Seed-only Database creation {plan.display_name}",
+            start_message="Publishing Seed-only Database",
+            completed_message="Seed-only Database created",
+            work=lambda _reporter, gate: (
+                self._service.execute_seed_only_database_creation(
+                    plan,
+                    cancellation_requested=gate.is_cancelled,
+                    before_publish=gate.begin_destructive,
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"plan_id": plan.plan_id, "seed_id": plan.seed_id},
         )
 
     def submit_list_database_seeds(
@@ -1063,6 +1313,57 @@ class DataManagerApplicationService:
             callback_dispatcher=callback_dispatcher,
         )
 
+    def submit_find_equivalent_artifact_collection_from_selection(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        presentation_order: Sequence[str],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            plan.market_id,
+            operation="data_manager.find_equivalent_artifact_collection",
+            task_name="Data Manager Artifact Collection reuse lookup",
+            start_message="Checking Artifact Collection reuse",
+            completed_message="Artifact Collection reuse lookup ready",
+            work=lambda _reporter, _gate: (
+                self._service.find_equivalent_artifact_collection_from_selection(
+                    plan, selected_outputs, presentation_order
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
+    def submit_find_equivalent_artifact_collection_for_materialization(
+        self,
+        plan: DataManagerArtifactMaterializationPlan,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._market_submit(
+            plan.target_market_id,
+            operation="data_manager.find_equivalent_materialized_collection",
+            task_name="Data Manager materialized Collection reuse lookup",
+            start_message="Checking materialized Artifact Collection reuse",
+            completed_message="Materialized Artifact Collection reuse lookup ready",
+            work=lambda _reporter, _gate: (
+                self._service.find_equivalent_artifact_collection_for_materialization(
+                    plan, selected_outputs
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+        )
+
     def submit_create_artifact_collection_from_selection(
         self,
         plan: ArtifactCollectionSelectionPlan,
@@ -1193,6 +1494,34 @@ class DataManagerApplicationService:
             completed_message="Artifact Collection inspection ready",
             work=lambda _reporter, _gate: self._service.inspect_artifact_collection(
                 collection_id, revision_id
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"collection_id": collection_id, "revision_id": revision_id},
+        )
+
+    def submit_inspect_artifact_collection_details(
+        self,
+        collection_id: str,
+        revision_id: str | None = None,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.inspect_artifact_collection_details",
+            task_name=(
+                "Data Manager Artifact Collection detail inspection "
+                f"{collection_id}"
+            ),
+            start_message=f"Inspecting Artifact Collection details {collection_id}",
+            completed_message="Artifact Collection detail inspection ready",
+            work=lambda _reporter, _gate: (
+                self._service.inspect_artifact_collection_details(
+                    collection_id, revision_id
+                )
             ),
             progress_callback=progress_callback,
             result_callback=result_callback,
@@ -1413,6 +1742,91 @@ class DataManagerApplicationService:
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
             metadata={"seed_id": seed_id, "collection_id": collection_id},
+        )
+
+    def submit_plan_database_artifact_addition(
+        self,
+        database_id: str,
+        root_logical_artifact_ids: Sequence[str],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.plan_database_artifact_addition",
+            task_name=f"Data Manager Database Artifact Preview {database_id}",
+            start_message="Planning Database Artifact content",
+            completed_message="Database Artifact content Preview ready",
+            work=lambda _reporter, _gate: (
+                self._service.plan_database_artifact_addition(
+                    database_id, root_logical_artifact_ids
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"database_id": database_id},
+        )
+
+    def submit_plan_database_collection_addition(
+        self,
+        database_id: str,
+        collection_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.plan_database_collection_addition",
+            task_name=f"Data Manager Database Collection Preview {database_id}",
+            start_message="Planning Database Artifact Collection content",
+            completed_message="Database Collection content Preview ready",
+            work=lambda _reporter, _gate: (
+                self._service.plan_database_collection_addition(
+                    database_id, collection_id
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={
+                "database_id": database_id,
+                "collection_id": collection_id,
+            },
+        )
+
+    def submit_execute_database_content_addition(
+        self,
+        plan: DatabaseContentAdditionPlan,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        if not isinstance(plan, DatabaseContentAdditionPlan):
+            raise TypeError("plan must be a DatabaseContentAdditionPlan")
+        return self._market_submit(
+            plan.market_id,
+            operation="data_manager.execute_database_content_addition",
+            task_name=f"Data Manager Database content addition {plan.database_id}",
+            start_message="Publishing immutable Database content revision",
+            completed_message="Database content revision published",
+            work=lambda _reporter, gate: (
+                self._service.execute_database_content_addition(
+                    plan,
+                    cancellation_requested=gate.is_cancelled,
+                    before_publish=gate.begin_destructive,
+                )
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={
+                "database_id": plan.database_id,
+                "plan_id": plan.plan_id,
+            },
         )
 
     def submit_list_databases(

@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,9 +46,14 @@ from .artifact_materialization import (
 )
 from .creation_models import (
     ArtifactCollectionDependencyV1,
+    ArtifactCollectionMemberV1,
+    ArtifactCollectionOutputV1,
     ArtifactCollectionRevisionV1,
+    DatabaseCollectionReferenceV2,
     DatabaseDefinitionV1,
+    DatabaseRevisionManifest,
     DatabaseRevisionManifestV1,
+    DatabaseRevisionManifestV2,
     DataManagerCreationError,
     deterministic_hash,
 )
@@ -118,6 +124,9 @@ class DataManagerUpdateWorkflow:
 
     def invalidate(self) -> None:
         self._invalidated = True
+
+    def cached_snapshot(self) -> DataManagerReconciliationSnapshot | None:
+        return self._snapshot
 
     def latest_snapshot(self) -> DataManagerReconciliationSnapshot:
         return self.reconcile_all(force=False)
@@ -370,7 +379,7 @@ class DataManagerUpdateWorkflow:
 
     @staticmethod
     def _incoming_collection_edges(
-        collection: ArtifactCollectionRevisionV1,
+        collection: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2,
     ) -> dict[str, tuple[ArtifactCollectionDependencyV1, ...]]:
         incoming: dict[str, list[ArtifactCollectionDependencyV1]] = {
             member.version_key.logical_artifact_id: []
@@ -433,7 +442,7 @@ class DataManagerUpdateWorkflow:
 
     def _load_and_prove_member_artifact(
         self,
-        collection: ArtifactCollectionRevisionV1,
+        collection: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2,
         member,
         summary,
         members: Mapping[str, object],
@@ -555,6 +564,46 @@ class DataManagerUpdateWorkflow:
         except FinancialToolInputCompatibilityError as exc:
             raise DataManagerOperationError(str(exc)) from exc
         return loaded
+
+    def _resolve_database_members(
+        self,
+        content: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2,
+        current_source: OHLCVSourceFingerprintV1,
+        managed_summaries: Sequence[object],
+    ) -> tuple[tuple[ArtifactCollectionMemberV1, ...], dict[str, str]]:
+        if not content.members:
+            return (), {}
+        summaries: dict[str, list[object]] = {}
+        for summary in managed_summaries:
+            summaries.setdefault(summary.logical_artifact_id, []).append(summary)
+        members = {
+            item.version_key.logical_artifact_id: item for item in content.members
+        }
+        incoming = self._incoming_collection_edges(content)
+        resolved: list[ArtifactCollectionMemberV1] = []
+        heads: dict[str, str] = {}
+        for member in content.members:
+            logical_id = member.version_key.logical_artifact_id
+            candidates = tuple(summaries.get(logical_id, ()))
+            if len(candidates) != 1 or not candidates[0].valid:
+                raise DataManagerOperationError(
+                    "required managed Artifact head is unavailable"
+                )
+            summary = candidates[0]
+            loaded = self._load_and_prove_member_artifact(
+                content, member, summary, members, incoming[logical_id]
+            )
+            if loaded.metadata.source_ohlcv != current_source:
+                raise DataManagerOperationError(
+                    "required managed Artifact is stale for current OHLCV"
+                )
+            heads[logical_id] = summary.artifact_id
+            resolved.append(replace(
+                member,
+                version_key=ManagedArtifactVersionKey(logical_id, summary.artifact_id),
+                values_sha256=loaded.metadata.values_sha256,
+            ))
+        return tuple(resolved), heads
 
     def plan_artifact_collection_update(
         self, collection_id: str
@@ -921,15 +970,21 @@ class DataManagerUpdateWorkflow:
         try:
             loaded = self._creation.load_database_revision(database_id)
             manifest = loaded.manifest
-            collection = self._creation.load_artifact_collection(manifest.collection_id)
+            content: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2
+            if isinstance(manifest, DatabaseRevisionManifestV1):
+                content = self._creation.load_artifact_collection(
+                    manifest.collection_id
+                )
+            else:
+                content = manifest
             source_change = self.classify_source_change(
                 manifest.source_ohlcv, manifest.market_id
             )
-            managed = self._artifacts.list_managed_artifacts(collection.market_id)
+            managed = self._artifacts.list_managed_artifacts(manifest.market_id)
             return self._plan_database_update_from_evidence(
                 database_id,
                 loaded,
-                collection,
+                content,
                 source_change,
                 managed,
             )
@@ -950,9 +1005,21 @@ class DataManagerUpdateWorkflow:
             status = "CURRENT"
             mode = "CURRENT"
             current_source = source_change.current_source
-            heads = self._current_collection_heads(
-                collection, managed_summaries=managed_summaries
-            )
+            resolved_members: tuple[ArtifactCollectionMemberV1, ...] = ()
+            heads: dict[str, str] = {}
+            if isinstance(manifest, DatabaseRevisionManifestV1):
+                heads = self._current_collection_heads(
+                    collection, managed_summaries=managed_summaries
+                )
+                resolved_members = collection.members
+            elif current_source is not None:
+                try:
+                    resolved_members, heads = self._resolve_database_members(
+                        collection, current_source, managed_summaries
+                    )
+                except DataManagerOperationError as exc:
+                    status, mode = "WAITING_FOR_ARTIFACT_UPDATE", "BLOCKED"
+                    blockers.append(str(exc))
             member_ids = tuple(
                 item.version_key.logical_artifact_id for item in collection.members
             )
@@ -962,7 +1029,7 @@ class DataManagerUpdateWorkflow:
             if current_source is None:
                 status, mode = "SOURCE_INVALID", "BLOCKED"
                 blockers.append("accepted OHLCV source is unavailable")
-            elif any(
+            elif isinstance(manifest, DatabaseRevisionManifestV1) and (any(
                 heads.get(item.version_key.logical_artifact_id)
                 != item.version_key.artifact_id
                 for item in collection.members
@@ -971,13 +1038,15 @@ class DataManagerUpdateWorkflow:
                     collection.market_id, item.version_key.artifact_id
                 ).metadata.source_ohlcv != current_source
                 for item in collection.members
-            ):
+            )):
                 status, mode = "WAITING_FOR_ARTIFACT_UPDATE", "BLOCKED"
                 blockers.append("Artifact Collection members are not current")
             candidate = None
             if mode != "BLOCKED":
                 candidate = self._database_frame(
-                    self._creation.load_database_seed(manifest.seed_id), collection
+                    self._creation.load_database_seed(manifest.seed_id),
+                    collection,
+                    members=resolved_members,
                 )
                 old = pd.read_csv(io.BytesIO(loaded.values_csv))
                 if set(member_ids) != set(old_member_ids):
@@ -993,9 +1062,12 @@ class DataManagerUpdateWorkflow:
                 elif len(candidate) > len(old):
                     status, mode = "UPDATE_AVAILABLE", "APPEND"
                 elif (
-                    source_change.status == "UNCHANGED"
-                    and collection.revision_id == manifest.collection_revision_id
-                    and tuple(item.version_key for item in collection.members)
+                    source_change.status in {"UNCHANGED", "APPEND_ONLY"}
+                    and (
+                        not isinstance(manifest, DatabaseRevisionManifestV1)
+                        or collection.revision_id == manifest.collection_revision_id
+                    )
+                    and tuple(item.version_key for item in resolved_members)
                     == manifest.artifact_version_keys
                 ):
                     status, mode = "CURRENT", "CURRENT"
@@ -1008,8 +1080,16 @@ class DataManagerUpdateWorkflow:
                 "revision_id": manifest.revision_id,
                 "source": _source_payload(current_source),
                 "source_status": source_change.status,
-                "collection_id": collection.collection_id,
-                "collection_revision_id": collection.revision_id,
+                "collection_id": (
+                    collection.collection_id
+                    if isinstance(manifest, DatabaseRevisionManifestV1)
+                    else None
+                ),
+                "collection_revision_id": (
+                    collection.revision_id
+                    if isinstance(manifest, DatabaseRevisionManifestV1)
+                    else None
+                ),
                 "heads": [list(value) for value in sorted(heads.items())],
                 "columns": list(columns),
                 "mode": mode,
@@ -1025,8 +1105,16 @@ class DataManagerUpdateWorkflow:
                 status=status,
                 source_change=source_change,
                 source_ohlcv=current_source,
-                collection_id=collection.collection_id,
-                collection_revision_id=collection.revision_id,
+                collection_id=(
+                    collection.collection_id
+                    if isinstance(manifest, DatabaseRevisionManifestV1)
+                    else None
+                ),
+                collection_revision_id=(
+                    collection.revision_id
+                    if isinstance(manifest, DatabaseRevisionManifestV1)
+                    else None
+                ),
                 starting_artifact_heads=tuple(heads.items()),
                 column_names=columns,
                 execution_stages=(("database",),),
@@ -1089,9 +1177,28 @@ class DataManagerUpdateWorkflow:
             current = self._creation.load_database_revision(plan.database_id)
             manifest = current.manifest
             definition = self._creation.load_database_definition(plan.database_id)
-            collection = self._creation.load_artifact_collection(plan.collection_id)
+            if isinstance(manifest, DatabaseRevisionManifestV1):
+                if plan.collection_id is None:
+                    raise DataManagerOperationError(
+                        "V1 Database update requires an Artifact Collection"
+                    )
+                content: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2 = (
+                    self._creation.load_artifact_collection(plan.collection_id)
+                )
+                members = content.members
+            else:
+                content = manifest
+                members, heads = self._resolve_database_members(
+                    content,
+                    plan.source_ohlcv,
+                    self._artifacts.list_managed_artifacts(plan.market_id),
+                )
+                if tuple(sorted(heads.items())) != plan.starting_artifact_heads:
+                    raise DataManagerOperationError(
+                        "Database Artifact heads changed before execution"
+                    )
             seed = self._creation.load_database_seed(manifest.seed_id)
-            candidate = self._database_frame(seed, collection)
+            candidate = self._database_frame(seed, content, members=members)
             if required_mode == "APPEND":
                 existing = pd.read_csv(io.BytesIO(current.values_csv))
                 additions = candidate.loc[
@@ -1108,10 +1215,11 @@ class DataManagerUpdateWorkflow:
             revision = self._database_manifest(
                 definition,
                 manifest,
-                collection,
+                content,
                 plan.source_ohlcv,
                 frame,
                 values,
+                members=members,
             )
             if cancelled():
                 raise DataManagerOperationError("Database update cancelled")
@@ -1123,6 +1231,16 @@ class DataManagerUpdateWorkflow:
                     raise DataManagerOperationError(
                         "accepted OHLCV source changed before Database publication"
                     )
+                if isinstance(manifest, DatabaseRevisionManifestV2):
+                    _members, current_heads = self._resolve_database_members(
+                        manifest,
+                        plan.source_ohlcv,
+                        self._artifacts.list_managed_artifacts(plan.market_id),
+                    )
+                    if tuple(sorted(current_heads.items())) != plan.starting_artifact_heads:
+                        raise DataManagerOperationError(
+                            "Database Artifact heads changed before publication"
+                        )
                 if before_publish is not None:
                     before_publish()
 
@@ -1356,11 +1474,14 @@ class DataManagerUpdateWorkflow:
             try:
                 loaded_revision = database_revisions[database_id]
                 loaded = loaded_revision.manifest
-                collection_revision = collections_by_id.get(loaded.collection_id)
-                if collection_revision is None:
-                    raise DataManagerOperationError(
-                        "Database Artifact Collection is unavailable"
-                    )
+                if isinstance(loaded, DatabaseRevisionManifestV1):
+                    collection_revision = collections_by_id.get(loaded.collection_id)
+                    if collection_revision is None:
+                        raise DataManagerOperationError(
+                            "Database Artifact Collection is unavailable"
+                        )
+                else:
+                    collection_revision = loaded
                 source_change = self._classify_captured_source(
                     loaded.source_ohlcv,
                     loaded.market_id,
@@ -1375,7 +1496,11 @@ class DataManagerUpdateWorkflow:
                     source_change,
                     managed_by_market.get(loaded.market_id, ()),
                 )
-                collection = collections.get(plan.collection_id)
+                collection = (
+                    None
+                    if plan.collection_id is None
+                    else collections.get(plan.collection_id)
+                )
                 values.append(DataManagerDatabaseCurrentness(
                     database_id,
                     loaded.revision_id,
@@ -1630,7 +1755,13 @@ class DataManagerUpdateWorkflow:
             for member in collection.members
         }
 
-    def _database_frame(self, seed, collection) -> pd.DataFrame:
+    def _database_frame(
+        self,
+        seed,
+        collection: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2,
+        *,
+        members: Sequence[ArtifactCollectionMemberV1] | None = None,
+    ) -> pd.DataFrame:
         dataset = self._loader.load(seed.market_id)
         frame = pd.DataFrame({
             "ts_ms": dataset.ts_ms,
@@ -1649,11 +1780,20 @@ class DataManagerUpdateWorkflow:
             frame["ts_ms"].between(seed.selected_range_start_ms, end),
             ["ts_ms", *seed.selected_ohlcv_columns],
         ].copy()
-        members = {
-            item.version_key.logical_artifact_id: item for item in collection.members
+        exact_members = tuple(collection.members if members is None else members)
+        output_columns = tuple(
+            item.column_name for item in collection.selected_outputs
+        )
+        base_columns = {"ts_ms", *seed.selected_ohlcv_columns}
+        if base_columns.intersection(output_columns):
+            raise DataManagerOperationError(
+                "Database output columns collide with selected base columns"
+            )
+        members_by_id = {
+            item.version_key.logical_artifact_id: item for item in exact_members
         }
         for output in collection.selected_outputs:
-            member = members[output.logical_artifact_id]
+            member = members_by_id[output.logical_artifact_id]
             loaded = self._artifacts.load_artifact_by_id(
                 seed.market_id, member.version_key.artifact_id
             )
@@ -1661,10 +1801,19 @@ class DataManagerUpdateWorkflow:
                 columns={output.output_name: output.column_name}
             )
             frame = frame.merge(values, on="ts_ms", how="inner", validate="one_to_one")
-        mask = frame[list(collection.presentation_order)].notna().all(axis=1)
+        presentation_order = (
+            collection.presentation_order
+            if isinstance(collection, ArtifactCollectionRevisionV1)
+            else tuple(item.column_name for item in collection.selected_outputs)
+        )
+        mask = (
+            frame[list(presentation_order)].notna().all(axis=1)
+            if presentation_order
+            else pd.Series(True, index=frame.index)
+        )
         return frame.loc[
             mask,
-            ["ts_ms", *seed.selected_ohlcv_columns, *collection.presentation_order],
+            ["ts_ms", *seed.selected_ohlcv_columns, *presentation_order],
         ].reset_index(drop=True)
 
     @classmethod
@@ -1684,13 +1833,71 @@ class DataManagerUpdateWorkflow:
     def _database_manifest(
         self,
         definition: DatabaseDefinitionV1,
-        previous: DatabaseRevisionManifestV1,
-        collection: ArtifactCollectionRevisionV1,
+        previous: DatabaseRevisionManifest,
+        collection: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2,
         source: OHLCVSourceFingerprintV1,
         frame: pd.DataFrame,
         values: bytes,
-    ) -> DatabaseRevisionManifestV1:
+        *,
+        members: Sequence[ArtifactCollectionMemberV1] | None = None,
+    ) -> DatabaseRevisionManifest:
         now = self._clock()
+        if isinstance(previous, DatabaseRevisionManifestV2):
+            exact_members = tuple(collection.members if members is None else members)
+            payload = {
+                "schema_version": "2.0",
+                "object_type": "database_revision",
+                "database_id": definition.database_id,
+                "display_name": definition.display_name,
+                "description": definition.description,
+                "seed_id": definition.seed_id,
+                "market_id": {
+                    "exchange": definition.market_id.exchange,
+                    "market_type": definition.market_id.market_type,
+                    "symbol": definition.market_id.symbol,
+                    "timeframe": definition.market_id.timeframe,
+                },
+                "source_ohlcv": source.to_dict(),
+                "members": [item.to_dict() for item in exact_members],
+                "dependency_edges": [
+                    item.to_dict() for item in previous.dependency_edges
+                ],
+                "selected_outputs": [
+                    item.to_dict() for item in previous.selected_outputs
+                ],
+                "collection_sources": [
+                    item.to_dict() for item in previous.collection_sources
+                ],
+                "column_mapping": {value: value for value in frame.columns},
+                "first_timestamp_ms": int(frame["ts_ms"].iloc[0]),
+                "last_timestamp_ms": int(frame["ts_ms"].iloc[-1]),
+                "row_count": len(frame),
+                "column_count": len(frame.columns),
+                "values_sha256": hashlib.sha256(values).hexdigest(),
+                "previous_revision_id": previous.revision_id,
+                "created_at_utc": now.isoformat().replace("+00:00", "Z"),
+            }
+            return DatabaseRevisionManifestV2(
+                database_id=definition.database_id,
+                revision_id=deterministic_hash(payload),
+                display_name=definition.display_name,
+                description=definition.description,
+                seed_id=definition.seed_id,
+                market_id=definition.market_id,
+                source_ohlcv=source,
+                members=exact_members,
+                dependency_edges=previous.dependency_edges,
+                selected_outputs=previous.selected_outputs,
+                collection_sources=previous.collection_sources,
+                column_mapping={value: value for value in frame.columns},
+                first_timestamp_ms=int(frame["ts_ms"].iloc[0]),
+                last_timestamp_ms=int(frame["ts_ms"].iloc[-1]),
+                row_count=len(frame),
+                column_count=len(frame.columns),
+                values_sha256=hashlib.sha256(values).hexdigest(),
+                previous_revision_id=previous.revision_id,
+                created_at_utc=now,
+            )
         payload = {
             "schema_version": "1.0",
             "object_type": "database_revision",

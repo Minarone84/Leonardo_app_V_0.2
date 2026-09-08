@@ -11,7 +11,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from leonardo.core.core_runner import TaskProgress, TaskResult, TaskSubmission
 from leonardo.gui.windows.workspace_snapshot_preflight_dialog import (
@@ -20,9 +21,11 @@ from leonardo.gui.windows.workspace_snapshot_preflight_dialog import (
 from leonardo.gui.windows.research_notebook_manager_dialog import (
     ResearchNotebookManagerDialog,
 )
+from leonardo.gui.windows.research_notebook_window import ResearchNotebookWindow
 from leonardo.research import DatasetCatalogReport
 from leonardo.research.workspace_snapshot import (
     ResearchWorkspaceSnapshotCompatibilityReport,
+    ResearchWorkspaceSnapshotSummary,
     ResearchWorkspaceSnapshotV1,
 )
 from tests.gui_test.test_research_gui_service_catalog import (
@@ -44,6 +47,7 @@ class _ControlledSnapshotLinkService:
         ] = {}
         self.raise_on_assign = False
         self._sequence = 0
+        self.list_value: object = ()
 
     def _submit(self, callback, value) -> TaskSubmission:
         self._sequence += 1
@@ -72,7 +76,7 @@ class _ControlledSnapshotLinkService:
     def submit_list_snapshots(
         self, *, result_callback=None, **_kwargs
     ) -> TaskSubmission:
-        return self._submit(result_callback, ())
+        return self._submit(result_callback, self.list_value)
 
     def complete(
         self,
@@ -182,6 +186,203 @@ def _ready_chart(presenter, service) -> int:
     service.complete(service.pending_ids("resident")[-1])
     _settle_qt()
     return slot_id
+
+
+def _snapshot_summary(
+    snapshot: ResearchWorkspaceSnapshotV1,
+) -> ResearchWorkspaceSnapshotSummary:
+    return ResearchWorkspaceSnapshotSummary(
+        snapshot.snapshot_id,
+        snapshot.display_name,
+        snapshot.description,
+        len(snapshot.charts),
+        snapshot.created_at_utc,
+        snapshot.updated_at_utc,
+        notebook_id=snapshot.notebook_id,
+    )
+
+
+def test_snapshot_and_notebook_helpers_clear_synchronous_terminal_results() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, _summary = _presenter()
+    snapshot_results: list[TaskResult] = []
+    notebook_results: list[TaskResult] = []
+
+    def immediate_submit(task_id: str, callback) -> TaskSubmission:
+        callback(TaskResult(task_id, "completed", value=()))
+        return TaskSubmission(task_id, "immediate")
+
+    try:
+        presenter._submit_snapshot_task(
+            lambda callback: immediate_submit("snapshot-immediate", callback),
+            snapshot_results.append,
+        )
+        presenter._submit_notebook_task(
+            lambda callback: immediate_submit("notebook-immediate", callback),
+            notebook_results.append,
+        )
+
+        assert [result.task_id for result in snapshot_results] == [
+            "snapshot-immediate"
+        ]
+        assert [result.task_id for result in notebook_results] == [
+            "notebook-immediate"
+        ]
+        assert presenter._snapshot_task_ids == set()
+        assert presenter._notebook_task_id is None
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_saved_workspace_refreshes_open_notebook_manager_assignments() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, _summary = _presenter()
+    snapshots, notebooks = _link_services(presenter)
+    saved = _workspace_snapshot("snapshot_saved", None)
+    snapshots.list_value = (_snapshot_summary(saved),)
+    manager = ResearchNotebookManagerDialog(parent=window)
+    presenter._notebook_manager = manager
+    try:
+        presenter._snapshot_saved_result(
+            TaskResult("snapshot-save", "completed", value=saved)
+        )
+        assert notebooks.pending
+        notebooks.complete(next(iter(notebooks.pending)))
+        assert snapshots.pending
+        snapshots.complete(next(iter(snapshots.pending)))
+
+        assert tuple(
+            (item.snapshot_id, item.notebook_id)
+            for item in manager.assignments
+        ) == (("snapshot_saved", None),)
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_busy_notebook_transition_reports_visible_activity() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, _summary = _presenter()
+    presenter._notebook_task_id = "notebook-active"
+    try:
+        presenter._request_notebook_transition("new", None)
+        assert "Notebook operation is already in progress." in (
+            window._activity_log.toPlainText()
+        )
+    finally:
+        presenter._notebook_task_id = None
+        presenter.dispose()
+        window.close()
+
+
+def test_snapshot_capture_clamps_only_persisted_center_and_preserves_viewport() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    try:
+        _open_catalog(presenter, service, summary)
+        slot_id = _ready_chart(presenter, service)
+        chart = presenter._chart_presenters[slot_id]
+        dataset = chart.session.dataset
+        viewport = chart.viewport
+        assert dataset is not None
+        assert viewport is not None
+
+        viewport.center_on_index(25)
+        before = viewport.snapshot()
+        inside = chart.capture_snapshot_view_state(
+            chart_ref="chart_inside",
+            workspace_position=1,
+            detached=False,
+        )
+        assert inside.viewport.center_timestamp_ms == dataset.ts_ms[25]
+        assert inside.viewport.visible_count == before.visible_count
+        assert viewport.snapshot() == before
+
+        viewport.center_on_index(viewport.domain_start)
+        before = viewport.snapshot()
+        assert viewport.center_index < 0
+        left = chart.capture_snapshot_view_state(
+            chart_ref="chart_left",
+            workspace_position=1,
+            detached=False,
+        )
+        assert left.viewport.center_timestamp_ms == dataset.ts_ms[0]
+        assert left.viewport.visible_count == before.visible_count
+        assert viewport.snapshot() == before
+
+        viewport.center_on_index(viewport.domain_end_exclusive - 1)
+        before = viewport.snapshot()
+        assert viewport.center_index >= dataset.row_count
+        right = chart.capture_snapshot_view_state(
+            chart_ref="chart_right",
+            workspace_position=1,
+            detached=False,
+        )
+        assert right.viewport.center_timestamp_ms == dataset.ts_ms[-1]
+        assert right.viewport.visible_count == before.visible_count
+        assert viewport.snapshot() == before
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("chart_count", "detach_last"),
+    ((1, False), (2, False), (2, True)),
+)
+def test_save_workspace_opens_for_ready_attached_and_detached_charts(
+    chart_count: int,
+    detach_last: bool,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshots, _notebooks = _link_services(presenter)
+    try:
+        _open_catalog(presenter, service, summary)
+        slots = tuple(
+            _ready_chart(presenter, service) for _index in range(chart_count)
+        )
+        if detach_last:
+            window.workspace.detach_chart(slots[-1])
+            _settle_qt()
+        presenter._open_save_snapshot()
+        task_id = next(iter(snapshots.pending))
+        snapshots.complete(task_id)
+        _settle_qt()
+        assert presenter._snapshot_save_dialog is not None
+        assert presenter._snapshot_save_dialog.isVisible()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_save_workspace_blocker_is_recorded_and_shown_without_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, _summary = _presenter()
+    snapshots, _notebooks = _link_services(presenter)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    try:
+        presenter._open_save_snapshot()
+        assert snapshots.pending == {}
+        assert warnings == [
+            (
+                "Save Workspace",
+                "Workspace Snapshot capture blocked: "
+                "workspace capture requires ready charts and no restore",
+            )
+        ]
+        assert warnings[0][1] in window._activity_log.toPlainText()
+    finally:
+        presenter.dispose()
+        window.close()
 
 
 def _restore_snapshot(summary, *, count: int = 2) -> ResearchWorkspaceSnapshotV1:
@@ -697,12 +898,32 @@ def test_link_assignment_and_unassignment_settle_after_manager_closes() -> None:
         window.close()
 
 
-def test_notebook_manager_new_uses_existing_editor_transition() -> None:
-    _qapp = QApplication.instance() or QApplication([])
+def test_notebook_manager_new_uses_existing_editor_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qapp = QApplication.instance() or QApplication([])
     window, presenter, service, summary = _presenter()
     snapshots, notebooks = _link_services(presenter)
+    surfacing_calls: list[tuple[str, ResearchNotebookWindow]] = []
+    for method_name in ("show", "raise_", "activateWindow"):
+        original = getattr(ResearchNotebookWindow, method_name)
+
+        def record_call(
+            editor,
+            *args,
+            _method_name=method_name,
+            _original=original,
+            **kwargs,
+        ):
+            surfacing_calls.append((_method_name, editor))
+            return _original(editor, *args, **kwargs)
+
+        monkeypatch.setattr(ResearchNotebookWindow, method_name, record_call)
     try:
+        window.show()
+        qapp.processEvents()
         _open_catalog(presenter, service, summary)
+        _ready_chart(presenter, service)
         _ready_chart(presenter, service)
         presenter._open_notebook_manager()
         notebooks.complete(next(iter(notebooks.pending)))
@@ -711,40 +932,112 @@ def test_notebook_manager_new_uses_existing_editor_transition() -> None:
         assert manager is not None
 
         manager._create.click()
+        qapp.processEvents()
 
         editor = presenter._notebook_editor
         assert editor is not None
         assert presenter._notebook_manager is manager
+        assert manager.isVisible()
+        assert editor.isVisible()
+        assert tuple(name for name, _editor in surfacing_calls) == (
+            "show",
+            "raise_",
+            "activateWindow",
+        )
+        assert all(call_editor is editor for _name, call_editor in surfacing_calls)
         assert editor.current_draft().display_name == "Untitled Notebook"
         assert tuple(page.market_id for page in editor.current_draft().pages) == (
             summary.market_id,
         )
+        assert presenter._current_workspace_snapshot_id is None
+        assert presenter._assigned_notebook_id is None
+        assert manager.assignments == ()
     finally:
         presenter.dispose()
         window.close()
 
 
-def test_notebook_manager_open_uses_existing_async_transition() -> None:
-    _qapp = QApplication.instance() or QApplication([])
-    window, presenter, service, summary = _presenter()
+def test_notebook_manager_new_opens_with_no_ready_charts() -> None:
+    qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, _summary = _presenter()
     snapshots, notebooks = _link_services(presenter)
-    bundle = build_notebook_gui_fixtures(summary.market_id, summary.market_id)
-    notebook = bundle.notebooks[0]
-    notebooks.list_value = (bundle.summaries[0],)
-    notebooks.load_values[notebook.notebook_id] = notebook
     try:
+        window.show()
+        qapp.processEvents()
         presenter._open_notebook_manager()
         notebooks.complete(next(iter(notebooks.pending)))
         snapshots.complete(next(iter(snapshots.pending)))
         manager = presenter._notebook_manager
         assert manager is not None
 
+        manager._create.click()
+        qapp.processEvents()
+
+        editor = presenter._notebook_editor
+        assert editor is not None
+        assert editor.isVisible()
+        assert presenter._notebook_manager is manager
+        assert manager.isVisible()
+        assert editor.current_draft().pages == ()
+        assert presenter._current_workspace_snapshot_id is None
+        assert presenter._assigned_notebook_id is None
+        assert manager.assignments == ()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_notebook_manager_open_uses_existing_async_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    snapshots, notebooks = _link_services(presenter)
+    bundle = build_notebook_gui_fixtures(summary.market_id, summary.market_id)
+    notebook = bundle.notebooks[0]
+    notebooks.list_value = (bundle.summaries[0],)
+    notebooks.load_values[notebook.notebook_id] = notebook
+    surfacing_calls: list[tuple[str, ResearchNotebookWindow]] = []
+    for method_name in ("show", "raise_", "activateWindow"):
+        original = getattr(ResearchNotebookWindow, method_name)
+
+        def record_call(
+            editor,
+            *args,
+            _method_name=method_name,
+            _original=original,
+            **kwargs,
+        ):
+            surfacing_calls.append((_method_name, editor))
+            return _original(editor, *args, **kwargs)
+
+        monkeypatch.setattr(ResearchNotebookWindow, method_name, record_call)
+    try:
+        window.show()
+        qapp.processEvents()
+        presenter._open_notebook_manager()
+        notebooks.complete(next(iter(notebooks.pending)))
+        snapshots.complete(next(iter(snapshots.pending)))
+        manager = presenter._notebook_manager
+        assert manager is not None
+
+        manager._list.item(0).setCheckState(Qt.CheckState.Checked)
         manager._open.click()
         notebooks.complete(next(iter(notebooks.pending)))
+        qapp.processEvents()
 
         assert presenter._notebook_manager is manager
-        assert presenter._notebook_editor is not None
-        assert presenter._notebook_editor.notebook_id == notebook.notebook_id
+        editor = presenter._notebook_editor
+        assert editor is not None
+        assert editor.notebook_id == notebook.notebook_id
+        assert manager.isVisible()
+        assert editor.isVisible()
+        assert tuple(name for name, _editor in surfacing_calls) == (
+            "show",
+            "raise_",
+            "activateWindow",
+        )
+        assert all(call_editor is editor for _name, call_editor in surfacing_calls)
     finally:
         presenter.dispose()
         window.close()

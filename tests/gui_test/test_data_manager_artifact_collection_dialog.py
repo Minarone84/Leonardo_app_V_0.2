@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGroupBox, QSizePolicy, QSplitter
 
 from leonardo.artifacts import ManagedArtifactVersionKey, OHLCVSourceFingerprintV1
 from leonardo.data import MarketId
@@ -27,6 +27,7 @@ from leonardo.data_manager import (
     DataManagerStudyEnvironmentCatalog,
 )
 from leonardo.data_manager.creation_models import ArtifactCollectionSelectionPlan
+import leonardo.gui.windows.data_manager_artifact_collection_dialog as dialog_module
 from leonardo.gui.windows.data_manager_artifact_collection_dialog import (
     DataManagerArtifactCollectionDialog,
 )
@@ -171,6 +172,86 @@ def _revision() -> ArtifactCollectionRevisionV1:
     return value
 
 
+def test_initial_geometry_group_clearance_and_create_edit_parity(monkeypatch) -> None:
+    calls: list[tuple[object, object, float, float]] = []
+
+    def capture_initial_size(
+        window,
+        *,
+        parent=None,
+        width_fraction=0.0,
+        height_fraction=0.0,
+    ) -> None:
+        calls.append((window, parent, width_fraction, height_fraction))
+
+    monkeypatch.setattr(dialog_module, "apply_initial_window_size", capture_initial_size)
+    snapshot = _snapshot()
+    dialog = DataManagerArtifactCollectionDialog(
+        snapshot,
+        browsing_market_id=MARKET_A,
+    )
+    try:
+        assert calls == [(dialog, None, 0.75, 0.75)]
+        groups = {
+            group.title(): group
+            for group in dialog.findChildren(QGroupBox)
+        }
+        expected = {"Collection", "Artifact roots", "Preview", "Output Mapping"}
+        assert expected <= groups.keys()
+        layouts = {title: groups[title].layout() for title in expected}
+        assert all(layout.contentsMargins().top() == 24 for layout in layouts.values())
+        assert dialog.minimumWidth() < dialog.maximumWidth()
+        assert dialog.minimumHeight() < dialog.maximumHeight()
+        workspace = dialog.findChild(
+            QSplitter, "data_manager.artifact_collection.splitter.workspace"
+        )
+        right = dialog.findChild(
+            QSplitter, "data_manager.artifact_collection.splitter.right"
+        )
+        assert workspace is dialog.workspace_splitter
+        assert workspace.orientation() == Qt.Orientation.Horizontal
+        assert workspace.count() == 2
+        assert not workspace.childrenCollapsible()
+        assert workspace.widget(0) is dialog.left_workspace
+        assert workspace.widget(1) is right
+        assert right is dialog.right_splitter
+        assert right.orientation() == Qt.Orientation.Vertical
+        assert right.count() == 2
+        assert not right.childrenCollapsible()
+        assert right.widget(0) is groups["Preview"]
+        assert right.widget(1) is groups["Output Mapping"]
+
+        left_layout = dialog.left_workspace.layout()
+        assert left_layout.indexOf(groups["Collection"]) == 0
+        assert left_layout.indexOf(groups["Artifact roots"]) == 1
+        assert left_layout.spacing() == 10
+        assert left_layout.stretch(0) == 0
+        assert left_layout.stretch(1) == 1
+        assert (
+            groups["Collection"].sizePolicy().verticalPolicy()
+            == QSizePolicy.Policy.Fixed
+        )
+        assert (
+            groups["Artifact roots"].sizePolicy().verticalPolicy()
+            == QSizePolicy.Policy.Expanding
+        )
+
+        dialog.resize(1200, 900)
+        dialog.show()
+        _QAPP.processEvents()
+        left_size, right_size = workspace.sizes()
+        assert abs(left_size - right_size) <= 1
+        top_size, bottom_size = right.sizes()
+        assert abs(top_size - bottom_size) <= 1
+
+        dialog.configure_create(snapshot, browsing_market_id=MARKET_A)
+        assert all(groups[title].layout() is layouts[title] for title in expected)
+        dialog.configure_edit(_revision(), snapshot, browsing_market_id=MARKET_B)
+        assert all(groups[title].layout() is layouts[title] for title in expected)
+    finally:
+        dialog.close()
+
+
 def test_scope_first_root_market_anchor_and_reset() -> None:
     dialog = DataManagerArtifactCollectionDialog(
         _snapshot(), browsing_market_id=MARKET_A
@@ -218,10 +299,12 @@ def test_preview_projects_support_and_requires_unique_output_columns() -> None:
         dialog.name_input.setText("Collection")
         assert not dialog.publish_button.isEnabled()
         dialog.output_table.item(1, 3).setText("second")
-        assert dialog.publish_button.isEnabled()
+        assert not dialog.publish_button.isEnabled()
         dialog.output_table.selectRow(1)
         dialog.move_up_button.click()
         assert dialog.presentation_order() == ("second", "value")
+        assert dialog.set_collection_prediction(plan, None)
+        assert dialog.publish_button.isEnabled()
         dialog.publish_button.click()
         assert created[0][0] is plan
         assert tuple(item.column_name for item in created[0][3]) == (
@@ -257,3 +340,23 @@ def test_edit_fixed_market_mapping_preservation_busy_and_close() -> None:
     finally:
         dialog.close()
     assert closed == [True]
+
+
+def test_preview_reports_equivalent_collection_winner() -> None:
+    dialog = DataManagerArtifactCollectionDialog(
+        _snapshot(), browsing_market_id=MARKET_A
+    )
+    winner = _revision()
+    try:
+        _check(dialog, ROOT_A)
+        dialog.name_input.setText("Different requested name")
+        plan = _plan((ROOT_A,))
+        assert dialog.set_plan(plan)
+        assert dialog.set_collection_prediction(plan, winner)
+        assert "Result: REUSE EXISTING COLLECTION" in dialog.preview_summary.text()
+        assert winner.display_name in dialog.preview_summary.text()
+        assert winner.collection_id in dialog.preview_summary.text()
+        assert winner.revision_id in dialog.preview_summary.text()
+        assert dialog.publish_button.isEnabled()
+    finally:
+        dialog.close()

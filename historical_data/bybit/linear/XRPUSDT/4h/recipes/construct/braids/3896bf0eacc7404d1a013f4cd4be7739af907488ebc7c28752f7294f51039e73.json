@@ -1,0 +1,44 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-09-07T15:43:32.563248Z",
+  "description": "",
+  "display_name": "braids",
+  "kind": "construct",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "research_fast_research_mid_research_slow",
+    "research_fast_research_mid_research_slow_width",
+    "research_fast_research_mid_research_slow_compression"
+  ],
+  "parameters": {
+    "fast": "__research_fast",
+    "mid": "__research_mid",
+    "slow": "__research_slow",
+    "tie_policy": "carry"
+  },
+  "recipe_id": "3896bf0eacc7404d1a013f4cd4be7739af907488ebc7c28752f7294f51039e73",
+  "schema_version": "1.0",
+  "source_artifacts": [
+    {
+      "artifact_id": "483444e7f2b8c5ea2f11df86df7f8545d759381ca8453f6c4754e24ac4d6926e",
+      "output_name": "sma_70",
+      "role": "fast"
+    },
+    {
+      "artifact_id": "d1aa37bf64bc3ea7ae86255c510d7f8bfd506ef6200284b317c6f9da538e33aa",
+      "output_name": "sma_90",
+      "role": "mid"
+    },
+    {
+      "artifact_id": "6c6648f37cd58a2f0b627be719c0ea55ce9946ef957c6eca571442113bbd1c56",
+      "output_name": "sma_100",
+      "role": "slow"
+    }
+  ],
+  "tool_key": "braids"
+}

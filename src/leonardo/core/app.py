@@ -173,7 +173,10 @@ class LeonardoApp:
             self.core_runner,
             self.data_manager_domain,
         )
-        self.research_study_domain = ResearchStudyService(self.artifact_service)
+        self.research_study_domain = ResearchStudyService(
+            self.artifact_service,
+            self.portable_recipe_store,
+        )
         self.research_study_service = ResearchStudyApplicationService(
             self.core_runner,
             self.research_study_domain,

@@ -1,42 +1,44 @@
-# Leonardo Light V2 - Agent Instructions
+# Leonardo Light V2 — Agent Instructions
 
-**Document ID:** `LEO-LV2-AGENTS-002`
-**Version:** `2.4`
+**Document ID:** `LEO-LV2-AGENTS-003`
+**Version:** `3.0`
 **Status:** Approved implementation-agent authority
-**Supersedes:** `LEO-LV2-AGENTS-002` version 2.3 and all earlier versions
+**Primary execution surface:** Codex CLI in PowerShell
+**Supersedes:** `LEO-LV2-AGENTS-002` version 2.4 and all earlier versions
 
 ---
 
 ## 1. Purpose and authority
 
-This document defines how Codex, Goblin, or any implementation agent must work inside the Leonardo Light V2 repository.
+This file defines how Codex/Goblin must work inside the Leonardo Light V2 repository.
 
-The primary goal is safe, focused, reviewable software work that advances complete Leonardo workflows without recreating unnecessary architecture.
+It is intentionally self-contained because Codex CLI automatically loads the applicable `AGENTS.md` project instructions. Do not require Codex to read Rick-only governance documents unless the current task explicitly names one.
 
-The governing document order is:
+Operational precedence for implementation work is:
 
 ```text
-1. Explicit user instruction for the current task
-2. Accepted task prompt or workplan prepared by Rick
-3. LEONARDO_LIGHT_V2_ARCHITECTURE_GUIDELINE.md
-4. AGENTS.md
-5. RICK_PROTOCOL_12_COMMANDMENTS.md
-6. RICK_CODEX_EXECUTION_PROTOCOL.md
-7. Canonical domain specifications and persisted schemas
-8. Current implementation and tests
+1. Explicit current user instruction
+2. Accepted current Rick task card / amendment
+3. Applicable AGENTS.md
+4. Explicitly named canonical specifications or persisted schemas
+5. Current implementation and tests
 ```
 
-If two authorities conflict, stop and report the exact conflict. Do not invent a compromise.
+If two applicable authorities conflict materially, stop and report the exact conflict. Do not invent a compromise.
 
-The word `Codex` in this document means the active implementation agent. When the user refers to `Goblin`, the same rules apply unless the task gives narrower instructions.
+`Rick Protocol` and `Rick–Codex Execution Protocol` govern Rick's workflow and handoff discipline. They are not automatic implementation inputs.
 
-### 1.1 Zero-discretion execution law
+The word `Codex` includes `Goblin` unless a task states otherwise.
 
-Codex/Goblin has **zero discretionary authority** inside a Leonardo task.
+---
 
-The accepted task prompt is a closed execution specification. Codex may inspect, implement, test, and report. It may not decide what would be better.
+## 2. Zero-discretion execution law
 
-Codex must not, unless the prompt explicitly commands the exact change:
+Codex has **zero product, architecture, cleanup, or improvement authority** inside a Leonardo task.
+
+The accepted task card is a closed execution specification. Codex may inspect, implement, validate, render, package, and report. It may not decide what would be better.
+
+Unless the task explicitly authorizes the exact action, Codex must not:
 
 ```text
 improve
@@ -58,430 +60,153 @@ change tests to prefer another behaviour
 replace an accepted implementation with a preferred alternative
 ```
 
-Good intentions, common practice, elegance, consistency, and personal judgement are not permissions.
+Mechanical syntax choices are allowed only when they are behaviorally and structurally equivalent, follow the nearby accepted pattern, and do not alter scope, architecture, ownership, APIs, persistence, naming, GUI behaviour, validation meaning, tests, or acceptance criteria.
 
-Mechanical syntax choices are allowed only when they are behaviourally and structurally equivalent, follow the existing local pattern, and do not alter:
+If more than one materially different valid implementation remains possible, stop and report the missing decision.
 
-```text
-scope
-file boundaries
-architecture
-ownership
-public APIs
-persisted data
-naming
-GUI behaviour
-validation meaning
-tests or acceptance criteria
-```
-
-If any required decision is not already explicit, Codex must stop and report the missing decision. It must not infer, approximate, compromise, or choose the option it considers best.
-
-No file outside the explicit allowed boundary may be changed. If the allowed boundary is insufficient, Codex stops and reports it.
+No file outside the explicit allowed boundary may be changed. If the boundary is insufficient, stop.
 
 ---
 
-## 2. Leonardo Light V2 direction
+## 3. Leonardo architectural baseline
 
-Leonardo Light V2 is a modular desktop financial research, analysis, backtesting, and trading application with a shared asynchronous runtime for long-running and concurrent operations.
+Leonardo Light V2 is a modular desktop financial research, analysis, backtesting, and trading application.
 
-The active baseline begins with:
+The permanent high-level model is:
 
 ```text
-Core
-GUI shells
-Runtime tracking
-Logging and audit
-Appearance control
+LeonardoApp
+    composition root
+        ↓
+Core runtime + Areas + Stores/Adapters + GUI services
 ```
 
-Domain capabilities are introduced as complete vertical slices, including:
+Core owns shared domain-neutral infrastructure:
 
 ```text
-Connection and historical download
-OHLCV validation and repair
-Research Suite
-Financial Tools
-Data Manager
-Analysis
-Custom indicators
-Backtesting
-Real-time operation
-Paper trading
-Live trading
-AI assistance
-```
-
-Old Leonardo is the behavioural reference for proven workflows, calculations, terminology, and edge cases.
-
-Heavy V2 is a donor-code archive. Existing Heavy V2 code is not automatically the architectural authority merely because it exists or has tests.
-
-Do not revive an old subsystem wholesale. Reuse only the parts accepted by the current task after dependency, behaviour, and fit inspection.
-
----
-
-## 3. Retired Heavy V2 doctrines
-
-The following doctrines are retired and must not be recreated unless the user explicitly approves them as a new requirement:
-
-```text
-Strict No Shared Responsibility Rule applied to every responsibility
-Contract-first architecture by default
-A public contract for every structured internal model
-Contract Kernel and Contract Registry as universal infrastructure
-Detailed handwritten GUI window metadata
-Object-level GUI roadmaps and censuses as sources of truth
-Object Map and trace-provider completeness as release gates
-Mandatory metadata and contract coherence checks for every task
-One runtime identity for every decorative GUI object
-Architecture expansion before a working vertical workflow
-```
-
-They are replaced by:
-
-```text
-Canonical authority for critical truth
-Controlled mutation of important state
-Precise domain models for durable Leonardo concepts
-Versioned schemas for persisted objects
-Formal contracts only at genuine hard boundaries
-Private typed models for internal work
-Stable GUI IDs with runtime discovery
-Vertical workflow validation
-Minimum justified complexity
-```
-
----
-
-## 4. Core architecture
-
-Leonardo uses one shared asynchronous Core.
-
-Core owns application-wide infrastructure:
-
-```text
-application startup and shutdown
-async event-loop execution
-background task lifecycle
-progress and cancellation
-process lifecycle tracking
-generic runtime identifiers
-coarse operational connection summaries supplied by Connection
-window runtime tracking
-application-wide discoverable actions registered only when shared invocation, shortcuts, automation, audit, or AI access require them
-configured local actor identity exposed for audit correlation
-historical actor evidence owned by AuditLog
-operational logging
-audit history
-structured error routing
-Runtime Manager snapshots
-safe ordered shutdown
-```
-
-Connection owns detailed provider, API, and websocket behaviour and state. Core may track generic identities and coarse operational summaries, but must not define provider semantics.
-
-Core must remain domain-neutral.
-
-Core must not define:
-
-```text
-financial calculations
-OHLCV validation semantics
-database-building rules
-analysis logic
-backtest mathematics
-trading or risk decisions
-GUI layout or presentation
-```
-
-Core runs and supervises work. Domain areas define what the work means.
-
-`LeonardoApp` is the composition root unless an accepted task explicitly changes that architecture.
-
-Long-running operations use the shared async Core. Trivial operations remain direct calls.
-
-Examples of long-running work:
-
-```text
-historical downloads
-repairs
-artifact batches
-database materialisation
-analysis runs
-backtests
-long provider operations
-```
-
-Examples of direct work:
-
-```text
-opening or focusing a window
-changing a font
-reading a simple setting
-formatting display text
-```
-
-Do not route trivial GUI work through the async runtime merely for uniformity.
-
----
-
-## 5. Area architecture
-
-Each Area owns its financial or business behaviour.
-
-A Suite is the user-facing GUI grouping through which an Area is presented. Suite navigation does not define code ownership.
-
-An Area may contain:
-
-```text
-application services
-domain services
-internal models
-provider adapters
-stores
-validation
-reports
-tests
-```
-
-Presenters, controllers, Qt adapters, and other view-binding code belong to the GUI/application-adapter layer. They may coordinate an Area without becoming part of its domain ownership.
-
-Areas use Core for:
-
-```text
-async execution
-progress
-cancellation
-generic runtime tracking
-logging
-audit
-error routing
 application lifecycle
-```
-
-Areas must not create independent replacements for:
-
-```text
-task management
-process management
-global action registration
+background execution
+task lifecycle
+progress and cancellation
+process lifecycle
+generic runtime tracking
+coarse connection summaries
 window tracking
-audit logging
-application shutdown
+audit and operational logging
+error routing
+safe shutdown
 ```
 
-Several Areas may operate simultaneously. One Area must not block, mutate, or corrupt another Area's work through hidden global state or shared mutable implementation details.
+Areas own financial and business meaning.
+
+The GUI is a replaceable shell. It owns interaction and presentation, not persistence, financial calculations, validation truth, database construction, analysis logic, trading logic, or task lifecycle.
+
+Long-running work uses the shared Core. Trivial GUI operations remain direct.
 
 ---
 
-## 6. Canonical authority and controlled mutation
+## 4. Canonical authority rule
 
 Strict NSRR is retired.
 
 The governing rule is:
 
-> Every critical invariant, canonical identity, persisted truth, financial rule, and mutable runtime-state family must have one authoritative owner and one controlled write path.
+> Every critical invariant, canonical identity, persisted truth, financial rule, and mutable runtime-state family has one authoritative owner and one controlled write path.
 
-Multiple components may:
+Multiple components may participate in a workflow, validate defensively, derive display state, cache disposable read models, emit audit evidence, or coordinate calls. They must not create competing truth or a second mutation authority.
 
-```text
-participate in one workflow
-perform defensive validation
-consume authoritative results
-derive presentation state
-cache read-only views
-emit audit events
-reuse shared mechanisms
-```
+Representative authorities include:
 
-They must not:
-
-```text
-create competing persisted truth
-independently redefine a critical business rule
-bypass the authoritative mutation path
-duplicate financial calculation semantics
-create parallel persistence or execution paths
-promote derived display state to canonical truth
-```
-
-Examples of canonical authorities:
-
-| Critical truth or state | Expected authority |
+| Truth/state | Authority |
 |---|---|
-| Task lifecycle | Task Manager |
-| Process lifecycle | Process Manager |
-| Provider/API/websocket detailed state | Connection Area |
-| Coarse operational connection summary | Connection Registry |
-| Window runtime state | Window Registry |
-| Current local actor identity | Application configuration |
-| Historical actor evidence | AuditLog |
-| OHLCV validity | OHLCV validator |
-| OHLCV persistence | OHLCV store |
-| Financial Tool definitions | Financial Tools specification registry |
+| Application lifecycle | `LeonardoApp` |
+| Task lifecycle | `TaskManager` |
+| Process lifecycle | `ProcessManager` |
+| Detailed provider/API/websocket state | Connection Area |
+| Window state | `WindowRegistry` |
+| Historical audit evidence | `AuditLog` |
+| Canonical market identity | `MarketId` authority |
+| OHLCV persistence | OHLCV Store |
+| OHLCV validity | OHLCV Validator |
+| Financial Tool definitions | Financial Tools specification authority |
 | Artifact naming | Canonical naming policy |
-| Database persistence | Database store |
-| Risk approval | Risk service |
-| Order execution | Trading gateway |
+| Database persistence | Database Store |
+| Risk approval | Risk Service |
+| Order execution | Trading Gateway |
 
-This table is illustrative. The accepted task and architecture determine the actual authority.
-
-A workflow may legitimately involve several areas. Do not force a whole workflow into one god service merely to claim exclusive ownership.
+The current task identifies the exact affected authorities.
 
 ---
 
-## 7. Data-structure vocabulary
+## 5. Durable concepts and internal models
 
-Do not call every dataclass a contract.
+Use the correct vocabulary.
 
-Use these categories:
-
-### 7.1 Domain specification
-
+### Domain specification
 Defines an important Leonardo concept and its semantics.
 
-Examples:
+### Canonical policy
+Defines deterministic rules such as naming, compatibility, or normalization.
 
-```text
-Financial Tool specification
-Artifact definition
-Recipe definition
-Custom indicator definition
-Backtest configuration
-```
+### Persisted schema
+Defines data that is saved now and must be loaded later. Persisted schemas are explicit, validated, and versioned.
 
-Domain specifications are canonical and may have many consumers.
+### Boundary contract
+Used only for a genuine hard boundary requiring independent stability, such as a durable persisted format, an external wire format, or a financially dangerous operation.
 
-### 7.2 Canonical policy
+### Internal model
+Implementation-local structured data that may change with its owner.
 
-Defines deterministic rules.
+### Runtime snapshot
+Read-only projection from an authoritative manager.
 
-Examples:
+### Report model
+Structured analytical, validation, or execution evidence.
 
-```text
-ft_naming
-market identity normalisation
-timeframe canonicalisation
-artifact compatibility
-database naming
-validation-status policy
-```
+Do not promote disposable internal dataclasses into public contracts merely because they are structured.
 
-### 7.3 Persisted schema
-
-Defines data saved now and loaded later.
-
-Examples:
-
-```text
-OHLCV sidecar
-artifact metadata
-recipe file
-Analysis Database manifest
-Study Environment
-Workspace Snapshot
-analysis report
-custom indicator package
-backtest report
-trade record
-```
-
-Persisted schemas require explicit validation and versioning appropriate to their lifespan.
-
-### 7.4 Boundary contract
-
-Defines communication across an exceptional hard boundary requiring independent stability.
-
-Valid present-day boundaries are limited to:
-
-```text
-versioned persisted data loaded by future Leonardo versions
-external wire formats exchanged outside the application process
-financially dangerous operations requiring stable validation and audit
-```
-
-Thread crossing, process supervision, provider replacement, GUI-to-presenter calls, ordinary cross-Area DTOs, and future AI capability ideas normally use owner-local typed models or local Protocols.
-
-### 7.5 Internal model
-
-Supports one implementation and may change with it.
-
-Examples:
-
-```text
-preflight table row
-pagination cursor
-internal planner stage
-temporary GUI summary
-database-build intermediate record
-runtime manager display row
-```
-
-Internal models should normally remain beside their owner and may use private dataclasses.
-
-### 7.6 Runtime snapshot
-
-A read-only projection from an authoritative manager for inspection.
-
-### 7.7 Report model
-
-A structured result used for validation, analysis, display, persistence, or AI explanation.
-
-Important Leonardo objects must remain explicit, typed, validated, and documented. Simplification does not mean unstructured dictionaries everywhere.
+Do not create registries that merely describe other registries.
 
 ---
 
-## 8. Contract policy
+## 6. Data Manager durable semantics
 
-Formal contracts must be kept to the minimum required by real stability boundaries.
-
-Before creating or modifying a formal contract, identify:
+Preserve the accepted Data Manager model unless the task explicitly changes it.
 
 ```text
-Owner
-Producer
-Consumer
-Boundary crossed
-Reason stability is required
-Persistence or compatibility requirements
+Accepted OHLCV
+├──→ Database Seed
+│    └──→ Database base revision
+│
+└──→ Financial Tool calculations
+     ├──→ managed Artifact
+     └──→ portable Recipe definitions / Recipe Collections
+
+Saved Artifacts / Artifact Collections
+        ↓ explicit reviewed import
+Database revisions
+        ↓
+Analysis
 ```
 
-If those facts cannot be stated clearly, use an internal model, normal method signature, local Protocol, or direct typed Python instead.
+Permanent rules:
 
-Do not create formal public contracts for:
+- Recipes are global definitions of how to create results.
+- Managed Artifacts are market/source-specific persisted calculated objects.
+- Artifacts are not runtime-owned by portable Recipes.
+- Recipe Collections and Artifact Collections are independent persistence families.
+- A Database owns fixed explicitly reviewed imported membership.
+- Importing an Artifact Collection does not make the Database follow later Collection edits.
+- Database membership changes only through explicit reviewed Database operations.
+- Raw current-dataset Construct inputs are Open/High/Low/Close only; raw Volume is prohibited.
+- Reconciliation/currentness is read-only truth discovery. Persistent updates remain explicit user actions.
+- Existing per-tool update policies remain mathematical authority unless a task explicitly changes them.
 
-```text
-temporary GUI state
-preflight table rows
-local service results
-pagination cursors
-internal planner stages
-database materialisation internals
-runtime-manager rows
-process records
-window records
-one service calling another inside the same area
-```
-
-Formal contracts are justified only for:
-
-```text
-versioned persisted schemas loaded by future Leonardo versions
-external wire formats exchanged outside the application process
-financially dangerous operations requiring stable validation and audit
-```
-
-Provider adapters should normally use local Protocols. Async/process messages and cross-Area DTOs should normally remain owner-local typed models. OpenAI capability schemas are introduced only when a real external assistant interface exists.
-
-A formal contract must not duplicate a canonical domain model merely to satisfy architecture ceremony.
-
-Do not add a Contract Registry, compatibility registry, descriptor registry, or contract census unless a concrete current requirement proves ordinary code and tests are insufficient.
+Do not create parallel Recipe, Artifact, Collection, Database, currentness, or update authorities.
 
 ---
 
-## 9. GUI shell policy
-
-The GUI is a shell around Leonardo capabilities.
+## 7. GUI policy
 
 The GUI owns:
 
@@ -489,26 +214,26 @@ The GUI owns:
 windows
 widgets
 layouts
-user interaction
 selection state
+input collection
 display formatting
-enabled and disabled presentation state
+enabled/disabled state
 dialogs
 progress presentation
-visual errors and reports
+visual errors/reports
 appearance
 navigation
-focus and selection context
+focus
 ```
 
 The GUI does not own:
 
 ```text
 provider communication
-async execution
+background task lifecycle
 financial calculations
 OHLCV validation truth
-persistence policy
+persistence rules
 database construction
 analysis algorithms
 backtest mathematics
@@ -516,651 +241,102 @@ risk decisions
 order execution
 ```
 
-A normal local GUI control delegates to its presenter or controller, which calls the relevant application service.
+Background code must not mutate Qt widgets directly. Use the existing queued GUI update path.
 
-Only operations requiring application-wide discovery, invocation, auditing, shortcuts, automation, or future AI access are registered globally. Local presentation behaviour such as changing tabs, clearing a preview, expanding a tree, or applying a local filter bypasses the global action registry.
+The live Qt object tree is the GUI source of truth. Do not recreate handwritten widget trees or metadata mirrors.
 
-A window may perform lightweight usability checks, such as detecting an empty required field. Authoritative validation remains in the relevant application or domain service.
+Stable `objectName`, action IDs, and appearance roles are appropriate for meaningful controls.
 
-Windows must remain editable and replaceable without changing domain implementations.
-
----
-
-## 10. GUI-first development
-
-GUI-shell-first development is accepted.
-
-For a feature, the preferred sequence is:
-
-```text
-1. Define the user workflow and acceptance conditions.
-2. Build the GUI shell.
-3. Define empty, ready, running, failed, cancelled, and completed states.
-4. Assign stable meaningful IDs.
-5. Connect controls to intent signals or clearly labelled shell handlers.
-6. Implement application and domain services.
-7. Connect long-running work through Core.
-8. Validate the complete vertical workflow.
-```
-
-A shell must not contain fake domain logic that silently becomes production behaviour.
-
-A feature is not complete because its window exists.
-
-Do not build broad fleets of empty windows ahead of validated workflows unless the user explicitly requests GUI shell restoration as the task.
+Subjective visual redesign belongs only in tasks that explicitly authorize it.
 
 ---
 
-## 11. GUI tracking and appearance
-
-Do not maintain a second handwritten copy of the GUI in TOML, JSON, roadmaps, or object metadata.
-
-Use:
-
-```text
-stable window IDs
-stable Qt objectName values
-runtime window and widget registries
-semantic appearance roles
-editable-property declarations
-focused, hovered, or selected widget context
-```
-
-The actual Qt object tree is the source of truth for live GUI structure.
-
-A small executable window catalog is allowed when needed for navigation and construction. It should contain only operational facts such as:
-
-```text
-window ID
-display title
-category
-factory
-optional permission
-```
-
-Appearance settings may support:
-
-```text
-global theme values
-semantic component roles
-window overrides
-widget overrides
-font family
-font size
-font weight
-colours
-spacing
-dimensions where supported
-```
-
-Do not create public contracts for each widget or window merely to support appearance editing.
-
----
-
-## 12. Runtime tracking and Runtime Manager
-
-Leonardo must track meaningful operational state.
-
-Required runtime families include, as implemented:
-
-```text
-application state
-tasks
-processes
-coarse operational provider/connection summaries
-windows
-meaningful user and AI actions
-recent errors and warnings
-```
-
-Detailed API requests, provider sessions, and websocket channels remain owned by Connection and are exposed to Runtime Manager only through read-only summaries when operationally useful.
-
-A general multi-user Session Service is not required today. Use one local actor identity until a real multi-user, remote-access, or authenticated external-assistant requirement exists.
-
-Each runtime family has one manager or registry that owns mutable state.
-
-Each manager should expose a read-only snapshot suitable for Runtime Manager.
-
-Runtime Manager is an inspector. It must not become a second mutation authority.
-
-Do not create Object Map graphs, relationship legends, trace-provider families, or public contracts merely to reconstruct state already owned by runtime managers.
-
-Audit history and current runtime state are distinct:
-
-```text
-Runtime manager/registry: what is true now
-Audit log: what happened before
-```
-
----
-
-## 13. Logging and audit
-
-Leonardo uses one coherent logging architecture.
-
-Operational logging supports:
-
-```text
-debugging
-diagnostics
-provider communication
-calculation failures
-performance information
-startup and shutdown
-development inspection
-```
-
-Audit events support meaningful application history, including:
-
-```text
-application startup and shutdown
-user actions
-task submission and settlement
-process launch and termination
-connection and websocket state changes
-destructive operations
-persistence operations
-trading and risk decisions
-```
-
-Not every widget interaction requires an audit event.
-
-Logging and audit depth must be proportional to operational or financial risk.
-
-Do not create a unique public event type for every minor action when one structured audit event with contextual details is sufficient.
-
-No fake cancellation, fake completion, fake success, or swallowed failure state is allowed.
-
----
-
-## 14. AI assistant integration
-
-The future OpenAI-powered assistant must use a small capability gateway.
-
-Typical capabilities include:
-
-```text
-window.open
-window.focus
-runtime.status
-task.cancel
-appearance.adjust
-download.prepare
-download.execute
-dataset.validate
-database.build
-backtest.run
-```
-
-The GUI and assistant must call the same underlying application services.
-
-Do not create separate AI implementations of domain workflows.
-
-The assistant must not manipulate Qt widgets to perform business operations. GUI context may resolve phrases such as `this window` or `that widget`, but the actual operation uses registered capabilities or appearance services.
-
-High-risk capabilities must enforce confirmation and permissions in Leonardo, not in model prose.
-
----
-
-## 15. Core working protocol
+## 8. Execution protocol: Audit → Literal Update → Validation
 
 Every implementation task follows:
 
 ```text
 Audit
-Literal Update
-Validation
+→ Literal Update
+→ Validation
+→ Audit package/report
+→ Stop
 ```
 
-The Update phase implements only the transformations explicitly stated in the accepted task. Audit findings do not create permission to fix additional issues.
-
-Do not skip Audit.
-
-Do not skip Validation.
-
-Do not mix unrelated work into one task.
-
-If nested `AGENTS.md` files exist, apply the most specific file to each edited path.
-
-If an instruction conflicts with the accepted task, stop and report the conflict.
-
----
-
-### 15.1 Audit
-
+### Audit
 Before editing:
 
-- inspect the relevant code and tests;
-- identify the actual workflow and behaviour;
-- identify the smallest safe change;
-- identify affected canonical authorities;
-- identify affected domain specifications or persisted schemas;
-- identify async, runtime, GUI, persistence, and external boundaries;
-- compare old Leonardo behaviour when relevant;
-- identify risks;
-- separate confirmed findings from assumptions;
-- avoid speculative refactoring.
+- verify baseline and index state;
+- verify pre-edit hashes when provided;
+- inspect relevant code/tests;
+- identify the actual workflow and authorities;
+- confirm allowed/forbidden boundaries;
+- record additional findings without fixing them.
 
-Audit output must include:
+Audit findings do not create permission to change additional files.
 
-```text
-Problem summary
-Relevant files
-Current behaviour
-Affected canonical authorities
-Affected domain models/schemas/contracts, where applicable
-Proposed change
-Risk level
-Validation plan
-Additional findings
-```
+### Literal Update
+During implementation:
 
-No files are changed during Audit unless the user explicitly authorises immediate editing as part of a bounded task.
-
----
-
-### 15.2 Update
-
-During Update:
-
-- implement the accepted instructions literally;
-- implement only the accepted scope;
-- preserve behaviour outside the task;
-- use the smallest justified architecture;
-- preserve canonical domain meaning;
-- preserve persisted compatibility unless explicitly changing it;
-- do not create speculative layers;
-- do not add parallel implementations;
-- do not rename unrelated concepts;
+- implement only the accepted transformations;
+- preserve behavior outside scope;
+- preserve durable semantics and compatibility unless explicitly changed;
 - do not add dependencies without approval;
 - do not perform unrelated formatting;
-- do not apply unsolicited improvements, even when they appear harmless;
-- do not alter tests or acceptance criteria unless the task explicitly identifies them as the target;
-- keep the patch readable and reversible.
+- do not alter protected tests unless explicitly authorized.
 
-Update output must include:
+### Validation
+After implementation:
 
-```text
-Files changed
-What changed
-Why it changed
-Behaviour intentionally preserved
-Out-of-scope findings left unchanged
-```
+- run the exact focused gates from the task;
+- run relevant vertical tests;
+- run broader regression gates required by the task;
+- run `compileall` where required;
+- run `git diff --check`;
+- verify the index remains empty unless the task explicitly authorizes staging;
+- inspect the complete task diff against the accepted baseline/package.
 
----
+A zero-test run is not a pass.
 
-### 15.3 Validation
-
-After every update:
-
-- run focused tests;
-- run the relevant vertical workflow test when available;
-- validate imports and package boundaries;
-- validate async progress, cancellation, failure, and shutdown where relevant;
-- validate persistence and compatibility where relevant;
-- validate Runtime Manager tracking where relevant;
-- validate GUI smoke behaviour and screenshots where relevant;
-- review the entire diff against the original state;
-- confirm no unrelated changes or formatting churn;
-- report every failure honestly.
-
-Validation output must include:
-
-```text
-Commands run
-Results
-Vertical workflow result, where applicable
-Original-code comparison
-Failures
-Remaining risks
-```
-
-Do not weaken tests, suppress failures, or claim completion without evidence.
+Do not weaken tests, suppress failures, or claim success without evidence.
 
 ---
 
-## 16. Phase-scoped aggregation
+## 9. Baseline modes
 
-A task may aggregate related subpatches only when:
+Leonardo supports two legitimate task baselines.
 
-- they contribute to one accepted outcome;
-- they share one bounded failure radius;
-- all allowed files and non-goals are explicit;
-- objective validation covers the combined result.
+### Clean commit baseline
+The task begins from a clean accepted commit. Git diff may serve as the primary byte boundary.
 
-Keep high-risk work isolated unless the accepted workplan explicitly combines it:
+### Accepted cumulative dirty baseline
+The working tree intentionally contains accepted prior work while `HEAD` remains unchanged.
 
-```text
-persistence writes
-dataframe loading
-provider execution
-projection generation
-backtesting
-PnL validation
-signal generation
-trading/order behaviour
-Core runtime changes
-broad GUI-service wiring
-```
+In this mode:
 
-Aggregation must never become an excuse to hide unrelated cleanup.
+- an empty working tree is **not** required;
+- the Git index must remain empty unless explicitly authorized;
+- task PRE hashes/package bytes define the task boundary;
+- do not infer task scope solely from `git diff HEAD`;
+- do not reset, clean, restore, or stash accepted cumulative work.
+
+The current task card states which baseline applies.
 
 ---
 
-## 17. Surgical change rule
+## 10. One writer per working tree
 
-Every patch must be:
+Only one agent may modify one working tree at a time.
 
-```text
-minimal
-task-bound
-reviewable
-free from unrelated formatting
-free from opportunistic refactoring
-free from speculative architecture
-```
+Other agents may audit read-only. Parallel modification requires a separate declared worktree/repository copy and an explicit merge plan.
 
-When the task is an explicit architecture reset, deletion, migration, or broad simplification, the patch may be large. It must still be bounded by a named workplan, explicit file scope, dependency order, and objective validation.
-
-Do not preserve obsolete architecture merely because the surgical-change rule exists. Conversely, do not broaden a local fix into a cleanup campaign.
-
-The final report must include an `Original-Code Comparison` section.
+Never allow two implementation agents to edit the same checkout concurrently.
 
 ---
 
-## 18. Scope control
+## 11. Git safety
 
-Before editing, identify:
-
-```text
-Exact required transformations
-Included workflows
-Excluded workflows
-Allowed files
-Conditionally allowed files
-Forbidden files
-Accepted architecture decisions
-Canonical authorities affected
-Persisted schemas affected
-GUI shells affected
-Validation commands
-Stop conditions
-```
-
-An issue outside the accepted scope belongs in `Additional Findings`.
-
-Do not repair unrelated problems without explicit approval.
-
-Any ambiguity that leaves more than one materially different implementation choice is a stop condition. Codex does not improvise, even when the possible change is small or apparently beneficial.
-
----
-
-## 19. Old Leonardo and donor-code reuse
-
-Old Leonardo is the behavioural authority when the user wants the old workflow preserved.
-
-Before reuse, inspect:
-
-```text
-behaviour and edge cases
-imports and dependencies
-hidden GUI/domain coupling
-persistence assumptions
-threading assumptions
-calculations and naming
-tests
-defects to reject
-```
-
-Classify donor material as:
-
-```text
-reuse directly
-adapt
-port behaviour only
-reject
-```
-
-Do not redesign working old behaviour merely because a new abstraction is possible.
-
-Do not copy entire old packages into active source as a shortcut.
-
-Do not require old behaviour to pass through retired Heavy V2 machinery.
-
----
-
-## 20. Vertical-slice development
-
-Each task or implementation branch should normally advance one primary vertical workflow. Parallel work is allowed only when branches have explicit boundaries, independent authorities, and a defined merge plan.
-
-The default implementation path is:
-
-```text
-user workflow
-GUI shell
-application service
-domain implementation
-provider or store
-Core async integration
-result/report
-vertical validation
-```
-
-A feature is complete only when the real user workflow works from start to finish.
-
-For historical download, for example:
-
-```text
-select
-preflight
-confirm
-execute
-progress
-cancel
-persist
-validate
-report
-```
-
-Architecture tests and unit tests support this path. They do not replace it.
-
----
-
-## 21. Testing priorities
-
-Tests should be prioritised in this order:
-
-1. Vertical workflow behaviour.
-2. Domain rules and calculations.
-3. Persisted-schema and migration behaviour.
-4. Async progress, cancellation, failure, and shutdown.
-5. Provider and external-adapter behaviour.
-6. Runtime tracking and audit.
-7. GUI smoke and visual behaviour.
-8. Dependency and layering checks.
-9. Specification or metadata consistency only where the specification or metadata is genuinely authoritative.
-
-Do not create tests whose only purpose is proving that one handwritten descriptor agrees with another handwritten descriptor.
-
-Do not delete failing tests unless the accepted task retires the behaviour or architecture they test.
-
-Do not skip tests merely to obtain a green result.
-
-When tests cannot run, state what is missing and what manual validation remains.
-
----
-
-## 22. Python and code-quality rules
-
-Code must be:
-
-```text
-clear
-deterministic
-typed where useful
-testable
-maintainable
-explicit about failure
-consistent with nearby accepted code
-minimal without being cryptic
-```
-
-Use:
-
-- explicit imports;
-- type hints for public functions and important internal boundaries;
-- private dataclasses for structured internal state;
-- `pathlib.Path` for filesystem paths;
-- existing logging and error mechanisms;
-- early returns where they improve clarity;
-- direct method calls inside an area when no hard boundary exists.
-
-Avoid:
-
-- hidden global state;
-- circular imports;
-- broad dumping-ground helper modules;
-- silent fallbacks;
-- mutable default arguments;
-- broad exception swallowing;
-- hardcoded filesystem paths unless part of accepted policy;
-- unnecessary copying in hot paths;
-- abstractions without a current consumer;
-- public APIs for disposable internal models.
-
-Hardcoded domain constants and parameters are acceptable when they are intentional, documented, tested, and not user-configurable requirements.
-
-Hardcoding must not duplicate canonical naming, identity, validation, persistence, or financial rules across several modules.
-
----
-
-## 23. Error handling
-
-- Fail clearly.
-- Include actionable context.
-- Validate at boundaries.
-- Allow defensive checks at several layers when their purposes differ.
-- Keep one authoritative decision for each canonical fact.
-- Do not continue after critical startup failure unless degraded mode is explicit.
-- Do not catch `Exception` except at a boundary responsible for final error routing.
-- Do not log an error and silently continue unless continuing is safe and intentional.
-- Do not remove defensive checks merely to reduce apparent duplication.
-
-GUI usability validation does not replace service validation.
-
-Provider capability validation does not replace OHLCV quality validation.
-
-Store safety validation does not replace domain validation.
-
----
-
-## 24. Documentation and docstrings
-
-Documentation must describe actual behaviour.
-
-Use professional, technical, objective language in repository documentation and code comments.
-
-Document:
-
-```text
-intent
-invariants
-canonical authority
-side effects
-failure modes
-threading assumptions
-persistence assumptions
-compatibility requirements
-non-obvious design decisions
-```
-
-Do not document obvious syntax.
-
-Do not claim behaviour that code does not enforce.
-
-Do not maintain detailed GUI object inventories as handwritten documentation.
-
-Roadmaps should be concise workflow documents, not replicas of source code.
-
-Update documentation when:
-
-- public behaviour changes;
-- a durable domain specification changes;
-- a persisted schema changes;
-- application lifecycle changes;
-- an accepted architecture rule changes.
-
----
-
-## 25. Dependency and environment rules
-
-- Do not add or upgrade third-party dependencies without explicit approval.
-- Prefer existing dependencies or the standard library when reasonable.
-- Do not modify the user's Python environment unless requested.
-- Do not install packages globally.
-- Do not edit lock files unless dependency changes are part of the task.
-- Do not use an optional dependency to avoid solving the accepted architecture correctly.
-
-When proposing a dependency, report:
-
-```text
-name
-purpose
-existing alternative
-installation impact
-files requiring changes
-```
-
----
-
-## 26. File-handling rules
-
-Do not:
-
-- edit archives in place;
-- edit binary files;
-- touch virtual environments;
-- modify user datasets unless explicitly requested;
-- write temporary files into source directories;
-- create backup/final/fixed duplicate source files;
-- commit generated caches or runtime output;
-- edit secrets or local environment files without scope.
-
-Common generated paths must remain ignored and must be excluded from handoff packages:
-
-```text
-__pycache__/
-*.pyc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
-build/
-*.egg-info/
-runs/
-tmp/
-_task_*/
-```
-
-Task reports that are intentionally durable belong in the accepted documentation path. Generated audit workspaces, extracted packages, replay directories, and `_task_*` evidence folders do not belong in active source control unless the task explicitly names one as a durable artifact.
-
-A deletion task may remove large obsolete architecture only when explicitly named, dependency-ordered, archived where required, and validated.
-
----
-
-## 27. Git safety
-
-### 27.1 One writer per working tree
-
-Only one agent may modify a working tree at a time.
-
-Other agents may perform read-only audit work. Parallel modification requires a separate declared worktree or repository copy with an explicit merge plan. Two agents must never edit the same checkout concurrently.
-
-### 27.2 Read-only commands
-
-Read-only Git commands are allowed when available:
+Read-only Git commands are allowed when useful:
 
 ```text
 git status
@@ -1173,11 +349,10 @@ git show
 git ls-files
 ```
 
-### 27.3 Write authority
-
-Do not run Git write or destructive commands unless the accepted task explicitly authorises the exact operation:
+Do not run Git write/destructive commands unless the current task explicitly authorizes that exact operation:
 
 ```text
+git add
 git commit
 git push
 git pull
@@ -1187,307 +362,204 @@ git checkout
 git restore
 git merge
 git rebase
-branch deletion
-tag deletion
+git stash
+branch/tag deletion
 remote modification
 ```
 
-The default local task finish is:
+Default implementation-agent finish is **not** commit.
+
+The normal finish is:
 
 ```text
-validated explicit files
-→ local commit
-→ clean working tree
-→ stop
+validated bounded implementation
+→ bounded audit package/report
+→ Rick audit
+→ user native/visual smoke where required
+→ later integration only when explicitly authorized
 ```
 
-Push, pull request, merge, branch creation, and branch deletion are not implied by task completion. They occur only when the user or accepted task explicitly requests them.
-
-Do not hide or overwrite the user's uncommitted changes.
-
-Record baseline Git state before implementation when Git evidence is available.
+Never hide or overwrite user changes.
 
 ---
 
-## 27.4 Patch and automation script reliability
+## 12. Audit-package authority
 
-Any patch, resume, finish, or validation script must be safe to rerun or must detect the exact partial state and provide an explicit resume path.
-
-Scripts must:
+All files intended for Leonardo audit must be created under:
 
 ```text
-verify the expected baseline
-verify the changed-file boundary
-refuse unrelated dirty state
-preserve each process argument as a separate argument
-never concatenate several file paths into one quoted path
-report the exact failing command and exit code
-avoid repeating expensive or destructive steps after they have already passed
-commit only after all required validation succeeds
+C:\Users\gmina\Documents\Python Project\Github_rep\Leo_V2_Task_Packages
 ```
 
-For PowerShell, arrays of paths must remain arrays when passed to native commands. Joining several paths into one string is forbidden.
-
----
-
-## 28. Security and secrets
-
-- Do not print or duplicate secrets.
-- Do not commit API keys, tokens, passwords, cookies, credentials, or private URLs.
-- Do not inspect secret files unless the task requires it.
-- Do not weaken credential validation.
-- Do not add network calls outside the accepted feature.
-- Do not send project data to external services.
-
-Trading, credential, and OpenAI integration require explicit security and confirmation policies before implementation.
-
----
-
-## 29. Performance
-
-Performance work must be evidence-driven.
-
-When performance is in scope:
-
-- identify the hot path;
-- identify the current cost;
-- remove repeated work before adding complexity;
-- preserve behaviour;
-- validate correctness before and after;
-- report readability and memory trade-offs.
-
-For chart and GUI hot paths:
-
-- avoid unnecessary copying;
-- avoid repeated full scans during interaction;
-- avoid listener fan-out without measurement;
-- avoid layout recalculation when only paint data changes;
-- preserve deterministic rendering.
-
-Do not optimise speculative future workloads.
-
----
-
-## 30. Layering rules
-
-General layering:
+This includes:
 
 ```text
-GUI shell
-    calls a presenter or controller
-
-Presenter / controller
-    translates user intent and presentation state
-
-Application services
-    coordinate workflows and execution policy
-
-Domain services
-    own financial and business meaning
-
-Core
-    supervises long-running execution and runtime state
-
-Stores/adapters
-    persist objects or communicate externally
+PRE / POST / PATCH / R1 ZIPs
+inventory files
+SHA-256 sidecars
+validation reports
+render/screenshots
+evidence folders
+scope reports
+comparison evidence
 ```
 
-Lower-level infrastructure must not depend on GUI implementation.
+Do not place audit evidence inside the active `Leo_V2` repository.
 
-GUI must not contain persistence, provider, financial, analysis, backtest, or trading logic.
+If Codex sandboxing blocks writes to `Leo_V2_Task_Packages`, request the narrow filesystem permission required for that exact directory. Do not work around the restriction by writing audit evidence into source control.
 
-A presenter may coordinate presentation across several Areas. An application service may coordinate a cross-Area workflow. Neither becomes the owner of the participating Areas' domain rules.
-
-Inside one cohesive area, direct imports and ordinary typed calls are preferred over unnecessary ports and adapters.
+Generated audit material is never application source.
 
 ---
 
-## 31. Domain-specific rules
+## 13. Runtime and user-data protection
 
-### 31.1 OHLCV
+Do not modify or delete user/runtime data unless the task explicitly requires that exact mutation.
 
-- Downloaded data is not automatically validated data.
-- Dataset identity must be canonical.
-- Storage owns physical persistence and atomic commit mechanics.
-- The OHLCV validator owns quality truth.
-- Sidecars are durable schemas and must be validated.
-- Repair must preserve provenance.
-
-### 31.2 Financial Tools
-
-- Financial Tool definitions and naming are canonical domain specifications/policies.
-- `ft_specs` and `ft_naming` or their accepted successors must remain authoritative.
-- Indicators, oscillators, and constructs remain modular and deterministic.
-- GUI and Data Manager must not duplicate calculation semantics.
-- Output naming and parameter meaning must not change casually.
-- Do not maintain duplicate `Contract` and `Spec` representations unless each has a proven distinct consumer and generated relationship.
-
-### 31.3 Research Suite
-
-- Preserve approved old Research Suite behaviour unless the task explicitly changes it.
-- The GUI owns chart interaction and presentation.
-- Domain services own data, calculations, saved objects, and backtest mathematics.
-- Long calculations must not block the GUI thread.
-
-### 31.4 Data Manager
-
-- Data Manager coordinates preparation, refinement, recipes, artifacts, and Analysis Database creation.
-- Internal build stages use private models.
-- Saved recipes, artifacts, collections, and database manifests use canonical durable schemas.
-- Source lineage and identity must remain explicit.
-
-### 31.5 Analysis and custom indicators
-
-- Analysis owns interpretation and rule discovery.
-- Analysis-derived custom indicators must be deterministic, versioned, explainable definitions.
-- Historical, backtest, paper, and live execution must use the same accepted calculation semantics.
-
-### 31.6 Backtesting and trading
-
-- Backtest mathematics belongs outside GUI widgets.
-- Fees, slippage, timing, position sizing, and leakage controls must be explicit.
-- Paper trading precedes live eligibility.
-- Risk approval and order execution require strict validated boundaries.
-- Live trading actions require explicit user authorisation and audit.
-
----
-
-## 32. Sandbox escalation
-
-Request execution outside a restricted sandbox only when:
-
-- sandbox execution failed;
-- the command is necessary for validation;
-- the exact command is narrow and read-only or test-only;
-- file, network, and Git effects are disclosed.
-
-Report:
+Typical protected runtime/persistence families include:
 
 ```text
-exact command
-why it is required
-whether it modifies files
-whether it uses the network
-whether it affects Git state
+historical_data/
+data_manager/
+research_notebooks/
+study_environments/
+workspace_snapshots/
 ```
 
-Do not request broad or session-wide escalation when one command is sufficient.
+Tests must use temporary/injected roots where appropriate.
+
+Do not package runtime persistence merely because it is present in the cumulative dirty tree.
 
 ---
 
-## 33. Final report format
+## 14. Dependencies and environment
 
-Every implementation report must contain:
-
-## Audit
-
-- files and workflows inspected;
-- confirmed findings;
-- affected authorities/models/schemas;
-- risk level.
-
-## Update
-
-- files changed;
-- exact changes;
-- reason;
-- preserved behaviour;
-- out-of-scope findings.
-
-## Validation
-
-- commands run;
-- results;
-- vertical workflow result where applicable;
-- runtime/persistence/GUI result where applicable;
-- failures;
-- remaining risks.
-
-## Original-Code Comparison
-
-- files compared;
-- whether the diff matches scope;
-- unrelated changes found;
-- compatibility intentionally preserved or changed.
-
-If no files changed, state:
+Supported Leonardo environment currently uses:
 
 ```text
-No files were changed.
+Python 3.12.12
+PySide6 6.10.2
 ```
 
-If validation is incomplete, state:
+Repository source must win over installed packages:
 
-```text
-Validation incomplete.
+```powershell
+$env:PYTHONPATH = "$PWD\src;$PWD"
 ```
 
-Then identify exactly what remains unverified.
+Do not add or upgrade third-party dependencies without explicit approval.
+
+Do not modify the user's Python environment unless requested.
+
+Do not install globally.
 
 ---
 
-## 34. Stop conditions
+## 15. Security and secrets
+
+Do not print, copy, package, or commit secrets.
+
+Do not inspect credential files unless the task explicitly requires it.
+
+Do not add network calls outside scope.
+
+Do not send project data to external services.
+
+Trading, credential, and OpenAI runtime integration require their own explicit security and confirmation policies.
+
+---
+
+## 16. Error handling
+
+- Fail clearly.
+- Include actionable context.
+- Validate at boundaries.
+- Preserve one authoritative decision for each canonical fact.
+- Do not silently continue after critical failure.
+- Do not swallow broad exceptions except at a final routing boundary.
+- Do not hide broken state with fallback behavior not authorized by the task.
+
+A refusal backed by correct evidence is a valid implementation result.
+
+---
+
+## 17. Stop conditions
 
 Stop and report when:
 
 ```text
-the repository baseline is wrong or unexpectedly dirty
+the baseline is wrong
+an expected PRE hash differs
+the index is unexpectedly non-empty
+an authorized new path already exists unexpectedly
+an allowed-file boundary is insufficient
 the task conflicts with accepted architecture
-critical authority is unclear
+a canonical authority is unclear
 a durable data meaning is unresolved
-an allowed file boundary is insufficient
-the task requires hidden scope expansion
-old behaviour conflicts with the accepted outcome
-a required dependency or runtime is unavailable
-visual validation cannot be performed when required
-tests prove the accepted design cannot work as written
+a hidden persistence change is required
+a forbidden file/package must change
+a required dependency/runtime is unavailable
+a protected test proves the frozen design cannot work
+visual validation required by the task cannot be produced
+a materially different implementation choice remains
+an unsolicited improvement appears desirable but is not authorized
 ```
 
-Do not improvise around stop conditions by adding fallbacks, compatibility facades, duplicate services, or temporary production behaviour.
+Do not improvise around stop conditions.
 
 ---
 
-## 35. Forbidden behaviour
+## 18. Final report
 
-Codex must not:
+Every implementation report must include:
 
-- improve, refactor, rename, restyle, reorganise, modernise, optimise, or fix adjacent code without an exact instruction;
-- redesign the product without explicit instruction;
-- recreate retired Heavy V2 doctrine;
-- introduce public contracts for disposable internal models;
-- add a Contract Registry, Object Map, or GUI metadata replica without an approved current requirement;
-- place domain logic in GUI widgets;
-- create Area-specific replacements for Core runtime systems;
-- create parallel persistence, validation, calculation, or execution paths;
-- hide broken state with silent fallbacks;
-- weaken tests or validation;
-- present shell/demo behaviour as real implementation;
-- run unauthorised Git write commands;
-- install dependencies without approval;
-- modify secrets or datasets outside scope;
-- claim success without validation.
+### Baseline
+Branch, HEAD, origin, environment, index, applicable hash gates.
+
+### Files
+Files inspected, changed, added, deleted.
+
+### Implementation
+Exact instructed behavior implemented and behavior intentionally preserved.
+
+### Authority/persistence
+Affected canonical authorities, persisted schemas, runtime boundaries, and explicit statement of any mutation behavior.
+
+### Validation
+Commands, exact counts, failures, warnings, renders/manual evidence where required.
+
+### Original-code/package comparison
+Exact task delta, unrelated changes found, compatibility intentionally preserved or changed.
+
+### Audit output
+Exact `Leo_V2_Task_Packages` evidence/package paths.
+
+### Status
+Exactly one of the task-defined final statuses, normally:
+
+```text
+READY FOR RICK PACKAGE AUDIT
+BLOCKED
+```
+
+Do not claim final product acceptance. Rick audits independently and the user performs native/visual acceptance where required.
 
 ---
 
-## 36. What done means
+## 19. What done means
 
-A task is done only when:
+Codex implementation is done only when:
 
-- the accepted instructions were followed literally;
-- no unsolicited change was made;
-- the accepted scope is implemented;
-- the real requested behaviour works;
-- the diff is bounded and reviewable;
-- canonical domain meaning remains coherent;
-- persisted compatibility is validated where applicable;
-- critical state has no competing mutation path;
-- relevant async, runtime, GUI, provider, or persistence behaviour is validated;
-- required tests pass or limitations are explicit;
-- visual acceptance is complete where required;
-- no retired architecture was recreated;
-- remaining risks are documented;
-- the POST/PATCH package can be independently audited.
+- instructions were followed literally;
+- no unsolicited changes were made;
+- the exact accepted scope is implemented;
+- relevant tests and validation pass or a blocker is reported;
+- the index remains in the required state;
+- the task delta is bounded and reviewable;
+- audit evidence is written only to `Leo_V2_Task_Packages`;
+- no unauthorized Git integration occurred;
+- the task is ready for independent Rick audit.
 
-The governing engineering principle is:
+The permanent engineering rule is:
 
-> Build the complete Leonardo product using the simplest architecture that preserves correctness, asynchronous safety, runtime visibility, durable data, canonical authority over critical truth, and future AI control.
+> Build Leonardo using the simplest architecture that preserves correctness, asynchronous safety, runtime visibility, durable evidence, canonical authority over critical truth, and explicit user control over persistent mutation.

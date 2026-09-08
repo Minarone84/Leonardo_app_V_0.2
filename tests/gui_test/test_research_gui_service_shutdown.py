@@ -8,6 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from leonardo.core.window_registry import WindowRegistry
@@ -22,6 +23,17 @@ from tests.gui_test.test_research_gui_service_catalog import (
     _settle_qt,
 )
 from tests.gui_test.test_research_gui_service_chart_lifecycle import _open_pending
+
+
+class _CloseEventCounter(QObject):
+    def __init__(self) -> None:
+        super().__init__()
+        self.count = 0
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.Close:
+            self.count += 1
+        return super().eventFilter(watched, event)
 
 
 def _tracked_presenter():
@@ -71,7 +83,7 @@ def test_dispose_with_catalog_active_cancels_once_and_is_idempotent() -> None:
 
 
 def test_dispose_cancels_full_load_resident_refill_and_clears_every_runtime() -> None:
-    _qapp = QApplication.instance() or QApplication([])
+    qapp = QApplication.instance() or QApplication([])
     window, presenter, service, summary, registry = _tracked_presenter()
     try:
         _complete_catalog(service, DatasetCatalogReport((summary,), ()))
@@ -90,6 +102,9 @@ def test_dispose_cancels_full_load_resident_refill_and_clears_every_runtime() ->
         ready_panel.go_to_button.click()
         ready_panel.detach_button.click()
         _settle_qt()
+        go_to = presenter._go_to_dialogs[ready_slot]
+        close_counter = _CloseEventCounter()
+        go_to.installEventFilter(close_counter)
 
         sessions = tuple(
             presenter._workspace_state.session_for(slot_id)
@@ -99,8 +114,11 @@ def test_dispose_cancels_full_load_resident_refill_and_clears_every_runtime() ->
         assert window.workspace.detached_slot_ids() == (ready_slot,)
 
         assert presenter.dispose() is True
+        qapp.processEvents()
         assert service.cancel_counts[load_id] == 1
         assert service.cancel_counts[resident_id] == 1
+        assert close_counter.count == 1
+        assert not go_to.isVisible()
         assert all(session.is_disposed for session in sessions)
         assert presenter._chart_presenters == {}
         assert presenter._go_to_dialogs == {}
@@ -109,6 +127,10 @@ def test_dispose_cancels_full_load_resident_refill_and_clears_every_runtime() ->
         assert registry.open_windows() == ()
         assert not window.action_for_text("Pan Anchor").isEnabled()
         assert not window.action_for_text("Pan Anchor").isChecked()
+        service.complete(load_id)
+        qapp.processEvents()
+        assert presenter._chart_presenters == {}
+        assert window.workspace.slot_ids() == ()
         assert presenter.dispose() is False
     finally:
         presenter.dispose()

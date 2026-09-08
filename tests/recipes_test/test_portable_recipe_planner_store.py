@@ -14,12 +14,14 @@ from leonardo.recipes import (
     PortableRecipeGraphError,
     PortableRecipeGraphPlanner,
     PortableRecipeIdentityCollisionError,
+    PortableRecipeCollectionRevisionV1,
     PortableRecipeProvenanceV1,
     PortableRecipeStore,
     PortableRecipeStoreError,
     PortableRecipeV1,
     build_portable_recipe,
 )
+from leonardo.recipes.models import canonical_json_bytes
 
 
 def _recipes():
@@ -56,6 +58,41 @@ def _make_link(link: Path, target: Path, *, directory: bool) -> None:
             if completed.returncode == 0:
                 return
         pytest.skip(f"operating system denied symbolic-link creation: {exc}")
+
+
+def _publish_legacy_collection(
+    store: PortableRecipeStore,
+    *,
+    collection_id: str,
+    display_name: str,
+    root_recipe_ids: tuple[str, ...],
+    member_recipe_ids: tuple[str, ...],
+    created_at_utc: datetime,
+) -> PortableRecipeCollectionRevisionV1:
+    revision = PortableRecipeCollectionRevisionV1.build(
+        collection_id=collection_id,
+        display_name=display_name,
+        description="",
+        root_recipe_ids=root_recipe_ids,
+        member_recipe_ids=member_recipe_ids,
+        previous_revision_id=None,
+        created_at_utc=created_at_utc,
+    )
+    store._publish_revision(revision, updated_at_utc=created_at_utc)
+    return revision
+
+
+def _publish_legacy_recipe(
+    store: PortableRecipeStore,
+    recipe: PortableRecipeV1,
+    legacy_recipe_id: str,
+) -> Path:
+    payload = recipe.to_dict()
+    payload["recipe_id"] = legacy_recipe_id
+    path = store.root_dir / "recipes" / f"{legacy_recipe_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json_bytes(payload))
+    return path
 
 
 def test_graph_planner_resolves_transitive_deterministic_closure() -> None:
@@ -109,7 +146,10 @@ def test_store_is_lazy_canonical_and_reuses_identical_objects(tmp_path: Path) ->
     assert store.list_recipe_summaries() == ()
     assert not root.exists()
     assert store.save_recipe(recipe) == recipe
-    assert set(item.name for item in root.iterdir()) == {"recipes"}
+    assert set(item.name for item in root.iterdir()) == {
+        "recipe_provenance",
+        "recipes",
+    }
     path = root / "recipes" / f"{recipe.recipe_id}.json"
     before = path.read_bytes()
     store.save_recipe(recipe)
@@ -122,12 +162,40 @@ def test_store_is_lazy_canonical_and_reuses_identical_objects(tmp_path: Path) ->
         store.save_recipe(recipe)
 
 
+def test_store_inspects_and_deletes_legacy_semantic_duplicate_without_weakening_load(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    recipe = _recipes()[0]
+    legacy_recipe_id = "f" * 64
+    store.save_recipe(recipe)
+    legacy_path = _publish_legacy_recipe(store, recipe, legacy_recipe_id)
+
+    with pytest.raises(PortableRecipeStoreError, match="persisted schema"):
+        store.load_recipe(legacy_recipe_id)
+
+    legacy = store.inspect_recipe_semantics(legacy_recipe_id)
+    canonical = store.inspect_recipe_semantics(recipe.recipe_id)
+    assert legacy.persisted_recipe_id == legacy_recipe_id
+    assert legacy.canonical_current_recipe_id == recipe.recipe_id
+    assert legacy.semantic_key == canonical.semantic_key
+    assert legacy.canonical_recipe == recipe
+
+    deleted = store.delete_recipe(
+        legacy_recipe_id,
+        canonical_winner_id=recipe.recipe_id,
+    )
+
+    assert deleted == recipe
+    assert not legacy_path.exists()
+    assert store.load_recipe(recipe.recipe_id) == recipe
+
+
 def test_store_provenance_and_collection_revisions_are_durable(tmp_path: Path) -> None:
     now = datetime(2026, 8, 1, tzinfo=UTC)
-    ticks = iter((now, now, now + timedelta(minutes=1), now + timedelta(minutes=1)))
     store = PortableRecipeStore(
         tmp_path / "data_manager",
-        clock=lambda: next(ticks),
+        clock=lambda: now,
         collection_id_factory=lambda: "a" * 32,
     )
     fast, slow, delta = _recipes()
@@ -212,6 +280,340 @@ def test_collection_update_expected_head_is_atomic_and_rejects_stale_edits(
             / f"{revision_id}.json"
         )
         assert path.read_bytes() == expected
+
+
+def test_collection_create_reuses_exact_semantics_without_allocation_or_publication(
+    tmp_path: Path,
+) -> None:
+    allocations: list[str] = []
+
+    def allocate() -> str:
+        value = "a" * 32
+        allocations.append(value)
+        return value
+
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=allocate
+    )
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    first = store.create_collection(
+        "Collection A", "old", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+
+    reused = store.create_collection(
+        "Something Else", "new text", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+
+    assert reused == first
+    assert reused.display_name == "Collection A"
+    assert reused.description == "old"
+    assert allocations == ["a" * 32]
+    assert store.list_collection_revisions(first.collection_id) == (first,)
+    assert len(store.list_collection_summaries()) == 1
+
+
+def test_collection_semantic_reuse_ignores_root_and_member_order(
+    tmp_path: Path,
+) -> None:
+    allocations = iter(("a" * 32, "b" * 32))
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=lambda: next(allocations)
+    )
+    fast, slow, _delta = _recipes()
+    for recipe in (fast, slow):
+        store.save_recipe(recipe)
+    plan = PortableRecipeGraphPlanner(store).plan((fast.recipe_id, slow.recipe_id))
+    first = store.create_collection(
+        "Ordered", "", plan.root_recipe_ids, plan.member_recipe_ids
+    )
+
+    assert store.find_equivalent_collection(
+        tuple(reversed(plan.root_recipe_ids)),
+        tuple(reversed(plan.member_recipe_ids)),
+    ) == first
+
+    reused = store.create_collection(
+        "Reordered",
+        "",
+        tuple(reversed(plan.root_recipe_ids)),
+        tuple(reversed(plan.member_recipe_ids)),
+    )
+
+    assert reused == first
+    assert len(store.list_collection_summaries()) == 1
+
+
+def test_collection_semantic_difference_creates_a_new_collection(
+    tmp_path: Path,
+) -> None:
+    allocations = iter(("a" * 32, "b" * 32))
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=lambda: next(allocations)
+    )
+    fast, slow, _delta = _recipes()
+    for recipe in (fast, slow):
+        store.save_recipe(recipe)
+
+    first = store.create_collection(
+        "Fast", "", (fast.recipe_id,), (fast.recipe_id,)
+    )
+    second = store.create_collection(
+        "Slow", "", (slow.recipe_id,), (slow.recipe_id,)
+    )
+
+    assert second.collection_id != first.collection_id
+    assert len(store.list_collection_summaries()) == 2
+
+
+def test_collection_metadata_edit_revises_the_semantic_winner(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    store = PortableRecipeStore(
+        tmp_path / "data_manager",
+        clock=lambda: now,
+        collection_id_factory=lambda: "a" * 32,
+    )
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    first = store.create_collection(
+        "Original", "old", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+
+    revised = store.update_collection(
+        first.collection_id,
+        "Renamed",
+        "new",
+        (recipe.recipe_id,),
+        (recipe.recipe_id,),
+    )
+
+    assert revised.collection_id == first.collection_id
+    assert revised.revision_id != first.revision_id
+    assert revised.previous_revision_id == first.revision_id
+    assert revised.display_name == "Renamed"
+    assert revised.description == "new"
+    assert store.list_collection_revisions(first.collection_id) == (first, revised)
+
+
+def test_recipe_first_persisted_timestamp_is_created_once_and_reuse_is_stable(
+    tmp_path: Path,
+) -> None:
+    current = [datetime(2026, 9, 4, 10, 0, tzinfo=UTC)]
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", clock=lambda: current[0]
+    )
+    recipe = _recipes()[0]
+
+    store.save_recipe(recipe)
+    first = store.load_persistence_metadata(recipe.recipe_id)
+    assert first is not None
+    assert first.first_persisted_at_utc == current[0]
+    assert first.origins == ()
+
+    current[0] = datetime(2026, 9, 4, 11, 0, tzinfo=UTC)
+    store.save_recipe(recipe)
+    assert store.load_persistence_metadata(recipe.recipe_id) == first
+
+
+def test_recipe_origin_merge_preserves_age_and_deduplicates_repeated_origin(
+    tmp_path: Path,
+) -> None:
+    current = [datetime(2026, 9, 4, 10, 0, tzinfo=UTC)]
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", clock=lambda: current[0]
+    )
+    recipe = _recipes()[0]
+
+    store.persist_recipe(
+        recipe,
+        origin_kind="research_save",
+        origin_details={"study_id": "study_one"},
+    )
+    current[0] = datetime(2026, 9, 4, 11, 0, tzinfo=UTC)
+    store.persist_recipe(
+        recipe,
+        origin_kind="research_save",
+        origin_details={"study_id": "study_one"},
+    )
+
+    metadata = store.load_persistence_metadata(recipe.recipe_id)
+    assert metadata is not None
+    assert metadata.first_persisted_at_utc == datetime(
+        2026, 9, 4, 10, 0, tzinfo=UTC
+    )
+    assert tuple(item.origin_kind for item in metadata.origins) == (
+        "research_save",
+    )
+    assert metadata.origins[0].origin_recorded_at_utc == datetime(
+        2026, 9, 4, 10, 0, tzinfo=UTC
+    )
+
+
+def test_legacy_recipe_remains_age_unknown_without_automatic_rewrite(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    recipe = _recipes()[0]
+    legacy_recipe_id = "f" * 64
+    legacy_path = _publish_legacy_recipe(store, recipe, legacy_recipe_id)
+    before = legacy_path.read_bytes()
+
+    store.inspect_recipe_semantics(legacy_recipe_id)
+
+    assert legacy_path.read_bytes() == before
+    assert store.load_persistence_metadata(legacy_recipe_id) is None
+
+
+def test_new_recipe_is_rolled_back_when_metadata_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    recipe = _recipes()[0]
+    original = store._write_immutable
+
+    def fail_metadata(path: Path, content: bytes) -> None:
+        if path.name == "metadata.json":
+            raise OSError("metadata publication failed")
+        original(path, content)
+
+    monkeypatch.setattr(store, "_write_immutable", fail_metadata)
+
+    with pytest.raises(OSError, match="metadata publication failed"):
+        store.save_recipe(recipe)
+    assert not (store.root_dir / "recipes" / f"{recipe.recipe_id}.json").exists()
+    assert not (
+        store.root_dir / "recipe_provenance" / recipe.recipe_id / "metadata.json"
+    ).exists()
+
+
+def test_reused_recipe_survives_origin_publication_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    before = store.load_persistence_metadata(recipe.recipe_id)
+
+    def fail_origin(_path: Path, _content: bytes) -> None:
+        raise OSError("origin publication failed")
+
+    monkeypatch.setattr(store, "_write_mutable", fail_origin)
+
+    with pytest.raises(OSError, match="origin publication failed"):
+        store.record_recipe_origin(
+            recipe.recipe_id,
+            origin_kind="data_manager_artifact",
+            origin_details={},
+        )
+    assert store.load_recipe(recipe.recipe_id) == recipe
+    assert store.load_persistence_metadata(recipe.recipe_id) == before
+
+
+def test_collection_edit_redirects_to_older_equivalent_peer_without_publication(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    older = _publish_legacy_collection(
+        store,
+        collection_id="prc_" + "a" * 32,
+        display_name="Older",
+        root_recipe_ids=(recipe.recipe_id,),
+        member_recipe_ids=(recipe.recipe_id,),
+        created_at_utc=now,
+    )
+    younger = _publish_legacy_collection(
+        store,
+        collection_id="prc_" + "b" * 32,
+        display_name="Younger",
+        root_recipe_ids=(recipe.recipe_id,),
+        member_recipe_ids=(recipe.recipe_id,),
+        created_at_utc=now + timedelta(minutes=1),
+    )
+
+    result = store.update_collection(
+        younger.collection_id,
+        "Requested",
+        "requested",
+        younger.root_recipe_ids,
+        younger.member_recipe_ids,
+    )
+
+    assert result == older
+    assert store.load_collection(older.collection_id) == older
+    assert store.load_collection(younger.collection_id) == younger
+    assert store.list_collection_revisions(older.collection_id) == (older,)
+    assert store.list_collection_revisions(younger.collection_id) == (younger,)
+
+
+def test_collection_oldest_winner_uses_original_creation_then_collection_id(
+    tmp_path: Path,
+) -> None:
+    store = PortableRecipeStore(tmp_path / "data_manager")
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    later = _publish_legacy_collection(
+        store,
+        collection_id="prc_" + "0" * 32,
+        display_name="Later",
+        root_recipe_ids=(recipe.recipe_id,),
+        member_recipe_ids=(recipe.recipe_id,),
+        created_at_utc=now + timedelta(minutes=1),
+    )
+    tied_high = _publish_legacy_collection(
+        store,
+        collection_id="prc_" + "b" * 32,
+        display_name="Tied high",
+        root_recipe_ids=(recipe.recipe_id,),
+        member_recipe_ids=(recipe.recipe_id,),
+        created_at_utc=now,
+    )
+    tied_low = _publish_legacy_collection(
+        store,
+        collection_id="prc_" + "a" * 32,
+        display_name="Tied low",
+        root_recipe_ids=(recipe.recipe_id,),
+        member_recipe_ids=(recipe.recipe_id,),
+        created_at_utc=now,
+    )
+
+    result = store.create_collection(
+        "Requested", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+
+    assert result == tied_low
+    assert result != tied_high
+    assert result != later
+
+
+def test_collection_reuse_skips_invalid_current_candidates(tmp_path: Path) -> None:
+    store = PortableRecipeStore(
+        tmp_path / "data_manager", collection_id_factory=lambda: "b" * 32
+    )
+    recipe = _recipes()[0]
+    store.save_recipe(recipe)
+    invalid = _publish_legacy_collection(
+        store,
+        collection_id="prc_" + "a" * 32,
+        display_name="Invalid",
+        root_recipe_ids=(recipe.recipe_id,),
+        member_recipe_ids=(recipe.recipe_id,),
+        created_at_utc=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    (
+        store.root_dir / "recipe_collections" / invalid.collection_id / "head.json"
+    ).unlink()
+
+    created = store.create_collection(
+        "Valid", "", (recipe.recipe_id,), (recipe.recipe_id,)
+    )
+
+    assert created.collection_id == "prc_" + "b" * 32
 
 
 def test_recipe_deletion_removes_exact_recipe_and_provenance_after_preflight(

@@ -1,0 +1,16 @@
+{
+  "dependencies": [],
+  "kind": "indicator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "tema_14"
+  ],
+  "parameters": {
+    "period": 14
+  },
+  "recipe_id": "bf010bd25305eb19c369fc45e75031c8a66289003eb2e9649cce463ad399699c",
+  "schema_version": "1.0",
+  "tool_key": "tema",
+  "tool_version": "1.0"
+}

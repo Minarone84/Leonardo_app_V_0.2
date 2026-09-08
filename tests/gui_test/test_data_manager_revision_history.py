@@ -35,7 +35,9 @@ def test_exact_revision_history_remains_separate_from_current_inspection() -> No
         )
         assert workspace.inspector.rowCount() == 2
         assert workspace.history.rowCount() == 2
-        assert workspace.history.item(0, 0).text() == "2026-08-01 00:00:00 UTC"
+        assert workspace.history.item(0, 0).text() == (
+            "2026-08-01 02:00:00 CEST (+02:00)"
+        )
         assert workspace.history.item(0, 2).text() == "revision-1"
         assert workspace.history.item(1, 1).text() == "current"
     finally:

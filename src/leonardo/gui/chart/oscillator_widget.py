@@ -259,6 +259,13 @@ class OscillatorStudyWidget(QWidget):
         painter.setPen(QPen(QColor(self._palette.border)))
         painter.drawRect(plot)
         painter.setFont(QFont("Consolas", 8))
+        for level in scene.reference_levels:
+            pen = QPen(QColor(self._palette.grid))
+            pen.setWidthF(level.line_width)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(plot.left(), level.y), QPointF(plot.right(), level.y))
+            painter.setPen(QColor(self._palette.axis_text))
+            painter.drawText(QPointF(plot.right() + 6, level.y + 4), f"{level.value:g}")
         for guide in scene.guides:
             pen = QPen(QColor(guide.color))
             pen.setWidthF(guide.line_width)

@@ -1,0 +1,15 @@
+{
+  "artifact_id": "62a3ca2d0edafffed13aafa19b1351a87b2f2a09ccaaac97771c85bfbd43a5ca",
+  "created_at_utc": "2026-09-07T15:43:32.563248Z",
+  "logical_artifact_id": "aac6f4d5bc62a5de804999e12c391a0fb9120ebeb1ff986311fe998b9f35f3ec",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "object_type": "artifact_version_record",
+  "portable_recipe_id": "6d014328aeb1e0ab89c01a7e688a48a6a01ea0703fda72516edbd8ee99fcde64",
+  "previous_artifact_id": null,
+  "schema_version": "1.0"
+}

@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "1h"
+  },
+  "provenance_id": "3d708bf99bd5d51368fd04625ca1b5f9a59614f78ce37524b317bb4e277eaabe",
+  "recipe_id": "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "Bollinger Bands",
+  "study_entry_id": "entry_001",
+  "study_environment_content_hash": "d5c953f5a969fb1c1201889a75866610bce90b40663a41cb4904a11cbaa24e95",
+  "study_environment_display_name": "XRP_TEST_A",
+  "study_environment_id": "env_8f33ee9296ed4f0cb81248aca517f101",
+  "study_environment_updated_at_utc": "2026-09-07T11:46:23.635127+00:00"
+}

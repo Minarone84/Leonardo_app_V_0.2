@@ -1,0 +1,26 @@
+{
+  "bindings": {},
+  "created_at_utc": "2026-09-07T15:45:24.458627Z",
+  "description": "",
+  "display_name": "hck",
+  "kind": "indicator",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "output_names": [
+    "fast_vwap",
+    "slow_vwap",
+    "vwap_color"
+  ],
+  "parameters": {
+    "fast_vwap_l": 13,
+    "slow_vwap_l": 48
+  },
+  "recipe_id": "af9ac872c15b5aa4bfdd559a0afef3289c700c2d3b75a4a805eeab1a9341c1f7",
+  "schema_version": "1.0",
+  "source_artifacts": [],
+  "tool_key": "hck"
+}

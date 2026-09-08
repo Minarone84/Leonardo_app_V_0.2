@@ -1,0 +1,17 @@
+{
+  "dependencies": [],
+  "kind": "oscillator",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "volume",
+    "volume_mean_20"
+  ],
+  "parameters": {
+    "period": 20
+  },
+  "recipe_id": "5b1331a65cb958ac12ab28baa812d76e5f717b8a9869b49a184772f0bd2564b3",
+  "schema_version": "1.0",
+  "tool_key": "volume",
+  "tool_version": "1.0"
+}

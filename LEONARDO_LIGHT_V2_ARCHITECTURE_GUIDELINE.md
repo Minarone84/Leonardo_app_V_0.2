@@ -1,45 +1,35 @@
 # Leonardo Light V2 Architecture Guideline
 
-**Document ID:** `LEONARDO-LIGHT-V2-ARCHITECTURE-GUIDELINE-003`  
-**Version:** `2.3`  
-**Status:** Approved architecture baseline  
-**Architecture style:** Modular monolith  
-**Governing principle:** Minimum justified complexity  
-**Supersedes:** strict NSRR, contract-heavy internal architecture, duplicated GUI metadata and handwritten GUI roadmaps
+**Document ID:** `LEONARDO-LIGHT-V2-ARCHITECTURE-GUIDELINE-003`
+**Version:** `2.4`
+**Status:** Approved architecture baseline
+**Architecture style:** Modular monolith
+**Governing principle:** Minimum justified complexity
+**Supersedes:** version 2.3 and earlier Light V2 architecture guidance
 
 ---
 
 ## 1. Purpose
 
-Leonardo Light V2 is a modular desktop financial research and trading application with one shared asynchronous runtime for long-running and concurrent work.
+Leonardo Light V2 is a modular desktop financial research, data-management, analysis, backtesting, real-time, and trading application.
 
-It must allow several functional Areas and GUI windows to remain active simultaneously while sharing:
+It uses one shared asynchronous runtime for long-running and concurrent work while allowing several Areas and GUI windows to remain active simultaneously.
 
-- application lifecycle;
-- background task execution;
-- process tracking;
-- provider and connection status;
-- window tracking;
-- logging;
-- audit;
-- error routing;
-- runtime inspection;
-- safe shutdown.
+The architecture must remain simple enough for one owner and AI-assisted development to understand, modify, test, audit, and extend.
 
-The architecture must remain simple enough for one owner and AI-assisted development to understand, modify, test and extend.
-
-Leonardo must not introduce unnecessary:
+Leonardo must not recreate unnecessary:
 
 - global contracts;
 - duplicated metadata;
-- manually reproduced GUI trees;
+- handwritten GUI trees;
 - registry layers that describe other registries;
 - speculative compatibility systems;
-- artificial ownership boundaries.
+- artificial ownership boundaries;
+- parallel persistence or execution paths.
 
 The engineering target is:
 
-> **The simplest architecture that preserves correctness, asynchronous safety, persistence integrity, maintainability, necessary runtime visibility and future AI control.**
+> **The simplest architecture that preserves correctness, asynchronous safety, persistence integrity, maintainability, runtime visibility, durable evidence, explicit user control, and future AI access.**
 
 ---
 
@@ -47,30 +37,28 @@ The engineering target is:
 
 Leonardo is an evidence-to-decision platform.
 
-Its primary pipeline is:
+Its broad product pipeline is:
 
 ```text
 External market
     ↓
-Connection and provider access
+Connection/provider access
     ↓
 Historical or real-time observations
     ↓
-OHLCV persistence
+Canonical OHLCV persistence
     ↓
 Validation, repair and acceptance
     ↓
-Financial-tool calculations
+Research / Financial Tool calculations
     ↓
-Artifacts and recipes
+Persisted analytical objects
     ↓
-Analysis Database
+Analysis Databases
     ↓
 Semantic market-state representation
     ↓
-White-box rules and projections
-    ↓
-Temporal validation
+Rules, projections and temporal validation
     ↓
 Backtesting and paper trading
     ↓
@@ -79,15 +67,13 @@ Risk-controlled execution
 Execution evidence
 ```
 
-Architecture exists to support this pipeline.
-
-The GUI, downloader, runtime manager, action registry and audit system are supporting mechanisms. They are not the product.
+Architecture exists to support this pipeline. GUI shells, registries, runtime managers, automation surfaces, and audit systems support the product but are not the product itself.
 
 ---
 
 ## 3. Primary architectural model
 
-Leonardo shall operate as a modular monolith.
+Leonardo operates as a modular monolith.
 
 ```text
 LeonardoApp
@@ -97,41 +83,34 @@ Core runtime
     +
 Areas
     +
-Stores and provider adapters
+Stores/provider adapters
     +
 GUI services
 ```
 
-The user interaction path is:
+Normal interaction path:
 
 ```text
-GUI control
-    ↓ user intent
-
+GUI intent
+    ↓
 Presenter / controller
-    ↓ workflow coordination
-
+    ↓
 Area application service
     ↓
-
 Direct domain call
 or
-Core-supervised background operation
+Core-supervised long-running operation
     ↓
-
-Domain services, providers and stores
+Domain services / providers / stores
     ↓
-
-Operation handle, progress, result and audit
+Result, progress, audit, persistence
     ↓ queued GUI update
-
-Presenter / controller
+Presenter
     ↓
-
 GUI presentation
 ```
 
-Simple operations do not pass through the asynchronous runtime merely for architectural consistency.
+Simple operations do not pass through the asynchronous runtime merely for consistency.
 
 ---
 
@@ -152,47 +131,30 @@ Examples:
 - Real-Time Environment;
 - Trading.
 
-An Area may contain:
+An Area may contain application services, domain services, private models, provider adapters, stores, validation, reports, and tests.
 
-- application services;
-- domain services;
-- private models;
-- provider adapters;
-- stores;
-- validation;
-- reports;
-- tests.
-
-Presenters, controllers, view adapters and Qt binding code belong to the GUI or application-adapter layer. They may coordinate an Area but do not become owners of its business behaviour.
+Presenters/controllers/Qt adapters belong to GUI/application-adapter layers. They coordinate Areas without becoming owners of their business meaning.
 
 ### 4.2 Suite
 
-A **Suite** is the user-facing GUI grouping through which an Area is presented.
+A **Suite** is a user-facing GUI grouping.
 
-Examples:
+Examples include Connection Suite, Research Suite, Data Manager Suite, Analysis Suite, and Trading Suite.
 
-- Connection Suite;
-- Research Suite;
-- Data Manager Suite;
-- Analysis Suite;
-- Trading Suite.
-
-The GUI navigation structure must not define the application’s code ownership.
-
-An Area may expose several windows. A window may coordinate several Areas through an application workflow without becoming an owner of their business rules.
+GUI navigation does not define code ownership.
 
 ---
 
 ## 5. Single composition root
 
-`LeonardoApp` is the only application composition root.
+`LeonardoApp` is the application composition root.
 
 It constructs and connects:
 
 - configuration;
-- audit log;
+- audit/logging;
 - Core runtime;
-- runtime managers and registries;
+- runtime registries/managers;
 - Area application services;
 - provider adapters;
 - stores;
@@ -200,406 +162,239 @@ It constructs and connects:
 - presenters;
 - Main Window.
 
-Windows must not construct hidden:
+Windows must not construct hidden runtimes, event loops, provider transports, stores, domain services, or global registries.
 
-- Core runtimes;
-- event loops;
-- provider transports;
-- stores;
-- domain services;
-- global registries.
+Cross-Area GUI/application coordination may be wired at composition when it does not create a new business authority.
 
-A window receives the presenter or services it requires through explicit construction or binding.
+A narrow composition callback is preferable to a speculative global EventBus when only one concrete coordination path is required.
 
 ---
 
 ## 6. Core responsibilities
 
-The Core is the shared, domain-neutral runtime foundation.
+Core is the shared domain-neutral runtime foundation.
 
 It owns:
 
-- application startup and shutdown coordination;
-- the background event loop;
+- startup and ordered shutdown;
+- background event-loop execution;
 - long-running task lifecycle;
-- task progress and cancellation;
-- external process lifecycle;
+- progress and cancellation;
+- external-process lifecycle;
 - generic runtime identifiers;
-- coarse provider and connection runtime summaries;
+- coarse connection summaries;
 - window runtime summaries;
-- registration and invocation of application-wide discoverable actions;
-- coherent logging;
-- persisted audit events;
+- application-wide discoverable actions where justified;
+- operational logging;
+- historical audit events;
 - structured error routing;
-- Runtime Manager snapshot aggregation;
-- safe and ordered shutdown.
+- Runtime Manager snapshot aggregation.
 
-The Core does **not** own:
+Core does **not** own:
 
-- provider capability rules;
-- exchange-specific request semantics;
-- websocket business behaviour;
+- provider semantics;
+- exchange-specific behavior;
+- websocket business meaning;
 - financial calculations;
-- OHLCV validation;
-- persistence rules;
-- database construction;
-- analysis algorithms;
-- backtest mathematics;
-- trading decisions;
-- risk decisions.
+- OHLCV validation truth;
+- persistence semantics;
+- Recipe/Artifact meaning;
+- Database construction rules;
+- analysis/backtest mathematics;
+- trading or risk decisions.
 
-The Core runs and observes work. It does not define what that work means.
-
----
-
-## 7. Area responsibilities
-
-Each Area owns its own business behaviour and critical decisions.
-
-Areas use the Core for:
-
-- long-running execution;
-- task identity;
-- progress delivery;
-- cancellation;
-- generic runtime tracking;
-- errors;
-- logging;
-- audit;
-- application shutdown coordination.
-
-Areas do not recreate their own:
-
-- event loops;
-- generic task managers;
-- process managers;
-- global logging systems;
-- global window tracking;
-- application shutdown systems.
-
-Several Areas may operate simultaneously.
-
-Example:
-
-```text
-Download running
-Research window active
-Runtime Manager refreshing
-Appearance settings changing
-Another provider connection receiving data
-```
-
-The Core must support this without one Area blocking or corrupting another.
+Core runs and observes work. It does not define what the work means.
 
 ---
 
-## 8. Canonical Authority Rule
+## 7. Canonical Authority Rule
 
-Strict NSRR is retired.
+Strict NSRR remains retired.
 
-The replacement rule is:
+The governing rule is:
 
-> **Every critical truth, invariant, canonical identity, persisted object family, financial decision and mutable runtime-state family must have one canonical authority and one controlled write path. Shared workflow participation is normal. Competing authority is forbidden.**
+> **Every critical truth, invariant, canonical identity, persisted object family, financial decision, and mutable runtime-state family has one canonical authority and one controlled write path. Shared workflow participation is normal. Competing authority is forbidden.**
 
-### 8.1 Canonical authorities
+Representative authorities:
 
-| Critical truth or state | Canonical authority |
+| Critical truth/state | Canonical authority |
 |---|---|
 | Application lifecycle | `LeonardoApp` |
 | Task lifecycle | `TaskManager` |
 | Process lifecycle | `ProcessManager` |
-| Provider/API/websocket detailed state | Connection Area |
+| Detailed provider/API/websocket state | Connection Area |
 | Coarse operational connection summary | `ConnectionRegistry` |
 | Window runtime state | `WindowRegistry` |
-| Registered application-wide action | `ActionRegistry` |
 | Historical audit evidence | `AuditLog` |
-| Canonical market identity | Naming/Data identity authority |
-| Provider capability | Connection provider adapter/configuration |
+| Market-series identity | `MarketId` authority |
 | OHLCV persistence | OHLCV Store |
-| OHLCV validation truth | OHLCV Validator |
+| OHLCV validity | OHLCV Validator |
 | Financial Tool definition | Financial Tools specification authority |
 | Artifact naming | Canonical naming policy |
+| Portable Recipe identity | Recipe identity/store authority |
+| Managed Artifact lineage | Artifact persistence authority |
 | Database persistence | Database Store |
 | Risk approval | Risk Service |
 | Order execution | Trading Gateway |
-| Position state | Position Manager |
-| Credentials | Credential Store |
 
-### 8.2 Allowed shared participation
-
-Other components may:
-
-- participate in workflows;
-- read authoritative state;
-- perform defensive input checks;
-- derive display state;
-- cache read-only summaries;
-- emit audit events;
-- reuse shared utilities;
-- coordinate calls between authorities.
-
-They must not:
-
-- persist contradictory truth;
-- independently redefine a critical business rule;
-- bypass the controlled write path;
-- treat derived state as canonical;
-- create a parallel implementation of the same critical decision.
-
-### 8.3 Layered validation
-
-Validation may exist at several layers:
-
-```text
-GUI:
-fast usability checks
-
-Application service:
-authoritative request validation
-
-Provider:
-external capability validation
-
-Store:
-persistence safety validation
-
-Domain validator:
-canonical domain truth
-```
-
-Repeated checks are acceptable when only one layer owns the canonical result.
+Shared participants may derive presentation, coordinate calls, perform defensive checks, cache read-only views, or emit audit evidence. They must not persist contradictory truth or create a second uncontrolled mutation path.
 
 ---
 
-## 9. GUI policy
+## 8. Persisted concepts and versioning
 
-The GUI is a replaceable shell around Leonardo’s capabilities.
+Minimal contracts do not mean minimal domain vocabulary.
 
-The GUI owns:
+Durable Leonardo concepts are explicit, typed, validated, and versioned where persisted.
 
-- windows;
-- widgets;
-- layouts;
-- user interaction;
-- local selection state;
-- display formatting;
-- enabled and disabled control state;
-- dialogs;
-- progress presentation;
-- visual errors and reports;
-- appearance;
-- navigation;
-- focus and selection context.
+Current durable families include, as implemented:
 
-The GUI does not own:
+- audit evidence;
+- canonical OHLCV sidecars;
+- portable Recipes and Recipe Collections;
+- managed Artifacts and Artifact Collections;
+- Study Environments;
+- Workspace Snapshots;
+- Research Notebooks/annotations where persisted;
+- Database Seeds;
+- Database revision manifests;
+- future Analysis/backtest/trading persisted evidence as those vertical workflows are implemented.
 
-- provider communication;
-- background task execution;
-- financial calculations;
-- OHLCV validation truth;
-- persistence rules;
-- database construction;
-- analysis algorithms;
-- backtest mathematics;
-- trading logic;
-- risk decisions.
+Do not maintain a permanent architecture census of every schema class/version. Each owning Area and its tests remain authoritative for the exact current schema set.
+
+Additional versioned schemas are introduced only with real vertical workflows and genuine persistence requirements.
+
+---
+
+## 9. Data Manager product model
+
+Data Manager coordinates durable preparation of accepted market evidence for Analysis.
+
+The accepted flow is:
+
+```text
+Accepted OHLCV
+├──→ Database Seed
+│    └──→ immutable Database base revision
+│
+└──→ Financial Tool calculation
+     ├──→ managed Artifact
+     └──→ portable Recipe / Recipe Collection
+
+Managed Artifacts / Artifact Collections
+        ↓ explicit reviewed selection/import
+immutable Database revisions
+        ↓
+Analysis
+```
+
+### 9.1 Recipe and Artifact independence
+
+A Recipe describes how a result can be calculated. It is global and portable.
+
+A managed Artifact is a persisted calculated object bound to concrete market/source evidence.
+
+Artifacts are not runtime-owned by Recipes. Direct Artifact creation need not publish a portable Recipe.
+
+Deleting a portable Recipe must not be blocked merely because an Artifact historically contains equivalent calculation semantics.
+
+### 9.2 Independent collection families
+
+Recipe Collections and Artifact Collections are independent.
+
+Deleting one collection family must not be blocked by references from the other family unless a current canonical dependency explicitly requires it.
+
+Deleting a collection does not automatically delete its members.
+
+### 9.3 Database Seeds
+
+A Database Seed is an immutable reviewed selection of accepted OHLCV source/range evidence used to establish a Database base.
+
+Seed identity and provenance remain explicit.
+
+### 9.4 Database ownership
+
+A Database owns fixed explicitly reviewed content.
+
+Adding an Artifact Collection imports the exact reviewed current Collection revision/output membership at that time.
+
+Later edits to the source Collection do **not** automatically change Database membership.
+
+Database membership changes only through an explicit reviewed Database operation.
+
+### 9.5 Database revisions
+
+Database history is immutable.
+
+Existing historical schema versions remain readable. New semantic evolution uses the currently approved persisted version unless a real new persistence requirement justifies another version.
+
+Do not create a new schema version merely for internal implementation convenience.
+
+---
+
+## 10. Data Manager currentness and update architecture
+
+Currentness is derived authoritative reconciliation truth, not a second persistence family.
+
+The lifecycle is:
+
+```text
+canonical OHLCV / Artifact / Collection evidence changes
+    ↓
+read-only reconciliation
+    ↓
+CURRENT / UPDATE AVAILABLE / BLOCKED / INVALID style presentation
+    ↓
+user reviews update
+    ↓
+explicit persistent mutation
+```
+
+Reconciliation must not silently mutate Artifacts, Collections, or Databases.
+
+When relevant evidence changes while Data Manager is open, GUI/application composition may notify the existing Data Manager presenter so it can request reconciliation through the existing background mechanism.
+
+Do not create a second watcher/currentness service when the existing reconciliation authority can be triggered.
+
+Existing per-tool update policies, dependency ordering, overlap behavior, and full-recalculation fallbacks remain mathematical authority unless an explicitly accepted task changes them.
+
+A universal fixed-backtrack rule is not architectural authority.
+
+---
+
+## 11. GUI policy
+
+The GUI is a replaceable shell around Leonardo capabilities.
+
+It owns windows, widgets, layouts, interaction, selection state, display formatting, enabled/disabled presentation, dialogs, progress presentation, visual errors/reports, appearance, navigation, and focus.
+
+It does not own provider communication, task execution, financial calculations, OHLCV validation truth, persistence rules, Database construction, Analysis algorithms, backtest mathematics, trading logic, or risk decisions.
 
 A GUI action expresses intent.
 
-Normal local interaction uses the direct path:
+Local behavior such as switching tabs, filtering rows, clearing previews, or expanding trees does not require global action registration.
 
-```text
-Start Download button
-    ↓
-Download presenter
-    ↓
-Connection application service
-    ↓
-Core-supervised background operation, when required
-```
-
-`ActionRegistry` is used only when an operation needs application-wide discovery, invocation, auditing, shortcuts, automation or future AI access. Local presentation behaviour such as changing tabs, clearing a preview or expanding a tree does not require registration.
-
-A window may be redesigned or replaced without changing the underlying operation.
+Application-wide `ActionRegistry` use is justified only for shared discovery/invocation, shortcuts, automation, audit policy, or future AI access.
 
 ---
 
-## 10. Synchronous GUI calls and concurrent windows
+## 12. Qt concurrency model
 
 Leonardo uses one Qt GUI thread and one `QApplication` event loop.
 
-Many windows may remain open and responsive simultaneously.
+Many windows may remain active simultaneously.
 
-Short GUI operations execute synchronously on the GUI thread:
+Short Qt operations remain synchronous on the GUI thread.
 
-```python
-window.show()
-window.raise_()
-window.activateWindow()
-widget.setVisible(True)
-widget.setFont(font)
-label.setText(message)
-```
+Long-running work must return control to Qt promptly and execute through Core or another accepted non-GUI execution authority.
 
-These calls complete quickly and do not prevent other windows from working.
+Background work never mutates Qt widgets directly.
 
-Qt processes events sequentially and rapidly for all windows:
+Use the existing queued signal/callback path back to the GUI thread.
 
-```text
-mouse event in Main Window
-paint Download Manager
-keyboard input in Research
-progress update in Runtime Manager
-resize Trading window
-```
+Modal dialogs are reserved for short user decisions. Long-running workflows should normally remain non-modal.
 
-To the user, the windows operate concurrently.
-
-### 10.1 What must not run on the GUI thread
-
-Long-running work must not execute directly from a widget callback.
-
-Bad:
-
-```python
-def _on_start_clicked(self) -> None:
-    candles = download_all_candles()
-    save_csv(candles)
-    validate_dataset()
-```
-
-This freezes every window.
-
-Correct:
-
-```text
-button click
-→ short synchronous presenter call
-→ application service
-→ optional Core-supervised background operation
-→ return to Qt event loop
-```
-
-### 10.2 Concurrent operations
-
-Several windows may start or observe several jobs:
-
-```text
-Download Manager → OHLCV download
-Data Manager → artifact calculation
-Analysis Suite → analysis job
-Runtime Manager → observes all jobs
-```
-
-The Core supervises these jobs outside the GUI thread.
-
-### 10.3 GUI update rule
-
-Background code must never mutate Qt widgets directly.
-
-Use:
-
-```text
-Core callback
-→ queued Qt signal
-→ presenter
-→ window update on GUI thread
-```
-
-### 10.4 Modal windows
-
-Modal dialogs are allowed only for short user decisions such as:
-
-- download confirmation;
-- destructive deletion;
-- live order confirmation;
-- credential changes.
-
-Long-running progress windows should normally be non-modal so unrelated workflows remain usable.
-
-### 10.5 Resource conflicts
-
-Responsive windows do not imply that conflicting operations are safe.
-
-Example:
-
-```text
-Download writes BTCUSDT 1h
-Maintenance attempts to repair the same dataset
-```
-
-Storage locks, validation and controlled write paths prevent the conflict.
-
-Window concurrency and resource authority are separate concerns.
-
----
-
-## 11. GUI-first vertical development
-
-Leonardo may use a shell-first process. Each task or implementation branch should normally advance one primary vertical workflow at a time. Parallel work is allowed when branches have explicit boundaries, independent authorities and a defined merge plan.
-
-For each feature:
-
-1. Audit the old working behaviour where available.
-2. Define the visible user workflow.
-3. Build or correct the visual shell.
-4. Define empty, ready, running, failed, cancelled and completed states.
-5. Assign stable identifiers to meaningful controls.
-6. Add a thin presenter or controller.
-7. Implement the application and domain services.
-8. Connect long-running work through Core.
-9. Complete persistence or provider integration.
-10. Validate the real workflow end to end.
-11. Obtain user acceptance.
-12. Move to the next feature.
-
-A shell must not contain fake business logic that becomes permanent by accident.
-
-A feature is not complete because its window exists.
-
-Do not build dozens of empty windows before proving one complete workflow.
-
----
-
-## 12. Presenter and controller policy
-
-A significant workflow should use one small presenter or controller.
-
-Example:
-
-```python
-class DownloadManagerPresenter:
-    def __init__(
-        self,
-        view: DownloadManagerView,
-        service: DownloadApplicationService,
-    ) -> None:
-        ...
-```
-
-The presenter may:
-
-- read user intent from the view;
-- call the application service;
-- receive an operation or job handle;
-- associate an operation with the window for presentation;
-- translate progress and results into view operations;
-- display errors.
-
-The application service decides whether an operation is direct or asynchronous. It owns workflow coordination, task submission policy, task naming, cancellation policy, resource locking and audit correlation. `TaskManager` remains the canonical owner of task lifecycle.
-
-The presenter must not:
-
-- calculate provider ranges;
-- paginate exchanges;
-- write files;
-- validate OHLCV truth;
-- calculate financial results;
-- own canonical task state.
-
-Use a small local `Protocol` when it materially improves testing.
-
-Local presenter interfaces are ordinary internal Python, not formal public contracts.
+Responsive windows do not imply conflicting resource mutations are safe. Resource authority and locking remain separate concerns.
 
 ---
 
@@ -607,482 +402,120 @@ Local presenter interfaces are ordinary internal Python, not formal public contr
 
 The live Qt object tree is the GUI source of truth.
 
-Leonardo must not maintain a second handwritten copy of the GUI in:
+Do not maintain a second handwritten GUI in JSON/TOML/roadmaps/parent maps.
 
-- TOML;
-- JSON;
-- roadmap metadata;
-- parent maps;
-- object-family descriptors.
+Use stable identifiers for meaningful windows/actions/widgets and semantic appearance roles where appropriate.
 
-### 13.1 Stable identities
+Framework-generated visual atoms do not require governance identities.
 
-Assign stable IDs to meaningful objects:
-
-- windows;
-- interactive controls;
-- editable widgets;
-- tables;
-- important status and report surfaces;
-- custom interactive regions;
-- actions.
-
-Use Qt `objectName`:
-
-```python
-table.setObjectName("download_manager.dataset_table")
-```
-
-Use action IDs:
-
-```python
-button.setProperty("action_id", "download.execute")
-```
-
-### 13.2 Appearance roles
-
-Use semantic appearance roles:
-
-```python
-table.setProperty("appearance_role", "data_table")
-button.setProperty("appearance_role", "primary_action")
-```
-
-### 13.3 Editable properties
-
-Objects that may be customized declare supported properties:
-
-```python
-table.setProperty(
-    "editable_properties",
-    (
-        "font_family",
-        "font_size",
-        "font_weight",
-        "foreground",
-        "background",
-        "row_height",
-    ),
-)
-```
-
-### 13.4 Proportional traceability
-
-Do not govern framework-generated or irrelevant visual atoms.
-
-Stable IDs are not required for:
-
-- Qt-created internal viewports;
-- automatic scrollbars;
-- delegates;
-- temporary paint objects;
-- ordinary spacers;
-- decorative labels that are never inspected, edited, automated or audited.
-
-### 13.5 Runtime GUI registry
-
-A lightweight GUI registry may discover or register live objects using:
-
-- `QObject.objectName()`;
-- Qt class name;
-- owning window;
-- dynamic properties;
-- visibility and enabled state;
-- weak references.
-
-The registry must not own widget lifecycle.
-
-It may provide:
-
-- live window count;
-- live widget count by type;
-- objects by window;
-- registered actions;
-- editable objects;
-- duplicate ID detection;
-- unnamed interactive-control detection.
+A lightweight runtime GUI registry may expose live windows/widgets through weak references and read-only inspection. It must not own widget lifecycle.
 
 ---
 
 ## 14. Runtime tracking
 
-Leonardo tracks operational systems that matter.
-
-Required runtime families:
+Leonardo tracks operational systems that matter:
 
 - application state;
 - tasks;
 - processes;
-- operational provider/API requests where useful;
-- provider connections;
-- websocket channels;
+- provider/connection summaries;
 - windows;
-- meaningful user and AI actions;
-- recent errors and warnings.
+- meaningful user/AI actions;
+- recent errors/warnings.
 
-A general multi-user session service is not required today.
+Each family has one owner/registry and exposes read-only snapshots.
 
-Use one local actor identity until an actual multi-user, remote-access or external-assistant authentication requirement exists.
+Runtime Manager aggregates those snapshots for inspection. It must not become a second mutation authority.
 
-Each runtime family has one manager or registry:
-
-```text
-TaskManager
-ProcessManager
-ConnectionRegistry
-WindowRegistry
-AuditLog
-```
-
-`ActionRegistry` is included when application-wide discoverable actions are enabled. It is not required for local widget behaviour.
-
-Each owner exposes a read-only snapshot.
-
-Runtime Manager combines those snapshots for inspection.
-
-Runtime Manager does not own or mutate runtime state.
-
-Derived rows and summaries must be disposable and regenerable.
+Audit history and current runtime state remain distinct.
 
 ---
 
 ## 15. Logging and audit
 
-Leonardo uses one coherent logging architecture.
+Operational logging supports debugging, diagnostics, provider communication, performance, calculation failures, startup/shutdown, and development inspection.
 
-### 15.1 Operational logging
+Audit events preserve meaningful application history such as startup/shutdown, task settlement, persistence mutations, destructive operations, connection changes, and future trading/risk decisions.
 
-Used for:
+Not every widget interaction is an audit event.
 
-- debugging;
-- diagnostics;
-- provider communication;
-- calculation failures;
-- performance information;
-- startup and shutdown;
-- development inspection.
-
-### 15.2 Audit events
-
-Used for meaningful application history:
-
-- application startup and shutdown;
-- important user or AI actions;
-- task submission and completion;
-- task failure and cancellation;
-- process launch and termination;
-- connection and websocket state changes;
-- destructive operations;
-- persistence operations;
-- trading and risk decisions.
-
-Audit events include relevant identifiers:
-
-- timestamp;
-- actor;
-- window;
-- action;
-- task;
-- process;
-- connection;
-- domain subject;
-- correlation ID;
-- severity;
-- message;
-- structured details.
-
-Not every widget interaction requires an audit event.
-
-Logging and audit depth must be proportional to operational and financial risk.
+Logging/audit depth is proportional to operational and financial risk.
 
 ---
 
 ## 16. Contracts policy
 
-Contracts are exceptional.
+Formal contracts are exceptional.
 
-At the initial Light V2 reset baseline, the only retained public versioned persisted schemas are:
+A formal contract is justified only when it protects a genuine hard boundary such as:
 
-```text
-AuditEventV1
-OHLCVSidecarV1
-```
-
-The shared canonical market-series identity is:
-
-```text
-MarketId
-```
-
-`MarketId` is the frozen canonical name for the shared immutable value object containing:
-
-```text
-exchange
-market_type
-symbol
-timeframe
-```
-
-Do not create a parallel `OHLCVDatasetIdentity` type or compatibility alias. Persisted OHLCV schemas reference `MarketId`; Area-local models may compose it without redefining market identity.
-
-Additional versioned schemas are introduced only when their corresponding vertical workflow is implemented and persistence compatibility genuinely requires them.
-
-### 16.1 Contract admission
-
-A future formal contract may be introduced only when it protects:
-
-- a persisted versioned format;
+- a durable persisted format;
 - an external wire format;
-- a financially dangerous operation requiring stable validation;
-- a genuine independently implemented boundary that cannot safely use local typed code.
+- a financially dangerous operation requiring stable validation/audit;
+- a genuinely independent implementation boundary that ordinary local typed code cannot safely serve.
 
 Thread crossing alone does not require a formal contract.
 
-A provider adapter boundary may use a local `Protocol`.
+GUI-to-presenter calls, internal planner records, runtime rows, and ordinary Area-local DTOs should normally remain ordinary typed Python or local Protocols.
 
-A GUI-to-presenter call may use direct typed Python.
-
-A cross-Area application DTO may remain owned by the producing Area unless independent version stability is genuinely required.
-
-### 16.2 Required justification
-
-Every proposed formal contract must state:
-
-```text
-Owner
-Producer
-Independent consumer
-Boundary crossed
-Versioning requirement
-Failure prevented
-Why owner-local typed code is insufficient
-```
-
-If these cannot be stated clearly, do not create the contract.
-
-### 16.3 Do not create formal contracts for
-
-- temporary GUI state;
-- preflight table rows;
-- internal planner stages;
-- local service results;
-- pagination cursors;
-- internal provider page models;
-- database-build intermediate data;
-- display-only summaries;
-- Runtime Manager rows;
-- process or window registry records;
-- one internal service calling another;
-- AI capabilities that do not yet exist.
-
-Use ordinary typed Python:
-
-- classes;
-- private dataclasses;
-- enums;
-- local Protocols;
-- method signatures;
-- direct imports;
-- documentation;
-- validation;
-- tests.
+Every proposed formal contract must identify its owner, producer, independent consumer, boundary, versioning need, failure prevented, and why owner-local typed code is insufficient.
 
 ---
 
-## 17. Domain specifications and persisted schemas
+## 17. AI and development-agent separation
 
-Minimal contracts do not mean unstructured data.
+Leonardo's future product AI assistant and Codex used to develop Leonardo are different systems.
 
-Important Leonardo concepts remain explicit, typed, validated and documented.
+### Product AI
+Future product AI must use the same application services/capability paths as the GUI. It must not manipulate Qt controls to perform business operations. High-risk capabilities enforce confirmation and safety inside Leonardo.
 
-Examples:
+### Development Codex
+Codex CLI is an external development agent operating on repository files under project governance. It is not part of Leonardo runtime architecture and does not use Leonardo's `ActionRegistry` to edit the application.
 
-- Financial Tool specifications;
-- Financial Tool naming policies;
-- market identities;
-- OHLCV sidecars;
-- artifact definitions;
-- artifact recipes;
-- recipe collections;
-- Study Environments;
-- Workspace Snapshots;
-- Analysis Database manifests;
-- analysis reports;
-- custom trading indicators;
-- backtest reports;
-- trading records.
-
-Classify structures correctly:
-
-| Structure | Purpose |
-|---|---|
-| Domain specification | Defines what an important Leonardo concept means |
-| Canonical policy | Defines deterministic rules such as naming |
-| Persisted schema | Defines data saved and loaded later |
-| Formal boundary contract | Defines an exceptional stable hard boundary |
-| Internal model | Supports implementation and may change freely |
-| Runtime snapshot | Read-only inspection output |
-| Report model | Structured analytical or validation result |
-| Configuration schema | Defines appearance or application settings |
-
-The simplification target is disposable workflow plumbing, not Leonardo’s durable vocabulary.
+Do not mix these concepts.
 
 ---
 
-## 18. Concurrency and multi-Area operation
+## 18. Development and validation policy
 
-Leonardo must support multiple Areas and operations simultaneously.
+Leonardo advances through complete vertical workflows.
 
-Examples:
-
-- historical download while Research remains usable;
-- database construction while another chart is inspected;
-- several provider connections remaining active;
-- Runtime Manager inspecting active jobs;
-- appearance settings changing without affecting background work.
-
-Long-running work must:
-
-- execute outside the GUI thread;
-- have a unique task identity;
-- report progress;
-- support cancellation where possible;
-- produce a terminal result;
-- route errors coherently;
-- settle cleanly during shutdown.
-
-Trivial synchronous actions remain direct:
-
-- opening a window;
-- changing a font;
-- focusing a widget;
-- reading a local setting;
-- updating display text;
-- taking a lightweight snapshot.
-
----
-
-## 19. Application actions and future AI control
-
-Only operations that require application-wide discovery, invocation, auditing, shortcuts, automation or future AI access are exposed through `ActionRegistry`.
-
-Examples:
+Preferred sequence:
 
 ```text
-window.open
-window.focus
-runtime.status
-task.cancel
-appearance.adjust
-download.execute
-dataset.delete
-database.build
-backtest.run
-trading.order.submit
-```
-
-Local GUI behaviour does not require registration. Examples include:
-
-```text
-select table row
-expand tree node
-clear preview
-switch tab
-change local filter
-resize panel
-```
-
-The registry initially owns only:
-
-- stable action ID;
-- invocation handler or application-service target;
-- optional label;
-- optional risk level;
-- optional confirmation policy;
-- audit policy where required.
-
-Argument validation, enabled-state truth and business rules normally remain with the application service or canonical domain authority.
-
-The registered invocation path is:
-
-```text
-GUI, menu, shortcut or AI request
-    ↓
-ActionRegistry
-    ↓
-application service
-    ↓
-optional Core-supervised background operation
-    ↓
-result and audit
-```
-
-GUI and AI must not receive separate implementations.
-
-The AI assistant must not manipulate Qt controls to perform business operations.
-
-It may inspect or focus GUI objects for navigation and appearance tasks.
-
-High-risk actions require explicit confirmation and safety policy:
-
-- destructive dataset changes;
-- credential changes;
-- paper-order submission;
-- live-order submission;
-- risk-limit changes.
-
-No speculative AI contract family is created before a real external assistant interface exists.
-
----
-
-## 20. Development and validation policy
-
-Leonardo is developed through complete vertical slices.
-
-For each feature:
-
-```text
-GUI shell
-→ presenter
+user workflow
+→ GUI shell where applicable
+→ presenter/controller
 → application service
 → domain implementation
-→ optional Core job
-→ persistence or external adapter
-→ result
+→ provider/store
+→ Core async integration where needed
+→ result/persistence
 → vertical validation
+→ user acceptance
 ```
 
-A feature is accepted only when the real user workflow works from beginning to end.
+Tests prioritize:
 
-Tests should prioritize:
-
-1. vertical workflow behaviour;
-2. domain rules and calculations;
-3. persistence and compatibility;
-4. asynchronous progress, cancellation and failure;
+1. vertical workflow behavior;
+2. domain rules/calculations;
+3. persistence and migration;
+4. async progress/cancellation/failure;
 5. provider adapters;
-6. GUI smoke behaviour;
-7. architecture dependency checks.
+6. runtime tracking/audit;
+7. GUI smoke/visual behavior;
+8. dependency/layering checks.
 
-Tests must not primarily prove that metadata agrees with other metadata.
-
-A refusal or blocked operation backed by correct evidence is a successful result.
+A GUI-bearing task does not close solely because automated tests pass. Native/visual acceptance remains required where specified.
 
 ---
 
-## 21. Complexity rule
+## 19. Complexity rule
 
-Every abstraction must justify its existence.
+Every abstraction must justify its current existence.
 
-A new layer, registry, contract, adapter or schema must provide a concrete current benefit such as:
-
-- preventing competing critical truth;
-- isolating an external dependency;
-- preserving durable data;
-- enabling long-running execution safely;
-- supporting multiple genuine implementations;
-- protecting a financially dangerous operation;
-- substantially improving testability.
+A new layer, registry, contract, adapter, schema, watcher, or event system must provide a concrete present benefit such as preventing competing truth, isolating an external dependency, preserving durable data, enabling safe long-running execution, supporting genuine multiple implementations, protecting a dangerous operation, or substantially improving testability.
 
 Future possibility alone is insufficient.
 
@@ -1096,113 +529,41 @@ Not maximum abstraction.
 
 ---
 
-## 22. Practical decision checklist
+## 20. Practical decision checklist
 
 Before adding architecture, ask:
 
-### Does this represent a durable Leonardo concept?
-
-If yes, define a canonical domain model or specification.
-
-### Will it be saved and loaded later?
-
-If yes, define a versioned persisted schema.
-
-### Does it cross a real external wire format or financially dangerous boundary?
-
-If yes, consider a formal contract.
-
-### Is it temporary implementation data?
-
-Keep it internal.
-
-### Is the same fact already represented elsewhere?
-
-Choose one canonical source and derive the rest.
-
-### Does the GUI need to edit or track it?
-
-Use stable IDs, runtime registration and appearance roles.
-
-### Does Runtime Manager need to display it?
-
-Expose a read-only snapshot from the existing authority.
-
-### Does long-running work need supervision?
-
-Use TaskManager/CoreRunner.
-
-### Is the operation trivial and fast?
-
-Call it directly.
-
-### Can ordinary typed Python solve the problem clearly?
-
-Use ordinary typed Python.
+- Is this a durable Leonardo concept? Define a canonical domain model/specification.
+- Will it be persisted and loaded later? Use a versioned persisted schema.
+- Does it cross a genuine hard boundary? Consider a formal contract.
+- Is it temporary implementation data? Keep it internal.
+- Is the same fact already authoritative elsewhere? Derive, do not duplicate.
+- Does long-running work need supervision? Use Core/TaskManager.
+- Is the operation trivial/fast? Call directly.
+- Can ordinary typed Python solve it clearly? Use ordinary typed Python.
+- Can composition wire this concrete cross-Area interaction without a global event system? Prefer composition.
+- Is a proposed update automatic? Verify that persistent mutation still requires explicit user review where product policy requires it.
 
 ---
 
-## 23. Final architectural statement
+## 21. Final architectural statement
 
-Leonardo Light V2 is a modular desktop application with one composition root, one shared Core runtime for long-running work and several cooperating Areas.
+Leonardo Light V2 is a modular desktop application with one composition root, one shared Core runtime for long-running work, several cooperating Areas, and a replaceable Qt GUI shell.
 
-The Core supplies:
+Critical truths have canonical authorities and controlled mutation paths.
 
-- lifecycle;
-- long-running concurrency;
-- task and process supervision;
-- coarse connection and window tracking;
-- application-wide registered actions, where justified;
-- errors;
-- logging;
-- audit;
-- runtime inspection;
-- safe shutdown.
+Durable concepts are explicitly modeled and versioned when persisted.
 
-The Areas supply:
+Recipes, managed Artifacts, collection families, Database Seeds, and Database revisions retain their accepted independent semantics.
 
-- Connection;
-- OHLCV;
-- Research;
-- Data Management;
-- Analysis;
-- Backtesting;
-- Real-Time;
-- Trading capabilities.
+Databases own fixed reviewed membership. Reconciliation discovers currentness; users explicitly authorize persistent updates.
 
-The GUI remains a replaceable presentation shell.
+The live Qt object tree is not duplicated in handwritten metadata.
 
-Short GUI operations run directly on the Qt thread.
+The future product AI and GUI use the same application capabilities, while development Codex remains external repository tooling.
 
-Long-running operations run through Core and return updates through queued GUI signals.
+Development proceeds through bounded complete vertical slices with independent audit and native acceptance.
 
-Strict NSRR is retired.
+The governing principle remains:
 
-It is replaced by canonical authority over critical truths and controlled mutation of important state.
-
-At the initial Light V2 reset baseline, public versioned persisted schemas are limited to:
-
-```text
-AuditEventV1
-OHLCVSidecarV1
-```
-
-with:
-
-```text
-MarketId
-```
-
-as the shared canonical market-series value object. Additional schemas are introduced only with their corresponding vertical workflows.
-
-Important domain objects and persisted formats remain precisely defined, typed, validated and documented.
-
-The GUI object tree is discovered from live Qt objects, not duplicated in handwritten metadata.
-
-GUI and AI use the same application services. Operations that require shared discovery or invocation use the same registered application actions.
-
-Development proceeds through complete vertical slices.
-
-The governing principle is:
-
-> **Build the complete Leonardo product using the simplest architecture that preserves correctness, asynchronous safety, runtime visibility, durable evidence, canonical authority over critical truth and future AI control.**
+> **Build the complete Leonardo product using the simplest architecture that preserves correctness, asynchronous safety, runtime visibility, durable evidence, canonical authority over critical truth, explicit persistence control, and future AI access.**

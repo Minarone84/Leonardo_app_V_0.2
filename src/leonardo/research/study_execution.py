@@ -20,6 +20,14 @@ from leonardo.financial_tools import (
     resolve_parameters,
     resolve_output_signals,
 )
+from leonardo.recipes import (
+    PortableRecipeDependencyV1,
+    PortableRecipeOHLCVInputV1,
+    PortableRecipeStore,
+    PortableRecipeValidationError,
+    PortableRecipeV1,
+    build_portable_recipe,
+)
 from leonardo.research.dataset import HistoricalDataset
 from leonardo.research.studies import (
     ChartStudy,
@@ -77,10 +85,19 @@ class _ResolvedSource:
 class ResearchStudyService:
     """Prepare full immutable Study results and explicit durable saves."""
 
-    def __init__(self, artifacts: ArtifactService) -> None:
+    def __init__(
+        self,
+        artifacts: ArtifactService,
+        portable_recipes: PortableRecipeStore | None = None,
+    ) -> None:
         if not isinstance(artifacts, ArtifactService):
             raise TypeError("artifacts must be an ArtifactService")
+        if portable_recipes is not None and not isinstance(
+            portable_recipes, PortableRecipeStore
+        ):
+            raise TypeError("portable_recipes must be a PortableRecipeStore")
         self._artifacts = artifacts
+        self._portable_recipes = portable_recipes
 
     def prepare_calculation(
         self,
@@ -330,6 +347,10 @@ class ResearchStudyService:
         _validate_save_context(attempt, dataset, study)
         if not isinstance(description, str):
             raise StudyValidationError("description must be a string")
+        if self._portable_recipes is None:
+            raise StudyValidationError(
+                "portable Recipe store is required for explicit Study Save"
+            )
         snapshot = _study_snapshot(studies)
         cancel = cancellation_requested or _never_cancelled
         _raise_if_cancelled(cancel, "save source resolution")
@@ -345,6 +366,24 @@ class ResearchStudyService:
                 expected_link=study.saved_link,
             )
             _raise_if_cancelled(cancel, "save publication")
+            if _begin_persistence is not None and not _begin_persistence():
+                raise StudyOperationCancelled(
+                    "Study operation cancelled before persistence"
+                )
+            self._publish_portable_recipe(
+                dataset,
+                study.saved_link.artifact_id,
+                study_id=study.study_id,
+            )
+            self._load_current_research_artifact(
+                dataset,
+                study.saved_link.artifact_id,
+                expected_kind=study.saved_link.kind,
+                expected_tool_key=study.saved_link.tool_key,
+                expected_study=study,
+                expected_source_refs=refs,
+                expected_link=study.saved_link,
+            )
             return StudySaveOutcome(
                 study_id=study.study_id,
                 saved_link=study.saved_link,
@@ -388,7 +427,26 @@ class ResearchStudyService:
                 expected_source_refs=refs,
                 expected_link=saved_link,
             )
-        except (ArtifactError, StudyValidationError):
+            self._publish_portable_recipe(
+                dataset,
+                metadata.artifact_id,
+                study_id=study.study_id,
+            )
+            self._load_current_research_artifact(
+                dataset,
+                metadata.artifact_id,
+                expected_kind=metadata.recipe.kind,
+                expected_tool_key=metadata.recipe.tool_key,
+                expected_study=study,
+                expected_source_refs=refs,
+                expected_link=saved_link,
+            )
+        except (
+            ArtifactError,
+            OSError,
+            PortableRecipeValidationError,
+            StudyValidationError,
+        ):
             if metadata.artifact_id not in existing_artifact_ids:
                 try:
                     self._artifacts.delete_artifact(
@@ -407,6 +465,75 @@ class ResearchStudyService:
             saved_link=saved_link,
             created=True,
         )
+
+    def _publish_portable_recipe(
+        self,
+        dataset: HistoricalDataset,
+        artifact_id: str,
+        *,
+        study_id: str,
+    ) -> PortableRecipeV1:
+        store = self._portable_recipes
+        if store is None:
+            raise StudyValidationError(
+                "portable Recipe store is required for explicit Study Save"
+            )
+        published: dict[str, PortableRecipeV1] = {}
+        resolving: set[str] = set()
+
+        def publish(current_artifact_id: str) -> PortableRecipeV1:
+            existing = published.get(current_artifact_id)
+            if existing is not None:
+                return existing
+            if current_artifact_id in resolving:
+                raise StudyValidationError(
+                    "Research artifact lineage contains a Recipe publication cycle"
+                )
+            resolving.add(current_artifact_id)
+            try:
+                loaded, result = self._load_current_research_artifact(
+                    dataset, current_artifact_id
+                )
+                dependencies = tuple(
+                    PortableRecipeDependencyV1(
+                        ref.role,
+                        publish(ref.artifact_id).recipe_id,
+                        ref.output_name,
+                    )
+                    for ref in loaded.metadata.recipe.source_artifacts
+                )
+                selectors = _canonical_selector_lineage(result)
+                ohlcv_inputs = tuple(
+                    PortableRecipeOHLCVInputV1(role, column)
+                    for role, column in selectors.implicit_ohlcv
+                )
+                if not ohlcv_inputs and not dependencies:
+                    ohlcv_inputs = tuple(
+                        PortableRecipeOHLCVInputV1(item.name, item.name)
+                        for item in get_financial_tool_spec(
+                            result.tool_key
+                        ).data_inputs
+                    )
+                candidate = build_portable_recipe(
+                    tool_key=result.tool_key,
+                    kind=result.kind,
+                    parameters=result.parameters,
+                    output_names=result.output_names,
+                    ohlcv_inputs=ohlcv_inputs,
+                    dependencies=dependencies,
+                )
+                winner = store.find_equivalent_recipe(candidate) or candidate
+                store.persist_recipe(
+                    winner,
+                    origin_kind="research_save",
+                    origin_details={"study_id": study_id},
+                )
+                published[current_artifact_id] = winner
+                return winner
+            finally:
+                resolving.remove(current_artifact_id)
+
+        return publish(artifact_id)
 
     def _resolve_sources(
         self,

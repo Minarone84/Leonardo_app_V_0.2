@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -23,8 +25,12 @@ from leonardo.data_manager import (
     DataManagerRecipeCollectionInspection,
 )
 from leonardo.gui.data_manager.table_presentation import resize_data_manager_table
+from leonardo.gui.window_geometry import apply_initial_window_size
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
-from leonardo.recipes import PortableRecipeGraphPlan
+from leonardo.recipes import (
+    PortableRecipeCollectionRevisionV1,
+    PortableRecipeGraphPlan,
+)
 
 
 DATA_MANAGER_RECIPE_COLLECTION_WINDOW_ID = "data_manager.recipe_collection.window"
@@ -66,10 +72,13 @@ class DataManagerRecipeCollectionDialog(QDialog):
         self._snapshot = snapshot
         self._recipes = snapshot.portable_recipes.recipes
         self._reviewed_plan: PortableRecipeGraphPlan | None = None
+        self._equivalent_collection: PortableRecipeCollectionRevisionV1 | None = None
+        self._prediction_ready = False
         self._collection_id: str | None = None
         self._expected_revision_id: str | None = None
         self._busy = False
         self._populating = False
+        self._workspace_splitter_initialized = False
 
         apply_identity(
             self,
@@ -78,10 +87,19 @@ class DataManagerRecipeCollectionDialog(QDialog):
         )
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        apply_initial_window_size(
+            self,
+            parent=parent,
+            width_fraction=0.75,
+            height_fraction=0.75,
+        )
 
         root = QVBoxLayout(self)
+        root.setSpacing(10)
         metadata = QGroupBox("Collection", self)
         metadata_layout = QFormLayout(metadata)
+        metadata_layout.setContentsMargins(12, 24, 12, 12)
+        metadata_layout.setVerticalSpacing(8)
         self.name_input = QLineEdit(metadata)
         self.name_input.setObjectName("data_manager.recipe_collection.input.name")
         self.description_input = QLineEdit(metadata)
@@ -92,9 +110,20 @@ class DataManagerRecipeCollectionDialog(QDialog):
         metadata_layout.addRow("Description", self.description_input)
         root.addWidget(metadata)
 
-        available = QGroupBox("Recipe roots", self)
+        workspace = QSplitter(Qt.Orientation.Horizontal, self)
+        apply_identity(
+            workspace,
+            "data_manager.recipe_collection.splitter.workspace",
+            object_type="splitter",
+        )
+        workspace.setChildrenCollapsible(False)
+
+        available = QGroupBox("Recipe roots", workspace)
         available_layout = QVBoxLayout(available)
+        available_layout.setContentsMargins(12, 24, 12, 12)
+        available_layout.setSpacing(10)
         selection = QHBoxLayout()
+        selection.setSpacing(10)
         self.select_all_button = QPushButton("Select All", available)
         self.select_all_button.setObjectName(
             "data_manager.recipe_collection.action.select_all"
@@ -116,10 +145,15 @@ class DataManagerRecipeCollectionDialog(QDialog):
         self.recipe_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.recipe_table.itemChanged.connect(self._on_recipe_item_changed)
         available_layout.addWidget(self.recipe_table)
-        root.addWidget(available, 1)
+        available_size_policy = available.sizePolicy()
+        available_size_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        available.setSizePolicy(available_size_policy)
+        workspace.addWidget(available)
 
-        preview = QGroupBox("Preview", self)
+        preview = QGroupBox("Preview", workspace)
         preview_layout = QVBoxLayout(preview)
+        preview_layout.setContentsMargins(12, 24, 12, 12)
+        preview_layout.setSpacing(10)
         self.preview_table = configure_table(
             QTableWidget(preview),
             object_id="data_manager.recipe_collection.table.preview",
@@ -130,13 +164,27 @@ class DataManagerRecipeCollectionDialog(QDialog):
         preview_layout.addWidget(self.preview_table)
         self.preview_summary = QLabel("Preview required.", preview)
         self.preview_summary.setWordWrap(True)
+        self.preview_summary.setMinimumHeight(
+            max(
+                self.preview_summary.sizeHint().height() * 2,
+                self.preview_summary.fontMetrics().lineSpacing() * 2,
+            )
+        )
         self.preview_summary.setObjectName(
             "data_manager.recipe_collection.label.preview_status"
         )
         preview_layout.addWidget(self.preview_summary)
-        root.addWidget(preview, 1)
+        preview_size_policy = preview.sizePolicy()
+        preview_size_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        preview.setSizePolicy(preview_size_policy)
+        workspace.addWidget(preview)
+        workspace.setStretchFactor(0, 1)
+        workspace.setStretchFactor(1, 1)
+        self.workspace_splitter = workspace
+        root.addWidget(workspace, 1)
 
         actions = QHBoxLayout()
+        actions.setSpacing(10)
         actions.addStretch(1)
         self.preview_button = QPushButton("Preview", self)
         self.preview_button.setObjectName(
@@ -161,6 +209,14 @@ class DataManagerRecipeCollectionDialog(QDialog):
         self.name_input.textChanged.connect(self._sync_controls)
         self.description_input.textChanged.connect(self._sync_controls)
         self.configure_create(snapshot)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._workspace_splitter_initialized:
+            return
+        self._workspace_splitter_initialized = True
+        extent = max(1, self.workspace_splitter.width())
+        self.workspace_splitter.setSizes((extent, extent))
 
     @property
     def collection_id(self) -> str | None:
@@ -234,11 +290,52 @@ class DataManagerRecipeCollectionDialog(QDialog):
         if plan.root_recipe_ids != self.selected_root_recipe_ids():
             return False
         self._reviewed_plan = plan
+        self._equivalent_collection = None
+        self._prediction_ready = False
         self._populate_preview(plan)
         self.preview_summary.setText(
             f"Preview ready: {len(plan.root_recipe_ids)} ROOT; "
-            f"{len(plan.member_recipe_ids) - len(plan.root_recipe_ids)} SUPPORT"
+            f"{len(plan.member_recipe_ids) - len(plan.root_recipe_ids)} SUPPORT; "
+            "checking Collection reuse..."
         )
+        self._sync_controls()
+        return True
+
+    def set_collection_prediction(
+        self,
+        plan: PortableRecipeGraphPlan,
+        equivalent: PortableRecipeCollectionRevisionV1 | None,
+    ) -> bool:
+        if plan is not self._reviewed_plan:
+            return False
+        if equivalent is not None and not isinstance(
+            equivalent, PortableRecipeCollectionRevisionV1
+        ):
+            raise TypeError(
+                "equivalent must be a PortableRecipeCollectionRevisionV1 or None"
+            )
+        self._equivalent_collection = equivalent
+        self._prediction_ready = True
+        support_count = len(plan.member_recipe_ids) - len(plan.root_recipe_ids)
+        lines = [
+            f"Preview ready: {len(plan.root_recipe_ids)} ROOT; {support_count} SUPPORT"
+        ]
+        if equivalent is None or equivalent.collection_id == self._collection_id:
+            lines.append(
+                "Result: UPDATE COLLECTION"
+                if self._collection_id is not None
+                else "Result: NEW COLLECTION"
+            )
+        else:
+            lines.extend(
+                (
+                    "Result: REUSE EXISTING COLLECTION",
+                    f"Existing Name: {equivalent.display_name}",
+                    f"Collection ID: {equivalent.collection_id}",
+                    f"Current Revision ID: {equivalent.revision_id}",
+                )
+            )
+        self.preview_summary.setText("\n".join(lines))
         self._sync_controls()
         return True
 
@@ -252,12 +349,23 @@ class DataManagerRecipeCollectionDialog(QDialog):
     def settle_success(
         self,
         inspection: DataManagerRecipeCollectionInspection,
+        *,
+        outcome: str = "UPDATED",
     ) -> None:
+        if outcome not in {"CREATED", "UPDATED", "REUSED_EXISTING"}:
+            raise ValueError("invalid Recipe Collection outcome")
         self.configure_edit(inspection, self._snapshot)
-        self.preview_summary.setText("Recipe Collection published successfully.")
+        self.preview_summary.setText(
+            f"Recipe Collection {outcome.replace('_', ' ').lower()} successfully.\n"
+            f"Name: {inspection.collection.display_name}\n"
+            f"Collection ID: {inspection.collection.collection_id}\n"
+            f"Revision ID: {inspection.collection.revision_id}"
+        )
 
     def invalidate_preview(self, message: str = "Preview required.") -> None:
         self._reviewed_plan = None
+        self._equivalent_collection = None
+        self._prediction_ready = False
         self.preview_table.setRowCount(0)
         self.preview_summary.setText(message)
         self._sync_controls()
@@ -387,6 +495,7 @@ class DataManagerRecipeCollectionDialog(QDialog):
             and description == description.strip()
             and bool(roots)
             and self.reviewed_plan_matches(roots)
+            and self._prediction_ready
             and (
                 self._collection_id is None
                 or bool(self._expected_revision_id)

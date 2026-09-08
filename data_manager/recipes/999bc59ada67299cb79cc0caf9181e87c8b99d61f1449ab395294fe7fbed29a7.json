@@ -1,0 +1,34 @@
+{
+  "dependencies": [
+    {
+      "output_name": "ema_7",
+      "recipe_id": "49945dda637de9af6e2192cb2109f9ee4d5a0467b020b335ecff17fafeb8d3af",
+      "role": "fast"
+    },
+    {
+      "output_name": "ema_14",
+      "recipe_id": "c890a2785b6c617088d74dda3d77a4f2433f9a3043a48a00d55b978e00a70e00",
+      "role": "mid"
+    },
+    {
+      "output_name": "ema_28",
+      "recipe_id": "9784c5dfb4d6213241e0a40d0bf9a05ffc532937aed38255c918cf30197e3849",
+      "role": "slow"
+    }
+  ],
+  "kind": "construct",
+  "object_type": "portable_recipe",
+  "ohlcv_inputs": [],
+  "output_names": [
+    "research_fast_research_mid_research_slow",
+    "research_fast_research_mid_research_slow_width",
+    "research_fast_research_mid_research_slow_compression"
+  ],
+  "parameters": {
+    "tie_policy": "carry"
+  },
+  "recipe_id": "999bc59ada67299cb79cc0caf9181e87c8b99d61f1449ab395294fe7fbed29a7",
+  "schema_version": "1.0",
+  "tool_key": "braids",
+  "tool_version": "1.0"
+}

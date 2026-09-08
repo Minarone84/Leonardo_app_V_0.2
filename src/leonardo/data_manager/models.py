@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Mapping
@@ -22,6 +22,7 @@ from .creation_models import (
     ArtifactCollectionRevisionV1,
     DatabaseDefinitionV1,
     DatabaseRevisionManifestV1,
+    DatabaseRevisionManifestV2,
     DatabaseSeedV1,
 )
 
@@ -32,10 +33,301 @@ _DELETION_KINDS = frozenset({"artifact", "recipe"})
 _PORTABILITY_STATUSES = frozenset(
     {"PORTABLE", "PORTABLE_WITH_DEPENDENCIES", "MARKET_BOUND", "UNSUPPORTED", "INVALID"}
 )
+_DUPLICATE_CLASSIFICATIONS = frozenset(
+    {"SAFE", "BLOCKED", "REVIEW REQUIRED", "INVALID / SKIPPED"}
+)
+_DUPLICATE_PURGE_RESULTS = frozenset(
+    {"PURGED", "BLOCKED", "SKIPPED STALE", "FAILED"}
+)
+_RECIPE_ORIGIN_KINDS = frozenset(
+    {"study_environment", "research_save", "data_manager_artifact"}
+)
 
 
 class DataManagerOperationError(RuntimeError):
     """Raised when a Data Manager operation cannot use canonical persisted truth."""
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenanceDomain:
+    key: str
+    display_name: str
+    requires_market: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("key must be a non-empty string")
+        if not isinstance(self.display_name, str) or not self.display_name:
+            raise ValueError("display_name must be a non-empty string")
+        if type(self.requires_market) is not bool:
+            raise TypeError("requires_market must be a boolean")
+
+
+DUPLICATE_MAINTENANCE_DOMAINS = MappingProxyType(
+    {
+        "recipes": DuplicateMaintenanceDomain("recipes", "Recipes", False),
+        "recipe_collections": DuplicateMaintenanceDomain(
+            "recipe_collections", "Recipe Collections", False
+        ),
+        "artifacts": DuplicateMaintenanceDomain("artifacts", "Artifacts", True),
+        "artifact_collections": DuplicateMaintenanceDomain(
+            "artifact_collections", "Artifact Collections", True
+        ),
+    }
+)
+
+
+def duplicate_maintenance_domain(value: object) -> DuplicateMaintenanceDomain:
+    if isinstance(value, DuplicateMaintenanceDomain):
+        expected = DUPLICATE_MAINTENANCE_DOMAINS.get(value.key)
+        if value != expected:
+            raise ValueError("duplicate maintenance domain is not canonical")
+        return value
+    if not isinstance(value, str):
+        raise TypeError("duplicate maintenance domain must be a string or domain")
+    try:
+        return DUPLICATE_MAINTENANCE_DOMAINS[value]
+    except KeyError as error:
+        raise ValueError(f"unknown duplicate maintenance domain: {value!r}") from error
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenancePreflight:
+    domain: DuplicateMaintenanceDomain
+    objects_to_check: int
+    market_id: MarketId | None = None
+    source_ohlcv: OHLCVSourceFingerprintV1 | None = None
+
+    def __post_init__(self) -> None:
+        domain = duplicate_maintenance_domain(self.domain)
+        if type(self.objects_to_check) is not int or self.objects_to_check < 0:
+            raise ValueError("objects_to_check must be a non-negative integer")
+        if domain.requires_market:
+            if self.market_id is None:
+                raise ValueError("selected-OHLCV maintenance requires market_id")
+            market = _require_canonical_market(self.market_id)
+            if (
+                not isinstance(self.source_ohlcv, OHLCVSourceFingerprintV1)
+                or self.source_ohlcv.market_id != market
+            ):
+                raise ValueError(
+                    "selected-OHLCV maintenance requires its exact source fingerprint"
+                )
+        elif self.market_id is not None or self.source_ohlcv is not None:
+            raise ValueError("global maintenance cannot contain OHLCV scope")
+
+    @property
+    def scope_label(self) -> str:
+        return "Global" if self.market_id is None else self.market_id.as_key()
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenanceCandidate:
+    object_id: str
+    classification: str
+    reason: str
+    blockers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _text(self.object_id, "object_id", required=True)
+        if self.classification not in _DUPLICATE_CLASSIFICATIONS:
+            raise ValueError("duplicate classification is invalid")
+        _text(self.reason, "reason", required=True)
+        object.__setattr__(
+            self,
+            "blockers",
+            _text_tuple(self.blockers, "blockers", allow_empty=True),
+        )
+        if self.classification == "BLOCKED" and not self.blockers:
+            raise ValueError("BLOCKED duplicate candidates require blockers")
+        if self.classification != "BLOCKED" and self.blockers:
+            raise ValueError("only BLOCKED duplicate candidates may contain blockers")
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenanceGroup:
+    domain: DuplicateMaintenanceDomain
+    canonical_id: str
+    duplicates: tuple[DuplicateMaintenanceCandidate, ...]
+    semantic_reason: str
+    tool_key: str = ""
+    parameters_label: str = ""
+
+    def __post_init__(self) -> None:
+        duplicate_maintenance_domain(self.domain)
+        _text(self.canonical_id, "canonical_id")
+        values = tuple(self.duplicates)
+        if not values or not all(
+            isinstance(item, DuplicateMaintenanceCandidate) for item in values
+        ):
+            raise ValueError(
+                "duplicates must contain DuplicateMaintenanceCandidate values"
+            )
+        if len({item.object_id for item in values}) != len(values):
+            raise ValueError("duplicate candidate identities must be unique")
+        _text(self.semantic_reason, "semantic_reason", required=True)
+        _text(self.tool_key, "tool_key")
+        _text(self.parameters_label, "parameters_label")
+        object.__setattr__(self, "duplicates", values)
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenanceScanResult:
+    preflight: DuplicateMaintenancePreflight
+    scanned_at_utc: datetime
+    objects_scanned: int
+    groups: tuple[DuplicateMaintenanceGroup, ...]
+    invalid_candidates: tuple[DuplicateMaintenanceCandidate, ...] = ()
+    historical_versions_excluded: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.preflight, DuplicateMaintenancePreflight):
+            raise TypeError("preflight must be a DuplicateMaintenancePreflight")
+        scanned_at = _aware_datetime(self.scanned_at_utc, "scanned_at_utc")
+        if scanned_at is None:
+            raise ValueError("scanned_at_utc is required")
+        object.__setattr__(self, "scanned_at_utc", scanned_at)
+        if type(self.objects_scanned) is not int or self.objects_scanned < 0:
+            raise ValueError("objects_scanned must be a non-negative integer")
+        groups = tuple(self.groups)
+        invalid = tuple(self.invalid_candidates)
+        if not all(
+            isinstance(item, DuplicateMaintenanceGroup)
+            and item.domain == self.preflight.domain
+            for item in groups
+        ):
+            raise ValueError("groups must match the preflight domain")
+        if not all(
+            isinstance(item, DuplicateMaintenanceCandidate)
+            and item.classification == "INVALID / SKIPPED"
+            for item in invalid
+        ):
+            raise ValueError(
+                "invalid_candidates must contain INVALID / SKIPPED candidates"
+            )
+        if (
+            type(self.historical_versions_excluded) is not int
+            or self.historical_versions_excluded < 0
+        ):
+            raise ValueError(
+                "historical_versions_excluded must be a non-negative integer"
+            )
+        if (
+            self.preflight.domain.key != "artifacts"
+            and self.historical_versions_excluded
+        ):
+            raise ValueError(
+                "only Artifact scans may exclude historical versions"
+            )
+        object.__setattr__(self, "groups", groups)
+        object.__setattr__(self, "invalid_candidates", invalid)
+
+    @property
+    def duplicate_objects(self) -> int:
+        return sum(len(group.duplicates) for group in self.groups)
+
+    @property
+    def safe_to_purge(self) -> int:
+        return self._classification_count("SAFE")
+
+    @property
+    def blocked(self) -> int:
+        return self._classification_count("BLOCKED")
+
+    @property
+    def invalid_skipped(self) -> int:
+        return len(self.invalid_candidates) + self._classification_count(
+            "INVALID / SKIPPED"
+        )
+
+    @property
+    def review_required(self) -> int:
+        return self._classification_count("REVIEW REQUIRED")
+
+    def _classification_count(self, classification: str) -> int:
+        return sum(
+            candidate.classification == classification
+            for group in self.groups
+            for candidate in group.duplicates
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenancePurgeDetail:
+    domain: DuplicateMaintenanceDomain
+    candidate_id: str
+    winner_id: str
+    result: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        duplicate_maintenance_domain(self.domain)
+        _text(self.candidate_id, "candidate_id", required=True)
+        _text(self.winner_id, "winner_id", required=True)
+        if self.candidate_id == self.winner_id and self.result != "FAILED":
+            raise ValueError("purge candidate cannot be its canonical winner")
+        if self.result not in _DUPLICATE_PURGE_RESULTS:
+            raise ValueError("duplicate purge result is invalid")
+        _text(self.reason, "reason", required=True)
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMaintenancePurgeResult:
+    scan: DuplicateMaintenanceScanResult
+    completed_at_utc: datetime
+    details: tuple[DuplicateMaintenancePurgeDetail, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scan, DuplicateMaintenanceScanResult):
+            raise TypeError("scan must be a DuplicateMaintenanceScanResult")
+        completed_at = _aware_datetime(self.completed_at_utc, "completed_at_utc")
+        if completed_at is None:
+            raise ValueError("completed_at_utc is required")
+        object.__setattr__(self, "completed_at_utc", completed_at)
+        details = tuple(self.details)
+        if not all(
+            isinstance(item, DuplicateMaintenancePurgeDetail)
+            and item.domain == self.scan.preflight.domain
+            for item in details
+        ):
+            raise ValueError("purge details must match the scan domain")
+        requested = {
+            (group.canonical_id, candidate.object_id)
+            for group in self.scan.groups
+            for candidate in group.duplicates
+            if candidate.classification == "SAFE"
+        }
+        reported = {(item.winner_id, item.candidate_id) for item in details}
+        if reported != requested or len(details) != len(requested):
+            raise ValueError("purge details must exactly cover SAFE scan candidates")
+        object.__setattr__(self, "details", details)
+
+    @property
+    def candidates_requested(self) -> int:
+        return len(self.details)
+
+    @property
+    def purged(self) -> int:
+        return self._result_count("PURGED")
+
+    @property
+    def blocked_during_revalidation(self) -> int:
+        return self._result_count("BLOCKED")
+
+    @property
+    def skipped_stale(self) -> int:
+        return self._result_count("SKIPPED STALE")
+
+    @property
+    def failed(self) -> int:
+        return self._result_count("FAILED")
+
+    @property
+    def canonical_winners_retained(self) -> int:
+        return len({item.winner_id for item in self.details})
+
+    def _result_count(self, result: str) -> int:
+        return sum(item.result == result for item in self.details)
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +737,10 @@ class DataManagerRecipeDerivationPlan:
     execution_stages: tuple[tuple[str, ...], ...]
     warnings: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
+    recipe_actions: tuple[tuple[str, str], ...] = ()
+    equivalent_collection_id: str | None = None
+    equivalent_collection_revision_id: str | None = None
+    equivalent_collection_name: str = ""
 
     def __post_init__(self) -> None:
         _text(self.environment_id, "environment_id", required=True)
@@ -475,6 +771,42 @@ class DataManagerRecipeDerivationPlan:
         object.__setattr__(self, "execution_stages", stages)
         object.__setattr__(self, "warnings", _text_tuple(self.warnings, "warnings", allow_empty=True))
         object.__setattr__(self, "blockers", _text_tuple(self.blockers, "blockers", allow_empty=True))
+        actions = tuple(tuple(item) for item in self.recipe_actions)
+        if not all(
+            len(item) == 2
+            and isinstance(item[0], str)
+            and item[1] in {"NEW", "REUSE EXISTING"}
+            for item in actions
+        ):
+            raise ValueError("recipe_actions contain invalid values")
+        action_ids = tuple(item[0] for item in actions)
+        recipe_ids = tuple(item.recipe_id for item in recipes)
+        if actions and (
+            len(set(action_ids)) != len(action_ids)
+            or set(action_ids) != set(recipe_ids)
+        ):
+            raise ValueError("recipe_actions must classify every Recipe exactly once")
+        paired_collection = (
+            self.equivalent_collection_id,
+            self.equivalent_collection_revision_id,
+        )
+        if (paired_collection[0] is None) != (paired_collection[1] is None):
+            raise ValueError("equivalent Collection identity must be paired")
+        if self.equivalent_collection_id is None:
+            if self.equivalent_collection_name:
+                raise ValueError("equivalent Collection name requires an identity")
+        else:
+            _text(self.equivalent_collection_id, "equivalent_collection_id", required=True)
+            _sha(
+                self.equivalent_collection_revision_id,
+                "equivalent_collection_revision_id",
+            )
+            _text(
+                self.equivalent_collection_name,
+                "equivalent_collection_name",
+                required=True,
+            )
+        object.__setattr__(self, "recipe_actions", actions)
 
     @property
     def blocked(self) -> bool:
@@ -488,6 +820,11 @@ class DataManagerRecipePersistenceResult:
     support_recipe_ids: tuple[str, ...]
     collection_id: str | None = None
     revision_id: str | None = None
+    created_recipe_ids: tuple[str, ...] = field(default=(), compare=False)
+    reused_recipe_ids: tuple[str, ...] = field(default=(), compare=False)
+    new_provenance_ids: tuple[str, ...] = field(default=(), compare=False)
+    existing_provenance_ids: tuple[str, ...] = field(default=(), compare=False)
+    collection_outcome: str = field(default="NONE", compare=False)
 
     def __post_init__(self) -> None:
         _text(self.environment_id, "environment_id", required=True)
@@ -500,6 +837,30 @@ class DataManagerRecipePersistenceResult:
         if self.collection_id is not None:
             _text(self.collection_id, "collection_id", required=True)
             _sha(self.revision_id, "revision_id")
+        evidence: dict[str, tuple[str, ...]] = {}
+        for name in (
+            "created_recipe_ids",
+            "reused_recipe_ids",
+            "new_provenance_ids",
+            "existing_provenance_ids",
+        ):
+            values = _text_tuple(getattr(self, name), name, allow_empty=True)
+            for value in values:
+                _sha(value, name)
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must be unique")
+            object.__setattr__(self, name, values)
+            evidence[name] = values
+        if set(evidence["created_recipe_ids"]) & set(evidence["reused_recipe_ids"]):
+            raise ValueError("created and reused Recipe IDs must be disjoint")
+        if set(evidence["new_provenance_ids"]) & set(
+            evidence["existing_provenance_ids"]
+        ):
+            raise ValueError("new and existing provenance IDs must be disjoint")
+        if self.collection_outcome not in {"NONE", "CREATED", "REUSED_EXISTING"}:
+            raise ValueError("invalid Recipe Collection outcome")
+        if (self.collection_outcome == "NONE") != (self.collection_id is None):
+            raise ValueError("Recipe Collection outcome must match Collection identity")
         object.__setattr__(self, "root_recipe_ids", roots)
         object.__setattr__(self, "support_recipe_ids", support)
 
@@ -521,6 +882,8 @@ class DataManagerPortableRecipeEntry:
     provenance_count: int
     valid: bool = True
     rejection_reason: str = ""
+    first_persisted_at_utc: datetime | None = None
+    origin_kinds: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _text(self.recipe_id, "recipe_id", required=True)
@@ -554,6 +917,17 @@ class DataManagerPortableRecipeEntry:
         object.__setattr__(self, "origin_study_display_names", _text_tuple(
             self.origin_study_display_names, "origin_study_display_names", allow_empty=True
         ))
+        object.__setattr__(
+            self,
+            "first_persisted_at_utc",
+            _aware_datetime(self.first_persisted_at_utc, "first_persisted_at_utc"),
+        )
+        origins = _text_tuple(self.origin_kinds, "origin_kinds", allow_empty=True)
+        if len(set(origins)) != len(origins) or any(
+            item not in _RECIPE_ORIGIN_KINDS for item in origins
+        ):
+            raise ValueError("portable Recipe origin kinds are invalid")
+        object.__setattr__(self, "origin_kinds", tuple(sorted(origins)))
         _require_validity(self.valid, self.rejection_reason)
 
 
@@ -913,7 +1287,7 @@ class DataManagerManagedArtifactCatalog:
 @dataclass(frozen=True, slots=True)
 class DataManagerDatabaseCatalogEntry:
     definition: DatabaseDefinitionV1
-    current_manifest: DatabaseRevisionManifestV1 | None
+    current_manifest: DatabaseRevisionManifestV1 | DatabaseRevisionManifestV2 | None
     revision_count: int
     currentness: object | None
     valid: bool = True
@@ -925,8 +1299,11 @@ class DataManagerDatabaseCatalogEntry:
         if not isinstance(self.definition, DatabaseDefinitionV1):
             raise TypeError("definition must be a DatabaseDefinitionV1")
         if self.current_manifest is not None:
-            if not isinstance(self.current_manifest, DatabaseRevisionManifestV1):
-                raise TypeError("current_manifest must be a DatabaseRevisionManifestV1")
+            if not isinstance(
+                self.current_manifest,
+                (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2),
+            ):
+                raise TypeError("current_manifest must be a Database revision manifest")
             if self.current_manifest.database_id != self.definition.database_id:
                 raise ValueError("current_manifest must belong to definition")
         if type(self.revision_count) is not int or self.revision_count < 0:

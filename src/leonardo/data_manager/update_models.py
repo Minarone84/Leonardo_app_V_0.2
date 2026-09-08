@@ -10,7 +10,12 @@ from leonardo.artifacts.models import OHLCVSourceFingerprintV1
 from leonardo.data import MarketId
 from leonardo.financial_tools.models import UpdateStrategy
 
-from .creation_models import ArtifactCollectionRevisionV1, DatabaseRevisionManifestV1
+from .creation_models import (
+    ArtifactCollectionRevisionV1,
+    DatabaseRevisionManifest,
+    DatabaseRevisionManifestV1,
+    DatabaseRevisionManifestV2,
+)
 from .models import DataManagerArtifactMaterializationResult
 
 
@@ -354,8 +359,8 @@ class DatabaseUpdatePlan:
     status: str
     source_change: DataManagerSourceChange
     source_ohlcv: OHLCVSourceFingerprintV1 | None
-    collection_id: str
-    collection_revision_id: str
+    collection_id: str | None
+    collection_revision_id: str | None
     starting_artifact_heads: tuple[tuple[str, str], ...]
     column_names: tuple[str, ...]
     execution_stages: tuple[tuple[str, ...], ...]
@@ -374,8 +379,11 @@ class DatabaseUpdatePlan:
             raise ValueError("source_change must match market_id")
         if self.source_ohlcv is not None and self.source_ohlcv.market_id != market:
             raise ValueError("source_ohlcv must match market_id")
-        _text(self.collection_id, "collection_id")
-        _sha(self.collection_revision_id, "collection_revision_id")
+        if (self.collection_id is None) != (self.collection_revision_id is None):
+            raise ValueError("Database collection identity must be paired")
+        if self.collection_id is not None:
+            _text(self.collection_id, "collection_id")
+            _sha(self.collection_revision_id, "collection_revision_id")
         object.__setattr__(self, "starting_artifact_heads", tuple(sorted(
             (_sha(logical, "logical_artifact_id"), _sha(artifact, "artifact_id"))
             for logical, artifact in self.starting_artifact_heads
@@ -393,15 +401,18 @@ class DatabaseUpdatePlan:
 class DatabaseUpdateResult:
     plan_id: str
     mode: str
-    database_revision: DatabaseRevisionManifestV1
+    database_revision: DatabaseRevisionManifest
     reconciliation_snapshot: DataManagerReconciliationSnapshot
 
     def __post_init__(self) -> None:
         _sha(self.plan_id, "plan_id")
         if self.mode not in {"APPEND", "REBUILD_REQUIRED"}:
             raise ValueError("result mode must be APPEND or REBUILD_REQUIRED")
-        if not isinstance(self.database_revision, DatabaseRevisionManifestV1):
-            raise TypeError("database_revision must be a DatabaseRevisionManifestV1")
+        if not isinstance(
+            self.database_revision,
+            (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2),
+        ):
+            raise TypeError("database_revision must be a Database revision manifest")
         if not isinstance(self.reconciliation_snapshot, DataManagerReconciliationSnapshot):
             raise TypeError("reconciliation_snapshot must be a DataManagerReconciliationSnapshot")
 

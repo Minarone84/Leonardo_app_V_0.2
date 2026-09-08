@@ -52,7 +52,7 @@ _PREVIEW_COLUMNS = (
     "Tool",
     "Kind",
     "Dependencies",
-    "Result",
+    "Action",
     "Recipe ID",
 )
 
@@ -97,6 +97,8 @@ class DataManagerRecipeDerivationDialog(QDialog):
 
         studies = QGroupBox("Study roots", self)
         studies_layout = QVBoxLayout(studies)
+        studies_layout.setContentsMargins(12, 24, 12, 12)
+        studies_layout.setSpacing(8)
         selection_actions = QHBoxLayout()
         self.select_all_button = QPushButton("Select All", studies)
         self.select_all_button.setObjectName(
@@ -125,6 +127,8 @@ class DataManagerRecipeDerivationDialog(QDialog):
 
         preview_group = QGroupBox("Preview", self)
         preview_layout = QVBoxLayout(preview_group)
+        preview_layout.setContentsMargins(12, 24, 12, 12)
+        preview_layout.setSpacing(8)
         self.preview_table = configure_table(
             QTableWidget(preview_group),
             object_id="data_manager.recipe_derivation.table.preview",
@@ -145,6 +149,8 @@ class DataManagerRecipeDerivationDialog(QDialog):
 
         collection = QGroupBox("Recipe Collection", self)
         collection_layout = QFormLayout(collection)
+        collection_layout.setContentsMargins(12, 24, 12, 12)
+        collection_layout.setVerticalSpacing(8)
         self.collection_checkbox = QCheckBox(
             "Save as Recipe Collection", collection
         )
@@ -194,7 +200,7 @@ class DataManagerRecipeDerivationDialog(QDialog):
         self.close_button.clicked.connect(self.close)
         self.select_all_button.clicked.connect(self._select_all_roots)
         self.deselect_all_button.clicked.connect(self._deselect_all_roots)
-        self.collection_checkbox.toggled.connect(self._sync_controls)
+        self.collection_checkbox.toggled.connect(self._on_collection_toggled)
         self.collection_name.textChanged.connect(self._sync_controls)
         self.collection_description.textChanged.connect(self._sync_controls)
 
@@ -245,6 +251,8 @@ class DataManagerRecipeDerivationDialog(QDialog):
         self._existing_recipe_ids = frozenset(str(item) for item in recipe_ids)
         if self._reviewed_plan is not None:
             self._populate_preview(self._reviewed_plan)
+            if not self._reviewed_plan.blockers:
+                self._set_preview_summary(self._reviewed_plan)
 
     def set_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
@@ -263,10 +271,7 @@ class DataManagerRecipeDerivationDialog(QDialog):
         if plan.blockers:
             self.status_label.setText("Recipe derivation Preview is blocked.")
         else:
-            self.status_label.setText(
-                f"Preview ready: {len(plan.root_entry_ids)} root; "
-                f"{len(plan.support_entry_ids)} support"
-            )
+            self._set_preview_summary(plan)
         self._sync_controls()
         return True
 
@@ -297,6 +302,11 @@ class DataManagerRecipeDerivationDialog(QDialog):
             "Recipes created/reused successfully\n"
             f"Roots: {len(result.root_recipe_ids)}\n"
             f"Support: {len(result.support_recipe_ids)}\n"
+            f"Created Recipes: {len(result.created_recipe_ids)}\n"
+            f"Reused Recipes: {len(result.reused_recipe_ids)}\n"
+            f"New provenance: {len(result.new_provenance_ids)}\n"
+            f"Existing provenance: {len(result.existing_provenance_ids)}\n"
+            f"Collection outcome: {result.collection_outcome}\n"
             f"Collection: {collection}"
         )
         self._sync_controls()
@@ -308,6 +318,8 @@ class DataManagerRecipeDerivationDialog(QDialog):
     def _build_environment_summary(self) -> QGroupBox:
         group = QGroupBox("Study Environment", self)
         layout = QFormLayout(group)
+        layout.setContentsMargins(12, 24, 12, 12)
+        layout.setVerticalSpacing(8)
         self.environment_name = QLabel("", group)
         self.environment_description = QLabel("", group)
         self.environment_description.setWordWrap(True)
@@ -355,6 +367,7 @@ class DataManagerRecipeDerivationDialog(QDialog):
             item.entry_id: item for item in plan.entry_classifications
         }
         ordered = (*plan.root_entry_ids, *plan.support_entry_ids)
+        actions = dict(plan.recipe_actions)
         self.preview_table.setRowCount(len(ordered))
         root_ids = set(plan.root_entry_ids)
         for row, entry_id in enumerate(ordered):
@@ -365,9 +378,9 @@ class DataManagerRecipeDerivationDialog(QDialog):
             else:
                 recipe_id = entry.recipe_id or ""
                 result = (
-                    "Existing"
+                    "REUSE EXISTING"
                     if recipe_id in self._existing_recipe_ids
-                    else "New"
+                    else actions.get(recipe_id, "NEW")
                 ) if recipe_id else ""
                 values = (
                     role,
@@ -382,6 +395,36 @@ class DataManagerRecipeDerivationDialog(QDialog):
                 self.preview_table.setItem(row, column, QTableWidgetItem(value))
         self.blockers_label.setText("\n".join(plan.blockers))
         resize_data_manager_table(self.preview_table)
+
+    def _set_preview_summary(self, plan: DataManagerRecipeDerivationPlan) -> None:
+        actions = tuple(
+            self.preview_table.item(row, 5).text()
+            for row in range(self.preview_table.rowCount())
+            if self.preview_table.item(row, 5) is not None
+        )
+        lines = [
+            f"Recipes considered: {len(actions)}",
+            f"New Recipes: {actions.count('NEW')}",
+            f"Existing Recipes reused: {actions.count('REUSE EXISTING')}",
+        ]
+        if self.collection_checkbox.isChecked():
+            if plan.equivalent_collection_id is None:
+                lines.append("Recipe Collection: NEW")
+            else:
+                lines.extend(
+                    (
+                        "Recipe Collection: REUSE EXISTING COLLECTION",
+                        f"Existing Name: {plan.equivalent_collection_name}",
+                        f"Collection ID: {plan.equivalent_collection_id}",
+                        f"Current Revision ID: {plan.equivalent_collection_revision_id}",
+                    )
+                )
+        self.status_label.setText("\n".join(lines))
+
+    def _on_collection_toggled(self, _checked: bool) -> None:
+        if self._reviewed_plan is not None and not self._reviewed_plan.blockers:
+            self._set_preview_summary(self._reviewed_plan)
+        self._sync_controls()
 
     def _on_study_item_changed(self, item: QTableWidgetItem) -> None:
         if self._populating or item.column() != 0:
@@ -422,7 +465,7 @@ class DataManagerRecipeDerivationDialog(QDialog):
         available = screen.availableGeometry()
         self.resize(
             int(available.width() * 0.40),
-            int(available.height() * 0.60),
+            int(available.height() * 0.78),
         )
 
     def _emit_preview(self) -> None:

@@ -1,0 +1,24 @@
+{
+  "collection_id": "prc_3121543c4005431180042ca5aa0e277b",
+  "created_at_utc": "2026-09-07T15:40:25.002612+00:00",
+  "description": "",
+  "display_name": "xrp_test_recipe_collection_C",
+  "member_recipe_ids": [
+    "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be",
+    "6ff2a5148f51953aff0072d5cd19a65ba800c0e381ebe96c66f676441d0bbe6f",
+    "ea06bc23617e16fb24e25b861fa5311436ee78210e6e75bd9f544a187e45bec2",
+    "6d014328aeb1e0ab89c01a7e688a48a6a01ea0703fda72516edbd8ee99fcde64",
+    "c98cf6b88d0203a274acb47b5ce1a168d32d4ccb84ca3bbff8ea93b1cba73723"
+  ],
+  "object_type": "portable_recipe_collection_revision",
+  "previous_revision_id": null,
+  "revision_id": "65c096cba92c397030a6f4a43e32e2cbc106a61ec693d8831ee248824c21edad",
+  "root_recipe_ids": [
+    "6d014328aeb1e0ab89c01a7e688a48a6a01ea0703fda72516edbd8ee99fcde64",
+    "c98cf6b88d0203a274acb47b5ce1a168d32d4ccb84ca3bbff8ea93b1cba73723",
+    "ea06bc23617e16fb24e25b861fa5311436ee78210e6e75bd9f544a187e45bec2",
+    "6ff2a5148f51953aff0072d5cd19a65ba800c0e381ebe96c66f676441d0bbe6f",
+    "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be"
+  ],
+  "schema_version": "1.0"
+}

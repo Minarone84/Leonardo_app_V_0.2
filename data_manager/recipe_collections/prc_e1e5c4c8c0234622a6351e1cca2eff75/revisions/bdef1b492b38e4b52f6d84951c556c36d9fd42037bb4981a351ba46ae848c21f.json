@@ -1,0 +1,24 @@
+{
+  "collection_id": "prc_e1e5c4c8c0234622a6351e1cca2eff75",
+  "created_at_utc": "2026-09-06T11:37:52.955481+00:00",
+  "description": "",
+  "display_name": "BTC_TEST_A_STUDY_COLLECTION",
+  "member_recipe_ids": [
+    "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+    "5b1331a65cb958ac12ab28baa812d76e5f717b8a9869b49a184772f0bd2564b3",
+    "9619a960a4d21c26bcc547562e69d4b315421a663e6d9a451fbaf110467d6839",
+    "e26a83a34a8c2dc143530825ad428b0854c369c8b84e7c62fce16d8dd2555cab",
+    "1d29abc63944e3441e425bff3202e70591184f7506c24119556182465fa8ad80"
+  ],
+  "object_type": "portable_recipe_collection_revision",
+  "previous_revision_id": null,
+  "revision_id": "bdef1b492b38e4b52f6d84951c556c36d9fd42037bb4981a351ba46ae848c21f",
+  "root_recipe_ids": [
+    "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+    "e26a83a34a8c2dc143530825ad428b0854c369c8b84e7c62fce16d8dd2555cab",
+    "9619a960a4d21c26bcc547562e69d4b315421a663e6d9a451fbaf110467d6839",
+    "1d29abc63944e3441e425bff3202e70591184f7506c24119556182465fa8ad80",
+    "5b1331a65cb958ac12ab28baa812d76e5f717b8a9869b49a184772f0bd2564b3"
+  ],
+  "schema_version": "1.0"
+}

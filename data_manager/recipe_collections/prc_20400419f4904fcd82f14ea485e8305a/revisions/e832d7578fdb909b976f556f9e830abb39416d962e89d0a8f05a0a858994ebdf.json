@@ -1,0 +1,25 @@
+{
+  "collection_id": "prc_20400419f4904fcd82f14ea485e8305a",
+  "created_at_utc": "2026-09-03T14:28:46.374710+00:00",
+  "description": "This is a test collection",
+  "display_name": "Test_4",
+  "member_recipe_ids": [
+    "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+    "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+    "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+    "099b93edd29a135ad33eaa1eb48982cfcd21f9c2607d60d4e74bed2084fe3a55",
+    "f3bd082122c1ee962d99af5336c5f810dace4468d419e4bec2acbee09bd2fbe8",
+    "c482fa027356b3b3b0e6e781834dccd5d669e2ea39d5b91f4ba33912e049dbf9",
+    "041d0b99151c9237424e351b423d70b267baa1332470033f3634a74cae7b7b1f"
+  ],
+  "object_type": "portable_recipe_collection_revision",
+  "previous_revision_id": null,
+  "revision_id": "e832d7578fdb909b976f556f9e830abb39416d962e89d0a8f05a0a858994ebdf",
+  "root_recipe_ids": [
+    "099b93edd29a135ad33eaa1eb48982cfcd21f9c2607d60d4e74bed2084fe3a55",
+    "041d0b99151c9237424e351b423d70b267baa1332470033f3634a74cae7b7b1f",
+    "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+    "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5"
+  ],
+  "schema_version": "1.0"
+}

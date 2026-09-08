@@ -21,7 +21,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from leonardo.data_manager import DataManagerProductCatalogSnapshot
+from leonardo.data_manager import (
+    DataManagerProductCatalogSnapshot,
+    database_collection_references,
+)
 from leonardo.gui.data_manager.table_presentation import (
     format_utc_timestamp_ms,
     resize_data_manager_table,
@@ -272,7 +275,7 @@ class DataManagerUpdateWorkspace(QWidget):
         _set_rows(self.database_plan_table, ((
             plan.mode, plan.status, ", ".join(plan.column_names),
             str(len(plan.execution_stages)), " | ".join(plan.blockers),
-            plan.collection_revision_id, plan.database_id,
+            plan.collection_revision_id or "", plan.database_id,
         ),))
         self._database_plan_database_id = plan.database_id
         blocked = bool(getattr(plan, "blocked", plan.blockers))
@@ -312,6 +315,18 @@ class DataManagerUpdateWorkspace(QWidget):
 
     def set_database_update_result(self, result) -> None:
         revision = result.database_revision
+        try:
+            references = database_collection_references(revision)
+            collection_revision_ids = tuple(
+                item.revision_id for item in references
+            )
+        except TypeError:
+            collection_revision_id = getattr(
+                revision, "collection_revision_id", None
+            )
+            collection_revision_ids = (
+                (collection_revision_id,) if collection_revision_id else ()
+            )
         _set_rows(self.commit_report, tuple(
             (name, value)
             for name, value in (
@@ -319,7 +334,10 @@ class DataManagerUpdateWorkspace(QWidget):
                 ("database_id", revision.database_id),
                 ("new_revision_id", revision.revision_id),
                 ("previous_revision_id", revision.previous_revision_id or ""),
-                ("collection_revision_id", revision.collection_revision_id),
+                (
+                    "collection_revision_id",
+                    ", ".join(collection_revision_ids),
+                ),
                 ("rows", str(revision.row_count)),
                 ("columns", str(revision.column_count)),
                 ("First TS", format_utc_timestamp_ms(revision.first_timestamp_ms)),

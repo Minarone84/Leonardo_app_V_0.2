@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDialog,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -41,6 +42,26 @@ class StudyEnvironmentSaveIntent:
     metadata_overrides: tuple[tuple[str, StudyUserMetadata], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class StudyEnvironmentSourceChart:
+    slot_id: int
+    session_id: str
+    display_label: str
+    studies: tuple[ChartStudy, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.slot_id) is not int or self.slot_id <= 0:
+            raise ValueError("slot_id must be positive")
+        if not isinstance(self.session_id, str) or not self.session_id:
+            raise ValueError("session_id must be text")
+        if not isinstance(self.display_label, str) or not self.display_label:
+            raise ValueError("display_label must be text")
+        if not self.studies or not all(
+            isinstance(study, ChartStudy) for study in self.studies
+        ):
+            raise ValueError("studies must contain ChartStudy values")
+
+
 class StudyEnvironmentSaveDialog(QDialog):
     """Edit only environment metadata over a captured chart snapshot."""
 
@@ -53,6 +74,8 @@ class StudyEnvironmentSaveDialog(QDialog):
         studies: tuple[ChartStudy, ...],
         summaries: tuple[StudyEnvironmentSummary, ...],
         parent: QWidget | None = None,
+        *,
+        source_charts: tuple[StudyEnvironmentSourceChart, ...] | None = None,
     ) -> None:
         super().__init__(parent)
         if type(slot_id) is not int or slot_id <= 0:
@@ -61,11 +84,41 @@ class StudyEnvironmentSaveDialog(QDialog):
             raise ValueError("session_id must be text")
         self.setObjectName("research.environment_save_dialog")
         self.setWindowTitle("Save Study Environment")
-        self._slot_id = slot_id
-        self._session_id = session_id
-        self._studies = tuple(studies)
+        fallback = StudyEnvironmentSourceChart(
+            slot_id,
+            session_id,
+            f"Chart {slot_id}",
+            tuple(studies),
+        )
+        self._source_charts = (
+            tuple(source_charts) if source_charts is not None else (fallback,)
+        )
+        if not self._source_charts:
+            raise ValueError("source_charts must not be empty")
+        if not all(
+            isinstance(source, StudyEnvironmentSourceChart)
+            for source in self._source_charts
+        ):
+            raise TypeError(
+                "source_charts must contain StudyEnvironmentSourceChart values"
+            )
+        initial_index = next(
+            (
+                index
+                for index, source in enumerate(self._source_charts)
+                if source.slot_id == slot_id and source.session_id == session_id
+            ),
+            -1,
+        )
+        if initial_index < 0:
+            raise ValueError("initial slot and session must identify a source chart")
+        initial_source = self._source_charts[initial_index]
+        self._slot_id = initial_source.slot_id
+        self._session_id = initial_source.session_id
+        self._studies = initial_source.studies
         self._summaries = tuple(summaries)
         self._intent: StudyEnvironmentSaveIntent | None = None
+        self._save_refused = False
         self.setStyleSheet(
             "QRadioButton::indicator {"
             " background-color: #111827; border: 1px solid #9CA3AF;"
@@ -84,6 +137,13 @@ class StudyEnvironmentSaveDialog(QDialog):
         group.addButton(self._create)
         group.addButton(self._update)
         self._create.setChecked(True)
+        self._source_chart = QComboBox(self)
+        self._source_chart.setObjectName(
+            "research.environment_save_dialog.combo.source_chart"
+        )
+        for source in self._source_charts:
+            self._source_chart.addItem(source.display_label, source)
+        self._source_chart.setCurrentIndex(initial_index)
         self._existing = QComboBox(self)
         self._existing.setObjectName("research.environment_save_dialog.combo.existing")
         for summary in self._summaries:
@@ -110,20 +170,31 @@ class StudyEnvironmentSaveDialog(QDialog):
         modes.addWidget(self._create)
         modes.addWidget(self._update)
         modes.addWidget(self._existing, 1)
+        source_chart = QHBoxLayout()
+        source_chart.addWidget(QLabel("Source Chart:", self))
+        source_chart.addWidget(self._source_chart, 1)
+        metadata = QFormLayout()
+        name_label = QLabel("Study Environment Name", self)
+        name_label.setBuddy(self._name)
+        description_label = QLabel("Description", self)
+        description_label.setBuddy(self._description)
+        metadata.addRow(name_label, self._name)
+        metadata.addRow(description_label, self._description)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         buttons.addWidget(self._save)
         buttons.addWidget(self._cancel)
         layout = QVBoxLayout(self)
+        layout.addLayout(source_chart)
         layout.addLayout(modes)
-        layout.addWidget(self._name)
-        layout.addWidget(self._description)
+        layout.addLayout(metadata)
         layout.addWidget(self._table)
         layout.addWidget(self._validation)
         layout.addLayout(buttons)
 
         self._create.toggled.connect(self._sync_mode)
         self._update.toggled.connect(self._sync_mode)
+        self._source_chart.currentIndexChanged.connect(self._source_changed)
         self._existing.currentIndexChanged.connect(self._existing_changed)
         self._name.textChanged.connect(self._validate)
         self._description.textChanged.connect(self._validate)
@@ -143,6 +214,12 @@ class StudyEnvironmentSaveDialog(QDialog):
     @property
     def result_intent(self) -> StudyEnvironmentSaveIntent | None:
         return self._intent
+
+    def show_save_failure(self, message: str) -> None:
+        if not isinstance(message, str) or not message:
+            raise ValueError("message must be non-empty text")
+        self._save_refused = True
+        self._validation.setText(message)
 
     def current_intent(self) -> StudyEnvironmentSaveIntent:
         mode = "update" if self._update.isChecked() else "create"
@@ -180,6 +257,8 @@ class StudyEnvironmentSaveDialog(QDialog):
 
     def _populate_studies(self) -> None:
         self._table.blockSignals(True)
+        self._table.clearContents()
+        self._table.setRowCount(len(self._studies))
         for row, study in enumerate(self._studies):
             readonly = (
                 str(row + 1),
@@ -212,6 +291,17 @@ class StudyEnvironmentSaveDialog(QDialog):
             self._table.setCellWidget(row, 5, role)
             self._table.setItem(row, 6, QTableWidgetItem(study.user_metadata.description))
         self._table.blockSignals(False)
+
+    def _source_changed(self, *_args) -> None:
+        source = self._source_chart.currentData()
+        if not isinstance(source, StudyEnvironmentSourceChart):
+            return
+        self._slot_id = source.slot_id
+        self._session_id = source.session_id
+        self._studies = source.studies
+        self._populate_studies()
+        self._resize_study_columns()
+        self._validate()
 
     def _resize_study_columns(self, *_args) -> None:
         resize_table_columns_to_contents(
@@ -256,8 +346,10 @@ class StudyEnvironmentSaveDialog(QDialog):
             self._validate()
             return
         self._intent = intent
+        self._save_refused = False
         self.save_requested.emit(intent)
-        self.accept()
+        if not self._save_refused:
+            self.accept()
 
 
 EnvironmentSaveDialog = StudyEnvironmentSaveDialog

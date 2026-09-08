@@ -38,10 +38,17 @@ from .creation_models import (
     BatchArtifactPlan,
     BatchArtifactRequest,
     DatabaseDefinitionV1,
+    DatabaseCollectionReferenceV2,
+    DatabaseContentAdditionPlan,
+    DatabaseContentOutputPreview,
     DatabaseReadiness,
+    DatabaseRevisionManifest,
     DatabaseRevisionManifestV1,
+    DatabaseRevisionManifestV2,
     DatabaseSeedV1,
+    DatabaseSeedCreationPlan,
     DataManagerCreationError,
+    SeedOnlyDatabaseCreationPlan,
     deterministic_hash,
 )
 from .construct_batch import visible_output_names
@@ -74,6 +81,12 @@ class DataManagerCreationWorkflow:
             tuple[DataManagerArtifactMaterializationPlan, object],
         ],
         batch_materialization_executor: Callable[..., DataManagerArtifactMaterializationResult],
+        portable_recipe_resolver: Callable[
+            [tuple[PortableRecipeV1, ...]], tuple[PortableRecipeV1, ...]
+        ],
+        portable_recipe_publisher: Callable[
+            [tuple[PortableRecipeV1, ...]], None
+        ],
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
@@ -82,6 +95,8 @@ class DataManagerCreationWorkflow:
         self._artifacts = artifacts
         self._plan_batch_materialization = batch_materialization_planner
         self._execute_batch_materialization = batch_materialization_executor
+        self._resolve_portable_recipes = portable_recipe_resolver
+        self._publish_portable_recipes = portable_recipe_publisher
         self._clock = clock or (lambda: datetime.now(UTC))
 
     @property
@@ -98,23 +113,245 @@ class DataManagerCreationWorkflow:
         selected_range_start_ms: int | None = None,
         selected_range_end_ms: int | None = None,
     ) -> DatabaseSeedV1:
+        plan = self.plan_database_seed_creation(
+            market_id,
+            display_name,
+            description=description,
+            selected_ohlcv_columns=selected_ohlcv_columns,
+            selected_range_start_ms=selected_range_start_ms,
+            selected_range_end_ms=selected_range_end_ms,
+        )
+        return self.execute_database_seed_creation(plan)
+
+    def plan_database_seed_creation(
+        self,
+        market_id: MarketId,
+        display_name: str,
+        *,
+        description: str = "",
+        selected_ohlcv_columns: Sequence[str] = (
+            "open", "high", "low", "close", "volume"
+        ),
+        selected_range_start_ms: int | None = None,
+        selected_range_end_ms: int | None = None,
+    ) -> DatabaseSeedCreationPlan:
         source = self._artifacts.capture_accepted_source(market_id)
         dataset = self._loader.load(market_id)
         if dataset.file_sha256 != source.csv_sha256 or dataset.row_count != source.row_count:
             raise DataManagerCreationError("loaded OHLCV does not match accepted source evidence")
-        start = dataset.first_timestamp_ms if selected_range_start_ms is None else selected_range_start_ms
-        end = dataset.last_timestamp_ms if selected_range_end_ms is None else selected_range_end_ms
+        columns = tuple(selected_ohlcv_columns)
+        canonical_columns = tuple(
+            item
+            for item in ("open", "high", "low", "close", "volume")
+            if item in columns
+        )
+        if not columns or columns != canonical_columns:
+            raise DataManagerCreationError(
+                "selected_ohlcv_columns must use canonical OHLCV order"
+            )
+        start = (
+            dataset.first_timestamp_ms
+            if selected_range_start_ms is None
+            else selected_range_start_ms
+        )
+        end = (
+            dataset.last_timestamp_ms
+            if selected_range_end_ms is None
+            else selected_range_end_ms
+        )
+        if type(start) is not int or type(end) is not int:
+            raise DataManagerCreationError("selected range endpoints must be integers")
+        timestamps = set(dataset.ts_ms)
+        if start not in timestamps or end not in timestamps or start > end:
+            raise DataManagerCreationError(
+                "selected source range endpoints must match exact OHLCV timestamps"
+            )
         seed = DatabaseSeedV1(
             seed_id=self._store.new_seed_id(), display_name=display_name,
             description=description, market_id=market_id, source_ohlcv=source,
             source_row_count=dataset.row_count,
             first_timestamp_ms=dataset.first_timestamp_ms,
             last_timestamp_ms=dataset.last_timestamp_ms,
-            selected_ohlcv_columns=tuple(selected_ohlcv_columns),
+            selected_ohlcv_columns=columns,
             selected_range_start_ms=start, selected_range_end_ms=end,
             created_at_utc=self._clock(),
         )
-        return self._store.save_seed(seed)
+        return DatabaseSeedCreationPlan(
+            deterministic_hash(seed.to_dict()), seed
+        )
+
+    def execute_database_seed_creation(
+        self,
+        plan: DatabaseSeedCreationPlan,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+        before_publish: Callable[[], None] | None = None,
+    ) -> DatabaseSeedV1:
+        if not isinstance(plan, DatabaseSeedCreationPlan):
+            raise TypeError("plan must be a DatabaseSeedCreationPlan")
+        cancelled = cancellation_requested or (lambda: False)
+        if cancelled():
+            raise DataManagerCreationError("Database Seed creation cancelled")
+        self._require_seed_candidate_current(plan.seed)
+
+        def publication_gate() -> None:
+            if cancelled():
+                raise DataManagerCreationError("Database Seed creation cancelled")
+            self._require_seed_candidate_current(plan.seed)
+            if before_publish is not None:
+                before_publish()
+
+        return self._store.save_seed(plan.seed, before_publish=publication_gate)
+
+    def plan_seed_only_database_creation(
+        self,
+        seed_id: str,
+        display_name: str,
+        *,
+        description: str = "",
+    ) -> SeedOnlyDatabaseCreationPlan:
+        seed = self.load_database_seed(seed_id)
+        valid, blockers = self.validate_database_seed(seed_id)
+        if not valid:
+            raise DataManagerCreationError(
+                "Database Seed is not current: " + "; ".join(blockers)
+            )
+        frame = self._seed_base_frame(seed)
+        seed_hash = sha256(seed.canonical_json_bytes()).hexdigest()
+        payload = {
+            "seed_id": seed.seed_id,
+            "seed_sha256": seed_hash,
+            "source_ohlcv": seed.source_ohlcv.to_dict(),
+            "display_name": display_name,
+            "description": description,
+            "column_names": list(frame.columns),
+            "row_count": len(frame),
+            "first_timestamp_ms": int(frame["ts_ms"].iloc[0]),
+            "last_timestamp_ms": int(frame["ts_ms"].iloc[-1]),
+        }
+        return SeedOnlyDatabaseCreationPlan(
+            plan_id=deterministic_hash(payload),
+            seed_id=seed.seed_id,
+            seed_sha256=seed_hash,
+            source_ohlcv=seed.source_ohlcv,
+            display_name=display_name,
+            description=description,
+            column_names=tuple(frame.columns),
+            row_count=len(frame),
+            first_timestamp_ms=int(frame["ts_ms"].iloc[0]),
+            last_timestamp_ms=int(frame["ts_ms"].iloc[-1]),
+        )
+
+    def execute_seed_only_database_creation(
+        self,
+        plan: SeedOnlyDatabaseCreationPlan,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+        before_publish: Callable[[], None] | None = None,
+    ) -> DatabaseRevisionManifestV2:
+        if not isinstance(plan, SeedOnlyDatabaseCreationPlan):
+            raise TypeError("plan must be a SeedOnlyDatabaseCreationPlan")
+        cancelled = cancellation_requested or (lambda: False)
+        if cancelled():
+            raise DataManagerCreationError("Seed-only Database creation cancelled")
+        fresh = self.plan_seed_only_database_creation(
+            plan.seed_id, plan.display_name, description=plan.description
+        )
+        if fresh != plan:
+            raise DataManagerCreationError(
+                "Seed-only Database creation plan changed before execution"
+            )
+        seed = self.load_database_seed(plan.seed_id)
+        if sha256(seed.canonical_json_bytes()).hexdigest() != plan.seed_sha256:
+            raise DataManagerCreationError("Database Seed bytes changed before execution")
+        frame = self._seed_base_frame(seed)
+        values = frame.to_csv(
+            index=False, lineterminator="\n", float_format="%.17g"
+        ).encode("utf-8")
+        database_id = self._store.new_database_id()
+        now = self._clock()
+        definition = DatabaseDefinitionV1(
+            database_id,
+            plan.display_name,
+            plan.description,
+            seed.market_id,
+            seed.seed_id,
+            now,
+        )
+        mapping = {column: column for column in plan.column_names}
+        payload = {
+            "schema_version": "2.0",
+            "object_type": "database_revision",
+            "database_id": database_id,
+            "display_name": plan.display_name,
+            "description": plan.description,
+            "seed_id": seed.seed_id,
+            "market_id": {
+                "exchange": seed.market_id.exchange,
+                "market_type": seed.market_id.market_type,
+                "symbol": seed.market_id.symbol,
+                "timeframe": seed.market_id.timeframe,
+            },
+            "source_ohlcv": plan.source_ohlcv.to_dict(),
+            "members": [],
+            "dependency_edges": [],
+            "selected_outputs": [],
+            "collection_sources": [],
+            "column_mapping": mapping,
+            "first_timestamp_ms": plan.first_timestamp_ms,
+            "last_timestamp_ms": plan.last_timestamp_ms,
+            "row_count": plan.row_count,
+            "column_count": len(plan.column_names),
+            "values_sha256": sha256(values).hexdigest(),
+            "previous_revision_id": None,
+            "created_at_utc": now.isoformat().replace("+00:00", "Z"),
+        }
+        manifest = DatabaseRevisionManifestV2(
+            database_id=database_id,
+            revision_id=deterministic_hash(payload),
+            display_name=plan.display_name,
+            description=plan.description,
+            seed_id=seed.seed_id,
+            market_id=seed.market_id,
+            source_ohlcv=plan.source_ohlcv,
+            members=(),
+            dependency_edges=(),
+            selected_outputs=(),
+            collection_sources=(),
+            column_mapping=mapping,
+            first_timestamp_ms=plan.first_timestamp_ms,
+            last_timestamp_ms=plan.last_timestamp_ms,
+            row_count=plan.row_count,
+            column_count=len(plan.column_names),
+            values_sha256=sha256(values).hexdigest(),
+            previous_revision_id=None,
+            created_at_utc=now,
+        )
+        if cancelled():
+            raise DataManagerCreationError("Seed-only Database creation cancelled")
+
+        def publication_gate() -> None:
+            if cancelled():
+                raise DataManagerCreationError("Seed-only Database creation cancelled")
+            persisted = self.load_database_seed(plan.seed_id)
+            if sha256(persisted.canonical_json_bytes()).hexdigest() != plan.seed_sha256:
+                raise DataManagerCreationError(
+                    "Database Seed bytes changed before publication"
+                )
+            if self._artifacts.capture_accepted_source(seed.market_id) != plan.source_ohlcv:
+                raise DataManagerCreationError(
+                    "OHLCV changed before Database publication"
+                )
+            if before_publish is not None:
+                before_publish()
+
+        return self._store.publish_database_revision(
+            definition,
+            manifest,
+            values,
+            expected_head_revision_id=None,
+            before_publish=publication_gate,
+        )
 
     def list_database_seeds(self) -> tuple[DatabaseSeedV1, ...]:
         return self._store.list_seeds()
@@ -157,16 +394,32 @@ class DataManagerCreationWorkflow:
     ) -> ArtifactCollectionRevisionV1:
         if not isinstance(materialization, DataManagerArtifactMaterializationResult):
             raise TypeError("materialization must be a DataManagerArtifactMaterializationResult")
-        collection_id = self._store.new_collection_id()
-        now = self._clock()
-        revision = self._collection_revision_from_materialization(
-            materialization, collection_id=collection_id, display_name=display_name,
-            description=description, previous=None, created_at=now, revised_at=now,
-            source_recipe_collection_id=source_recipe_collection_id,
-            source_recipe_collection_revision_id=source_recipe_collection_revision_id,
-            selected_outputs=selected_outputs,
+        values = self._collection_values_from_materialization(
+            materialization, selected_outputs
         )
-        return self._store.save_collection_revision(revision, expected_head_revision_id=None)
+        now = self._clock()
+        return self._store.create_collection_revision(
+            market_id=values["market_id"],
+            source_ohlcv=values["source_ohlcv"],
+            root_logical_artifact_ids=values["roots"],
+            support_logical_artifact_ids=values["supports"],
+            members=values["members"],
+            selected_outputs=values["selected_outputs"],
+            presentation_order=values["presentation_order"],
+            revision_factory=lambda collection_id: self._build_collection_revision(
+                collection_id=collection_id,
+                display_name=display_name,
+                description=description,
+                source_recipe_collection_id=source_recipe_collection_id,
+                source_recipe_collection_revision_id=(
+                    source_recipe_collection_revision_id
+                ),
+                previous_revision_id=None,
+                created_at_utc=now,
+                revised_at_utc=now,
+                **values,
+            ),
+        )
 
     def create_artifact_collection_from_selection(
         self,
@@ -180,28 +433,35 @@ class DataManagerCreationWorkflow:
             raise TypeError("plan must be an ArtifactCollectionSelectionPlan")
         outputs = self._selection_outputs(plan, selected_outputs)
         now = self._clock()
-        revision = self._build_collection_revision(
-            collection_id=self._store.new_collection_id(),
-            display_name=display_name,
-            description=description,
+        presentation_order = tuple(item.column_name for item in outputs)
+        return self._store.create_collection_revision(
             market_id=plan.market_id,
-            roots=plan.root_logical_artifact_ids,
-            supports=plan.support_logical_artifact_ids,
-            members=plan.members,
-            edges=plan.dependency_edges,
-            selected_outputs=outputs,
-            presentation_order=tuple(item.column_name for item in outputs),
-            source_recipe_collection_id=None,
-            source_recipe_collection_revision_id=None,
             source_ohlcv=plan.source_ohlcv,
-            first_timestamp_ms=plan.first_timestamp_ms,
-            last_timestamp_ms=plan.last_timestamp_ms,
-            previous_revision_id=None,
-            created_at_utc=now,
-            revised_at_utc=now,
-        )
-        return self._store.save_collection_revision(
-            revision, expected_head_revision_id=None
+            root_logical_artifact_ids=plan.root_logical_artifact_ids,
+            support_logical_artifact_ids=plan.support_logical_artifact_ids,
+            members=plan.members,
+            selected_outputs=outputs,
+            presentation_order=presentation_order,
+            revision_factory=lambda collection_id: self._build_collection_revision(
+                collection_id=collection_id,
+                display_name=display_name,
+                description=description,
+                market_id=plan.market_id,
+                roots=plan.root_logical_artifact_ids,
+                supports=plan.support_logical_artifact_ids,
+                members=plan.members,
+                edges=plan.dependency_edges,
+                selected_outputs=outputs,
+                presentation_order=presentation_order,
+                source_recipe_collection_id=None,
+                source_recipe_collection_revision_id=None,
+                source_ohlcv=plan.source_ohlcv,
+                first_timestamp_ms=plan.first_timestamp_ms,
+                last_timestamp_ms=plan.last_timestamp_ms,
+                previous_revision_id=None,
+                created_at_utc=now,
+                revised_at_utc=now,
+            ),
         )
 
     def edit_artifact_collection_from_selection(
@@ -560,6 +820,7 @@ class DataManagerCreationWorkflow:
             raise DataManagerCreationError("batch Artifact graph changed before execution")
         if cancelled():
             raise DataManagerCreationError("batch cancelled before Artifact publication")
+        self._publish_portable_recipes(recipes)
         try:
             result = self._execute_batch_materialization(
                 materialization_plan, members, progress=progress,
@@ -720,13 +981,559 @@ class DataManagerCreationWorkflow:
             before_publish=publication_gate,
         )
 
+    def plan_database_content_addition(
+        self,
+        database_id: str,
+        selection: ArtifactCollectionSelectionPlan,
+        *,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        source_kind: str,
+        source_collection: DatabaseCollectionReferenceV2 | None = None,
+    ) -> DatabaseContentAdditionPlan:
+        if not isinstance(selection, ArtifactCollectionSelectionPlan):
+            raise TypeError("selection must be an ArtifactCollectionSelectionPlan")
+        if source_kind not in {"artifacts", "collection"}:
+            raise DataManagerCreationError("Database content source kind is invalid")
+        loaded_database = self.load_database_revision(database_id)
+        manifest = loaded_database.manifest
+        definition = self.load_database_definition(database_id)
+        if manifest.market_id != definition.market_id:
+            raise DataManagerCreationError(
+                "Database definition and current revision MarketId differ"
+            )
+        if selection.market_id != manifest.market_id:
+            raise DataManagerCreationError(
+                "selected content MarketId does not match Database MarketId"
+            )
+        current_members, current_edges, current_outputs, current_sources = (
+            self._database_v2_content(manifest)
+        )
+        frame = self._read_database_values(loaded_database.values_csv)
+        old_columns = tuple(str(item) for item in frame.columns)
+        if (
+            set(old_columns) != set(manifest.column_mapping)
+            or any(
+                manifest.column_mapping[column] != column
+                for column in old_columns
+            )
+        ):
+            raise DataManagerCreationError(
+                "Database values columns do not match current manifest"
+            )
+
+        blockers: list[str] = []
+        try:
+            accepted_source = self._artifacts.capture_accepted_source(
+                manifest.market_id
+            )
+        except Exception as exc:
+            accepted_source = manifest.source_ohlcv
+            blockers.append(f"accepted OHLCV unavailable: {exc}")
+        if accepted_source != manifest.source_ohlcv:
+            blockers.append("Database update required before adding content.")
+        if selection.source_ohlcv != manifest.source_ohlcv:
+            blockers.append(
+                "selected content OHLCV source does not match Database source"
+            )
+
+        incoming_outputs = tuple(selected_outputs)
+        if not incoming_outputs or not all(
+            isinstance(item, ArtifactCollectionOutputV1)
+            for item in incoming_outputs
+        ):
+            raise DataManagerCreationError(
+                "Database content selection requires persisted outputs"
+            )
+        selected_member_ids = {
+            item.version_key.logical_artifact_id for item in selection.members
+        }
+        if any(
+            item.logical_artifact_id not in selected_member_ids
+            for item in incoming_outputs
+        ):
+            raise DataManagerCreationError(
+                "selected output is not provided by the selected Artifact graph"
+            )
+
+        current_by_logical = {
+            item.version_key.logical_artifact_id: item for item in current_members
+        }
+
+        current_output_by_key = {
+            (item.logical_artifact_id, item.output_name): item
+            for item in current_outputs
+        }
+        current_column_names = set(old_columns)
+        pending_columns = [
+            item.column_name
+            for item in incoming_outputs
+            if (item.logical_artifact_id, item.output_name)
+            not in current_output_by_key
+        ]
+        duplicate_pending_columns = {
+            column for column in pending_columns if pending_columns.count(column) > 1
+        }
+        member_by_id = {
+            item.version_key.logical_artifact_id: item for item in selection.members
+        }
+        preview_rows: list[DatabaseContentOutputPreview] = []
+        additions: list[ArtifactCollectionOutputV1] = []
+        for output in incoming_outputs:
+            key = (output.logical_artifact_id, output.output_name)
+            member = member_by_id[output.logical_artifact_id]
+            if key in current_output_by_key:
+                current_output = current_output_by_key[key]
+                preview_rows.append(DatabaseContentOutputPreview(
+                    "ALREADY_INCLUDED",
+                    output.logical_artifact_id,
+                    member.version_key.artifact_id,
+                    member.tool_key,
+                    output.output_name,
+                    current_output.column_name,
+                    source_collection.collection_id
+                    if source_collection is not None
+                    else "Artifact",
+                ))
+                continue
+            collision = (
+                output.column_name in current_column_names
+                or output.column_name in duplicate_pending_columns
+            )
+            status = "BLOCKED_COLLISION" if collision else "ADD"
+            detail = (
+                f"Database column collision: {output.column_name}"
+                if collision
+                else ""
+            )
+            preview_rows.append(DatabaseContentOutputPreview(
+                status,
+                output.logical_artifact_id,
+                member.version_key.artifact_id,
+                member.tool_key,
+                output.output_name,
+                output.column_name,
+                source_collection.collection_id
+                if source_collection is not None
+                else "Artifact",
+                detail,
+            ))
+            if collision:
+                blockers.append(detail)
+            else:
+                additions.append(output)
+
+        addition_ids = {item.logical_artifact_id for item in additions}
+        required_ids = set(addition_ids)
+        while True:
+            previous = set(required_ids)
+            for edge in selection.dependency_edges:
+                if edge.dependent_logical_artifact_id in required_ids:
+                    required_ids.add(edge.dependency_logical_artifact_id)
+            if required_ids == previous:
+                break
+        for incoming in selection.members:
+            logical_id = incoming.version_key.logical_artifact_id
+            existing = current_by_logical.get(logical_id)
+            if (
+                logical_id in required_ids
+                and existing is not None
+                and existing != incoming
+            ):
+                blockers.append(
+                    "Database fixed membership conflicts with selected Artifact: "
+                    f"{logical_id}"
+                )
+        new_members = tuple(
+            item
+            for item in selection.members
+            if item.version_key.logical_artifact_id in required_ids
+            and item.version_key.logical_artifact_id not in current_by_logical
+        )
+        final_member_ids = set(current_by_logical) | {
+            item.version_key.logical_artifact_id for item in new_members
+        }
+        final_members = (*current_members, *new_members)
+        edge_signatures = {
+            (
+                item.dependency_logical_artifact_id,
+                item.dependent_logical_artifact_id,
+                item.role,
+                item.output_name,
+            )
+            for item in current_edges
+        }
+        new_edges = tuple(
+            edge
+            for edge in selection.dependency_edges
+            if edge.dependency_logical_artifact_id in final_member_ids
+            and edge.dependent_logical_artifact_id in final_member_ids
+            and (
+                edge.dependency_logical_artifact_id,
+                edge.dependent_logical_artifact_id,
+                edge.role,
+                edge.output_name,
+            )
+            not in edge_signatures
+        )
+        final_edges = (*current_edges, *new_edges)
+        final_outputs = (*current_outputs, *additions)
+        final_sources = current_sources
+        if additions and source_collection is not None and source_collection not in final_sources:
+            final_sources = (*final_sources, source_collection)
+
+        new_columns = tuple(item.column_name for item in additions)
+        materialized = frame
+        leading = 0
+        non_leading = 0
+        if additions and not blockers:
+            materialized = self._materialize_database_content(
+                frame,
+                manifest.source_ohlcv,
+                tuple(additions),
+                member_by_id,
+            )
+            required_columns = tuple(
+                item.column_name for item in final_outputs
+            )
+            valid_rows = materialized.loc[:, required_columns].notna().all(axis=1)
+            valid_values = valid_rows.tolist()
+            for is_valid in valid_values:
+                if is_valid:
+                    break
+                leading += 1
+            non_leading = sum(
+                not is_valid for is_valid in valid_values[leading:]
+            )
+            materialized = materialized.loc[valid_rows].reset_index(drop=True)
+            if materialized.empty:
+                blockers.append("Database has no usable rows after content addition")
+
+        first_timestamp = int(frame["ts_ms"].iloc[0])
+        last_timestamp = int(frame["ts_ms"].iloc[-1])
+        if not materialized.empty:
+            first_timestamp = int(materialized["ts_ms"].iloc[0])
+            last_timestamp = int(materialized["ts_ms"].iloc[-1])
+        blockers_tuple = tuple(dict.fromkeys(blockers))
+        values = {
+            "database_id": database_id,
+            "starting_revision_id": manifest.revision_id,
+            "starting_schema_version": manifest.schema_version,
+            "market_id": manifest.market_id,
+            "source_ohlcv": manifest.source_ohlcv,
+            "source_kind": source_kind,
+            "selected_root_logical_artifact_ids": (
+                selection.root_logical_artifact_ids
+            ),
+            "source_collection": source_collection,
+            "final_members": tuple(final_members),
+            "final_dependency_edges": tuple(final_edges),
+            "final_selected_outputs": tuple(final_outputs),
+            "final_collection_sources": tuple(final_sources),
+            "output_preview_rows": tuple(preview_rows),
+            "old_columns": old_columns,
+            "new_columns": new_columns,
+            "old_row_count": len(frame),
+            "new_row_count": len(materialized),
+            "first_timestamp_ms": first_timestamp,
+            "last_timestamp_ms": last_timestamp,
+            "leading_warmup_exclusions": leading,
+            "non_leading_missing_rows": non_leading,
+            "requires_v1_transition": bool(
+                additions and isinstance(manifest, DatabaseRevisionManifestV1)
+            ),
+            "blockers": blockers_tuple,
+        }
+        payload = {
+            "database_id": values["database_id"],
+            "starting_revision_id": values["starting_revision_id"],
+            "starting_schema_version": values["starting_schema_version"],
+            "market_id": {
+                "exchange": manifest.market_id.exchange,
+                "market_type": manifest.market_id.market_type,
+                "symbol": manifest.market_id.symbol,
+                "timeframe": manifest.market_id.timeframe,
+            },
+            "source_ohlcv": manifest.source_ohlcv.to_dict(),
+            "source_kind": source_kind,
+            "selected_root_logical_artifact_ids": list(
+                selection.root_logical_artifact_ids
+            ),
+            "source_collection": (
+                None if source_collection is None else source_collection.to_dict()
+            ),
+            "final_members": [item.to_dict() for item in final_members],
+            "final_dependency_edges": [item.to_dict() for item in final_edges],
+            "final_selected_outputs": [item.to_dict() for item in final_outputs],
+            "final_collection_sources": [item.to_dict() for item in final_sources],
+            "output_preview_rows": [item.to_dict() for item in preview_rows],
+            "old_columns": list(old_columns),
+            "new_columns": list(new_columns),
+            "old_row_count": len(frame),
+            "new_row_count": len(materialized),
+            "first_timestamp_ms": first_timestamp,
+            "last_timestamp_ms": last_timestamp,
+            "leading_warmup_exclusions": leading,
+            "non_leading_missing_rows": non_leading,
+            "requires_v1_transition": values["requires_v1_transition"],
+            "blockers": list(blockers_tuple),
+        }
+        return DatabaseContentAdditionPlan(
+            deterministic_hash(payload),
+            **values,
+        )
+
+    def execute_database_content_addition(
+        self,
+        plan: DatabaseContentAdditionPlan,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+        before_publish: Callable[[], None] | None = None,
+    ) -> DatabaseRevisionManifestV2 | None:
+        if not isinstance(plan, DatabaseContentAdditionPlan):
+            raise TypeError("plan must be a DatabaseContentAdditionPlan")
+        if plan.blocked:
+            raise DataManagerCreationError(
+                "Database content addition is blocked: " + "; ".join(plan.blockers)
+            )
+        if not plan.has_additions:
+            return None
+        cancelled = cancellation_requested or (lambda: False)
+        if cancelled():
+            raise DataManagerCreationError(
+                "Database content addition cancelled before materialization"
+            )
+        loaded = self.load_database_revision(
+            plan.database_id, plan.starting_revision_id
+        )
+        frame = self._read_database_values(loaded.values_csv)
+        member_by_id = {
+            item.version_key.logical_artifact_id: item
+            for item in plan.final_members
+        }
+        additions = tuple(
+            output
+            for output in plan.final_selected_outputs
+            if output.column_name in plan.new_columns
+        )
+        materialized = self._materialize_database_content(
+            frame,
+            plan.source_ohlcv,
+            additions,
+            member_by_id,
+        )
+        required_columns = tuple(
+            item.column_name for item in plan.final_selected_outputs
+        )
+        materialized = materialized.loc[
+            materialized.loc[:, required_columns].notna().all(axis=1)
+        ].reset_index(drop=True)
+        if (
+            len(materialized) != plan.new_row_count
+            or int(materialized["ts_ms"].iloc[0]) != plan.first_timestamp_ms
+            or int(materialized["ts_ms"].iloc[-1]) != plan.last_timestamp_ms
+        ):
+            raise DataManagerCreationError(
+                "Database content materialization changed after Preview"
+            )
+        values_csv = materialized.to_csv(
+            index=False, lineterminator="\n", float_format="%.17g"
+        ).encode("utf-8")
+        definition = self.load_database_definition(plan.database_id)
+        now = self._clock()
+        collection_sources = tuple(
+            sorted(
+                plan.final_collection_sources,
+                key=lambda item: (item.collection_id, item.revision_id),
+            )
+        )
+        payload = {
+            "schema_version": "2.0",
+            "object_type": "database_revision",
+            "database_id": plan.database_id,
+            "display_name": definition.display_name,
+            "description": definition.description,
+            "seed_id": definition.seed_id,
+            "market_id": {
+                "exchange": plan.market_id.exchange,
+                "market_type": plan.market_id.market_type,
+                "symbol": plan.market_id.symbol,
+                "timeframe": plan.market_id.timeframe,
+            },
+            "source_ohlcv": plan.source_ohlcv.to_dict(),
+            "members": [item.to_dict() for item in plan.final_members],
+            "dependency_edges": [
+                item.to_dict() for item in plan.final_dependency_edges
+            ],
+            "selected_outputs": [
+                item.to_dict() for item in plan.final_selected_outputs
+            ],
+            "collection_sources": [
+                item.to_dict() for item in collection_sources
+            ],
+            "column_mapping": {
+                str(column): str(column) for column in materialized.columns
+            },
+            "first_timestamp_ms": plan.first_timestamp_ms,
+            "last_timestamp_ms": plan.last_timestamp_ms,
+            "row_count": len(materialized),
+            "column_count": len(materialized.columns),
+            "values_sha256": sha256(values_csv).hexdigest(),
+            "previous_revision_id": plan.starting_revision_id,
+            "created_at_utc": now.isoformat().replace("+00:00", "Z"),
+        }
+        manifest = DatabaseRevisionManifestV2(
+            database_id=plan.database_id,
+            revision_id=deterministic_hash(payload),
+            display_name=definition.display_name,
+            description=definition.description,
+            seed_id=definition.seed_id,
+            market_id=plan.market_id,
+            source_ohlcv=plan.source_ohlcv,
+            members=plan.final_members,
+            dependency_edges=plan.final_dependency_edges,
+            selected_outputs=plan.final_selected_outputs,
+            collection_sources=plan.final_collection_sources,
+            column_mapping=payload["column_mapping"],
+            first_timestamp_ms=plan.first_timestamp_ms,
+            last_timestamp_ms=plan.last_timestamp_ms,
+            row_count=len(materialized),
+            column_count=len(materialized.columns),
+            values_sha256=payload["values_sha256"],
+            previous_revision_id=plan.starting_revision_id,
+            created_at_utc=now,
+        )
+
+        def publication_gate() -> None:
+            if cancelled():
+                raise DataManagerCreationError(
+                    "Database content addition cancelled before publication"
+                )
+            if self._store.load_database_head(plan.database_id).revision_id != plan.starting_revision_id:
+                raise DataManagerCreationError("Database head changed after Preview")
+            if self._artifacts.capture_accepted_source(plan.market_id) != plan.source_ohlcv:
+                raise DataManagerCreationError(
+                    "Database update required before adding content."
+                )
+            for member in plan.final_members:
+                loaded_artifact = self._artifacts.load_artifact_by_id(
+                    plan.market_id, member.version_key.artifact_id
+                )
+                if (
+                    loaded_artifact.metadata.values_sha256 != member.values_sha256
+                    or loaded_artifact.metadata.source_ohlcv != plan.source_ohlcv
+                ):
+                    raise DataManagerCreationError(
+                        "Artifact changed after Database content Preview"
+                    )
+            if plan.source_collection is not None:
+                reference = plan.source_collection
+                if self._store.load_collection_head(reference.collection_id).revision_id != reference.revision_id:
+                    raise DataManagerCreationError(
+                        "Artifact Collection changed after Database content Preview"
+                    )
+            if before_publish is not None:
+                before_publish()
+
+        return self._store.publish_database_revision(
+            definition,
+            manifest,
+            values_csv,
+            expected_head_revision_id=plan.starting_revision_id,
+            before_publish=publication_gate,
+        )
+
+    def _database_v2_content(
+        self, manifest: DatabaseRevisionManifest
+    ) -> tuple[
+        tuple[ArtifactCollectionMemberV1, ...],
+        tuple[ArtifactCollectionDependencyV1, ...],
+        tuple[ArtifactCollectionOutputV1, ...],
+        tuple[DatabaseCollectionReferenceV2, ...],
+    ]:
+        if isinstance(manifest, DatabaseRevisionManifestV2):
+            return (
+                manifest.members,
+                manifest.dependency_edges,
+                manifest.selected_outputs,
+                manifest.collection_sources,
+            )
+        collection = self.load_artifact_collection(
+            manifest.collection_id, manifest.collection_revision_id
+        )
+        if (
+            tuple(item.version_key for item in collection.members)
+            != manifest.artifact_version_keys
+            or tuple(item.values_sha256 for item in collection.members)
+            != manifest.artifact_payload_hashes
+            or collection.source_portable_recipe_ids != manifest.portable_recipe_ids
+            or collection.source_ohlcv != manifest.source_ohlcv
+        ):
+            raise DataManagerCreationError(
+                "V1 Database content does not match its exact Artifact Collection"
+            )
+        return (
+            collection.members,
+            collection.dependency_edges,
+            collection.selected_outputs,
+            (DatabaseCollectionReferenceV2(
+                collection.collection_id, collection.revision_id
+            ),),
+        )
+
+    @staticmethod
+    def _read_database_values(values_csv: bytes) -> pd.DataFrame:
+        try:
+            frame = pd.read_csv(StringIO(values_csv.decode("utf-8")))
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+            raise DataManagerCreationError("Database values payload is invalid") from exc
+        if frame.empty or "ts_ms" not in frame.columns:
+            raise DataManagerCreationError("Database values payload is empty or invalid")
+        if frame["ts_ms"].isna().any() or frame["ts_ms"].duplicated().any():
+            raise DataManagerCreationError("Database timestamps are invalid")
+        return frame
+
+    def _materialize_database_content(
+        self,
+        frame: pd.DataFrame,
+        source_ohlcv,
+        additions: tuple[ArtifactCollectionOutputV1, ...],
+        member_by_id: Mapping[str, ArtifactCollectionMemberV1],
+    ) -> pd.DataFrame:
+        result = frame.copy()
+        loaded_by_artifact: dict[str, object] = {}
+        for output in additions:
+            member = member_by_id[output.logical_artifact_id]
+            artifact_id = member.version_key.artifact_id
+            loaded = loaded_by_artifact.get(artifact_id)
+            if loaded is None:
+                loaded = self._artifacts.load_artifact_by_id(
+                    source_ohlcv.market_id, artifact_id
+                )
+                if (
+                    loaded.metadata.values_sha256 != member.values_sha256
+                    or loaded.metadata.source_ohlcv != source_ohlcv
+                ):
+                    raise DataManagerCreationError(
+                        "selected Artifact does not match persisted Database content truth"
+                    )
+                loaded_by_artifact[artifact_id] = loaded
+            if output.output_name not in loaded.frame.columns:
+                raise DataManagerCreationError(
+                    "selected Artifact output is not persisted"
+                )
+            values = loaded.frame.loc[:, ["ts_ms", output.output_name]].rename(
+                columns={output.output_name: output.column_name}
+            )
+            result = result.merge(values, on="ts_ms", how="left", validate="one_to_one")
+        return result
+
     def list_database_ids(self) -> tuple[str, ...]:
         return self._store.list_database_ids()
 
     def load_database_definition(self, database_id: str) -> DatabaseDefinitionV1:
         return self._store.load_database_definition(database_id)
 
-    def list_database_revisions(self, database_id: str) -> tuple[DatabaseRevisionManifestV1, ...]:
+    def list_database_revisions(self, database_id: str) -> tuple[DatabaseRevisionManifest, ...]:
         return self._store.list_database_revisions(database_id)
 
     def load_database_revision(self, database_id: str, revision_id: str | None = None):
@@ -743,6 +1550,28 @@ class DataManagerCreationWorkflow:
         source_recipe_collection_revision_id: str | None,
         selected_outputs: Sequence[ArtifactCollectionOutputV1] | None,
     ) -> ArtifactCollectionRevisionV1:
+        values = self._collection_values_from_materialization(
+            materialization, selected_outputs
+        )
+        return self._build_collection_revision(
+            collection_id=collection_id,
+            display_name=display_name,
+            description=description,
+            previous_revision_id=previous,
+            created_at_utc=created_at,
+            revised_at_utc=revised_at,
+            source_recipe_collection_id=source_recipe_collection_id,
+            source_recipe_collection_revision_id=(
+                source_recipe_collection_revision_id
+            ),
+            **values,
+        )
+
+    def _collection_values_from_materialization(
+        self,
+        materialization: DataManagerArtifactMaterializationResult,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1] | None,
+    ) -> dict[str, object]:
         artifact_by_id = {item.artifact_id: item for item in materialization.managed_artifacts}
         logical_by_artifact = {item.artifact_id: item.logical_artifact_id for item in materialization.managed_artifacts}
         members: list[ArtifactCollectionMemberV1] = []
@@ -777,20 +1606,24 @@ class DataManagerCreationWorkflow:
                     outputs.append(ArtifactCollectionOutputV1(logical_id, output, column))
         else:
             outputs = list(selected_outputs)
-        return self._build_collection_revision(
-            collection_id=collection_id, display_name=display_name, description=description,
-            market_id=materialization.target_market_id,
-            roots=materialization.root_logical_artifact_ids,
-            supports=materialization.support_logical_artifact_ids,
-            members=tuple(members), edges=tuple(edges), selected_outputs=tuple(outputs),
-            presentation_order=tuple(item.column_name for item in outputs),
-            source_recipe_collection_id=source_recipe_collection_id,
-            source_recipe_collection_revision_id=source_recipe_collection_revision_id,
-            source_ohlcv=materialization.source_ohlcv,
-            first_timestamp_ms=max(item.first_timestamp_ms for item in materialization.managed_artifacts),
-            last_timestamp_ms=min(item.last_timestamp_ms for item in materialization.managed_artifacts),
-            previous_revision_id=previous, created_at_utc=created_at, revised_at_utc=revised_at,
-        )
+        return {
+            "market_id": materialization.target_market_id,
+            "roots": materialization.root_logical_artifact_ids,
+            "supports": materialization.support_logical_artifact_ids,
+            "members": tuple(members),
+            "edges": tuple(edges),
+            "selected_outputs": tuple(outputs),
+            "presentation_order": tuple(item.column_name for item in outputs),
+            "source_ohlcv": materialization.source_ohlcv,
+            "first_timestamp_ms": max(
+                item.first_timestamp_ms
+                for item in materialization.managed_artifacts
+            ),
+            "last_timestamp_ms": min(
+                item.last_timestamp_ms
+                for item in materialization.managed_artifacts
+            ),
+        }
 
     @staticmethod
     def _selection_outputs(
@@ -958,7 +1791,7 @@ class DataManagerCreationWorkflow:
             raise DataManagerCreationError(
                 "accepted OHLCV source changed during batch validation"
             )
-        return tuple(recipes)
+        return self._resolve_portable_recipes(tuple(recipes))
 
     @staticmethod
     def _build_batch_portable_recipe(
@@ -1217,6 +2050,63 @@ class DataManagerCreationWorkflow:
         if usable.empty:
             return None, None, 0
         return int(usable["ts_ms"].iloc[0]), int(usable["ts_ms"].iloc[-1]), len(usable)
+
+    def _require_seed_candidate_current(self, seed: DatabaseSeedV1) -> None:
+        source = self._artifacts.capture_accepted_source(seed.market_id)
+        if source != seed.source_ohlcv:
+            raise DataManagerCreationError(
+                "accepted OHLCV fingerprint changed before Seed publication"
+            )
+        dataset = self._loader.load(seed.market_id)
+        if (
+            dataset.file_sha256 != seed.source_ohlcv.csv_sha256
+            or dataset.row_count != seed.source_row_count
+            or dataset.first_timestamp_ms != seed.first_timestamp_ms
+            or dataset.last_timestamp_ms != seed.last_timestamp_ms
+        ):
+            raise DataManagerCreationError(
+                "loaded OHLCV does not match Database Seed source evidence"
+            )
+        timestamps = set(dataset.ts_ms)
+        if (
+            seed.selected_range_start_ms not in timestamps
+            or seed.selected_range_end_ms not in timestamps
+        ):
+            raise DataManagerCreationError(
+                "selected source range is no longer exact"
+            )
+
+    def _seed_base_frame(self, seed: DatabaseSeedV1) -> pd.DataFrame:
+        dataset = self._loader.load(seed.market_id)
+        end = (
+            dataset.last_timestamp_ms
+            if seed.selected_range_end_ms == seed.last_timestamp_ms
+            else seed.selected_range_end_ms
+        )
+        timestamps = set(dataset.ts_ms)
+        if seed.selected_range_start_ms not in timestamps or end not in timestamps:
+            raise DataManagerCreationError(
+                "selected source range endpoints are unavailable"
+            )
+        frame = pd.DataFrame({
+            "ts_ms": dataset.ts_ms,
+            "open": dataset.open,
+            "high": dataset.high,
+            "low": dataset.low,
+            "close": dataset.close,
+            "volume": dataset.volume,
+        })
+        frame = frame.loc[
+            frame["ts_ms"].between(seed.selected_range_start_ms, end),
+            ["ts_ms", *seed.selected_ohlcv_columns],
+        ].reset_index(drop=True)
+        if frame.empty:
+            raise DataManagerCreationError("Seed-only Database has no selected rows")
+        if frame["ts_ms"].duplicated().any() or not frame["ts_ms"].is_monotonic_increasing:
+            raise DataManagerCreationError(
+                "Database timestamps must be monotonic and unique"
+            )
+        return frame
 
     def _database_frame(
         self, seed: DatabaseSeedV1, collection: ArtifactCollectionRevisionV1

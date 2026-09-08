@@ -1,0 +1,20 @@
+{
+  "collection_id": "prc_c2cbfed886bd44f7b918ca0b79613823",
+  "created_at_utc": "2026-09-02T15:39:41.598056+00:00",
+  "description": "",
+  "display_name": "Test_BTC_C",
+  "member_recipe_ids": [
+    "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+    "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+    "e26a83a34a8c2dc143530825ad428b0854c369c8b84e7c62fce16d8dd2555cab"
+  ],
+  "object_type": "portable_recipe_collection_revision",
+  "previous_revision_id": "d3f4d34b9dc9316e31d15f3e31f907cf2604be789727c2bfad6f5e35c16fb7b2",
+  "revision_id": "71ebded2bec283f873d6a56a05a5b9cedaf4417937edd0c2660b061a05512c78",
+  "root_recipe_ids": [
+    "4e7f3ede57252f882265d19682d2b60df7240b39dba4f915ed4fef0f61f734a8",
+    "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+    "e26a83a34a8c2dc143530825ad428b0854c369c8b84e7c62fce16d8dd2555cab"
+  ],
+  "schema_version": "1.0"
+}

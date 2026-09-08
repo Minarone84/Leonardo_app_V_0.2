@@ -1,0 +1,20 @@
+{
+  "first_persisted_at_utc": "2026-09-07T15:40:24.103522+00:00",
+  "object_type": "portable_recipe_persistence_metadata",
+  "origins": [
+    {
+      "details": {
+        "entry_id": "entry_002",
+        "environment_content_hash": "4c86175d8eec93d1e57ca6b7a652c965c40f3e94b4e8f36a87fa80700b67fde1",
+        "environment_id": "env_6ac010a438604d4d90b50d7a00ad5cbd"
+      },
+      "object_type": "portable_recipe_origin",
+      "origin_id": "575fb940b6f7883f907993d723d504039873277c70b545048449ae2eb7035c7f",
+      "origin_kind": "study_environment",
+      "origin_recorded_at_utc": "2026-09-07T15:40:24.103522+00:00",
+      "schema_version": "1.0"
+    }
+  ],
+  "recipe_id": "6ff2a5148f51953aff0072d5cd19a65ba800c0e381ebe96c66f676441d0bbe6f",
+  "schema_version": "1.0"
+}

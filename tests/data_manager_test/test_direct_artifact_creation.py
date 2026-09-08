@@ -8,6 +8,7 @@ import pytest
 from leonardo.artifacts import ArtifactService, ArtifactSourceRefV1
 from leonardo.core.core_runner import CoreRunner, TaskResult
 from leonardo.core.task_manager import TaskManager
+from leonardo.data_manager import DataManagerArtifactMaterializationRequest
 from leonardo.data_manager.application import DataManagerApplicationService
 from leonardo.data_manager.direct_artifact import (
     DataManagerDirectArtifactRequest,
@@ -17,14 +18,23 @@ from leonardo.data_manager.direct_artifact import (
 from leonardo.data_manager.models import DataManagerOperationError
 from leonardo.data_manager.service import DataManagerService
 from leonardo.financial_tools import calculate_financial_tool, resolve_parameters
-from leonardo.recipes import PortableRecipeGraphPlanner, PortableRecipeStore
+from leonardo.recipes import (
+    PortableRecipeGraphPlanner,
+    PortableRecipeOHLCVInputV1,
+    PortableRecipeStore,
+    build_portable_recipe,
+)
 from leonardo.research import (
     AcceptedDatasetCatalog,
     HistoricalDatasetLoader,
+    ResearchStudyService,
     StudyEnvironmentStore,
 )
 
 from tests.artifacts_test.test_artifact_service_roundtrip import _accepted_dataset
+from tests.data_manager_test.test_portable_recipe_workflow import _save_environment
+from tests.research_test.test_study_artifact_apply_save import _save_attempt
+from tests.research_test.test_study_execution import accepted_context, prepare
 
 
 def _domain(tmp_path: Path):
@@ -88,7 +98,7 @@ def _root_entry(result):
     )
 
 
-def test_direct_base_artifacts_create_no_global_recipes_and_reuse_current(
+def test_direct_base_artifacts_create_global_recipes_and_reuse_current(
     tmp_path: Path,
 ) -> None:
     market, _frame, service, artifacts, recipes, _historical = _domain(tmp_path)
@@ -99,11 +109,20 @@ def test_direct_base_artifacts_create_no_global_recipes_and_reuse_current(
     )
     results = tuple(service.create_direct_artifact(request) for request in requests)
 
-    assert recipes.list_recipe_summaries() == ()
+    assert {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    } == {item.portable_recipe_id for item in results}
     assert all(item.materialization.source_ohlcv == requests[0].expected_source_ohlcv for item in results)
     assert len(artifacts.list_managed_artifacts(market)) == 3
     assert recipes.list_collection_summaries() == ()
     assert service.list_artifact_collections() == ()
+    for result in results:
+        metadata = recipes.load_persistence_metadata(result.portable_recipe_id)
+        assert metadata is not None
+        assert metadata.first_persisted_at_utc is not None
+        assert {item.origin_kind for item in metadata.origins} == {
+            "data_manager_artifact"
+        }
 
     first = results[0]
     second = service.create_direct_artifact(requests[0])
@@ -113,7 +132,131 @@ def test_direct_base_artifacts_create_no_global_recipes_and_reuse_current(
     assert second.materialization.reused_artifact_ids == first.materialization.created_artifact_ids
     logical_id = first.materialization.root_logical_artifact_ids[0]
     assert len(artifacts.list_artifact_versions(market, logical_id)) == 1
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 3
+
+
+def test_direct_creation_reuses_semantically_equivalent_recipe_artifact(
+    tmp_path: Path,
+) -> None:
+    market, _frame, service, artifacts, recipes, _historical = _domain(tmp_path)
+    request = _request(service, market, "sma", {"period": 3})
+    implicit = _build_direct_portable_recipe(request, {})
+    explicit = build_portable_recipe(
+        tool_key=implicit.tool_key,
+        tool_version=implicit.tool_version,
+        kind=implicit.kind,
+        parameters=implicit.parameters,
+        output_names=implicit.output_names,
+        ohlcv_inputs=(PortableRecipeOHLCVInputV1("close", "close"),),
+    )
+    assert explicit.recipe_id != implicit.recipe_id
+    recipes.save_recipe(explicit)
+    existing = service.execute_artifact_materialization(
+        service.plan_artifact_materialization(
+            DataManagerArtifactMaterializationRequest(
+                market, (explicit.recipe_id,)
+            )
+        )
+    )
+
+    reused = service.create_direct_artifact(request)
+
+    assert reused.portable_recipe_id == explicit.recipe_id
+    assert reused.materialization.created_artifact_ids == ()
+    assert reused.materialization.reused_artifact_ids == (
+        existing.created_artifact_ids[0],
+    )
+    assert reused.materialization.root_logical_artifact_ids == (
+        existing.root_logical_artifact_ids[0],
+    )
+    assert len(artifacts.list_managed_artifacts(market)) == 1
+    assert len(
+        artifacts.list_artifact_versions(
+            market, existing.root_logical_artifact_ids[0]
+        )
+    ) == 1
+
+
+@pytest.mark.parametrize("first_route", ("data_manager", "research"))
+def test_data_manager_and_research_save_reuse_one_global_recipe(
+    tmp_path: Path, first_route: str
+) -> None:
+    market, _frame, service, _artifacts, recipes, _historical = _domain(tmp_path)
+    dataset, research_artifacts, _research_frame = accepted_context(
+        tmp_path / "research"
+    )
+    research = ResearchStudyService(research_artifacts, recipes)
+    study = prepare(research, dataset, "sma", parameters={"period": 3})
+    request = _request(service, market, "sma", {"period": 3})
+
+    if first_route == "data_manager":
+        direct = service.create_direct_artifact(request)
+        research.save_study(_save_attempt(study), dataset, study, (study,))
+    else:
+        research.save_study(_save_attempt(study), dataset, study, (study,))
+        direct = service.create_direct_artifact(request)
+
+    summaries = recipes.list_recipe_summaries()
+    assert len(summaries) == 1
+    assert direct.portable_recipe_id == summaries[0].recipe_id
+    metadata = recipes.load_persistence_metadata(direct.portable_recipe_id)
+    assert metadata is not None
+    assert {item.origin_kind for item in metadata.origins} == {
+        "data_manager_artifact",
+        "research_save",
+    }
+
+
+def test_environment_research_and_data_manager_routes_converge(
+    tmp_path: Path,
+) -> None:
+    market, _frame, service, _artifacts, recipes, _historical = _domain(tmp_path)
+    _save_environment(
+        service._study_environments,
+        environment_id="env_three_route",
+        display_name="Three Route",
+        market=market,
+    )
+    service.persist_recipe_derivation(
+        "env_three_route", ("entry_001",), create_collection=False
+    )
+    environment_recipe_id = recipes.list_recipe_summaries()[0].recipe_id
+    environment_metadata = recipes.load_persistence_metadata(environment_recipe_id)
+    assert environment_metadata is not None
+    assert environment_metadata.first_persisted_at_utc is not None
+
+    dataset, research_artifacts, _research_frame = accepted_context(
+        tmp_path / "research"
+    )
+    research = ResearchStudyService(research_artifacts, recipes)
+    study = prepare(research, dataset, "ema", parameters={"period": 20})
+    research.save_study(_save_attempt(study), dataset, study, (study,))
+    assert tuple(item.recipe_id for item in recipes.list_recipe_summaries()) == (
+        environment_recipe_id,
+    )
+    research_metadata = recipes.load_persistence_metadata(environment_recipe_id)
+    assert research_metadata is not None
+    assert (
+        research_metadata.first_persisted_at_utc
+        == environment_metadata.first_persisted_at_utc
+    )
+
+    direct = service.create_direct_artifact(
+        _request(service, market, "ema", {"period": 20})
+    )
+    assert direct.portable_recipe_id == environment_recipe_id
+    assert len(recipes.list_recipe_summaries()) == 1
+    final_metadata = recipes.load_persistence_metadata(environment_recipe_id)
+    assert final_metadata is not None
+    assert (
+        final_metadata.first_persisted_at_utc
+        == environment_metadata.first_persisted_at_utc
+    )
+    assert {item.origin_kind for item in final_metadata.origins} == {
+        "data_manager_artifact",
+        "research_save",
+        "study_environment",
+    }
 
 
 def test_direct_catalog_and_construct_chains_use_only_task_1062_signals(
@@ -185,7 +328,7 @@ def test_direct_catalog_and_construct_chains_use_only_task_1062_signals(
         source.role: (source.artifact_id, source.output_name)
         for source in mixed
     }
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 7
 
 
 def test_construct_catalog_labels_use_persisted_parameter_order_and_values(
@@ -280,7 +423,7 @@ def test_direct_utc_uses_one_exact_current_peaks_troughs_owner(
     assert {
         item.artifact_id for item in loaded.metadata.recipe.source_artifacts
     } == {owner.artifact_id}
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 2
 
 
 def test_direct_creation_rejects_forged_sources_dynamic_binning_and_stale_target(
@@ -342,17 +485,10 @@ def test_direct_creation_cancellation_before_publication_advances_no_head(
     assert _persistence_bytes(recipes.root_dir) == {}
 
 
-def test_direct_creation_never_consults_global_recipe_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_direct_creation_publishes_each_global_recipe_once(
+    tmp_path: Path,
 ) -> None:
     market, _frame, service, artifacts, recipes, _historical = _domain(tmp_path)
-
-    def reject_recipe_authority(*_args, **_kwargs):
-        raise AssertionError("Direct Artifact creation consulted Recipe authority")
-
-    monkeypatch.setattr(recipes, "save_recipe", reject_recipe_authority)
-    monkeypatch.setattr(recipes, "load_recipe", reject_recipe_authority)
-    monkeypatch.setattr(service._recipe_planner, "plan", reject_recipe_authority)
 
     service.create_direct_artifact(
         _request(service, market, "sma", {"period": 3})
@@ -459,10 +595,17 @@ def test_direct_creation_never_consults_global_recipe_authority(
         for role, output in utc_outputs.items()
     }
     assert _root_entry(derivative).portable_recipe_id == derivative.portable_recipe_id
-    assert recipes.list_recipe_summaries() == ()
+    persisted_ids = {
+        item.recipe_id for item in recipes.list_recipe_summaries()
+    }
+    assert len(persisted_ids) == 8
+    assert {
+        _root_entry(result).portable_recipe_id
+        for result in (derivative, braid, utc)
+    }.issubset(persisted_ids)
 
 
-def test_direct_creation_preserves_global_recipe_persistence_bytes(
+def test_direct_creation_reuses_existing_recipe_and_publishes_missing_recipe(
     tmp_path: Path,
 ) -> None:
     market, _frame, service, _artifacts, recipes, _historical = _domain(tmp_path)
@@ -470,6 +613,8 @@ def test_direct_creation_preserves_global_recipe_persistence_bytes(
     matching_recipe = _build_direct_portable_recipe(matching_request, {})
     recipes.save_recipe(matching_recipe)
     before = _persistence_bytes(recipes.root_dir)
+    before_metadata = recipes.load_persistence_metadata(matching_recipe.recipe_id)
+    assert before_metadata is not None
 
     matching = service.create_direct_artifact(matching_request)
     service.create_direct_artifact(
@@ -477,10 +622,27 @@ def test_direct_creation_preserves_global_recipe_persistence_bytes(
     )
 
     assert matching.portable_recipe_id == matching_recipe.recipe_id
-    assert _persistence_bytes(recipes.root_dir) == before
-    assert tuple(
+    after = _persistence_bytes(recipes.root_dir)
+    recipe_path = f"recipes/{matching_recipe.recipe_id}.json"
+    assert after[recipe_path] == before[recipe_path]
+    matching_metadata = recipes.load_persistence_metadata(matching_recipe.recipe_id)
+    assert matching_metadata is not None
+    assert (
+        matching_metadata.first_persisted_at_utc
+        == before_metadata.first_persisted_at_utc
+    )
+    assert {item.origin_kind for item in matching_metadata.origins} == {
+        "data_manager_artifact"
+    }
+    assert len(after) == len(before) + 2
+    assert {
         item.recipe_id for item in recipes.list_recipe_summaries()
-    ) == (matching_recipe.recipe_id,)
+    } == {
+        matching_recipe.recipe_id,
+        _build_direct_portable_recipe(
+            _request(service, market, "rsi", {"period": 3}), {}
+        ).recipe_id,
+    }
     assert recipes.list_collection_summaries() == ()
 
 
@@ -544,7 +706,7 @@ def test_direct_creation_recalculates_stale_artifact_support_from_metadata(
     assert derivative.logical_artifact_id in (
         angle.materialization.advanced_logical_artifact_ids
     )
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 3
 
 
 def test_direct_creation_rejects_managed_semantic_lineage_drift(
@@ -619,7 +781,7 @@ def test_direct_creation_rejects_managed_semantic_lineage_drift(
         item.tool_key == "angle"
         for item in artifacts.list_managed_artifacts(market)
     )
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 2
 
 
 def test_direct_creation_rejects_semantically_stable_malformed_support(
@@ -680,7 +842,7 @@ def test_direct_creation_rejects_semantically_stable_malformed_support(
         item.tool_key == "angle"
         for item in artifacts.list_managed_artifacts(market)
     )
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 1
 
 
 def test_direct_creation_rejects_existing_root_semantic_lineage_drift(
@@ -728,7 +890,7 @@ def test_direct_creation_rejects_existing_root_semantic_lineage_drift(
         market, root.logical_artifact_id
     ) == versions_before
     assert _persistence_bytes(historical) == persistence_before
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 1
 
 
 def test_direct_creation_rejects_first_root_version_with_wrong_semantics(
@@ -816,7 +978,7 @@ def test_direct_creation_advances_existing_semantically_stable_root(
     assert first_loaded.metadata.recipe.parameters["period"] == 5
     assert second_loaded.metadata.recipe.parameters["period"] == 5
     assert second_loaded.metadata.source_ohlcv == current_source
-    assert recipes.list_recipe_summaries() == ()
+    assert len(recipes.list_recipe_summaries()) == 1
 
 
 def test_direct_application_operations_run_through_core_with_progress(

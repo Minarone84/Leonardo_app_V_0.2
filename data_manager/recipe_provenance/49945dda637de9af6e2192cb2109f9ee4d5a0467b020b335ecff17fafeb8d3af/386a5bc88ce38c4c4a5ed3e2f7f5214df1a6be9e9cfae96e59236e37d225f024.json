@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "LINKUSDT",
+    "timeframe": "1h"
+  },
+  "provenance_id": "386a5bc88ce38c4c4a5ed3e2f7f5214df1a6be9e9cfae96e59236e37d225f024",
+  "recipe_id": "49945dda637de9af6e2192cb2109f9ee4d5a0467b020b335ecff17fafeb8d3af",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "EMA",
+  "study_entry_id": "entry_004",
+  "study_environment_content_hash": "2c9be9e4cb2aec9453ae9999e24d1731da4c82d4efd124e3c4cfb52876ef19f7",
+  "study_environment_display_name": "BTC_TEST_STUDY_FOR_DATA_MANAGER",
+  "study_environment_id": "env_ebb2c7dadc91450c947ae8e0b95ff8b2",
+  "study_environment_updated_at_utc": "2026-09-01T09:15:25.791720+00:00"
+}

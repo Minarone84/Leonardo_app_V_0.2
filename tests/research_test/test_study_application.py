@@ -18,6 +18,7 @@ from tests.research_test.test_study_execution import (
     accepted_context,
     apply_attempt,
     prepare,
+    research_service,
 )
 
 
@@ -45,7 +46,7 @@ def test_application_runs_calculation_in_core_worker_and_cleans_bookkeeping(
     tmp_path: Path, monkeypatch
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    domain = ResearchStudyService(artifacts)
+    domain = research_service(tmp_path, artifacts)
     runner = CoreRunner(TaskManager())
     application = ResearchStudyApplicationService(runner, domain)
     completed = Event()
@@ -81,7 +82,7 @@ def test_application_cancellation_prevents_result_publication(
     tmp_path: Path, monkeypatch
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    domain = ResearchStudyService(artifacts)
+    domain = research_service(tmp_path, artifacts)
     runner = CoreRunner(TaskManager())
     application = ResearchStudyApplicationService(runner, domain)
     started = Event()
@@ -121,7 +122,7 @@ def test_application_cancellation_prevents_result_publication(
 
 def test_cancel_before_persistence_writes_nothing(tmp_path: Path, monkeypatch) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    domain = ResearchStudyService(artifacts)
+    domain = research_service(tmp_path, artifacts)
     study = prepare(domain, dataset, "sma", parameters={"period": 3})
     manager = TaskManager()
     runner = CoreRunner(manager)
@@ -168,7 +169,7 @@ def test_cancel_after_persistence_start_returns_false_and_completes(
     tmp_path: Path, monkeypatch
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    domain = ResearchStudyService(artifacts)
+    domain = research_service(tmp_path, artifacts)
     study = prepare(domain, dataset, "sma", parameters={"period": 3})
     runner = CoreRunner(TaskManager())
     application = ResearchStudyApplicationService(runner, domain)
@@ -207,7 +208,7 @@ def test_cancel_after_persistence_start_returns_false_and_completes(
 
 def test_delayed_result_dispatcher_does_not_delay_terminal_cleanup(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    domain = ResearchStudyService(artifacts)
+    domain = research_service(tmp_path, artifacts)
     manager = TaskManager()
     runner = CoreRunner(manager)
     application = ResearchStudyApplicationService(runner, domain)
@@ -240,7 +241,7 @@ def test_failure_and_cancellation_cleanup_precede_external_dispatch(
     tmp_path: Path, monkeypatch
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    domain = ResearchStudyService(artifacts)
+    domain = research_service(tmp_path, artifacts)
     manager = TaskManager()
     runner = CoreRunner(manager)
     application = ResearchStudyApplicationService(runner, domain)

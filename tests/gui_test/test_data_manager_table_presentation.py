@@ -36,7 +36,7 @@ from tests.gui_test.test_data_manager_catalogs import empty_product_snapshot
 
 
 TIMESTAMP_MS = 1786297337123
-EXPECTED_TIMESTAMP = "2026-08-09 17:42:17 UTC"
+EXPECTED_TIMESTAMP = "2026-08-09 19:42:17 CEST (+02:00)"
 
 
 def _sort_rows(*values: str):
@@ -78,11 +78,11 @@ def test_typed_row_sorting_uses_numeric_values_and_comma_grouping() -> None:
     )
 
 
-def test_typed_row_sorting_uses_utc_chronology_in_both_directions() -> None:
+def test_typed_row_sorting_uses_absolute_chronology_in_both_directions() -> None:
     rows = _sort_rows(
-        "2026-08-09 00:00:00 UTC",
-        "2026-07-30 00:00:00 UTC",
-        "2026-08-16 00:00:00 UTC",
+        "2026-08-09 02:00:00 CEST (+02:00)",
+        "2026-07-30 02:00:00 CEST (+02:00)",
+        "2026-08-16 02:00:00 CEST (+02:00)",
     )
     ascending = sort_data_manager_rows(
         rows, column=0, kind="utc", descending=False
@@ -92,13 +92,27 @@ def test_typed_row_sorting_uses_utc_chronology_in_both_directions() -> None:
     )
 
     assert tuple(row[0][0] for row in ascending) == (
-        "2026-07-30 00:00:00 UTC",
-        "2026-08-09 00:00:00 UTC",
-        "2026-08-16 00:00:00 UTC",
+        "2026-07-30 02:00:00 CEST (+02:00)",
+        "2026-08-09 02:00:00 CEST (+02:00)",
+        "2026-08-16 02:00:00 CEST (+02:00)",
     )
     assert tuple(row[0][0] for row in descending) == tuple(
         reversed(tuple(row[0][0] for row in ascending))
     )
+
+
+def test_typed_row_sorting_distinguishes_dst_fallback_offsets() -> None:
+    first = "2026-10-25 02:30:00 CEST (+02:00)"
+    second = "2026-10-25 02:30:00 CET (+01:00)"
+    rows = _sort_rows(second, first)
+    ascending = sort_data_manager_rows(
+        rows, column=0, kind="utc", descending=False
+    )
+    descending = sort_data_manager_rows(
+        rows, column=0, kind="utc", descending=True
+    )
+    assert tuple(row[0][0] for row in ascending) == (first, second)
+    assert tuple(row[0][0] for row in descending) == (second, first)
 
 
 @pytest.mark.parametrize("descending", (False, True))
@@ -132,8 +146,8 @@ def test_shared_dataset_projection_preserves_selector_display_semantics() -> Non
         "Persistence",
         "Validation",
         "Rows",
-        "First Data UTC",
-        "Last Data UTC",
+        "First Data",
+        "Last Data",
         "Details",
     )
     assert data_manager_dataset_details(entry) == "warning one | warning two"
@@ -163,6 +177,11 @@ def test_timestamp_formatter_and_shared_resize_are_content_derived() -> None:
         table.setItem(0, 0, QTableWidgetItem("short"))
         resize_data_manager_table(table)
         short = table.columnWidth(0)
+        assert table.showGrid()
+        assert table.font().pointSizeF() >= 11.0
+        assert table.verticalHeader().minimumSectionSize() >= 28
+        assert table.verticalHeader().defaultSectionSize() >= 28
+        assert table.rowHeight(0) >= 28
         table.item(0, 0).setText("a substantially longer displayed Data Manager value")
         resize_data_manager_table(table)
         assert table.columnWidth(0) > short

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from numbers import Integral, Real
 from types import MappingProxyType
@@ -57,6 +58,11 @@ from leonardo.recipes import (
     PortableRecipeValidationError,
     build_portable_recipe,
 )
+from leonardo.recipes.identity import (
+    normalize_portable_recipe_parameters,
+    object_semantic_key,
+    object_semantic_parameters,
+)
 from leonardo.research import (
     AcceptedDatasetCatalog,
     AcceptedDatasetSummary,
@@ -104,6 +110,14 @@ from .models import (
     DataManagerStudyEnvironmentEntry,
     DataManagerStudyEnvironmentInspection,
     DataManagerDatabaseCatalogEntry,
+    DuplicateMaintenanceCandidate,
+    DuplicateMaintenanceDomain,
+    DuplicateMaintenanceGroup,
+    DuplicateMaintenancePreflight,
+    DuplicateMaintenancePurgeDetail,
+    DuplicateMaintenancePurgeResult,
+    DuplicateMaintenanceScanResult,
+    duplicate_maintenance_domain,
 )
 from .artifact_materialization import (
     ArtifactMaterializationValidationError,
@@ -126,11 +140,18 @@ from .creation_models import (
     ArtifactCollectionValidation,
     BatchArtifactPlan,
     BatchArtifactRequest,
+    DatabaseCollectionReferenceV2,
+    DatabaseContentAdditionPlan,
+    DatabaseRevisionManifest,
     DatabaseReadiness,
     DatabaseDefinitionV1,
     DatabaseRevisionManifestV1,
+    DatabaseRevisionManifestV2,
     DatabaseSeedV1,
+    DatabaseSeedCreationPlan,
     DataManagerCreationError,
+    SeedOnlyDatabaseCreationPlan,
+    database_collection_references,
     deterministic_hash,
 )
 from .creation_service import DataManagerCreationWorkflow
@@ -166,6 +187,78 @@ def _artifact_configuration_label(recipe: object) -> str:
         if parameter.name in parameters
     )
     return spec.title if not values else f"{spec.title} [{', '.join(values)}]"
+
+
+def _invalid_duplicate_candidate(
+    object_id: str, reason: str
+) -> DuplicateMaintenanceCandidate:
+    return DuplicateMaintenanceCandidate(
+        object_id,
+        "INVALID / SKIPPED",
+        reason or "persisted object is invalid",
+    )
+
+
+def _duplicate_scan_progress(
+    domain: DuplicateMaintenanceDomain,
+    current: int,
+    total: int,
+    progress: Callable[[int, int, str], None] | None,
+    cancellation_requested: Callable[[], bool] | None,
+) -> None:
+    if cancellation_requested is not None and cancellation_requested():
+        raise RuntimeError("Data Manager duplicate maintenance scan cancelled")
+    if progress is not None:
+        progress(
+            current,
+            total,
+            f"Scanning {domain.display_name} {current} / {total}",
+        )
+
+
+def _duplicate_purge_progress(
+    domain: DuplicateMaintenanceDomain,
+    current: int,
+    total: int,
+    progress: Callable[[int, int, str], None] | None,
+    cancellation_requested: Callable[[], bool] | None,
+) -> None:
+    if cancellation_requested is not None and cancellation_requested():
+        raise RuntimeError("Data Manager duplicate purge cancelled")
+    if progress is not None:
+        progress(
+            current,
+            total,
+            f"Purging {domain.display_name} duplicates {current} / {total}",
+        )
+
+
+def _sorted_duplicate_groups(
+    groups: Sequence[DuplicateMaintenanceGroup],
+) -> tuple[DuplicateMaintenanceGroup, ...]:
+    return tuple(
+        sorted(
+            groups,
+            key=lambda item: (
+                item.canonical_id,
+                tuple(candidate.object_id for candidate in item.duplicates),
+            ),
+        )
+    )
+
+
+def _database_collection_ids_for_deletion_proof(
+    manifest: object,
+) -> tuple[str, ...]:
+    if isinstance(manifest, (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2)):
+        return tuple(
+            reference.collection_id
+            for reference in database_collection_references(manifest)
+        )
+    collection_id = getattr(manifest, "collection_id", None)
+    if isinstance(collection_id, str) and collection_id:
+        return (collection_id,)
+    raise TypeError("manifest must provide Database Collection reference evidence")
 
 
 def _format_configuration_scalar(value: object) -> str:
@@ -316,13 +409,21 @@ class DataManagerService:
         self._study_environments = study_environments
         self._portable_recipes = portable_recipes
         self._recipe_planner = recipe_planner
+        resolved_creation_store = creation_store or DataManagerCreationStore(
+            portable_recipes.root_dir
+        )
+        resolved_creation_store.set_collection_semantic_key_resolver(
+            self._artifact_collection_semantic_key_parts
+        )
         self._creation = DataManagerCreationWorkflow(
-            store=creation_store or DataManagerCreationStore(portable_recipes.root_dir),
+            store=resolved_creation_store,
             catalog=catalog,
             loader=loader,
             artifacts=artifacts,
             batch_materialization_planner=self._plan_batch_artifact_materialization,
             batch_materialization_executor=self._execute_direct_artifact_materialization,
+            portable_recipe_resolver=self._resolve_portable_recipe_candidates,
+            portable_recipe_publisher=self._publish_portable_recipe_candidates,
         )
         self._updates = DataManagerUpdateWorkflow(
             catalog,
@@ -355,6 +456,34 @@ class DataManagerService:
             selected_range_start_ms=selected_range_start_ms,
             selected_range_end_ms=selected_range_end_ms,
         )
+        self._updates.invalidate()
+        return result
+
+    def plan_database_seed_creation(
+        self, market_id: MarketId, display_name: str, **options
+    ) -> DatabaseSeedCreationPlan:
+        return self._creation.plan_database_seed_creation(
+            market_id, display_name, **options
+        )
+
+    def execute_database_seed_creation(
+        self, plan: DatabaseSeedCreationPlan, **execution
+    ) -> DatabaseSeedV1:
+        result = self._creation.execute_database_seed_creation(plan, **execution)
+        self._updates.invalidate()
+        return result
+
+    def plan_seed_only_database_creation(
+        self, seed_id: str, display_name: str, **options
+    ) -> SeedOnlyDatabaseCreationPlan:
+        return self._creation.plan_seed_only_database_creation(
+            seed_id, display_name, **options
+        )
+
+    def execute_seed_only_database_creation(
+        self, plan: SeedOnlyDatabaseCreationPlan, **execution
+    ) -> DatabaseRevisionManifestV2:
+        result = self._creation.execute_seed_only_database_creation(plan, **execution)
         self._updates.invalidate()
         return result
 
@@ -405,6 +534,65 @@ class DataManagerService:
         )
         self._updates.invalidate()
         return result
+
+    def find_equivalent_artifact_collection_for_materialization(
+        self,
+        plan: DataManagerArtifactMaterializationPlan,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+    ) -> ArtifactCollectionRevisionV1 | None:
+        if not isinstance(plan, DataManagerArtifactMaterializationPlan):
+            raise TypeError("plan must be a DataManagerArtifactMaterializationPlan")
+        if plan.blocked or any(node.status != "REUSE_CURRENT" for node in plan.nodes):
+            return None
+        managed_by_id = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts(plan.target_market_id)
+        }
+        try:
+            projected = tuple(
+                _project_managed_artifact(managed_by_id[node.logical_artifact_id])
+                for node in plan.nodes
+            )
+            materialization = DataManagerArtifactMaterializationResult(
+                plan.plan_id,
+                plan.target_market_id,
+                plan.source_ohlcv,
+                tuple(
+                    node.logical_artifact_id
+                    for node in plan.nodes
+                    if node.role == "ROOT"
+                ),
+                tuple(
+                    node.logical_artifact_id
+                    for node in plan.nodes
+                    if node.role == "SUPPORT"
+                ),
+                (),
+                tuple(node.current_artifact_id for node in plan.nodes),
+                (),
+                tuple(
+                    ManagedArtifactVersionKey(
+                        node.logical_artifact_id, node.current_artifact_id
+                    )
+                    for node in plan.nodes
+                ),
+                (),
+                projected,
+            )
+            values = self._creation._collection_values_from_materialization(
+                materialization, selected_outputs
+            )
+            return self.creation_store.find_equivalent_collection(
+                market_id=values["market_id"],
+                source_ohlcv=values["source_ohlcv"],
+                root_logical_artifact_ids=values["roots"],
+                support_logical_artifact_ids=values["supports"],
+                members=values["members"],
+                selected_outputs=values["selected_outputs"],
+                presentation_order=values["presentation_order"],
+            )
+        except (ArtifactError, DataManagerCreationError, KeyError, TypeError, ValueError) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
 
     def plan_artifact_collection_selection(
         self,
@@ -705,6 +893,24 @@ class DataManagerService:
         except (ArtifactError, KeyError, TypeError, ValueError) as exc:
             raise DataManagerCreationError(str(exc)) from exc
 
+    def find_equivalent_artifact_collection_from_selection(
+        self,
+        plan: ArtifactCollectionSelectionPlan,
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        presentation_order: Sequence[str],
+    ) -> ArtifactCollectionRevisionV1 | None:
+        if not isinstance(plan, ArtifactCollectionSelectionPlan):
+            raise TypeError("plan must be an ArtifactCollectionSelectionPlan")
+        return self.creation_store.find_equivalent_collection(
+            market_id=plan.market_id,
+            source_ohlcv=plan.source_ohlcv,
+            root_logical_artifact_ids=plan.root_logical_artifact_ids,
+            support_logical_artifact_ids=plan.support_logical_artifact_ids,
+            members=plan.members,
+            selected_outputs=tuple(selected_outputs),
+            presentation_order=tuple(presentation_order),
+        )
+
     def create_artifact_collection_from_selection(
         self,
         plan: ArtifactCollectionSelectionPlan,
@@ -821,6 +1027,51 @@ class DataManagerService:
     ) -> tuple[ArtifactCollectionRevisionV1, ArtifactCollectionValidation]:
         return self._creation.inspect_artifact_collection(collection_id, revision_id)
 
+    def inspect_artifact_collection_details(
+        self, collection_id: str, revision_id: str | None = None
+    ) -> tuple[
+        ArtifactCollectionRevisionV1,
+        ArtifactCollectionValidation,
+        tuple[ArtifactMetadataV1, ...],
+    ]:
+        revision, validation = self._creation.inspect_artifact_collection(
+            collection_id, revision_id
+        )
+        metadata_values: list[ArtifactMetadataV1] = []
+        for member in revision.members:
+            metadata = self._artifacts.load_artifact_by_id(
+                revision.market_id,
+                member.version_key.artifact_id,
+            ).metadata
+            if not isinstance(metadata, ArtifactMetadataV1):
+                raise DataManagerOperationError(
+                    "Artifact Collection member metadata is invalid"
+                )
+            comparisons = (
+                ("artifact_id", metadata.artifact_id, member.version_key.artifact_id),
+                ("market_id", metadata.recipe.market_id, revision.market_id),
+                ("tool_key", metadata.recipe.tool_key, member.tool_key),
+                ("kind", metadata.recipe.kind, member.kind),
+                ("output_names", metadata.recipe.output_names, member.output_names),
+                ("values_sha256", metadata.values_sha256, member.values_sha256),
+            )
+            mismatch = next(
+                (name for name, actual, expected in comparisons if actual != expected),
+                None,
+            )
+            if mismatch is not None:
+                raise DataManagerOperationError(
+                    "Artifact Collection member metadata does not match Collection "
+                    f"truth: {mismatch}"
+                )
+            metadata_values.append(metadata)
+        metadata_tuple = tuple(metadata_values)
+        if len(metadata_tuple) != len(revision.members):
+            raise DataManagerOperationError(
+                "Artifact Collection member metadata count does not match Collection truth"
+            )
+        return revision, validation, metadata_tuple
+
     def validate_artifact_collection(
         self, collection_id: str, revision_id: str | None = None
     ) -> ArtifactCollectionValidation:
@@ -867,6 +1118,112 @@ class DataManagerService:
     ) -> DatabaseRevisionManifestV1:
         result = self._creation.build_database_revision(seed_id, collection_id, **options)
         self._updates.invalidate()
+        return result
+
+    def plan_database_artifact_addition(
+        self,
+        database_id: str,
+        root_logical_artifact_ids: Sequence[str],
+    ) -> DatabaseContentAdditionPlan:
+        definition = self._creation.load_database_definition(database_id)
+        selection = self.plan_artifact_collection_selection(
+            definition.market_id, root_logical_artifact_ids
+        )
+        members = {
+            item.version_key.logical_artifact_id: item
+            for item in selection.members
+        }
+        outputs = tuple(
+            ArtifactCollectionOutputV1(logical_id, output_name, output_name)
+            for logical_id in selection.root_logical_artifact_ids
+            for output_name in members[logical_id].output_names
+        )
+        return self._creation.plan_database_content_addition(
+            database_id,
+            selection,
+            selected_outputs=outputs,
+            source_kind="artifacts",
+        )
+
+    def plan_database_collection_addition(
+        self,
+        database_id: str,
+        collection_id: str,
+    ) -> DatabaseContentAdditionPlan:
+        collection = self._creation.load_artifact_collection(collection_id)
+        validation = self._creation.validate_artifact_collection(
+            collection_id, collection.revision_id
+        )
+        if not validation.valid:
+            raise DataManagerCreationError(
+                "Artifact Collection is not current and valid: "
+                + "; ".join(validation.blockers)
+            )
+        selection = self.plan_artifact_collection_selection(
+            collection.market_id, collection.root_logical_artifact_ids
+        )
+        if (
+            selection.source_ohlcv != collection.source_ohlcv
+            or selection.members != collection.members
+            or selection.dependency_edges != collection.dependency_edges
+        ):
+            raise DataManagerCreationError(
+                "Artifact Collection no longer matches current managed Artifact truth"
+            )
+        reference = DatabaseCollectionReferenceV2(
+            collection.collection_id, collection.revision_id
+        )
+        return self._creation.plan_database_content_addition(
+            database_id,
+            selection,
+            selected_outputs=collection.selected_outputs,
+            source_kind="collection",
+            source_collection=reference,
+        )
+
+    def execute_database_content_addition(
+        self,
+        plan: DatabaseContentAdditionPlan,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+        before_publish: Callable[[], None] | None = None,
+    ) -> DatabaseRevisionManifestV2 | None:
+        if not isinstance(plan, DatabaseContentAdditionPlan):
+            raise TypeError("plan must be a DatabaseContentAdditionPlan")
+        if (
+            self.creation_store.load_database_head(
+                plan.database_id
+            ).revision_id
+            != plan.starting_revision_id
+        ):
+            raise DataManagerCreationError("Database head changed after Preview")
+        if self._artifacts.capture_accepted_source(plan.market_id) != plan.source_ohlcv:
+            raise DataManagerCreationError(
+                "Database update required before adding content."
+            )
+        if plan.source_kind == "artifacts":
+            current = self.plan_database_artifact_addition(
+                plan.database_id, plan.selected_root_logical_artifact_ids
+            )
+        else:
+            if plan.source_collection is None:
+                raise DataManagerCreationError(
+                    "Collection Database content plan has no Collection reference"
+                )
+            current = self.plan_database_collection_addition(
+                plan.database_id, plan.source_collection.collection_id
+            )
+        if current != plan:
+            raise DataManagerCreationError(
+                "Database content plan changed after Preview"
+            )
+        result = self._creation.execute_database_content_addition(
+            plan,
+            cancellation_requested=cancellation_requested,
+            before_publish=before_publish,
+        )
+        if result is not None:
+            self._updates.invalidate()
         return result
 
     def reconcile_update_status(
@@ -917,7 +1274,7 @@ class DataManagerService:
 
     def list_database_revisions(
         self, database_id: str
-    ) -> tuple[DatabaseRevisionManifestV1, ...]:
+    ) -> tuple[DatabaseRevisionManifest, ...]:
         return self._creation.list_database_revisions(database_id)
 
     def load_database_revision(
@@ -1136,9 +1493,12 @@ class DataManagerService:
         recipe_id: str,
         *,
         before_delete: Callable[[], None] | None,
+        canonical_winner_id: str | None = None,
     ) -> PortableRecipeV1:
         deleted = self._portable_recipes.delete_recipe(
-            recipe_id, before_delete=before_delete
+            recipe_id,
+            before_delete=before_delete,
+            canonical_winner_id=canonical_winner_id,
         )
         self._updates.invalidate()
         return deleted
@@ -1469,14 +1829,52 @@ class DataManagerService:
                 collection_members = graph.member_recipe_ids
             if before_publish is not None:
                 before_publish()
+            recipe_actions = self._recipe_persistence_actions(current.recipes)
+            created_recipe_ids: list[str] = []
+            reused_recipe_ids: list[str] = []
             for recipe in current.recipes:
-                self._portable_recipes.save_recipe(recipe)
+                action = dict(recipe_actions)[recipe.recipe_id]
+                if action == "NEW":
+                    provenance = next(
+                        item
+                        for item in current.provenances
+                        if item.recipe_id == recipe.recipe_id
+                    )
+                    self._portable_recipes.persist_recipe(
+                        recipe,
+                        origin_kind="study_environment",
+                        origin_details={
+                            "environment_id": provenance.study_environment_id,
+                            "environment_content_hash": (
+                                provenance.study_environment_content_hash
+                            ),
+                            "entry_id": provenance.study_entry_id,
+                        },
+                    )
+                    created_recipe_ids.append(recipe.recipe_id)
+                else:
+                    reused_recipe_ids.append(recipe.recipe_id)
+            existing_provenance = {
+                item.provenance_id
+                for recipe_id in (*root_recipe_ids, *support_recipe_ids)
+                for item in self._portable_recipes.list_provenance(recipe_id)
+            }
+            new_provenance_ids: list[str] = []
+            existing_provenance_ids: list[str] = []
             for provenance in current.provenances:
-                self._portable_recipes.save_provenance(provenance)
+                if provenance.provenance_id in existing_provenance:
+                    existing_provenance_ids.append(provenance.provenance_id)
+                else:
+                    self._portable_recipes.save_provenance(provenance)
+                    new_provenance_ids.append(provenance.provenance_id)
             collection_id = None
             revision_id = None
+            collection_outcome = "NONE"
             if collection_metadata is not None:
                 display_name, description = collection_metadata
+                existing_collection = self._portable_recipes.find_equivalent_collection(
+                    root_recipe_ids, collection_members
+                )
                 revision = self._portable_recipes.create_collection(
                     display_name,
                     description,
@@ -1485,12 +1883,23 @@ class DataManagerService:
                 )
                 collection_id = revision.collection_id
                 revision_id = revision.revision_id
+                collection_outcome = (
+                    "REUSED_EXISTING"
+                    if existing_collection is not None
+                    and revision.collection_id == existing_collection.collection_id
+                    else "CREATED"
+                )
             result = DataManagerRecipePersistenceResult(
                 environment_id,
                 root_recipe_ids,
                 support_recipe_ids,
                 collection_id,
                 revision_id,
+                tuple(created_recipe_ids),
+                tuple(reused_recipe_ids),
+                tuple(new_provenance_ids),
+                tuple(existing_provenance_ids),
+                collection_outcome,
             )
             if collection_id is not None:
                 self._updates.invalidate()
@@ -1537,6 +1946,9 @@ class DataManagerService:
                 try:
                     recipe = self._portable_recipes.load_recipe(summary.recipe_id)
                     provenances = self._portable_recipes.list_provenance(recipe.recipe_id)
+                    persistence = self._portable_recipes.load_persistence_metadata(
+                        recipe.recipe_id
+                    )
                 except (FileNotFoundError, PortableRecipeStoreError, PortableRecipeValidationError) as exc:
                     item = DataManagerPortableRecipeEntry(
                         summary.recipe_id, summary.tool_key, summary.tool_version,
@@ -1552,12 +1964,23 @@ class DataManagerService:
                             value.exchange, value.market_type, value.symbol, value.timeframe
                         ),
                     ))
+                    origin_kinds = {
+                        item.origin_kind
+                        for item in (() if persistence is None else persistence.origins)
+                    }
+                    if provenances:
+                        origin_kinds.add("study_environment")
                     item = DataManagerPortableRecipeEntry(
                         recipe.recipe_id,
                         recipe.tool_key,
                         recipe.tool_version,
                         recipe.kind,
-                        recipe.parameters,
+                        normalize_portable_recipe_parameters(
+                            recipe.tool_key,
+                            recipe.parameters,
+                            ohlcv_inputs=recipe.ohlcv_inputs,
+                            dependencies=recipe.dependencies,
+                        ),
                         recipe.output_names,
                         tuple(
                             f"{value.role}=OHLCV.{value.column_name}"
@@ -1571,7 +1994,17 @@ class DataManagerService:
                         markets,
                         tuple(sorted({value.study_environment_id for value in provenances})),
                         tuple(sorted({value.study_display_name for value in provenances})),
-                        len(provenances),
+                        (
+                            len(provenances)
+                            if persistence is None
+                            else len(persistence.origins)
+                        ),
+                        first_persisted_at_utc=(
+                            None
+                            if persistence is None
+                            else persistence.first_persisted_at_utc
+                        ),
+                        origin_kinds=tuple(sorted(origin_kinds)),
                     )
             if _recipe_matches(item, filters):
                 entries.append(item)
@@ -1670,7 +2103,7 @@ class DataManagerService:
             plan = self.plan_recipe_collection(root_recipe_ids)
             if before_publish is not None:
                 before_publish()
-            self._portable_recipes.update_collection(
+            revision = self._portable_recipes.update_collection(
                 collection_id,
                 display_name,
                 description,
@@ -1678,7 +2111,7 @@ class DataManagerService:
                 plan.member_recipe_ids,
                 expected_head_revision_id=expected_revision_id,
             )
-            result = self.inspect_recipe_collection(collection_id)
+            result = self.inspect_recipe_collection(revision.collection_id)
             self._updates.invalidate()
             return result
         except DataManagerOperationError:
@@ -1706,6 +2139,22 @@ class DataManagerService:
             TypeError,
             ValueError,
             ArtifactMaterializationValidationError,
+            PortableRecipeGraphError,
+            PortableRecipeStoreError,
+            PortableRecipeValidationError,
+        ) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+
+    def find_equivalent_recipe_collection(
+        self, root_recipe_ids: tuple[str, ...]
+    ) -> PortableRecipeCollectionRevisionV1 | None:
+        plan = self.plan_recipe_collection(root_recipe_ids)
+        try:
+            return self._portable_recipes.find_equivalent_collection(
+                plan.root_recipe_ids, plan.member_recipe_ids
+            )
+        except (
+            FileNotFoundError,
             PortableRecipeGraphError,
             PortableRecipeStoreError,
             PortableRecipeValidationError,
@@ -1835,6 +2284,33 @@ class DataManagerService:
                     )
                 roots = revision.root_recipe_ids
                 collection_revision_id = revision.revision_id
+            requested_graph = self._recipe_planner.plan(roots)
+            requested_recipes = {
+                recipe_id: self._portable_recipes.load_recipe(recipe_id)
+                for recipe_id in requested_graph.member_recipe_ids
+            }
+            requested_graph_is_valid = True
+            for recipe_id in requested_graph.member_recipe_ids:
+                try:
+                    _validate_recipe_execution(
+                        requested_recipes[recipe_id], requested_recipes
+                    )
+                    _target_configuration(requested_recipes[recipe_id])
+                except (KeyError, TypeError, ValueError):
+                    requested_graph_is_valid = False
+                    break
+            if requested_graph_is_valid:
+                roots = tuple(
+                    dict.fromkeys(
+                        (
+                            self._portable_recipes.find_equivalent_recipe(
+                                requested_recipes[recipe_id]
+                            )
+                            or requested_recipes[recipe_id]
+                        ).recipe_id
+                        for recipe_id in roots
+                    )
+                )
             graph = self._recipe_planner.plan(roots)
             recipes = {
                 recipe_id: self._portable_recipes.load_recipe(recipe_id)
@@ -1850,13 +2326,26 @@ class DataManagerService:
                 except (KeyError, TypeError, ValueError) as exc:
                     blockers_by_recipe[recipe_id].append(str(exc))
 
-            logical_by_recipe = {
-                recipe_id: compute_logical_artifact_id(market, recipe_id)
-                for recipe_id in graph.member_recipe_ids
-            }
             managed = {
                 item.logical_artifact_id: item
                 for item in self._artifacts.list_managed_artifacts(market)
+            }
+            artifact_winners = self._current_artifact_semantic_winners(
+                market, source, tuple(managed.values())
+            )
+            recipe_semantic_keys = {
+                recipe_id: self._portable_recipes.semantic_key_for_recipe(
+                    recipes[recipe_id], recipes=recipes
+                )
+                for recipe_id in graph.member_recipe_ids
+            }
+            logical_by_recipe = {
+                recipe_id: (
+                    artifact_winners[recipe_semantic_keys[recipe_id]].logical_artifact_id
+                    if recipe_semantic_keys[recipe_id] in artifact_winners
+                    else compute_logical_artifact_id(market, recipe_id)
+                )
+                for recipe_id in graph.member_recipe_ids
             }
             nodes: list[DataManagerArtifactMaterializationNode] = []
             node_by_recipe: dict[str, DataManagerArtifactMaterializationNode] = {}
@@ -1885,10 +2374,6 @@ class DataManagerService:
                 elif current is not None:
                     previous_artifact_id = current.artifact_id
                     try:
-                        if current.portable_recipe_id != recipe_id:
-                            raise ArtifactLineageError(
-                                "managed portable Recipe identity disagrees"
-                            )
                         loaded = self._artifacts.load_artifact_by_id(
                             market, current.artifact_id
                         )
@@ -1900,7 +2385,6 @@ class DataManagerService:
                         ):
                             status = "CREATE"
                         else:
-                            parameters, bindings = _target_configuration(recipe)
                             dependency_artifact_ids = {
                                 dependency_id: node_by_recipe[dependency_id].current_artifact_id
                                 for dependency_id in dependencies_by_recipe[recipe_id]
@@ -1911,22 +2395,11 @@ class DataManagerService:
                             ):
                                 status = "CREATE"
                             else:
-                                refs = _source_refs(
-                                    recipe,
-                                    {
-                                        key: value
-                                        for key, value in dependency_artifact_ids.items()
-                                        if value is not None
-                                    },
-                                )
-                                target_recipe = loaded.metadata.recipe
                                 if (
-                                    target_recipe.tool_key == recipe.tool_key
-                                    and target_recipe.kind == recipe.kind
-                                    and dict(target_recipe.parameters) == parameters
-                                    and dict(target_recipe.bindings) == bindings
-                                    and target_recipe.output_names == recipe.output_names
-                                    and target_recipe.source_artifacts == refs
+                                    self._artifact_semantic_key(
+                                        market, current.artifact_id, source
+                                    )
+                                    == recipe_semantic_keys[recipe_id]
                                 ):
                                     status = "REUSE_CURRENT"
                                     current_artifact_id = current.artifact_id
@@ -2152,12 +2625,22 @@ class DataManagerService:
                             "direct Construct source is not admitted by Task 1062"
                         )
 
-            recipe = _build_direct_portable_recipe(
+            candidate = _build_direct_portable_recipe(
                 request, source_recipe_ids
             )
             plan, members = self._plan_direct_artifact_materialization(
-                request, recipe, current_source
+                request, candidate, current_source
             )
+            recipe = self._resolve_portable_recipe_candidates((candidate,))[0]
+            if recipe != candidate:
+                plan, members = self._plan_direct_artifact_materialization(
+                    request, recipe, current_source
+                )
+            _raise_materialization_cancelled(
+                cancellation_requested or (lambda: False),
+                "portable Recipe publication",
+            )
+            self._publish_portable_recipe_candidates((recipe,))
             materialization = self._execute_direct_artifact_materialization(
                 plan,
                 members,
@@ -2305,6 +2788,9 @@ class DataManagerService:
             item.logical_artifact_id: item
             for item in self._artifacts.list_managed_artifacts(market)
         }
+        artifact_winners = self._current_artifact_semantic_winners(
+            market, expected_source, tuple(managed.values())
+        )
         version_owners: dict[str, tuple[str, str]] = {}
         versions_by_logical_id: dict[str, tuple[object, ...]] = {}
         for summary in managed.values():
@@ -2435,8 +2921,19 @@ class DataManagerService:
         root_recipe_ids: list[str] = []
         for root_recipe, sources in roots:
             parameters, bindings = _target_configuration(root_recipe)
-            root_logical_id = compute_logical_artifact_id(
-                market, root_recipe.recipe_id
+            root_semantic_key = self._direct_root_semantic_key(
+                market, expected_source, root_recipe, sources
+            )
+            existing_root = artifact_winners.get(root_semantic_key)
+            root_portable_recipe_id = (
+                root_recipe.recipe_id
+                if existing_root is None
+                else existing_root.portable_recipe_id
+            )
+            root_logical_id = (
+                compute_logical_artifact_id(market, root_recipe.recipe_id)
+                if existing_root is None
+                else existing_root.logical_artifact_id
             )
             root_dependencies = tuple(
                 _DirectArtifactDependency(
@@ -2447,26 +2944,11 @@ class DataManagerService:
                 )
                 for source in sources
             )
-            requested_root_descriptor = _DirectArtifactSemanticDescriptor(
-                root_recipe.tool_key,
-                root_recipe.kind,
-                parameters,
-                bindings,
-                root_recipe.output_names,
-                tuple(
-                    _DirectArtifactSemanticDependency(
-                        dependency.role,
-                        dependency.portable_recipe_id,
-                        dependency.output_name,
-                    )
-                    for dependency in root_dependencies
-                ),
-            )
             root_summary = managed.get(root_logical_id)
             if root_summary is not None:
                 if not root_summary.valid:
                     raise ArtifactLineageError(root_summary.rejection_reason)
-                if root_summary.portable_recipe_id != root_recipe.recipe_id:
+                if root_summary.portable_recipe_id != root_portable_recipe_id:
                     raise ArtifactLineageError(
                         "managed Artifact semantic identity disagrees"
                     )
@@ -2475,21 +2957,27 @@ class DataManagerService:
                     raise ArtifactLineageError(
                         "managed Artifact lineage has no versions"
                     )
-                historical_root_descriptor = (
-                    self._validate_direct_artifact_semantic_lineage(
-                        market,
-                        root_summary,
-                        root_versions,
-                        version_owners,
-                    )
+                self._validate_direct_artifact_semantic_lineage(
+                    market,
+                    root_summary,
+                    root_versions,
+                    version_owners,
                 )
-                if historical_root_descriptor != requested_root_descriptor:
+                if (
+                    self._artifact_semantic_key(
+                        market,
+                        root_summary.artifact_id,
+                        expected_source,
+                        require_source=False,
+                    )
+                    != root_semantic_key
+                ):
                     raise ArtifactLineageError(
                         "managed Artifact semantic identity disagrees with "
                         "requested calculation"
                     )
             root_member = _DirectArtifactMember(
-                root_recipe.recipe_id,
+                root_portable_recipe_id,
                 root_logical_id,
                 root_recipe.tool_key,
                 root_recipe.kind,
@@ -2512,7 +3000,7 @@ class DataManagerService:
             members[root_logical_id] = root_member
             if root_logical_id not in root_logical_ids:
                 root_logical_ids.append(root_logical_id)
-                root_recipe_ids.append(root_recipe.recipe_id)
+                root_recipe_ids.append(root_portable_recipe_id)
 
         order: list[str] = []
         active: set[str] = set()
@@ -3286,7 +3774,11 @@ class DataManagerService:
         return DataManagerManagedArtifactCatalog(values)
 
     def scan_product_catalogs(self) -> DataManagerProductCatalogSnapshot:
-        reconciliation = self.latest_update_status()
+        reconciliation = self._updates.cached_snapshot()
+        if reconciliation is None:
+            raise DataManagerOperationError(
+                "Product catalog scan requires a completed reconciliation snapshot"
+            )
         currentness = {
             item.database_id: item for item in reconciliation.databases
         }
@@ -3294,7 +3786,11 @@ class DataManagerService:
         for database_id in self.list_database_ids():
             definition = self.load_database_definition(database_id)
             revisions = self.list_database_revisions(database_id)
-            current_manifest = revisions[-1] if revisions else None
+            current_manifest = (
+                None
+                if not revisions
+                else self.load_database_revision(database_id).manifest
+            )
             databases.append(
                 DataManagerDatabaseCatalogEntry(
                     definition=definition,
@@ -3314,6 +3810,990 @@ class DataManagerService:
             databases=tuple(databases),
             latest_reconciliation=reconciliation,
         )
+
+    def prepare_duplicate_maintenance(
+        self,
+        domain: DuplicateMaintenanceDomain | str,
+        market_id: MarketId | None = None,
+    ) -> DuplicateMaintenancePreflight:
+        exact_domain = duplicate_maintenance_domain(domain)
+        if not exact_domain.requires_market:
+            if market_id is not None:
+                raise ValueError("global duplicate maintenance does not use MarketId")
+            count = (
+                len(self._portable_recipes.list_recipe_summaries())
+                if exact_domain.key == "recipes"
+                else len(self._portable_recipes.list_collection_summaries())
+            )
+            return DuplicateMaintenancePreflight(exact_domain, count)
+
+        if market_id is None:
+            raise DataManagerOperationError(
+                f"{exact_domain.display_name} duplicate maintenance requires "
+                "a selected accepted dataset"
+            )
+        market = _canonical_market(market_id)
+        self._require_accepted(market)
+        source = self._capture_duplicate_maintenance_source(market)
+        if exact_domain.key == "artifacts":
+            count = len(self._current_artifact_candidates(market, source))
+        else:
+            count = len(self._current_artifact_collection_candidates(market, source))
+        return DuplicateMaintenancePreflight(exact_domain, count, market, source)
+
+    def scan_duplicate_maintenance(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> DuplicateMaintenanceScanResult:
+        if not isinstance(preflight, DuplicateMaintenancePreflight):
+            raise TypeError("preflight must be a DuplicateMaintenancePreflight")
+        if preflight.domain.requires_market:
+            market = preflight.market_id
+            source = preflight.source_ohlcv
+            if market is None or source is None:
+                raise DataManagerOperationError(
+                    "selected-OHLCV duplicate maintenance scope is incomplete"
+                )
+            self._require_duplicate_maintenance_source(market, source)
+
+        scanners = {
+            "recipes": self._scan_recipe_duplicates,
+            "recipe_collections": self._scan_recipe_collection_duplicates,
+            "artifacts": self._scan_artifact_duplicates,
+            "artifact_collections": self._scan_artifact_collection_duplicates,
+        }
+        groups, invalid, scanned, historical = scanners[preflight.domain.key](
+            preflight,
+            progress=progress,
+            cancellation_requested=cancellation_requested,
+        )
+        if preflight.domain.requires_market:
+            self._require_duplicate_maintenance_source(
+                preflight.market_id, preflight.source_ohlcv
+            )
+        return DuplicateMaintenanceScanResult(
+            preflight,
+            datetime.now(UTC),
+            scanned,
+            groups,
+            invalid,
+            historical,
+        )
+
+    def purge_duplicate_maintenance(
+        self,
+        scan: DuplicateMaintenanceScanResult,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+        before_delete: Callable[[], None] | None = None,
+    ) -> DuplicateMaintenancePurgeResult:
+        if not isinstance(scan, DuplicateMaintenanceScanResult):
+            raise TypeError("scan must be a DuplicateMaintenanceScanResult")
+        requested = tuple(
+            (group.canonical_id, candidate)
+            for group in scan.groups
+            for candidate in group.duplicates
+            if candidate.classification == "SAFE"
+        )
+        details: list[DuplicateMaintenancePurgeDetail] = []
+        abort_reason = ""
+        total = len(requested)
+        for index, (winner_id, candidate) in enumerate(requested, start=1):
+            _duplicate_purge_progress(
+                scan.preflight.domain,
+                index,
+                total,
+                progress,
+                cancellation_requested,
+            )
+            if abort_reason:
+                details.append(
+                    DuplicateMaintenancePurgeDetail(
+                        scan.preflight.domain,
+                        candidate.object_id,
+                        winner_id,
+                        "FAILED",
+                        f"purge aborted after unsafe persistence state: {abort_reason}",
+                    )
+                )
+                continue
+            if candidate.object_id == winner_id:
+                details.append(
+                    DuplicateMaintenancePurgeDetail(
+                        scan.preflight.domain,
+                        candidate.object_id,
+                        winner_id,
+                        "FAILED",
+                        "invalid purge candidate equals canonical winner",
+                    )
+                )
+                continue
+
+            try:
+                current = self.scan_duplicate_maintenance(scan.preflight)
+                current_group, current_candidate = self._current_duplicate_candidate(
+                    current, candidate.object_id
+                )
+                if current_group is None or current_candidate is None:
+                    details.append(
+                        DuplicateMaintenancePurgeDetail(
+                            scan.preflight.domain,
+                            candidate.object_id,
+                            winner_id,
+                            "SKIPPED STALE",
+                            "candidate no longer belongs to a duplicate group",
+                        )
+                    )
+                    continue
+                if current_group.canonical_id != winner_id:
+                    details.append(
+                        DuplicateMaintenancePurgeDetail(
+                            scan.preflight.domain,
+                            candidate.object_id,
+                            winner_id,
+                            "SKIPPED STALE",
+                            "canonical duplicate winner changed after scan",
+                        )
+                    )
+                    continue
+                if current_candidate.classification == "BLOCKED":
+                    details.append(
+                        DuplicateMaintenancePurgeDetail(
+                            scan.preflight.domain,
+                            candidate.object_id,
+                            winner_id,
+                            "BLOCKED",
+                            current_candidate.reason
+                            + ": "
+                            + ", ".join(current_candidate.blockers),
+                        )
+                    )
+                    continue
+                if current_candidate.classification != "SAFE":
+                    details.append(
+                        DuplicateMaintenancePurgeDetail(
+                            scan.preflight.domain,
+                            candidate.object_id,
+                            winner_id,
+                            "SKIPPED STALE",
+                            "candidate is no longer classified SAFE",
+                        )
+                    )
+                    continue
+
+                self._delete_duplicate_candidate(
+                    scan.preflight,
+                    candidate.object_id,
+                    winner_id,
+                    before_delete=before_delete,
+                )
+                details.append(
+                    DuplicateMaintenancePurgeDetail(
+                        scan.preflight.domain,
+                        candidate.object_id,
+                        winner_id,
+                        "PURGED",
+                        "duplicate deleted after current canonical revalidation",
+                    )
+                )
+            except Exception as exc:
+                result, severe = self._duplicate_purge_failure(exc)
+                reason = f"{type(exc).__name__}: {exc}"
+                details.append(
+                    DuplicateMaintenancePurgeDetail(
+                        scan.preflight.domain,
+                        candidate.object_id,
+                        winner_id,
+                        result,
+                        reason,
+                    )
+                )
+                if severe:
+                    abort_reason = reason
+
+        return DuplicateMaintenancePurgeResult(
+            scan,
+            datetime.now(UTC),
+            tuple(details),
+        )
+
+    @staticmethod
+    def _current_duplicate_candidate(
+        scan: DuplicateMaintenanceScanResult,
+        candidate_id: str,
+    ) -> tuple[
+        DuplicateMaintenanceGroup | None,
+        DuplicateMaintenanceCandidate | None,
+    ]:
+        for group in scan.groups:
+            for candidate in group.duplicates:
+                if candidate.object_id == candidate_id:
+                    return group, candidate
+        return None, None
+
+    def _delete_duplicate_candidate(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        candidate_id: str,
+        winner_id: str,
+        *,
+        before_delete: Callable[[], None] | None,
+    ) -> None:
+        key = preflight.domain.key
+        if key == "recipes":
+            self._delete_portable_recipe(
+                candidate_id,
+                before_delete=before_delete,
+                canonical_winner_id=winner_id,
+            )
+            return
+        if key == "recipe_collections":
+            self._delete_recipe_collection(
+                candidate_id, before_delete=before_delete
+            )
+            return
+        if key == "artifacts":
+            if preflight.market_id is None:
+                raise DataManagerOperationError("Artifact purge scope is incomplete")
+            self._delete_managed_artifact(
+                preflight.market_id,
+                candidate_id,
+                before_delete=before_delete,
+            )
+            return
+        if key == "artifact_collections":
+            self._delete_artifact_collection(
+                candidate_id, before_delete=before_delete
+            )
+            return
+        raise DataManagerOperationError("duplicate purge domain is unsupported")
+
+    @staticmethod
+    def _duplicate_purge_failure(error: Exception) -> tuple[str, bool]:
+        message = str(error).casefold()
+        if "referenced" in message or "source changed" in message or "unavailable" in message:
+            return "BLOCKED", False
+        if isinstance(error, FileNotFoundError) or "not found" in message:
+            return "SKIPPED STALE", False
+        severe_markers = (
+            "cannot prove",
+            "corrupt",
+            "escapes",
+            "identity",
+            "reparse",
+            "shared by another lineage",
+            "unexpected persistence",
+            "unsafe persistence",
+            "revisions do not match",
+        )
+        return "FAILED", any(marker in message for marker in severe_markers)
+
+    def _scan_recipe_duplicates(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        *,
+        progress: Callable[[int, int, str], None] | None,
+        cancellation_requested: Callable[[], bool] | None,
+    ) -> tuple[
+        tuple[DuplicateMaintenanceGroup, ...],
+        tuple[DuplicateMaintenanceCandidate, ...],
+        int,
+        int,
+    ]:
+        summaries = self._portable_recipes.list_recipe_summaries()
+        grouped: dict[bytes, list[object]] = {}
+        persistence_by_id: dict[str, object | None] = {}
+        persistence_errors: dict[str, str] = {}
+        invalid: list[DuplicateMaintenanceCandidate] = []
+        total = len(summaries)
+        for index, summary in enumerate(summaries, start=1):
+            try:
+                semantic = self._portable_recipes.inspect_recipe_semantics(
+                    summary.recipe_id
+                )
+                grouped.setdefault(semantic.semantic_key, []).append(semantic)
+                try:
+                    persistence_by_id[summary.recipe_id] = (
+                        self._portable_recipes.load_persistence_metadata(
+                            summary.recipe_id
+                        )
+                    )
+                except (PortableRecipeStoreError, PortableRecipeValidationError) as exc:
+                    persistence_by_id[summary.recipe_id] = None
+                    persistence_errors[summary.recipe_id] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            except (
+                FileNotFoundError,
+                PortableRecipeStoreError,
+                PortableRecipeValidationError,
+            ) as exc:
+                reason = summary.rejection_reason or f"{type(exc).__name__}: {exc}"
+                invalid.append(
+                    _invalid_duplicate_candidate(summary.recipe_id, reason)
+                )
+            _duplicate_scan_progress(
+                preflight.domain,
+                index,
+                total,
+                progress,
+                cancellation_requested,
+            )
+
+        groups: list[DuplicateMaintenanceGroup] = []
+        for values in grouped.values():
+            if len(values) < 2:
+                continue
+            timestamped = tuple(
+                (
+                    persistence_by_id[item.persisted_recipe_id],
+                    item,
+                )
+                for item in values
+            )
+            if all(
+                metadata is not None
+                and metadata.first_persisted_at_utc is not None
+                for metadata, _item in timestamped
+            ):
+                winner = min(
+                    timestamped,
+                    key=lambda value: (
+                        value[0].first_persisted_at_utc,
+                        value[1].persisted_recipe_id,
+                    ),
+                )[1]
+                canonical_id = winner.persisted_recipe_id
+                duplicate_values = tuple(
+                    sorted(
+                        (
+                            item
+                            for item in values
+                            if item.persisted_recipe_id
+                            != winner.persisted_recipe_id
+                        ),
+                        key=lambda item: item.persisted_recipe_id,
+                    )
+                )
+                duplicates = []
+                for item in duplicate_values:
+                    try:
+                        blockers = self._portable_recipes.recipe_deletion_blockers(
+                            item.persisted_recipe_id
+                        )
+                    except PortableRecipeStoreError as exc:
+                        blockers = (f"Recipe reference proof unavailable: {exc}",)
+                    duplicates.append(
+                        DuplicateMaintenanceCandidate(
+                            item.persisted_recipe_id,
+                            "BLOCKED" if blockers else "SAFE",
+                            (
+                            "historical Recipe has dependency references"
+                            if blockers
+                            else "Recipe matches the canonical semantic winner"
+                            ),
+                            blockers,
+                        )
+                    )
+            else:
+                canonical_id = ""
+                duplicates = [
+                    DuplicateMaintenanceCandidate(
+                        item.persisted_recipe_id,
+                        "REVIEW REQUIRED",
+                        persistence_errors.get(
+                            item.persisted_recipe_id,
+                            "Recipe persistence age is unknown",
+                        ),
+                    )
+                    for item in sorted(
+                        values, key=lambda item: item.persisted_recipe_id
+                    )
+                ]
+            if not duplicates:
+                continue
+            recipe = min(
+                values, key=lambda item: item.persisted_recipe_id
+            ).canonical_recipe
+            groups.append(
+                DuplicateMaintenanceGroup(
+                    preflight.domain,
+                    canonical_id,
+                    tuple(duplicates),
+                    "Equivalent executable Recipe semantics",
+                    recipe.tool_key,
+                    json.dumps(
+                        dict(recipe.parameters),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ),
+                )
+            )
+        return (
+            tuple(sorted(groups, key=lambda item: item.canonical_id)),
+            tuple(invalid),
+            total,
+            0,
+        )
+
+    def _scan_recipe_collection_duplicates(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        *,
+        progress: Callable[[int, int, str], None] | None,
+        cancellation_requested: Callable[[], bool] | None,
+    ) -> tuple[
+        tuple[DuplicateMaintenanceGroup, ...],
+        tuple[DuplicateMaintenanceCandidate, ...],
+        int,
+        int,
+    ]:
+        summaries = self._portable_recipes.list_collection_summaries()
+        grouped: dict[frozenset[bytes], list[tuple[datetime, str]]] = {}
+        invalid: list[DuplicateMaintenanceCandidate] = []
+        total = len(summaries)
+        for index, summary in enumerate(summaries, start=1):
+            if not summary.valid:
+                invalid.append(
+                    _invalid_duplicate_candidate(
+                        summary.collection_id, summary.rejection_reason
+                    )
+                )
+            else:
+                try:
+                    revision = self._portable_recipes.load_collection(
+                        summary.collection_id
+                    )
+                    graph = self._recipe_planner.plan(revision.root_recipe_ids)
+                    if revision.member_recipe_ids != graph.member_recipe_ids:
+                        raise PortableRecipeStoreError(
+                            "Collection members disagree with canonical graph"
+                        )
+                    semantic_key = self._portable_recipes._collection_semantic_key(
+                        revision.root_recipe_ids, revision.member_recipe_ids
+                    )
+                    created = summary.created_at_utc or revision.created_at_utc
+                    grouped.setdefault(semantic_key, []).append(
+                        (created, revision.collection_id)
+                    )
+                except (
+                    FileNotFoundError,
+                    PortableRecipeGraphError,
+                    PortableRecipeStoreError,
+                    PortableRecipeValidationError,
+                ) as exc:
+                    invalid.append(
+                        _invalid_duplicate_candidate(
+                            summary.collection_id, f"{type(exc).__name__}: {exc}"
+                        )
+                    )
+            _duplicate_scan_progress(
+                preflight.domain,
+                index,
+                total,
+                progress,
+                cancellation_requested,
+            )
+        groups = tuple(
+            DuplicateMaintenanceGroup(
+                preflight.domain,
+                ordered[0][1],
+                tuple(
+                    DuplicateMaintenanceCandidate(
+                        collection_id,
+                        "SAFE",
+                        "same root and member Recipe sets as the canonical winner",
+                    )
+                    for _created, collection_id in ordered[1:]
+                ),
+                "Equivalent Recipe Collection root and member sets",
+            )
+            for values in grouped.values()
+            if len(values) > 1
+            for ordered in (sorted(values, key=lambda item: (item[0], item[1])),)
+        )
+        return _sorted_duplicate_groups(groups), tuple(invalid), total, 0
+
+    def _scan_artifact_duplicates(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        *,
+        progress: Callable[[int, int, str], None] | None,
+        cancellation_requested: Callable[[], bool] | None,
+    ) -> tuple[
+        tuple[DuplicateMaintenanceGroup, ...],
+        tuple[DuplicateMaintenanceCandidate, ...],
+        int,
+        int,
+    ]:
+        market = preflight.market_id
+        source = preflight.source_ohlcv
+        if market is None or source is None:
+            raise DataManagerOperationError("Artifact scan scope is incomplete")
+        candidates = self._current_artifact_candidates(market, source)
+        grouped: dict[bytes, list[ManagedArtifactSummary]] = {}
+        invalid: list[DuplicateMaintenanceCandidate] = []
+        historical = 0
+        total = len(candidates)
+        for index, summary in enumerate(candidates, start=1):
+            if not summary.valid:
+                invalid.append(
+                    _invalid_duplicate_candidate(
+                        summary.logical_artifact_id, summary.rejection_reason
+                    )
+                )
+            else:
+                try:
+                    loaded = self._artifacts.load_artifact_by_id(
+                        market, summary.artifact_id
+                    )
+                    metadata = loaded.metadata
+                    if (
+                        metadata.artifact_id != summary.artifact_id
+                        or metadata.recipe.market_id != market
+                        or metadata.source_ohlcv != source
+                    ):
+                        raise ArtifactLineageError(
+                            "current managed Artifact disagrees with selected source"
+                        )
+                    versions = self._artifacts.list_artifact_versions(
+                        market, summary.logical_artifact_id
+                    )
+                    if not any(
+                        item.artifact_id == summary.artifact_id for item in versions
+                    ):
+                        raise ArtifactLineageError(
+                            "current managed Artifact is absent from its history"
+                        )
+                    historical += max(0, len(versions) - 1)
+                    semantic_key = self._artifact_semantic_key(
+                        market, summary.artifact_id, source
+                    )
+                    grouped.setdefault(semantic_key, []).append(summary)
+                except (
+                    ArtifactError,
+                    AttributeError,
+                    FileNotFoundError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    invalid.append(
+                        _invalid_duplicate_candidate(
+                            summary.logical_artifact_id,
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+            _duplicate_scan_progress(
+                preflight.domain,
+                index,
+                total,
+                progress,
+                cancellation_requested,
+            )
+
+        groups: list[DuplicateMaintenanceGroup] = []
+        for values in grouped.values():
+            by_logical_id = {
+                item.logical_artifact_id: item for item in values
+            }
+            if len(by_logical_id) < 2:
+                continue
+            canonical = tuple(
+                item
+                for item in by_logical_id.values()
+                if item.logical_artifact_id
+                == compute_logical_artifact_id(market, item.portable_recipe_id)
+            )
+            winner = (
+                min(
+                    canonical,
+                    key=lambda item: (
+                        item.created_at_utc or datetime.max.replace(tzinfo=UTC),
+                        item.logical_artifact_id,
+                    ),
+                )
+                if canonical
+                else None
+            )
+            canonical_id = "" if winner is None else winner.logical_artifact_id
+            duplicates = tuple(
+                DuplicateMaintenanceCandidate(
+                    item.logical_artifact_id,
+                    "REVIEW REQUIRED",
+                    "legacy Artifact lineage shares portable Recipe semantics",
+                )
+                for item in sorted(
+                    by_logical_id.values(), key=lambda value: value.logical_artifact_id
+                )
+                if item.logical_artifact_id != canonical_id
+            )
+            groups.append(
+                DuplicateMaintenanceGroup(
+                    preflight.domain,
+                    canonical_id,
+                    duplicates,
+                    "Different logical Artifact identities share one portable Recipe",
+                )
+            )
+        return _sorted_duplicate_groups(groups), tuple(invalid), total, historical
+
+    def _current_artifact_semantic_winners(
+        self,
+        market: MarketId,
+        source: OHLCVSourceFingerprintV1,
+        summaries: Sequence[ManagedArtifactSummary],
+    ) -> dict[bytes, ManagedArtifactSummary]:
+        grouped: dict[bytes, list[ManagedArtifactSummary]] = {}
+        cache: dict[str, bytes] = {}
+        for summary in summaries:
+            if not summary.valid:
+                continue
+            try:
+                key = self._artifact_semantic_key(
+                    market, summary.artifact_id, source, cache
+                )
+            except (ArtifactError, AttributeError, FileNotFoundError, TypeError, ValueError):
+                continue
+            grouped.setdefault(key, []).append(summary)
+        return {
+            key: min(
+                values,
+                key=lambda item: (
+                    item.logical_artifact_id
+                    != compute_logical_artifact_id(market, item.portable_recipe_id),
+                    item.created_at_utc or datetime.max.replace(tzinfo=UTC),
+                    item.logical_artifact_id,
+                ),
+            )
+            for key, values in grouped.items()
+        }
+
+    def _direct_root_semantic_key(
+        self,
+        market: MarketId,
+        source: OHLCVSourceFingerprintV1,
+        recipe: PortableRecipeV1,
+        artifact_sources: Sequence[DataManagerDirectArtifactSource],
+    ) -> bytes:
+        inputs: list[dict[str, object]] = [
+            {
+                "role": item.role,
+                "source": "ohlcv",
+                "column_name": item.column_name,
+            }
+            for item in recipe.ohlcv_inputs
+        ]
+        inputs.extend(
+            {
+                "role": item.role,
+                "source": "object",
+                "object_semantic_key": self._artifact_semantic_key(
+                    market, item.artifact_id, source
+                ).hex(),
+                "output_name": item.output_name,
+            }
+            for item in artifact_sources
+        )
+        if not inputs:
+            inputs.extend(
+                {
+                    "role": item.name,
+                    "source": "ohlcv",
+                    "column_name": item.name,
+                }
+                for item in get_financial_tool_spec(recipe.tool_key).data_inputs
+            )
+        return object_semantic_key(
+            recipe.tool_key,
+            object_semantic_parameters(
+                recipe.tool_key,
+                recipe.parameters,
+                has_object_inputs=bool(artifact_sources),
+            ),
+            tuple(sorted(inputs, key=lambda item: str(item["role"]))),
+        )
+
+    def _artifact_semantic_key(
+        self,
+        market: MarketId,
+        artifact_id: str,
+        source: OHLCVSourceFingerprintV1,
+        cache: dict[str, bytes] | None = None,
+        active: set[str] | None = None,
+        *,
+        require_source: bool = True,
+    ) -> bytes:
+        keys = {} if cache is None else cache
+        visiting = set() if active is None else active
+        current = keys.get(artifact_id)
+        if current is not None:
+            return current
+        if artifact_id in visiting:
+            raise ArtifactLineageError(
+                "Artifact semantic dependency graph contains a cycle"
+            )
+        visiting.add(artifact_id)
+        loaded = self._artifacts.load_artifact_by_id(market, artifact_id)
+        metadata = loaded.metadata
+        recipe = metadata.recipe
+        if (
+            metadata.artifact_id != artifact_id
+            or (require_source and metadata.source_ohlcv != source)
+            or recipe.market_id != market
+        ):
+            raise ArtifactLineageError(
+                "Artifact semantic input disagrees with selected dataframe"
+            )
+        reference_roles = {item.role for item in recipe.source_artifacts}
+        inputs: list[dict[str, object]] = []
+        for role, value in recipe.bindings.items():
+            if role in reference_roles:
+                continue
+            column = value
+            if isinstance(column, str) and column.startswith("OHLCV."):
+                column = column.removeprefix("OHLCV.")
+            inputs.append(
+                {
+                    "role": role,
+                    "source": "ohlcv",
+                    "column_name": column,
+                }
+            )
+        for reference in recipe.source_artifacts:
+            inputs.append(
+                {
+                    "role": reference.role,
+                    "source": "object",
+                    "object_semantic_key": self._artifact_semantic_key(
+                        market,
+                        reference.artifact_id,
+                        source,
+                        keys,
+                        visiting,
+                        require_source=require_source,
+                    ).hex(),
+                    "output_name": reference.output_name,
+                }
+            )
+        if not inputs:
+            inputs.extend(
+                {
+                    "role": item.name,
+                    "source": "ohlcv",
+                    "column_name": item.name,
+                }
+                for item in get_financial_tool_spec(recipe.tool_key).data_inputs
+            )
+        semantic_key = object_semantic_key(
+            recipe.tool_key,
+            object_semantic_parameters(
+                recipe.tool_key,
+                recipe.parameters,
+                has_object_inputs=bool(recipe.source_artifacts),
+            ),
+            tuple(sorted(inputs, key=lambda item: str(item["role"]))),
+        )
+        visiting.remove(artifact_id)
+        keys[artifact_id] = semantic_key
+        return semantic_key
+
+    def _scan_artifact_collection_duplicates(
+        self,
+        preflight: DuplicateMaintenancePreflight,
+        *,
+        progress: Callable[[int, int, str], None] | None,
+        cancellation_requested: Callable[[], bool] | None,
+    ) -> tuple[
+        tuple[DuplicateMaintenanceGroup, ...],
+        tuple[DuplicateMaintenanceCandidate, ...],
+        int,
+        int,
+    ]:
+        market = preflight.market_id
+        source = preflight.source_ohlcv
+        if market is None or source is None:
+            raise DataManagerOperationError(
+                "Artifact Collection scan scope is incomplete"
+            )
+        candidates = self._current_artifact_collection_candidates(market, source)
+        grouped: dict[tuple[object, ...], list[ArtifactCollectionRevisionV1]] = {}
+        invalid: list[DuplicateMaintenanceCandidate] = []
+        total = len(candidates)
+        for index, revision in enumerate(candidates, start=1):
+            if revision.validation_state != "valid":
+                invalid.append(
+                    _invalid_duplicate_candidate(
+                        revision.collection_id,
+                        f"current validation state is {revision.validation_state}",
+                    )
+                )
+            else:
+                try:
+                    semantic_key = self._artifact_collection_semantic_key_parts(
+                        revision.market_id,
+                        revision.source_ohlcv,
+                        revision.members,
+                    )
+                    grouped.setdefault(semantic_key, []).append(revision)
+                except (
+                    ArtifactError,
+                    AttributeError,
+                    FileNotFoundError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    invalid.append(
+                        _invalid_duplicate_candidate(
+                            revision.collection_id,
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+            _duplicate_scan_progress(
+                preflight.domain,
+                index,
+                total,
+                progress,
+                cancellation_requested,
+            )
+
+        database_error = ""
+        try:
+            database_revisions = self._database_revisions_for_deletion_proof()
+        except (DataManagerOperationError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            database_revisions = ()
+            database_error = f"Database reference evidence is invalid: {exc}"
+        groups: list[DuplicateMaintenanceGroup] = []
+        for values in grouped.values():
+            if len(values) < 2:
+                continue
+            ordered = sorted(
+                values, key=lambda item: (item.created_at_utc, item.collection_id)
+            )
+            duplicates: list[DuplicateMaintenanceCandidate] = []
+            for revision in ordered[1:]:
+                blockers = tuple(
+                    dict.fromkeys(
+                        (
+                            (database_error,) if database_error else ()
+                        )
+                        + tuple(
+                            f"Database {item.database_id} revision {item.revision_id}"
+                            for item in database_revisions
+                            if revision.collection_id
+                            in _database_collection_ids_for_deletion_proof(item)
+                        )
+                    )
+                )
+                duplicates.append(
+                    DuplicateMaintenanceCandidate(
+                        revision.collection_id,
+                        "BLOCKED" if blockers else "SAFE",
+                        "same canonical Artifact Collection semantic key",
+                        blockers,
+                    )
+                )
+            groups.append(
+                DuplicateMaintenanceGroup(
+                    preflight.domain,
+                    ordered[0].collection_id,
+                    tuple(duplicates),
+                    "Equivalent current Artifact Collection semantics",
+                )
+            )
+        return _sorted_duplicate_groups(groups), tuple(invalid), total, 0
+
+    def _artifact_collection_semantic_key_parts(
+        self,
+        market_id: object,
+        source_ohlcv: object,
+        members: Sequence[ArtifactCollectionMemberV1],
+    ) -> tuple[object, ...]:
+        if not isinstance(market_id, MarketId):
+            raise TypeError("Artifact Collection market_id must be a MarketId")
+        if not isinstance(source_ohlcv, OHLCVSourceFingerprintV1):
+            raise TypeError(
+                "Artifact Collection source_ohlcv must be an OHLCVSourceFingerprintV1"
+            )
+        cache: dict[str, bytes] = {}
+        return (
+            source_ohlcv,
+            frozenset(
+                self._artifact_semantic_key(
+                    market_id,
+                    item.version_key.artifact_id,
+                    source_ohlcv,
+                    cache,
+                    require_source=False,
+                )
+                for item in members
+            ),
+        )
+
+    def _capture_duplicate_maintenance_source(
+        self, market: MarketId
+    ) -> OHLCVSourceFingerprintV1:
+        try:
+            return self._artifacts.capture_accepted_source(market)
+        except (ArtifactError, FileNotFoundError, OSError, RuntimeError) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+
+    def _require_duplicate_maintenance_source(
+        self,
+        market: MarketId | None,
+        expected: OHLCVSourceFingerprintV1 | None,
+    ) -> None:
+        if market is None or expected is None:
+            raise DataManagerOperationError(
+                "selected-OHLCV duplicate maintenance scope is incomplete"
+            )
+        self._require_accepted(market)
+        if self._capture_duplicate_maintenance_source(market) != expected:
+            raise DataManagerOperationError(
+                "accepted OHLCV source changed during duplicate maintenance"
+            )
+
+    def _current_artifact_candidates(
+        self,
+        market: MarketId,
+        source: OHLCVSourceFingerprintV1,
+    ) -> tuple[ManagedArtifactSummary, ...]:
+        values: list[ManagedArtifactSummary] = []
+        for summary in self._artifacts.list_managed_artifacts(market):
+            if not summary.valid:
+                values.append(summary)
+                continue
+            try:
+                loaded = self._artifacts.load_artifact_by_id(
+                    market, summary.artifact_id
+                )
+            except (ArtifactError, FileNotFoundError):
+                values.append(summary)
+                continue
+            if loaded.metadata.source_ohlcv == source:
+                values.append(summary)
+        return tuple(values)
+
+    def _current_artifact_collection_candidates(
+        self,
+        market: MarketId,
+        source: OHLCVSourceFingerprintV1,
+    ) -> tuple[ArtifactCollectionRevisionV1, ...]:
+        values: list[ArtifactCollectionRevisionV1] = []
+        for collection_id in self.creation_store.list_collection_ids():
+            try:
+                revision = self.creation_store.load_collection(collection_id)
+            except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                continue
+            if revision.market_id == market and revision.source_ohlcv == source:
+                values.append(revision)
+        return tuple(values)
 
     def list_managed_artifact_versions(
         self, market_id: MarketId, logical_artifact_id: str
@@ -3543,14 +5023,32 @@ class DataManagerService:
             item.entry_id for item in environment.entries if item.entry_id in included
         )
         support = tuple(item for item in ordered_entries if item not in set(roots))
-        recipes = tuple(analysis.recipes_by_entry[item] for item in ordered_entries)
+        candidate_recipes = tuple(
+            analysis.recipes_by_entry[item] for item in ordered_entries
+        )
+        recipes, resolved_recipe_ids = self._resolve_recipe_candidates(
+            candidate_recipes
+        )
+        classifications = tuple(
+            replace(
+                item,
+                recipe_id=(
+                    item.recipe_id
+                    if item.recipe_id not in resolved_recipe_ids
+                    else resolved_recipe_ids[item.recipe_id]
+                ),
+            )
+            for item in analysis.classifications
+        )
         provenances: tuple[PortableRecipeProvenanceV1, ...] = ()
         graph = PortableRecipeGraphPlan((), (), (), ())
         if not blockers:
             assert environment.created_from is not None
             provenances = tuple(
                 PortableRecipeProvenanceV1.build(
-                    recipe_id=analysis.recipes_by_entry[item.entry_id].recipe_id,
+                    recipe_id=resolved_recipe_ids[
+                        analysis.recipes_by_entry[item.entry_id].recipe_id
+                    ],
                     origin_market_id=environment.created_from,
                     study_environment_id=environment.environment_id,
                     study_environment_content_hash=environment.content_hash,
@@ -3564,23 +5062,154 @@ class DataManagerService:
                 if item.entry_id in included
             )
             recipe_by_id = {item.recipe_id: item for item in recipes}
-            root_recipe_ids = tuple(
-                analysis.recipes_by_entry[item].recipe_id for item in roots
-            )
+            root_recipe_ids = tuple(dict.fromkeys(
+                resolved_recipe_ids[analysis.recipes_by_entry[item].recipe_id]
+                for item in roots
+            ))
             graph = self._recipe_planner.plan(root_recipe_ids, recipes=recipe_by_id)
+        recipe_actions = self._recipe_persistence_actions(recipes)
+        equivalent_collection = None
+        if recipe_actions and all(
+            action == "REUSE EXISTING" for _recipe_id, action in recipe_actions
+        ):
+            equivalent_collection = self._portable_recipes.find_equivalent_collection(
+                graph.root_recipe_ids, graph.member_recipe_ids
+            )
         return DataManagerRecipeDerivationPlan(
             environment.environment_id,
             environment.content_hash,
             roots,
             support,
-            analysis.classifications,
+            classifications,
             recipes,
             provenances,
             graph.dependency_edges,
             graph.execution_stages,
             (),
             tuple(blockers),
+            recipe_actions,
+            None if equivalent_collection is None else equivalent_collection.collection_id,
+            None if equivalent_collection is None else equivalent_collection.revision_id,
+            "" if equivalent_collection is None else equivalent_collection.display_name,
         )
+
+    def _resolve_recipe_candidates(
+        self, recipes: Sequence[PortableRecipeV1]
+    ) -> tuple[tuple[PortableRecipeV1, ...], dict[str, str]]:
+        candidates = {item.recipe_id: item for item in recipes}
+        resolved: dict[str, PortableRecipeV1] = {}
+        semantic_winners: dict[bytes, PortableRecipeV1] = {}
+        active: set[str] = set()
+
+        def resolve(recipe_id: str) -> PortableRecipeV1:
+            current = resolved.get(recipe_id)
+            if current is not None:
+                return current
+            if recipe_id in active:
+                raise DataManagerOperationError(
+                    "portable Recipe candidate graph contains a cycle"
+                )
+            active.add(recipe_id)
+            candidate = candidates.get(recipe_id)
+            if candidate is None:
+                try:
+                    candidate = self._portable_recipes.load_recipe(recipe_id)
+                except FileNotFoundError as exc:
+                    raise DataManagerOperationError(
+                        f"portable Recipe dependency is unavailable: {recipe_id}"
+                    ) from exc
+                resolved[recipe_id] = candidate
+                active.remove(recipe_id)
+                return candidate
+            dependencies = tuple(
+                PortableRecipeDependencyV1(
+                    item.role,
+                    resolve(item.recipe_id).recipe_id,
+                    item.output_name,
+                )
+                for item in candidate.dependencies
+            )
+            rebuilt = build_portable_recipe(
+                tool_key=candidate.tool_key,
+                tool_version=candidate.tool_version,
+                kind=candidate.kind,
+                parameters=candidate.parameters,
+                output_names=candidate.output_names,
+                ohlcv_inputs=candidate.ohlcv_inputs,
+                dependencies=dependencies,
+            )
+            available = {
+                item.recipe_id: item for item in (*resolved.values(), rebuilt)
+            }
+            semantic_key = self._portable_recipes.semantic_key_for_recipe(
+                rebuilt, recipes=available
+            )
+            winner = semantic_winners.get(semantic_key)
+            if winner is None:
+                winner = self._portable_recipes.find_equivalent_recipe(
+                    rebuilt, recipes=available
+                )
+            if winner is None:
+                winner = rebuilt
+            semantic_winners.setdefault(semantic_key, winner)
+            resolved[recipe_id] = winner
+            active.remove(recipe_id)
+            return winner
+
+        for recipe in recipes:
+            resolve(recipe.recipe_id)
+        ordered = tuple(
+            dict.fromkeys(resolved[item.recipe_id].recipe_id for item in recipes)
+        )
+        by_id = {item.recipe_id: item for item in resolved.values()}
+        return tuple(by_id[item] for item in ordered), {
+            recipe_id: item.recipe_id for recipe_id, item in resolved.items()
+        }
+
+    def _resolve_portable_recipe_candidates(
+        self, recipes: tuple[PortableRecipeV1, ...]
+    ) -> tuple[PortableRecipeV1, ...]:
+        return self._resolve_recipe_candidates(recipes)[0]
+
+    def _publish_portable_recipe_candidates(
+        self, recipes: tuple[PortableRecipeV1, ...]
+    ) -> None:
+        for recipe in recipes:
+            try:
+                existing = self._portable_recipes.load_recipe(recipe.recipe_id)
+            except FileNotFoundError:
+                self._portable_recipes.persist_recipe(
+                    recipe,
+                    origin_kind="data_manager_artifact",
+                    origin_details={},
+                )
+                continue
+            if existing != recipe:
+                raise DataManagerOperationError(
+                    f"portable Recipe identity collision: {recipe.recipe_id}"
+                )
+            self._portable_recipes.record_recipe_origin(
+                recipe.recipe_id,
+                origin_kind="data_manager_artifact",
+                origin_details={},
+            )
+
+    def _recipe_persistence_actions(
+        self, recipes: Sequence[PortableRecipeV1]
+    ) -> tuple[tuple[str, str], ...]:
+        actions: list[tuple[str, str]] = []
+        for recipe in recipes:
+            try:
+                existing = self._portable_recipes.load_recipe(recipe.recipe_id)
+            except FileNotFoundError:
+                actions.append((recipe.recipe_id, "NEW"))
+                continue
+            if existing != recipe:
+                raise DataManagerOperationError(
+                    f"portable Recipe identity collision: {recipe.recipe_id}"
+                )
+            actions.append((recipe.recipe_id, "REUSE EXISTING"))
+        return tuple(actions)
 
 
 def _validate_collection_metadata(

@@ -28,20 +28,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from leonardo.artifacts import ArtifactMetadataV1
 from leonardo.data import MarketId
 from leonardo.data_manager import (
     ArtifactCollectionRevisionV1,
+    ArtifactCollectionValidation,
     DataManagerArtifactEntry,
     DataManagerArtifactValidation,
     DataManagerCatalogSnapshot,
     DataManagerDatasetEntry,
+    DataManagerDatabaseCatalogEntry,
     DataManagerMarketSnapshot,
     DataManagerManagedArtifactEntry,
     DataManagerPortableRecipeEntry,
     DataManagerRecipeEntry,
     DataManagerRecipeCollectionEntry,
+    DataManagerRecipeCollectionInspection,
     DataManagerProductCatalogSnapshot,
     DataManagerStudyEnvironmentInspection,
+    DatabaseSeedV1,
 )
 from leonardo.data_manager.direct_artifact import DataManagerDirectArtifactCatalog
 from leonardo.gui.action_observer import GuiActionObserver
@@ -55,6 +60,7 @@ from leonardo.gui.data_manager.table_presentation import (
     DATA_MANAGER_DATASET_COLUMNS,
     data_manager_dataset_details,
     data_manager_dataset_row,
+    format_utc_datetime,
     resize_data_manager_table,
 )
 from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
@@ -80,6 +86,15 @@ if TYPE_CHECKING:
     )
     from leonardo.gui.windows.data_manager_artifact_collection_dialog import (
         DataManagerArtifactCollectionDialog,
+    )
+    from leonardo.gui.windows.data_manager_recipe_artifact_materialization_dialog import (
+        DataManagerRecipeArtifactMaterializationDialog,
+    )
+    from leonardo.gui.windows.data_manager_database_seed_dialog import (
+        DataManagerDatabaseSeedDialog,
+    )
+    from leonardo.gui.windows.data_manager_database_creation_dialog import (
+        DataManagerDatabaseCreationDialog,
     )
 
 
@@ -115,10 +130,21 @@ class DataManagerSuiteWindow(QWidget):
     catalog_delete_artifact_requested = Signal(object)
     catalog_delete_recipe_collection_requested = Signal(object)
     catalog_delete_artifact_collection_requested = Signal(object)
+    duplicate_maintenance_requested = Signal(str)
+    duplicate_maintenance_scan_requested = Signal(object)
+    duplicate_maintenance_purge_requested = Signal(object)
     create_recipe_collection_requested = Signal()
     edit_recipe_collection_requested = Signal(object)
+    create_artifact_from_recipe_requested = Signal(object)
+    create_artifacts_from_recipe_collection_requested = Signal(object)
+    recipe_artifact_materialization_preview_requested = Signal(object)
+    recipe_artifact_materialization_execute_requested = Signal(
+        object, bool, str, str, object
+    )
     create_artifact_collection_requested = Signal()
     edit_artifact_collection_requested = Signal(object)
+    inspect_recipe_collection_requested = Signal(object)
+    inspect_artifact_collection_requested = Signal(object)
     recipe_collection_preview_requested = Signal(object)
     recipe_collection_create_requested = Signal(str, str, object)
     recipe_collection_update_requested = Signal(str, str, str, object, str)
@@ -127,6 +153,16 @@ class DataManagerSuiteWindow(QWidget):
     artifact_collection_edit_requested = Signal(
         str, object, str, str, object, object, str
     )
+    create_database_seed_requested = Signal()
+    create_seed_only_database_requested = Signal(object)
+    add_database_artifacts_requested = Signal(object)
+    add_database_collection_requested = Signal(object)
+    database_content_preview_requested = Signal(str, str, object)
+    database_content_add_requested = Signal(object)
+    database_seed_preview_requested = Signal(object)
+    database_seed_create_requested = Signal(object)
+    seed_only_database_preview_requested = Signal(object)
+    seed_only_database_create_requested = Signal(object)
 
     def __init__(
         self,
@@ -171,6 +207,17 @@ class DataManagerSuiteWindow(QWidget):
         self._artifact_collection_dialog: (
             DataManagerArtifactCollectionDialog | None
         ) = None
+        self._recipe_artifact_materialization_dialog: (
+            DataManagerRecipeArtifactMaterializationDialog | None
+        ) = None
+        self._database_seed_dialog: DataManagerDatabaseSeedDialog | None = None
+        self._database_creation_dialog: (
+            DataManagerDatabaseCreationDialog | None
+        ) = None
+        self._database_content_dialog = None
+        self._collection_inspection_dialog = None
+        self._duplicate_maintenance_preflight_dialog = None
+        self._duplicate_maintenance_results_dialog = None
         self._product_catalogs: DataManagerProductCatalogSnapshot | None = None
         self._existing_recipe_ids: tuple[str, ...] = ()
         self._creation_workspace: DataManagerCreationWorkspace | None = None
@@ -234,10 +281,17 @@ class DataManagerSuiteWindow(QWidget):
         self._recipes = ()
         self._selected_market = None
         self._selected_dataset_entry = None
+        self._invalidate_duplicate_maintenance_scope(None)
         if self._catalog_workspace is not None:
             self._catalog_workspace.set_selected_market(None)
         if self._artifact_collection_dialog is not None:
             self._artifact_collection_dialog.set_browsing_market(None)
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_target(None)
+        if self._database_seed_dialog is not None:
+            self._database_seed_dialog.invalidate_preview(
+                "Accepted dataset context is unavailable."
+            )
         self._invalidate_artifact_creation_target()
         for table in self._tables.values():
             table.setRowCount(0)
@@ -264,16 +318,22 @@ class DataManagerSuiteWindow(QWidget):
         next_market = None if snapshot is None else snapshot.market_id
         if next_market != self._selected_market:
             self._invalidate_artifact_creation_target()
+            self._invalidate_duplicate_maintenance_scope(next_market)
         self._clear_object_selection()
         self._selected_market = None if snapshot is None else snapshot.market_id
         self._selected_dataset_entry = None if snapshot is None else snapshot.dataset
         if self._catalog_workspace is not None:
             self._catalog_workspace.set_selected_market(self._selected_market)
+        self._sync_database_seed_dialog_context()
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_current_market(self._selected_market)
         if self._artifact_collection_dialog is not None:
             self._artifact_collection_dialog.set_browsing_market(
                 self._selected_market
+            )
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_target(
+                self._accepted_target_dataset()
             )
         self._artifacts = () if snapshot is None else snapshot.artifacts
         self._recipes = () if snapshot is None else snapshot.recipes
@@ -307,15 +367,19 @@ class DataManagerSuiteWindow(QWidget):
             return False
         if market_id != self._selected_market:
             self._invalidate_artifact_creation_target()
+            self._invalidate_duplicate_maintenance_scope(market_id)
         self._selected_market = market_id
         self._selected_dataset_entry = accepted
         if self._catalog_workspace is not None:
             self._catalog_workspace.set_selected_market(market_id)
         if self._artifact_collection_dialog is not None:
             self._artifact_collection_dialog.set_browsing_market(market_id)
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_target(accepted)
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_current_market(market_id)
         self._populate_selected_dataset()
+        self._sync_database_seed_dialog_context()
         self._set_selection_details("Loading accepted dataset...")
         self._sync_actions()
         if emit_selection:
@@ -387,6 +451,14 @@ class DataManagerSuiteWindow(QWidget):
             self._recipe_collection_dialog.set_busy(self._busy)
         if self._artifact_collection_dialog is not None:
             self._artifact_collection_dialog.set_busy(self._busy)
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_busy(self._busy)
+        if self._database_seed_dialog is not None:
+            self._database_seed_dialog.set_busy(self._busy)
+        if self._database_creation_dialog is not None:
+            self._database_creation_dialog.set_busy(self._busy)
+        if self._database_content_dialog is not None:
+            self._database_content_dialog.set_busy(self._busy)
         if self._creation_workspace is not None:
             self._creation_workspace.set_busy(self._busy)
         if self._update_workspace is not None:
@@ -455,6 +527,30 @@ class DataManagerSuiteWindow(QWidget):
                 snapshot,
                 browsing_market_id=self._selected_market,
             )
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_catalog(snapshot)
+        if (
+            self._database_creation_dialog is not None
+            and self._database_creation_dialog.context_key
+            != tuple(item.seed_id for item in snapshot.database_seeds)
+        ):
+            self._database_creation_dialog.set_catalog(snapshot)
+        if self._database_content_dialog is not None and not self._busy:
+            database_id = self._database_content_dialog.context_key[0]
+            database = next(
+                (
+                    item
+                    for item in snapshot.databases
+                    if item.definition.database_id == database_id
+                ),
+                None,
+            )
+            if database is not None:
+                self._database_content_dialog.set_context(
+                    database,
+                    snapshot,
+                    mode=self._database_content_dialog.mode,
+                )
         self.set_catalog(snapshot.catalog)
         self.set_creation_catalogs(
             portable_recipes=tuple(
@@ -719,6 +815,20 @@ class DataManagerSuiteWindow(QWidget):
             self._recipe_collection_dialog.close()
         if self._artifact_collection_dialog is not None:
             self._artifact_collection_dialog.close()
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.close()
+        if self._database_seed_dialog is not None:
+            self._database_seed_dialog.close()
+        if self._database_creation_dialog is not None:
+            self._database_creation_dialog.close()
+        if self._database_content_dialog is not None:
+            self._database_content_dialog.close()
+        if self._collection_inspection_dialog is not None:
+            self._collection_inspection_dialog.close()
+        if self._duplicate_maintenance_preflight_dialog is not None:
+            self._duplicate_maintenance_preflight_dialog.close()
+        if self._duplicate_maintenance_results_dialog is not None:
+            self._duplicate_maintenance_results_dialog.close()
         self.closing.emit()
         super().closeEvent(event)
 
@@ -826,6 +936,11 @@ class DataManagerSuiteWindow(QWidget):
                 "Preview Dataset",
                 self.preview_dataset_requested.emit,
             ),
+            (
+                "data_manager.button.duplicate_maintenance",
+                "Duplicate Maintenance...",
+                self._request_duplicate_maintenance,
+            ),
         )
         for object_id, label, callback in actions:
             button = QPushButton(label, panel)
@@ -869,6 +984,7 @@ class DataManagerSuiteWindow(QWidget):
         self._selected_dataset_table = table
         layout.addWidget(table)
         self._populate_selected_dataset()
+        self._sync_database_seed_dialog_context()
         return panel
 
     def _build_catalogs(self) -> QWidget:
@@ -890,11 +1006,35 @@ class DataManagerSuiteWindow(QWidget):
         workspace.edit_recipe_collection_requested.connect(
             self.edit_recipe_collection_requested.emit
         )
+        workspace.create_artifact_from_recipe_requested.connect(
+            self.create_artifact_from_recipe_requested.emit
+        )
+        workspace.create_artifacts_from_recipe_collection_requested.connect(
+            self.create_artifacts_from_recipe_collection_requested.emit
+        )
         workspace.create_artifact_collection_requested.connect(
             self.create_artifact_collection_requested.emit
         )
         workspace.edit_artifact_collection_requested.connect(
             self.edit_artifact_collection_requested.emit
+        )
+        workspace.inspect_recipe_collection_requested.connect(
+            self.inspect_recipe_collection_requested.emit
+        )
+        workspace.inspect_artifact_collection_requested.connect(
+            self.inspect_artifact_collection_requested.emit
+        )
+        workspace.create_database_seed_requested.connect(
+            self.create_database_seed_requested.emit
+        )
+        workspace.create_seed_only_database_requested.connect(
+            self.create_seed_only_database_requested.emit
+        )
+        workspace.add_database_artifacts_requested.connect(
+            self.add_database_artifacts_requested.emit
+        )
+        workspace.add_database_collection_requested.connect(
+            self.add_database_collection_requested.emit
         )
         workspace.delete_recipe_requested.connect(
             self._confirm_catalog_recipe_deletion
@@ -1143,6 +1283,12 @@ class DataManagerSuiteWindow(QWidget):
     def dataset_selector_dialog(self) -> DataManagerDatasetSelectorDialog | None:
         return self._dataset_selector_dialog
 
+    def duplicate_maintenance_preflight_dialog(self):
+        return self._duplicate_maintenance_preflight_dialog
+
+    def duplicate_maintenance_results_dialog(self):
+        return self._duplicate_maintenance_results_dialog
+
     def artifact_creation_dialog(self) -> DataManagerArtifactCreationDialog | None:
         return self._artifact_creation_dialog
 
@@ -1163,6 +1309,463 @@ class DataManagerSuiteWindow(QWidget):
         self,
     ) -> DataManagerArtifactCollectionDialog | None:
         return self._artifact_collection_dialog
+
+    def recipe_artifact_materialization_dialog(
+        self,
+    ) -> DataManagerRecipeArtifactMaterializationDialog | None:
+        return self._recipe_artifact_materialization_dialog
+
+    def database_seed_dialog(self) -> DataManagerDatabaseSeedDialog | None:
+        return self._database_seed_dialog
+
+    def database_creation_dialog(
+        self,
+    ) -> DataManagerDatabaseCreationDialog | None:
+        return self._database_creation_dialog
+
+    def accepted_target_dataset(self) -> DataManagerDatasetEntry | None:
+        return self._accepted_target_dataset()
+
+    def product_catalogs(self) -> DataManagerProductCatalogSnapshot | None:
+        return self._product_catalogs
+
+    def show_database_seed_dialog(
+        self, dataset: DataManagerDatasetEntry
+    ) -> None:
+        from leonardo.gui.windows.data_manager_database_seed_dialog import (
+            DATA_MANAGER_DATABASE_SEED_WINDOW_ID,
+            DataManagerDatabaseSeedDialog,
+        )
+
+        dialog = self._database_seed_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerDatabaseSeedDialog(dataset, self)
+            dialog.preview_requested.connect(
+                self.database_seed_preview_requested.emit
+            )
+            dialog.create_requested.connect(
+                self.database_seed_create_requested.emit
+            )
+            dialog.closing.connect(self._release_database_seed_dialog)
+            self._database_seed_dialog = dialog
+        elif dialog.context_key != _dataset_context_key(dataset):
+            dialog.set_dataset(dataset)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_DATABASE_SEED_WINDOW_ID,
+                dialog.windowTitle(),
+                "dialog",
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_database_creation_dialog(
+        self,
+        snapshot: DataManagerProductCatalogSnapshot,
+        *,
+        selected_seed: DatabaseSeedV1 | None = None,
+    ) -> None:
+        from leonardo.gui.windows.data_manager_database_creation_dialog import (
+            DATA_MANAGER_DATABASE_CREATION_WINDOW_ID,
+            DataManagerDatabaseCreationDialog,
+        )
+
+        dialog = self._database_creation_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerDatabaseCreationDialog(
+                snapshot, selected_seed=selected_seed, parent=self
+            )
+            dialog.preview_requested.connect(
+                self.seed_only_database_preview_requested.emit
+            )
+            dialog.create_requested.connect(
+                self.seed_only_database_create_requested.emit
+            )
+            dialog.closing.connect(self._release_database_creation_dialog)
+            self._database_creation_dialog = dialog
+        elif (
+            dialog.context_key
+            != tuple(item.seed_id for item in snapshot.database_seeds)
+            or (
+                selected_seed is not None
+                and (
+                    dialog.selected_seed() is None
+                    or dialog.selected_seed().seed_id != selected_seed.seed_id
+                )
+            )
+        ):
+            dialog.set_catalog(snapshot, selected_seed=selected_seed)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_DATABASE_CREATION_WINDOW_ID,
+                dialog.windowTitle(),
+                "dialog",
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _release_database_seed_dialog(self) -> None:
+        self._database_seed_dialog = None
+
+    def _release_database_creation_dialog(self) -> None:
+        self._database_creation_dialog = None
+
+    def database_content_dialog(self):
+        return self._database_content_dialog
+
+    def show_database_content_dialog(
+        self,
+        database: DataManagerDatabaseCatalogEntry,
+        snapshot: DataManagerProductCatalogSnapshot,
+        *,
+        mode: str,
+    ) -> None:
+        from leonardo.gui.windows.data_manager_database_content_dialog import (
+            DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID,
+            DataManagerDatabaseContentDialog,
+        )
+
+        dialog = self._database_content_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerDatabaseContentDialog(self)
+            dialog.preview_requested.connect(
+                self.database_content_preview_requested.emit
+            )
+            dialog.add_requested.connect(
+                self.database_content_add_requested.emit
+            )
+            dialog.closing.connect(self._release_database_content_dialog)
+            self._database_content_dialog = dialog
+        dialog.set_context(database, snapshot, mode=mode)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID,
+                dialog.windowTitle(),
+                "window",
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _release_database_content_dialog(self) -> None:
+        self._database_content_dialog = None
+
+    def collection_inspection_dialog(self):
+        return self._collection_inspection_dialog
+
+    def show_recipe_collection_inspection(
+        self,
+        inspection: DataManagerRecipeCollectionInspection,
+        recipe_entries: tuple[DataManagerPortableRecipeEntry, ...],
+    ) -> None:
+        from leonardo.gui.windows.data_manager_collection_inspection_dialog import (
+            DATA_MANAGER_COLLECTION_INSPECTION_WINDOW_ID,
+            DataManagerCollectionInspectionDialog,
+        )
+
+        if not isinstance(inspection, DataManagerRecipeCollectionInspection):
+            raise TypeError(
+                "inspection must be a DataManagerRecipeCollectionInspection"
+            )
+        if not isinstance(recipe_entries, tuple) or not all(
+            isinstance(item, DataManagerPortableRecipeEntry)
+            for item in recipe_entries
+        ):
+            raise TypeError(
+                "recipe_entries must be a tuple of DataManagerPortableRecipeEntry values"
+            )
+        dialog = self._collection_inspection_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerCollectionInspectionDialog(self)
+            dialog.closing.connect(self._release_collection_inspection_dialog)
+            self._collection_inspection_dialog = dialog
+        dialog.configure_recipe_collection(inspection, recipe_entries)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_COLLECTION_INSPECTION_WINDOW_ID,
+                "Collection Inspection",
+                "dialog",
+            )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_artifact_collection_inspection(
+        self,
+        revision: ArtifactCollectionRevisionV1,
+        validation: ArtifactCollectionValidation,
+        metadata: tuple[ArtifactMetadataV1, ...],
+    ) -> None:
+        from leonardo.gui.windows.data_manager_collection_inspection_dialog import (
+            DATA_MANAGER_COLLECTION_INSPECTION_WINDOW_ID,
+            DataManagerCollectionInspectionDialog,
+        )
+
+        if not isinstance(revision, ArtifactCollectionRevisionV1):
+            raise TypeError("revision must be an ArtifactCollectionRevisionV1")
+        if not isinstance(validation, ArtifactCollectionValidation):
+            raise TypeError("validation must be an ArtifactCollectionValidation")
+        if not isinstance(metadata, tuple) or not all(
+            isinstance(item, ArtifactMetadataV1) for item in metadata
+        ):
+            raise TypeError("metadata must be a tuple of ArtifactMetadataV1 values")
+        dialog = self._collection_inspection_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerCollectionInspectionDialog(self)
+            dialog.closing.connect(self._release_collection_inspection_dialog)
+            self._collection_inspection_dialog = dialog
+        dialog.configure_artifact_collection(revision, validation, metadata)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_COLLECTION_INSPECTION_WINDOW_ID,
+                "Collection Inspection",
+                "dialog",
+            )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _release_collection_inspection_dialog(self) -> None:
+        self._collection_inspection_dialog = None
+
+    def show_recipe_artifact_materialization_dialog(
+        self,
+        source: DataManagerPortableRecipeEntry | DataManagerRecipeCollectionEntry,
+        snapshot: DataManagerProductCatalogSnapshot,
+    ) -> None:
+        from leonardo.gui.windows.data_manager_recipe_artifact_materialization_dialog import (
+            DATA_MANAGER_RECIPE_ARTIFACT_MATERIALIZATION_WINDOW_ID,
+            DataManagerRecipeArtifactMaterializationDialog,
+        )
+
+        if not isinstance(
+            source, (DataManagerPortableRecipeEntry, DataManagerRecipeCollectionEntry)
+        ):
+            raise TypeError("source must be a Recipe or Recipe Collection entry")
+        if not isinstance(snapshot, DataManagerProductCatalogSnapshot):
+            raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
+        dialog = self._recipe_artifact_materialization_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerRecipeArtifactMaterializationDialog(self)
+            dialog.preview_requested.connect(
+                self.recipe_artifact_materialization_preview_requested.emit
+            )
+            dialog.execute_requested.connect(
+                self.recipe_artifact_materialization_execute_requested.emit
+            )
+            dialog.closing.connect(
+                self._release_recipe_artifact_materialization_dialog
+            )
+            self._recipe_artifact_materialization_dialog = dialog
+        target = self._accepted_target_dataset()
+        if isinstance(source, DataManagerPortableRecipeEntry):
+            dialog.configure_recipe(source, snapshot, target)
+        else:
+            dialog.configure_recipe_collection(source, snapshot, target)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_RECIPE_ARTIFACT_MATERIALIZATION_WINDOW_ID,
+                "Recipe Artifact Materialization",
+                "dialog",
+            )
+        dialog.set_busy(self._busy)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_duplicate_maintenance_preflight(self, preflight: object) -> None:
+        from leonardo.data_manager.models import DuplicateMaintenancePreflight
+        from leonardo.gui.windows.data_manager_duplicate_maintenance_preflight_dialog import (
+            DATA_MANAGER_DUPLICATE_MAINTENANCE_PREFLIGHT_WINDOW_ID,
+            DataManagerDuplicateMaintenancePreflightDialog,
+        )
+
+        if not isinstance(preflight, DuplicateMaintenancePreflight):
+            raise TypeError("preflight must be a DuplicateMaintenancePreflight")
+        dialog = self._duplicate_maintenance_preflight_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerDuplicateMaintenancePreflightDialog(preflight, self)
+            dialog.scan_requested.connect(
+                self.duplicate_maintenance_scan_requested.emit
+            )
+            dialog.closing.connect(
+                self._release_duplicate_maintenance_preflight_dialog
+            )
+            self._duplicate_maintenance_preflight_dialog = dialog
+        else:
+            dialog.set_preflight(preflight)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_DUPLICATE_MAINTENANCE_PREFLIGHT_WINDOW_ID,
+                dialog.windowTitle(),
+                "dialog",
+            )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_duplicate_maintenance_results(self, result: object) -> None:
+        from leonardo.data_manager.models import DuplicateMaintenanceScanResult
+        from leonardo.gui.windows.data_manager_duplicate_maintenance_results_dialog import (
+            DATA_MANAGER_DUPLICATE_MAINTENANCE_RESULTS_WINDOW_ID,
+            DataManagerDuplicateMaintenanceResultsDialog,
+        )
+
+        if not isinstance(result, DuplicateMaintenanceScanResult):
+            raise TypeError("result must be a DuplicateMaintenanceScanResult")
+        dialog = self._duplicate_maintenance_results_dialog
+        created = dialog is None
+        if dialog is None:
+            dialog = DataManagerDuplicateMaintenanceResultsDialog(result, self)
+            dialog.purge_requested.connect(
+                self.duplicate_maintenance_purge_requested.emit
+            )
+            dialog.closing.connect(
+                self._release_duplicate_maintenance_results_dialog
+            )
+            self._duplicate_maintenance_results_dialog = dialog
+        else:
+            dialog.set_result(result)
+        if created and self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_DUPLICATE_MAINTENANCE_RESULTS_WINDOW_ID,
+                dialog.windowTitle(),
+                "dialog",
+            )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def confirm_duplicate_maintenance_purge(self, scan: object) -> bool:
+        from leonardo.data_manager.models import DuplicateMaintenanceScanResult
+
+        if not isinstance(scan, DuplicateMaintenanceScanResult):
+            raise TypeError("scan must be a DuplicateMaintenanceScanResult")
+        winners = {
+            group.canonical_id
+            for group in scan.groups
+            if any(
+                candidate.classification == "SAFE"
+                for candidate in group.duplicates
+            )
+        }
+        retained = scan.blocked + scan.review_required + scan.invalid_skipped
+        message = (
+            f"Domain:\n{scan.preflight.domain.display_name}\n\n"
+            f"Safe duplicate objects selected:\n{scan.safe_to_purge}\n\n"
+            f"Canonical winners retained:\n{len(winners)}\n\n"
+            f"Blocked / review / invalid objects:\n{retained}\n\n"
+        )
+        source = scan.preflight.source_ohlcv
+        if source is not None and scan.preflight.market_id is not None:
+            message += (
+                f"Selected MarketId:\n{scan.preflight.market_id.as_key()}\n\n"
+                "Exact OHLCV fingerprint:\n"
+                f"CSV {source.csv_sha256}\n"
+                f"Sidecar {source.sidecar_sha256}\n\n"
+            )
+        message += (
+            "This operation permanently deletes duplicate persisted objects\n"
+            "and their owned metadata.\n\n"
+            "No canonical winner will be deleted."
+        )
+        confirmation = QMessageBox(self)
+        confirmation.setWindowTitle("Duplicate Purge")
+        confirmation.setIcon(QMessageBox.Icon.Warning)
+        confirmation.setText(message)
+        execute = confirmation.addButton(
+            "Execute Purge", QMessageBox.ButtonRole.DestructiveRole
+        )
+        confirmation.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        confirmation.exec()
+        return confirmation.clickedButton() is execute
+
+    def show_duplicate_maintenance_purge_result(self, result: object) -> None:
+        from leonardo.data_manager.models import DuplicateMaintenancePurgeResult
+        from leonardo.gui.windows.data_manager_duplicate_maintenance_results_dialog import (
+            DATA_MANAGER_DUPLICATE_MAINTENANCE_RESULTS_WINDOW_ID,
+            DataManagerDuplicateMaintenanceResultsDialog,
+        )
+
+        if not isinstance(result, DuplicateMaintenancePurgeResult):
+            raise TypeError("result must be a DuplicateMaintenancePurgeResult")
+        for dialog in (
+            self._duplicate_maintenance_preflight_dialog,
+            self._duplicate_maintenance_results_dialog,
+        ):
+            if dialog is not None:
+                dialog.close()
+        self._duplicate_maintenance_preflight_dialog = None
+        self._duplicate_maintenance_results_dialog = None
+        dialog = DataManagerDuplicateMaintenanceResultsDialog(result, self)
+        dialog.closing.connect(self._release_duplicate_maintenance_results_dialog)
+        self._duplicate_maintenance_results_dialog = dialog
+        if self._floating_window_tracker is not None:
+            self._floating_window_tracker(
+                dialog,
+                DATA_MANAGER_DUPLICATE_MAINTENANCE_RESULTS_WINDOW_ID,
+                dialog.windowTitle(),
+                "dialog",
+            )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def invalidate_duplicate_maintenance_results(self) -> None:
+        for dialog in (
+            self._duplicate_maintenance_preflight_dialog,
+            self._duplicate_maintenance_results_dialog,
+        ):
+            if dialog is not None:
+                dialog.close()
+        self._duplicate_maintenance_preflight_dialog = None
+        self._duplicate_maintenance_results_dialog = None
+
+    def _release_duplicate_maintenance_preflight_dialog(self) -> None:
+        self._duplicate_maintenance_preflight_dialog = None
+
+    def _release_duplicate_maintenance_results_dialog(self) -> None:
+        self._duplicate_maintenance_results_dialog = None
+
+    def _invalidate_duplicate_maintenance_scope(
+        self, market_id: MarketId | None
+    ) -> None:
+        for dialog in (
+            self._duplicate_maintenance_preflight_dialog,
+            self._duplicate_maintenance_results_dialog,
+        ):
+            if dialog is None:
+                continue
+            value = getattr(dialog, "preflight", None)
+            if value is None:
+                result = getattr(dialog, "result", None)
+                value = None if result is None else result.preflight
+            if value is not None and value.market_id is not None:
+                if value.market_id != market_id:
+                    dialog.close()
+
+    def _release_recipe_artifact_materialization_dialog(self) -> None:
+        self._recipe_artifact_materialization_dialog = None
 
     def show_recipe_collection_dialog(
         self,
@@ -1458,7 +2061,12 @@ class DataManagerSuiteWindow(QWidget):
             ),
             None,
         )
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_target(
+                self._accepted_target_dataset()
+            )
         self._populate_selected_dataset()
+        self._sync_database_seed_dialog_context()
         self._set_selection_details("Loading accepted dataset...")
         self.market_selected.emit(market_id)
         self._sync_actions()
@@ -1534,7 +2142,7 @@ class DataManagerSuiteWindow(QWidget):
                     item.kind,
                     ", ".join(item.output_names),
                     item.display_name,
-                    "" if item.created_at_utc is None else item.created_at_utc.isoformat(),
+                    format_utc_datetime(item.created_at_utc),
                     "valid" if item.valid else f"invalid: {item.rejection_reason}",
                 ),
             )
@@ -1547,12 +2155,43 @@ class DataManagerSuiteWindow(QWidget):
         self._buttons["data_manager.button.preview_dataset"].setEnabled(
             not self._busy and self._selected_market is not None
         )
+        family = (
+            ""
+            if self._catalog_workspace is None
+            else self._catalog_workspace.current_family
+        )
+        self._buttons["data_manager.button.duplicate_maintenance"].setEnabled(
+            not self._busy
+            and family
+            in {
+                "Recipes",
+                "Recipe Collections",
+                "Artifacts",
+                "Artifact Collections",
+            }
+        )
         if self._catalog_workspace is not None:
             self._catalog_workspace.set_create_artifact_enabled(
                 not self._busy and self._selected_market is not None
             )
             self._catalog_workspace.set_derive_recipes_enabled(not self._busy)
             self._catalog_workspace.set_deletion_actions_enabled(not self._busy)
+            self._catalog_workspace.set_materialization_actions_enabled(
+                not self._busy and self._accepted_target_market() is not None
+            )
+            self._catalog_workspace.set_database_creation_actions_enabled(
+                create_seed=(
+                    not self._busy and self._accepted_target_dataset() is not None
+                ),
+                create_database=(
+                    not self._busy
+                    and self._product_catalogs is not None
+                    and bool(self._product_catalogs.database_seeds)
+                ),
+            )
+            self._catalog_workspace.set_database_content_actions_enabled(
+                not self._busy and self._product_catalogs is not None
+            )
         if self._cancel_button is not None:
             self._cancel_button.setEnabled(self._busy)
         target = self._selected_market is not None
@@ -1571,6 +2210,32 @@ class DataManagerSuiteWindow(QWidget):
             self._artifact_creation_dialog.invalidate_target()
         if self._construct_batch_dialog is not None:
             self._construct_batch_dialog.invalidate_target()
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_target(None)
+
+    def _accepted_target_market(self) -> MarketId | None:
+        entry = self._accepted_target_dataset()
+        return None if entry is None else entry.market_id
+
+    def _accepted_target_dataset(self) -> DataManagerDatasetEntry | None:
+        entry = self._selected_dataset_entry
+        if (
+            entry is not None
+            and entry.accepted
+            and entry.market_id == self._selected_market
+        ):
+            return entry
+        return None
+
+    def _sync_database_seed_dialog_context(self) -> None:
+        dialog = self._database_seed_dialog
+        if dialog is None:
+            return
+        dataset = self._accepted_target_dataset()
+        if dataset is None:
+            dialog.invalidate_preview("Accepted dataset context is unavailable.")
+        elif dialog.context_key != _dataset_context_key(dataset):
+            dialog.set_dataset(dataset)
 
     def _confirm_delete_artifact(self) -> None:
         artifact = self.selected_artifact()
@@ -1617,7 +2282,7 @@ class DataManagerSuiteWindow(QWidget):
             f"Collection ID: {value.collection_id}\n\n"
             "This deletes the Collection and all of its revisions.\n"
             "Member Recipes are not deleted.\n"
-            "Deletion is refused if an Artifact Collection references it."
+            "Artifact-domain objects are not deleted and do not block deletion."
         )
         if QMessageBox.question(
             self, "Delete Recipe Collection", message
@@ -1668,6 +2333,19 @@ class DataManagerSuiteWindow(QWidget):
                 return
         callback()
 
+    def _request_duplicate_maintenance(self) -> None:
+        if self._catalog_workspace is None:
+            return
+        domain_by_family = {
+            "Recipes": "recipes",
+            "Recipe Collections": "recipe_collections",
+            "Artifacts": "artifacts",
+            "Artifact Collections": "artifact_collections",
+        }
+        domain = domain_by_family.get(self._catalog_workspace.current_family)
+        if domain is not None:
+            self.duplicate_maintenance_requested.emit(domain)
+
     def _selected_row(self, object_id: str) -> int | None:
         rows = self._tables[object_id].selectionModel().selectedRows()
         if not rows:
@@ -1692,6 +2370,10 @@ class DataManagerSuiteWindow(QWidget):
             ),
             None,
         )
+        if self._recipe_artifact_materialization_dialog is not None:
+            self._recipe_artifact_materialization_dialog.set_target(
+                self._accepted_target_dataset()
+            )
         self._populate_selected_dataset()
 
     def _populate_selected_dataset(self) -> None:
@@ -1726,3 +2408,12 @@ class DataManagerSuiteWindow(QWidget):
 def _set_row(table: QTableWidget, row: int, values: tuple[str, ...]) -> None:
     for column, value in enumerate(values):
         table.setItem(row, column, QTableWidgetItem(value))
+
+
+def _dataset_context_key(dataset: DataManagerDatasetEntry) -> tuple[object, ...]:
+    return (
+        dataset.market_id,
+        dataset.first_timestamp_ms,
+        dataset.last_timestamp_ms,
+        dataset.row_count,
+    )

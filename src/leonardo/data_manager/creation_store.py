@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import stat
-from collections.abc import Callable
+from hashlib import sha256
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -13,10 +14,15 @@ from uuid import uuid4
 
 from .creation_models import (
     ArtifactCollectionHeadV1,
+    ArtifactCollectionMemberV1,
+    ArtifactCollectionOutputV1,
     ArtifactCollectionRevisionV1,
     DatabaseDefinitionV1,
     DatabaseHeadV1,
+    DatabaseRevisionManifest,
     DatabaseRevisionManifestV1,
+    database_collection_references,
+    database_revision_from_dict,
     DatabaseSeedV1,
     DataManagerCreationError,
     LoadedDatabaseRevision,
@@ -46,6 +52,10 @@ class DataManagerCreationStore:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._token_factory = token_factory or (lambda: uuid4().hex)
         self._lock = RLock()
+        self._collection_semantic_key_resolver: (
+            Callable[[object, object, Sequence[ArtifactCollectionMemberV1]], tuple[object, ...]]
+            | None
+        ) = None
 
     @property
     def root_dir(self) -> Path:
@@ -53,6 +63,17 @@ class DataManagerCreationStore:
 
     def new_collection_id(self) -> str:
         return f"ac_{self._token()}"
+
+    def set_collection_semantic_key_resolver(
+        self,
+        resolver: Callable[
+            [object, object, Sequence[ArtifactCollectionMemberV1]],
+            tuple[object, ...],
+        ],
+    ) -> None:
+        if not callable(resolver):
+            raise TypeError("resolver must be callable")
+        self._collection_semantic_key_resolver = resolver
 
     def new_seed_id(self) -> str:
         return f"seed_{self._token()}"
@@ -69,36 +90,177 @@ class DataManagerCreationStore:
         if not isinstance(revision, ArtifactCollectionRevisionV1):
             raise TypeError("revision must be an ArtifactCollectionRevisionV1")
         with self._lock:
-            collection_dir = self._collection_dir(revision.collection_id)
             current = self._load_optional_collection_head(revision.collection_id)
             current_id = None if current is None else current.revision_id
             if current_id != expected_head_revision_id:
                 raise DataManagerCreationStoreError("Artifact Collection head changed")
             if revision.previous_revision_id != current_id:
                 raise DataManagerCreationStoreError("previous Collection revision is not current")
-            revisions_dir = collection_dir / "revisions"
-            revision_path = revisions_dir / f"{revision.revision_id}.json"
-            revision_existed = revision_path.exists()
-            head_path = collection_dir / "head.json"
-            previous_head = (
-                self._read_safe_file(head_path) if head_path.exists() else None
-            )
-            self._write_immutable(revision_path, revision.canonical_json_bytes())
-            head = ArtifactCollectionHeadV1(
-                revision.collection_id, revision.revision_id, self._clock()
-            )
-            try:
-                self._write_atomic(head_path, canonical_json_bytes(head.to_dict()))
-            except Exception:
-                self._restore_atomic_target(head_path, previous_head)
-                if not revision_existed and revision_path.exists():
-                    revision_path.unlink()
-                if revisions_dir.exists() and not any(revisions_dir.iterdir()):
-                    revisions_dir.rmdir()
-                if collection_dir.exists() and not any(collection_dir.iterdir()):
-                    collection_dir.rmdir()
-                raise
+            winner = self._equivalent_collection(revision)
+            if winner is not None and winner.collection_id != revision.collection_id:
+                return winner
+            self._publish_collection_revision(revision)
         return revision
+
+    def create_collection_revision(
+        self,
+        *,
+        market_id: object,
+        source_ohlcv: object,
+        root_logical_artifact_ids: Sequence[str],
+        support_logical_artifact_ids: Sequence[str],
+        members: Sequence[ArtifactCollectionMemberV1],
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        presentation_order: Sequence[str],
+        revision_factory: Callable[[str], ArtifactCollectionRevisionV1],
+    ) -> ArtifactCollectionRevisionV1:
+        requested_key = self._collection_semantic_key(
+            market_id=market_id,
+            source_ohlcv=source_ohlcv,
+            root_logical_artifact_ids=root_logical_artifact_ids,
+            support_logical_artifact_ids=support_logical_artifact_ids,
+            members=members,
+            selected_outputs=selected_outputs,
+            presentation_order=presentation_order,
+        )
+        with self._lock:
+            winner = self._equivalent_collection_key(requested_key)
+            if winner is not None:
+                return winner
+            collection_id = self.new_collection_id()
+            revision = revision_factory(collection_id)
+            if not isinstance(revision, ArtifactCollectionRevisionV1):
+                raise TypeError(
+                    "revision_factory must return an ArtifactCollectionRevisionV1"
+                )
+            if revision.collection_id != collection_id:
+                raise DataManagerCreationStoreError(
+                    "Artifact Collection factory returned a different identity"
+                )
+            if revision.previous_revision_id is not None:
+                raise DataManagerCreationStoreError(
+                    "new Artifact Collection cannot have a previous revision"
+                )
+            if self._collection_semantic_key_from_revision(revision) != requested_key:
+                raise DataManagerCreationStoreError(
+                    "Artifact Collection factory changed requested semantics"
+                )
+            self._publish_collection_revision(revision)
+            return revision
+
+    def find_equivalent_collection(
+        self,
+        *,
+        market_id: object,
+        source_ohlcv: object,
+        root_logical_artifact_ids: Sequence[str],
+        support_logical_artifact_ids: Sequence[str],
+        members: Sequence[ArtifactCollectionMemberV1],
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        presentation_order: Sequence[str],
+    ) -> ArtifactCollectionRevisionV1 | None:
+        """Return the current oldest semantic winner without publishing."""
+
+        requested_key = self._collection_semantic_key(
+            market_id=market_id,
+            source_ohlcv=source_ohlcv,
+            root_logical_artifact_ids=root_logical_artifact_ids,
+            support_logical_artifact_ids=support_logical_artifact_ids,
+            members=members,
+            selected_outputs=selected_outputs,
+            presentation_order=presentation_order,
+        )
+        with self._lock:
+            return self._equivalent_collection_key(requested_key)
+
+    def _publish_collection_revision(
+        self, revision: ArtifactCollectionRevisionV1
+    ) -> None:
+        collection_dir = self._collection_dir(revision.collection_id)
+        revisions_dir = collection_dir / "revisions"
+        revision_path = revisions_dir / f"{revision.revision_id}.json"
+        revision_existed = revision_path.exists()
+        head_path = collection_dir / "head.json"
+        previous_head = self._read_safe_file(head_path) if head_path.exists() else None
+        self._write_immutable(revision_path, revision.canonical_json_bytes())
+        head = ArtifactCollectionHeadV1(
+            revision.collection_id, revision.revision_id, self._clock()
+        )
+        try:
+            self._write_atomic(head_path, canonical_json_bytes(head.to_dict()))
+        except Exception:
+            self._restore_atomic_target(head_path, previous_head)
+            if not revision_existed and revision_path.exists():
+                revision_path.unlink()
+            if revisions_dir.exists() and not any(revisions_dir.iterdir()):
+                revisions_dir.rmdir()
+            if collection_dir.exists() and not any(collection_dir.iterdir()):
+                collection_dir.rmdir()
+            raise
+
+    def _equivalent_collection(
+        self, revision: ArtifactCollectionRevisionV1
+    ) -> ArtifactCollectionRevisionV1 | None:
+        return self._equivalent_collection_key(
+            self._collection_semantic_key_from_revision(revision)
+        )
+
+    def _equivalent_collection_key(
+        self, requested_key: tuple[object, ...]
+    ) -> ArtifactCollectionRevisionV1 | None:
+        candidates: list[ArtifactCollectionRevisionV1] = []
+        for collection_id in self.list_collection_ids():
+            try:
+                current = self.load_collection(collection_id)
+            except (DataManagerCreationStoreError, FileNotFoundError):
+                continue
+            if (
+                current.validation_state == "valid"
+                and self._collection_semantic_key_from_revision(current)
+                == requested_key
+            ):
+                candidates.append(current)
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda item: (item.created_at_utc, item.collection_id),
+        )
+
+    def _collection_semantic_key_from_revision(
+        self, revision: ArtifactCollectionRevisionV1
+    ) -> tuple[object, ...]:
+        return self._collection_semantic_key(
+            market_id=revision.market_id,
+            source_ohlcv=revision.source_ohlcv,
+            root_logical_artifact_ids=revision.root_logical_artifact_ids,
+            support_logical_artifact_ids=revision.support_logical_artifact_ids,
+            members=revision.members,
+            selected_outputs=revision.selected_outputs,
+            presentation_order=revision.presentation_order,
+        )
+
+    def _collection_semantic_key(
+        self,
+        *,
+        market_id: object,
+        source_ohlcv: object,
+        root_logical_artifact_ids: Sequence[str],
+        support_logical_artifact_ids: Sequence[str],
+        members: Sequence[ArtifactCollectionMemberV1],
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
+        presentation_order: Sequence[str],
+    ) -> tuple[object, ...]:
+        del root_logical_artifact_ids
+        del support_logical_artifact_ids
+        del selected_outputs
+        del presentation_order
+        resolver = self._collection_semantic_key_resolver
+        if resolver is None:
+            raise DataManagerCreationStoreError(
+                "Artifact Collection semantic authority is not configured"
+            )
+        return resolver(market_id, source_ohlcv, members)
 
     def list_collection_ids(self) -> tuple[str, ...]:
         root = self._root / "artifact_collections"
@@ -152,7 +314,10 @@ class DataManagerCreationStore:
                 )
             for database_id in self.list_database_ids():
                 for revision in self.list_database_revisions(database_id):
-                    if revision.collection_id == collection_id:
+                    if any(
+                        item.collection_id == collection_id
+                        for item in database_collection_references(revision)
+                    ):
                         raise DataManagerCreationStoreError(
                             "Artifact Collection is referenced by a Database"
                         )
@@ -170,11 +335,29 @@ class DataManagerCreationStore:
             self._remove_empty_directory(self._root)
             return current
 
-    def save_seed(self, seed: DatabaseSeedV1) -> DatabaseSeedV1:
+    def save_seed(
+        self,
+        seed: DatabaseSeedV1,
+        *,
+        before_publish: Callable[[], None] | None = None,
+    ) -> DatabaseSeedV1:
         if not isinstance(seed, DatabaseSeedV1):
             raise TypeError("seed must be a DatabaseSeedV1")
         with self._lock:
-            self._write_immutable(self._seed_path(seed.seed_id), seed.canonical_json_bytes())
+            path = self._seed_path(seed.seed_id)
+            seed_root = path.parent
+            root_existed = self._root.exists()
+            seed_root_existed = seed_root.exists()
+            try:
+                if before_publish is not None:
+                    before_publish()
+                self._write_immutable(path, seed.canonical_json_bytes())
+            except Exception:
+                if not seed_root_existed:
+                    self._remove_empty_directory(seed_root)
+                if not root_existed:
+                    self._remove_empty_directory(self._root)
+                raise
         return seed
 
     def list_seeds(self) -> tuple[DatabaseSeedV1, ...]:
@@ -209,16 +392,16 @@ class DataManagerCreationStore:
     def publish_database_revision(
         self,
         definition: DatabaseDefinitionV1,
-        manifest: DatabaseRevisionManifestV1,
+        manifest: DatabaseRevisionManifest,
         values_csv: bytes,
         *,
         expected_head_revision_id: str | None,
         before_publish: Callable[[], None] | None = None,
-    ) -> DatabaseRevisionManifestV1:
+    ) -> DatabaseRevisionManifest:
         if not isinstance(definition, DatabaseDefinitionV1):
             raise TypeError("definition must be a DatabaseDefinitionV1")
-        if not isinstance(manifest, DatabaseRevisionManifestV1):
-            raise TypeError("manifest must be a DatabaseRevisionManifestV1")
+        if not isinstance(manifest, DatabaseRevisionManifest):
+            raise TypeError("manifest must be a Database revision manifest")
         if definition.database_id != manifest.database_id:
             raise DataManagerCreationStoreError(
                 "Database definition and revision identities differ"
@@ -321,7 +504,7 @@ class DataManagerCreationStore:
 
     def list_database_revisions(
         self, database_id: str
-    ) -> tuple[DatabaseRevisionManifestV1, ...]:
+    ) -> tuple[DatabaseRevisionManifest, ...]:
         revisions = self._database_dir(database_id) / "revisions"
         with self._lock:
             if not revisions.exists():
@@ -345,11 +528,15 @@ class DataManagerCreationStore:
             if children != {"manifest.json", "values.csv"}:
                 raise DataManagerCreationStoreError("Database revision payload files are not exact")
             manifest = self._load_canonical(
-                directory / "manifest.json", DatabaseRevisionManifestV1.from_dict
+                directory / "manifest.json", database_revision_from_dict
             )
             values = self._read_safe_file(directory / "values.csv")
             if manifest.database_id != database_id or manifest.revision_id != exact:
                 raise DataManagerCreationStoreError("Database revision identity disagrees with path")
+            if sha256(values).hexdigest() != manifest.values_sha256:
+                raise DataManagerCreationStoreError(
+                    "Database revision values hash does not match manifest"
+                )
             return LoadedDatabaseRevision(manifest, values)
 
     def load_database_head(self, database_id: str) -> DatabaseHeadV1:

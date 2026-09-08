@@ -9,6 +9,7 @@ from PySide6.QtCore import QSignalBlocker, Signal, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QCheckBox,
     QDialog,
     QGridLayout,
     QHBoxLayout,
@@ -52,7 +53,7 @@ _FILTER_LABELS = {
 _FILTER_TEXT_SCALE = 1.5
 _COMBO_CHROME_WIDTH = 44
 _DATASET_NUMBER_COLUMNS = {"Rows"}
-_DATASET_UTC_COLUMNS = {"First Data UTC", "Last Data UTC"}
+_DATASET_UTC_COLUMNS = {"First Data", "Last Data"}
 
 def _search_help_html(snapshot: DataManagerCatalogSnapshot) -> str:
     entries = snapshot.datasets
@@ -229,6 +230,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         self._catalog = DataManagerCatalogSnapshot(())
         self._visible_entries: tuple[DataManagerDatasetEntry, ...] = ()
         self._current_market: MarketId | None = None
+        self._checked_markets: set[MarketId] = set()
+        self._populating = False
         self._sort_state: tuple[int, bool] | None = None
         self._busy = False
         self._filters: dict[str, QComboBox] = {}
@@ -273,30 +276,43 @@ class DataManagerDatasetSelectorDialog(QDialog):
     def set_catalog(self, snapshot: DataManagerCatalogSnapshot) -> None:
         if not isinstance(snapshot, DataManagerCatalogSnapshot):
             raise TypeError("snapshot must be a DataManagerCatalogSnapshot")
-        pending_selection = self.selected_market_id() or self._current_market
+        pending_checks = set(self._checked_markets)
         self._catalog = snapshot
+        self._checked_markets = pending_checks
         if self._search_help_dialog is not None:
             self._search_help_dialog.set_catalog(snapshot)
         self._rebuild_filter_values()
         self._populate_active_dataset()
-        self._populate(preferred_market=pending_selection)
+        self._populate()
 
     def set_current_market(self, market_id: MarketId | None) -> None:
         if market_id is not None and not isinstance(market_id, MarketId):
             raise TypeError("market_id must be a MarketId or None")
         self._current_market = market_id
+        self._checked_markets = set() if market_id is None else {market_id}
         self._populate_active_dataset()
         self._populate(preferred_market=market_id)
 
     def selected_market_id(self) -> MarketId | None:
-        entry = self._selected_entry()
+        if len(self._checked_markets) != 1:
+            return None
+        checked_market = next(iter(self._checked_markets))
+        entry = next(
+            (
+                item
+                for item in self._visible_entries
+                if item.market_id == checked_market
+            ),
+            None,
+        )
         if entry is None or not entry.accepted:
             return None
         return entry.market_id
 
     def clear_selection(self) -> None:
+        self._checked_markets.clear()
         if self._table is not None:
-            self._table.clearSelection()
+            self._populate()
         self._sync_actions()
 
     def set_busy(self, busy: bool) -> None:
@@ -508,11 +524,16 @@ class DataManagerDatasetSelectorDialog(QDialog):
         *,
         selectable: bool,
     ) -> QTableWidget:
+        columns = (
+            ("Select", *DATA_MANAGER_DATASET_COLUMNS)
+            if selectable
+            else DATA_MANAGER_DATASET_COLUMNS
+        )
         table = configure_table(
             QTableWidget(self),
             object_id=object_id,
-            columns=DATA_MANAGER_DATASET_COLUMNS,
-            labels=DATA_MANAGER_DATASET_COLUMNS,
+            columns=columns,
+            labels=columns,
         )
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setWordWrap(False)
@@ -554,6 +575,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         self._populate()
 
     def _on_sort_column(self, column: int) -> None:
+        if column == 0:
+            return
         previous = self._sort_state
         descending = previous is not None and previous == (column, False)
         self._sort_state = (column, descending)
@@ -568,7 +591,7 @@ class DataManagerDatasetSelectorDialog(QDialog):
         self._populate()
 
     def _sort_kind(self, column: int) -> DataManagerSortKind:
-        label = DATA_MANAGER_DATASET_COLUMNS[column]
+        label = DATA_MANAGER_DATASET_COLUMNS[column - 1]
         if label in _DATASET_NUMBER_COLUMNS:
             return "number"
         if label in _DATASET_UTC_COLUMNS:
@@ -637,7 +660,7 @@ class DataManagerDatasetSelectorDialog(QDialog):
             search.clear()
             del blocker
         self._rebuild_filter_values()
-        self._populate(preferred_market=self._current_market)
+        self._populate()
 
     def _populate_active_dataset(self) -> None:
         table = self._active_table
@@ -666,7 +689,11 @@ class DataManagerDatasetSelectorDialog(QDialog):
         table = self._table
         if table is None:
             return
-        selected_before = preferred_market or self.selected_market_id()
+        checked_before = (
+            {preferred_market}
+            if preferred_market is not None
+            else set(self._checked_markets)
+        )
         selected_filters = {
             key: str(combo.currentData() or "").casefold()
             for key, combo in self._filters.items()
@@ -688,23 +715,35 @@ class DataManagerDatasetSelectorDialog(QDialog):
             column, descending = self._sort_state
             projected = sort_data_manager_rows(
                 tuple((data_manager_dataset_row(entry), entry) for entry in filtered),
-                column=column,
+                column=column - 1,
                 kind=self._sort_kind(column),
                 descending=descending,
             )
             visible = tuple(entry for _values, entry in projected)
+        visible_accepted = {
+            entry.market_id
+            for entry in visible
+            if entry.accepted and entry.market_id is not None
+        }
+        checked_before &= visible_accepted
+        self._checked_markets = checked_before
         blocker = QSignalBlocker(table)
-        table.setRowCount(len(visible))
-        table.clearSelection()
-        for row, entry in enumerate(visible):
-            self._write_dataset_row(table, row, entry)
-        self._visible_entries = visible
-        if selected_before is not None:
+        self._populating = True
+        try:
+            table.setRowCount(len(visible))
+            table.clearSelection()
+            self._visible_entries = visible
             for row, entry in enumerate(visible):
-                if entry.accepted and entry.market_id == selected_before:
-                    table.selectRow(row)
-                    break
-        del blocker
+                self._write_dataset_row(table, row, entry)
+            if len(checked_before) == 1:
+                selected_before = next(iter(checked_before))
+                for row, entry in enumerate(visible):
+                    if entry.accepted and entry.market_id == selected_before:
+                        table.selectRow(row)
+                        break
+        finally:
+            self._populating = False
+            del blocker
         self._resize_dataset_tables()
         self._sync_actions()
 
@@ -715,10 +754,50 @@ class DataManagerDatasetSelectorDialog(QDialog):
         entry: DataManagerDatasetEntry,
     ) -> None:
         details = data_manager_dataset_details(entry)
-        for column, value in enumerate(data_manager_dataset_row(entry)):
+        offset = 0
+        if table is self._table:
+            offset = 1
+            checkbox = QCheckBox(table)
+            checkbox.setChecked(
+                entry.accepted and entry.market_id in self._checked_markets
+            )
+            checkbox.setEnabled(entry.accepted and entry.market_id is not None)
+            checkbox.setToolTip(details)
+            checkbox.setStyleSheet(
+                "QCheckBox::indicator { width: 16px; height: 16px; }"
+                "QCheckBox::indicator:unchecked {"
+                " border: 1px solid #8C98A8; background: #20252D; }"
+                "QCheckBox::indicator:checked {"
+                " border: 1px solid #59A6FF; background: #2D78C4; }"
+            )
+            checkbox.toggled.connect(
+                lambda checked, market=entry.market_id: self._dataset_toggled(
+                    market, checked
+                )
+            )
+            holder = QWidget(table)
+            layout = QHBoxLayout(holder)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(checkbox)
+            table.setCellWidget(row, 0, holder)
+        for column, value in enumerate(data_manager_dataset_row(entry), start=offset):
             item = QTableWidgetItem(value)
             item.setToolTip(details)
             table.setItem(row, column, item)
+
+    def _dataset_toggled(
+        self,
+        market_id: MarketId | None,
+        checked: bool,
+    ) -> None:
+        if self._populating or market_id is None:
+            return
+        if checked:
+            self._checked_markets.add(market_id)
+        else:
+            self._checked_markets.discard(market_id)
+        self._populate()
 
     def _resize_dataset_tables(self) -> None:
         tables = tuple(
@@ -730,10 +809,17 @@ class DataManagerDatasetSelectorDialog(QDialog):
             return
         for table in tables:
             resize_data_manager_table(table)
-        for column in range(len(DATA_MANAGER_DATASET_COLUMNS)):
-            width = max(table.columnWidth(column) for table in tables)
-            for table in tables:
-                table.setColumnWidth(column, width)
+        active = self._active_table
+        selectable = self._table
+        if active is not None and selectable is not None:
+            selectable.setColumnWidth(0, 58)
+            for column in range(len(DATA_MANAGER_DATASET_COLUMNS)):
+                width = max(
+                    active.columnWidth(column),
+                    selectable.columnWidth(column + 1),
+                )
+                active.setColumnWidth(column, width)
+                selectable.setColumnWidth(column + 1, width)
         self._fit_active_table_height()
 
     def _fit_active_table_height(self) -> None:
@@ -750,16 +836,15 @@ class DataManagerDatasetSelectorDialog(QDialog):
         table.setFixedHeight(height)
 
     def _selected_entry(self) -> DataManagerDatasetEntry | None:
-        table = self._table
-        if table is None:
-            return None
-        rows = table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        row = rows[0].row()
-        if 0 <= row < len(self._visible_entries):
-            return self._visible_entries[row]
-        return None
+        return next(
+            (
+                entry
+                for entry in self._visible_entries
+                if len(self._checked_markets) == 1
+                and entry.market_id in self._checked_markets
+            ),
+            None,
+        )
 
     def _sync_actions(self) -> None:
         selected = self._selected_entry()

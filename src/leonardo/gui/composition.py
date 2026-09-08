@@ -152,6 +152,7 @@ class GuiCompositionRoot:
             on_ohlcv_maintenance_requested=open_maintenance,
             on_suite_shell_requested=open_suite,
             on_close_requested=self._close_suite_shells,
+            on_display_time_zone_changed=self._on_display_time_zone_changed,
             username=getattr(getattr(self._context, "config", None), "actor_id", "local-user"),
         )
         self._register_window_actions(main_window, "main_window.window")
@@ -232,6 +233,9 @@ class GuiCompositionRoot:
             presenter = OhlcvMaintenancePresenter(
                 window,
                 getattr(self._context, "ohlcv_maintenance_service"),
+                on_canonical_ohlcv_evidence_changed=(
+                    self._notify_data_manager_ohlcv_change
+                ),
             )
             self._ohlcv_maintenance_window = window
             self._ohlcv_maintenance_presenter = presenter
@@ -364,6 +368,18 @@ class GuiCompositionRoot:
                 market_id, source="research"
             )
         return "Data Manager Suite opened."
+
+    def _notify_data_manager_ohlcv_change(self, market_id: MarketId) -> None:
+        presenter = self._data_manager_suite_presenter
+        if presenter is None or presenter.is_disposed:
+            return
+        presenter.notify_external_ohlcv_change(market_id)
+
+    def _on_display_time_zone_changed(self) -> None:
+        presenter = self._data_manager_suite_presenter
+        if presenter is None or presenter.is_disposed:
+            return
+        presenter.refresh()
 
     def _register_window_actions(self, window: object, window_id: str) -> None:
         observer = self._action_observer

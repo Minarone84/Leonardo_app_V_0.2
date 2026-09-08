@@ -41,6 +41,9 @@ from tests.data_manager_test.test_portable_recipe_workflow import (
     _peaks_and_utc_entries,
     _save_environment,
 )
+from leonardo.data_manager.artifact_materialization import (
+    _resolve_execution_configuration,
+)
 
 
 MARKET = MarketId("bybit", "linear", "BTCUSDT", "1m")
@@ -186,6 +189,34 @@ def _utc_recipe(
             "universal_trend_classifier", naming
         ),
         dependencies=dependencies,
+    )
+
+
+def test_normalized_angle_momentum_recipes_reconstruct_execution_selectors() -> None:
+    sma = _leaf("sma", {"period": 14})
+    raw = build_portable_recipe(
+        tool_key="angle_momentum",
+        kind="construct",
+        parameters={"n": 3, "source_columns": "close"},
+        output_names=("close_ang_mtm_3",),
+        ohlcv_inputs=(PortableRecipeOHLCVInputV1("source_1", "close"),),
+    )
+    dependent = build_portable_recipe(
+        tool_key="angle_momentum",
+        kind="construct",
+        parameters={"n": 3, "source_columns": "close"},
+        output_names=("sma_14_ang_mtm_3",),
+        dependencies=(
+            PortableRecipeDependencyV1("source_1", sma.recipe_id, "sma_14"),
+        ),
+    )
+
+    assert dict(raw.parameters) == {"n": 3}
+    assert dict(dependent.parameters) == {"n": 3}
+    assert _resolve_execution_configuration(raw).parameters["source_columns"] == "close"
+    assert (
+        _resolve_execution_configuration(dependent).parameters["source_columns"]
+        == "__research_source_1"
     )
 
 
@@ -440,19 +471,18 @@ def test_execution_equivalent_roots_share_one_immutable_artifact(
 
     assert not plan.blocked
     result = service.execute_artifact_materialization(plan)
-    assert result.root_logical_artifact_ids == tuple(
-        compute_logical_artifact_id(market, recipe_id) for recipe_id in requested
+    semantic_winner = min(requested)
+    assert result.root_logical_artifact_ids == (
+        compute_logical_artifact_id(market, semantic_winner),
     )
-    assert len(set(result.root_logical_artifact_ids)) == 2
     assert len(result.created_artifact_ids) == 1
     assert result.reused_artifact_ids == ()
-    assert len(result.created_version_keys) == 2
-    assert len(set(result.created_version_keys)) == 2
+    assert len(result.created_version_keys) == 1
     assert result.reused_version_keys == ()
     assert len(artifacts.list_artifacts(market)) == 1
     assert len(artifacts.list_recipes(market)) == 1
     managed = artifacts.list_managed_artifacts(market)
-    assert len(managed) == 2
+    assert len(managed) == 1
     assert {item.artifact_id for item in managed} == set(result.created_artifact_ids)
     assert all(
         len(artifacts.list_artifact_versions(market, logical_id)) == 1
@@ -478,7 +508,7 @@ def test_execution_equivalent_roots_share_one_immutable_artifact(
     assert repeated.created_artifact_ids == ()
     assert repeated.reused_artifact_ids == (shared_artifact_id,)
     assert repeated.created_version_keys == ()
-    assert len(repeated.reused_version_keys) == 2
+    assert len(repeated.reused_version_keys) == 1
     assert set(repeated.reused_version_keys) == {
         ManagedArtifactVersionKey(logical_id, shared_artifact_id)
         for logical_id in result.root_logical_artifact_ids
@@ -594,9 +624,14 @@ def test_sequential_execution_reuses_shared_immutable_artifact(
     assert (artifact_dir / "artifact.meta.json").read_bytes() == metadata_bytes
     assert len(artifacts.list_artifacts(market)) == 1
     assert len(artifacts.list_recipes(market)) == 1
-    explicit_logical = compute_logical_artifact_id(market, explicit.recipe_id)
-    assert artifacts.load_artifact_head(market, explicit_logical).artifact_id == artifact_id
-    assert len(artifacts.list_artifact_versions(market, explicit_logical)) == 1
+    assert artifacts.load_artifact_head(
+        market, first.root_logical_artifact_ids[0]
+    ).artifact_id == artifact_id
+    assert len(
+        artifacts.list_artifact_versions(
+            market, first.root_logical_artifact_ids[0]
+        )
+    ) == 1
 
 
 def test_dependency_output_must_be_numeric_and_analysis_usable(
@@ -751,6 +786,91 @@ def test_braid_instability_transitive_graph_materializes_shared_dependencies_onc
     result = service.execute_artifact_materialization(plan)
     assert len(result.created_artifact_ids) == 7
     assert len(artifacts.list_managed_artifacts(market)) == 7
+
+
+def test_recipe_derivation_skips_existing_recipe_and_deduplicates_provenance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _market, service, _artifacts, recipes, _root, environments = _domain(tmp_path)
+    environment = _save_environment(
+        environments,
+        environment_id="env_recipe_reuse",
+        display_name="Recipe Reuse",
+        entries=_braid_instability_entries(),
+    )
+    initial = service.plan_recipe_derivation(
+        environment.environment_id, ("entry_instability",)
+    )
+    candidate = initial.recipes[0]
+    assert candidate.dependencies == ()
+    assert candidate.ohlcv_inputs == ()
+    existing = build_portable_recipe(
+        tool_key=candidate.tool_key,
+        tool_version=candidate.tool_version,
+        kind=candidate.kind,
+        parameters=candidate.parameters,
+        output_names=candidate.output_names,
+        ohlcv_inputs=(PortableRecipeOHLCVInputV1("close", "close"),),
+    )
+    assert existing.recipe_id != candidate.recipe_id
+    recipes.save_recipe(existing)
+    saved_recipe_ids: list[str] = []
+    original_persist_recipe = recipes.persist_recipe
+
+    def record_save(recipe, *, origin_kind, origin_details) -> None:
+        saved_recipe_ids.append(recipe.recipe_id)
+        original_persist_recipe(
+            recipe,
+            origin_kind=origin_kind,
+            origin_details=origin_details,
+        )
+
+    monkeypatch.setattr(recipes, "persist_recipe", record_save)
+
+    mixed = service.plan_recipe_derivation(
+        environment.environment_id, ("entry_instability",)
+    )
+    assert dict(mixed.recipe_actions)[existing.recipe_id] == "REUSE EXISTING"
+    assert candidate.recipe_id not in {
+        recipe.recipe_id for recipe in mixed.recipes
+    }
+    assert tuple(action for _recipe_id, action in mixed.recipe_actions).count("NEW") == (
+        len(mixed.recipes) - 1
+    )
+    first = service.persist_recipe_derivation(
+        environment.environment_id,
+        ("entry_instability",),
+        create_collection=False,
+    )
+
+    assert existing.recipe_id in first.reused_recipe_ids
+    assert existing.recipe_id not in saved_recipe_ids
+    assert set(saved_recipe_ids) == set(first.created_recipe_ids)
+    assert len(saved_recipe_ids) == len(mixed.recipes) - 1
+    assert len(first.new_provenance_ids) == len(mixed.provenances)
+    assert first.existing_provenance_ids == ()
+
+    saved_recipe_ids.clear()
+    second = service.persist_recipe_derivation(
+        environment.environment_id,
+        ("entry_instability",),
+        create_collection=False,
+    )
+
+    assert saved_recipe_ids == []
+    assert set(second.reused_recipe_ids) == {
+        recipe.recipe_id for recipe in mixed.recipes
+    }
+    assert second.new_provenance_ids == ()
+    assert set(second.existing_provenance_ids) == set(first.new_provenance_ids)
+    for recipe in mixed.recipes:
+        metadata = recipes.load_persistence_metadata(recipe.recipe_id)
+        assert metadata is not None
+        assert metadata.first_persisted_at_utc is not None
+        assert tuple(item.origin_kind for item in metadata.origins) == (
+            "study_environment",
+        )
 
 
 def test_cross_family_braids_and_instability_materialize_with_exact_lineage(

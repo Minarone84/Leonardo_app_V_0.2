@@ -18,6 +18,7 @@ from leonardo.research import (
     StudyExecutionRequest,
     StudyInputSource,
 )
+from leonardo.recipes import PortableRecipeStore
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -42,6 +43,13 @@ def accepted_context(root: Path) -> tuple[HistoricalDataset, ArtifactService, pd
         volume=tuple(float(value) for value in frame.volume),
     )
     return dataset, ArtifactService(root), frame
+
+
+def research_service(root: Path, artifacts: ArtifactService) -> ResearchStudyService:
+    return ResearchStudyService(
+        artifacts,
+        PortableRecipeStore(root / "data_manager"),
+    )
 
 
 def publish_accepted_frame(

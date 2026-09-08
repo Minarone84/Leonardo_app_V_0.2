@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal, TypeVar
 
 from PySide6.QtWidgets import QTableWidget
 
 from leonardo.data_manager import DataManagerDatasetEntry
+from leonardo.gui.display_time import (
+    format_display_datetime,
+    format_display_timestamp_ms,
+    parse_display_datetime,
+)
 from leonardo.gui.table_sizing import resize_table_columns_to_contents
 
 
@@ -22,8 +27,8 @@ DATA_MANAGER_DATASET_COLUMNS = (
     "Persistence",
     "Validation",
     "Rows",
-    "First Data UTC",
-    "Last Data UTC",
+    "First Data",
+    "Last Data",
     "Details",
 )
 
@@ -77,33 +82,19 @@ def sort_data_manager_rows(
             return value.casefold()
         if kind == "number":
             return Decimal(value.replace(",", ""))
-        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S UTC").replace(
-            tzinfo=UTC
-        )
+        return parse_display_datetime(value)
 
     return tuple(sorted(populated, key=key, reverse=descending)) + blanks
 
 
 def format_utc_timestamp_ms(value: int | None) -> str:
-    """Format an epoch-millisecond value for Data Manager presentation."""
-    if value is None:
-        return ""
-    if type(value) is not int:
-        raise TypeError("timestamp value must be an integer or None")
-    return datetime.fromtimestamp(value / 1000, tz=UTC).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+    """Compatibility adapter to the canonical GUI display-time authority."""
+    return format_display_timestamp_ms(value)
 
 
 def format_utc_datetime(value: datetime | None) -> str:
-    """Format a timezone-aware datetime in UTC for Data Manager presentation."""
-    if value is None:
-        return ""
-    if not isinstance(value, datetime):
-        raise TypeError("datetime value must be a datetime or None")
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("datetime value must be timezone-aware")
-    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    """Compatibility adapter to the canonical GUI display-time authority."""
+    return format_display_datetime(value)
 
 
 def format_data_manager_value(field_name: str, value: object) -> str:
@@ -157,4 +148,16 @@ def data_manager_dataset_details(entry: DataManagerDatasetEntry) -> str:
 
 def resize_data_manager_table(table: QTableWidget) -> None:
     """Resize a Data Manager table using the application content-size policy."""
+    table.setShowGrid(True)
+    font = table.font()
+    if font.pointSizeF() < 11.0:
+        font.setPointSize(11)
+        table.setFont(font)
+    vertical_header = table.verticalHeader()
+    vertical_header.setMinimumSectionSize(
+        max(28, vertical_header.minimumSectionSize())
+    )
+    vertical_header.setDefaultSectionSize(
+        max(28, vertical_header.defaultSectionSize())
+    )
     resize_table_columns_to_contents(table)

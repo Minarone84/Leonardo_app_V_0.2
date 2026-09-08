@@ -280,8 +280,8 @@ def test_dialog_identity_construct_choices_and_dataset_context(qapp) -> None:
         ) == data_manager_dataset_row(entry)
         assert table.item(0, 10).toolTip() == data_manager_dataset_details(entry)
         assert table.item(0, 7).text() == "6"
-        assert table.item(0, 8).text() == "1970-01-01 00:00:00 UTC"
-        assert table.item(0, 9).text() == "1970-01-01 00:00:00 UTC"
+        assert table.item(0, 8).text() == "1970-01-01 01:00:00 CET (+01:00)"
+        assert table.item(0, 9).text() == "1970-01-01 01:00:00 CET (+01:00)"
         assert table.item(0, 5).text() == "committed"
         assert table.item(0, 6).text() == "ok"
         assert table.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers

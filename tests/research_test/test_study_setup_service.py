@@ -25,7 +25,11 @@ from leonardo.research import (
     StudyUserMetadata,
 )
 
-from tests.research_test.test_study_execution import accepted_context, prepare
+from tests.research_test.test_study_execution import (
+    accepted_context,
+    prepare,
+    research_service,
+)
 
 
 def _save_attempt(study) -> StudySaveAttempt:
@@ -41,7 +45,7 @@ def _save_attempt(study) -> StudySaveAttempt:
 
 def test_service_projects_catalog_and_constructs_environment_without_values(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     ema = prepare(runtime, dataset, "ema", parameters={"period": 20})
     rsi = prepare(runtime, dataset, "rsi", parameters={"period": 14})
     presentations = StudyPresentationRegistry()
@@ -71,7 +75,7 @@ def test_environment_capture_uses_stable_dependency_order_for_three_levels(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     sma = prepare(runtime, dataset, "sma", parameters={"period": 3})
     derivative = prepare(
         runtime,
@@ -136,7 +140,7 @@ def test_environment_capture_orders_peaks_before_utc_and_rebinds_entry_sources(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     peaks = prepare(runtime, dataset, "peaks_troughs")
     utc = prepare(
         runtime,
@@ -185,7 +189,7 @@ def test_environment_capture_rejects_missing_dependency_and_cycle(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     first = prepare(runtime, dataset, "sma", parameters={"period": 3})
     second = prepare(runtime, dataset, "rsi", parameters={"period": 14})
     presentations = StudyPresentationRegistry()
@@ -271,7 +275,7 @@ def test_environment_capture_rejects_missing_dependency_and_cycle(
 
 def test_pure_environment_is_cross_market_compatible(tmp_path: Path) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     study = prepare(runtime, dataset, "ema", parameters={"period": 20})
     presentations = StudyPresentationRegistry()
     presentation = presentations.register(study)
@@ -304,7 +308,7 @@ def test_catalog_projects_same_name_artifacts_without_identity_or_naming_mutatio
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     sma_20 = prepare(runtime, dataset, "sma", parameters={"period": 20})
     sma_200 = prepare(runtime, dataset, "sma", parameters={"period": 200})
     saved = (
@@ -339,7 +343,7 @@ def test_catalog_projects_artifact_backed_source_without_internal_identity(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     source = prepare(runtime, dataset, "sma", parameters={"period": 20})
     source_saved = runtime.save_study(
         _save_attempt(source), dataset, source, (source,)
@@ -440,7 +444,7 @@ def test_dynamic_binning_cannot_build_a_new_research_environment(
     tmp_path: Path,
 ) -> None:
     dataset, artifacts, _frame = accepted_context(tmp_path)
-    runtime = ResearchStudyService(artifacts)
+    runtime = research_service(tmp_path, artifacts)
     dynamic = prepare(
         runtime,
         dataset,

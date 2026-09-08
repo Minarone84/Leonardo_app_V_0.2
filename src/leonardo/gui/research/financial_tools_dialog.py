@@ -497,7 +497,16 @@ class _StudyParameterEditor(QWidget):
                 self._utc_window("range_fractal_window"),
             )
         else:
-            self.source_selector = StudySourceSelectorWidget(catalog, parent=self)
+            role_labels = (
+                {"fast": "Minuend", "slow": "Subtrahend"}
+                if spec.key == "delta"
+                else None
+            )
+            self.source_selector = StudySourceSelectorWidget(
+                catalog,
+                parent=self,
+                role_labels=role_labels,
+            )
             self.source_selector.set_schema(source_role_schema(spec.key))
         self.source_selector.setObjectName(f"{object_name_prefix}.sources")
         self.source_selector.intent_changed.connect(self._changed)

@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "provenance_id": "0b221834fa34e8ce088f6243af6d31ead6797bce173e70be5ce7735b95f2ec6d",
+  "recipe_id": "5b1331a65cb958ac12ab28baa812d76e5f717b8a9869b49a184772f0bd2564b3",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "Volume",
+  "study_entry_id": "entry_004",
+  "study_environment_content_hash": "61ca75302dd040db204722b0de4ce33ce06a2d0ff7600ff87ef25824b20ae967",
+  "study_environment_display_name": "BTC_TEST_A_STUDY",
+  "study_environment_id": "env_7ce88aae4f9a4a76bd9ee5d68d1da60f",
+  "study_environment_updated_at_utc": "2026-07-31T17:23:57.952354+00:00"
+}

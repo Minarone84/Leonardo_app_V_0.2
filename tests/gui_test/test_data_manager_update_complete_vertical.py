@@ -276,11 +276,29 @@ def test_real_gui_update_append_restart_and_explicit_rebuild(tmp_path) -> None:
     collection = _completed(
         application.submit_create_artifact_collection, materialization, "SMA"
     )
+    other_parameters = dict(resolve_parameters("ema", {"period": 3}))
+    other_recipe = build_portable_recipe(
+        tool_key="ema",
+        kind="indicator",
+        parameters=other_parameters,
+        output_names=resolve_output_names("ema", other_parameters),
+    )
+    app.portable_recipe_store.save_recipe(other_recipe)
+    other_materialization = _completed(
+        application.submit_execute_artifact_materialization,
+        _completed(
+            application.submit_plan_artifact_materialization,
+            DataManagerArtifactMaterializationRequest(
+                MARKET, (other_recipe.recipe_id,)
+            ),
+        ),
+    )
     other_collection = _completed(
         application.submit_create_artifact_collection,
-        materialization,
-        "SMA Secondary",
+        other_materialization,
+        "EMA Secondary",
     )
+    assert collection.collection_id != other_collection.collection_id
     seed = _completed(application.submit_create_database_seed, MARKET, "Research DB")
     database = _completed(
         application.submit_build_database_revision,

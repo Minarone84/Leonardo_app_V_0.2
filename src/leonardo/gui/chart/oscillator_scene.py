@@ -28,6 +28,13 @@ class OscillatorGuide:
 
 
 @dataclass(frozen=True, slots=True)
+class OscillatorReferenceLevel:
+    value: float
+    y: float
+    line_width: float
+
+
+@dataclass(frozen=True, slots=True)
 class OscillatorPoint:
     global_index: float
     x: float
@@ -86,6 +93,7 @@ class OscillatorScene:
     plot_rect: SceneRect
     axis_low: float
     axis_high: float
+    reference_levels: tuple[OscillatorReferenceLevel, ...]
     guides: tuple[OscillatorGuide, ...]
     fills: tuple[OscillatorFillStrip, ...]
     histogram_bars: tuple[OscillatorHistogramBar, ...]
@@ -130,7 +138,9 @@ def build_oscillator_scene(
         for guide in presentation.guide_styles.values()
         if guide.visible
     )
-    if tool_key == "volume":
+    if tool_key == "braids":
+        low, high = 0.5, 6.5
+    elif tool_key == "volume":
         low, high = _volume_range(visible_values)
     elif visual is not None and visual.range_mode == "fixed_bounds":
         low, high = visual.bounds
@@ -138,6 +148,18 @@ def build_oscillator_scene(
         low, high = _auto_range(
             visible_values + tuple(guide.value for guide in visible_guides)
         )
+    reference_levels = (
+        tuple(
+            OscillatorReferenceLevel(
+                float(value),
+                _y(float(value), low, high, plot_rect),
+                0.5,
+            )
+            for value in range(1, 7)
+        )
+        if tool_key == "braids"
+        else ()
+    )
     guides = tuple(
         OscillatorGuide(
             item.kind,
@@ -227,6 +249,7 @@ def build_oscillator_scene(
         viewport.end_index_exclusive,
         low,
         high,
+        reference_levels,
         plot_rect,
         guides,
         fills,
@@ -240,6 +263,7 @@ def build_oscillator_scene(
         plot_rect,
         low,
         high,
+        reference_levels,
         guides,
         fills,
         histogram_bars,

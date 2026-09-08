@@ -1,0 +1,104 @@
+{
+  "collection_id": "ac_8adf3ac0b82f41b1bff3a529a0846064",
+  "created_at_utc": "2026-09-08T14:55:32.524025Z",
+  "database_ready": true,
+  "dependency_edges": [],
+  "description": "",
+  "display_name": "Test_collection_D",
+  "first_timestamp_ms": 1620892800000,
+  "last_timestamp_ms": 1788753600000,
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "members": [
+    {
+      "artifact_id": "6c6648f37cd58a2f0b627be719c0ea55ce9946ef957c6eca571442113bbd1c56",
+      "kind": "indicator",
+      "logical_artifact_id": "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+      "output_names": [
+        "sma_100"
+      ],
+      "portable_recipe_id": "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be",
+      "tool_key": "sma",
+      "values_sha256": "57f91da55ec8770f5700bb82408648b0d80b1ea6b681545972fde6ee35743ae1"
+    },
+    {
+      "artifact_id": "69e70654beb1f317ea96c8ce77c029ac9b90f988cadef6b7acba21c02459cc5c",
+      "kind": "indicator",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_names": [
+        "fast_vwap",
+        "slow_vwap",
+        "vwap_color"
+      ],
+      "portable_recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+      "tool_key": "hck",
+      "values_sha256": "6cbb20ace4a70b720fbc3272c7d40f67d5345384bb53dd86e9e0afd049e8bfb8"
+    }
+  ],
+  "object_type": "artifact_collection_revision",
+  "presentation_order": [
+    "sma_100",
+    "fast_vwap",
+    "slow_vwap",
+    "vwap_color"
+  ],
+  "previous_revision_id": null,
+  "revised_at_utc": "2026-09-08T14:55:32.524025Z",
+  "revision_id": "4dbc57744da5a35f9550195ee7e90d8f39dcb7edbf051c0429bee3511b9d3bc1",
+  "root_logical_artifact_ids": [
+    "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+    "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f"
+  ],
+  "schema_version": "1.0",
+  "selected_outputs": [
+    {
+      "column_name": "sma_100",
+      "logical_artifact_id": "5edf66b8eaf99df7fbff802ce34a1f04379eb37a85f7ca20438d1d8984a60556",
+      "output_name": "sma_100"
+    },
+    {
+      "column_name": "fast_vwap",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_name": "fast_vwap"
+    },
+    {
+      "column_name": "slow_vwap",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_name": "slow_vwap"
+    },
+    {
+      "column_name": "vwap_color",
+      "logical_artifact_id": "5d8d8ef65f3e48eacf487f5bbbaf62778ad072d80c133d5af060af4dfb90fd2f",
+      "output_name": "vwap_color"
+    }
+  ],
+  "source_ohlcv": {
+    "csv_sha256": "172cec3437a7c65e1955fb2fbe811f104c529db5e789724e8225c33a11d11b4e",
+    "first_timestamp_ms": 1620892800000,
+    "last_timestamp_ms": 1788753600000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "XRPUSDT",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 11658,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "03646e2e4da3d63eed00a3dd386408585b05a57457b3dc15311c7db54c56705c",
+    "validation_status": "ok"
+  },
+  "source_portable_recipe_ids": [
+    "52f7303ff6f7a7129277d172db5ad095e5fd757dd27defd2625a286995b399be",
+    "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5"
+  ],
+  "source_recipe_collection_id": null,
+  "source_recipe_collection_revision_id": null,
+  "support_logical_artifact_ids": [],
+  "validation_state": "valid"
+}

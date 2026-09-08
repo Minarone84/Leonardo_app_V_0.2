@@ -1,0 +1,149 @@
+{
+  "collection_id": "ac_762094e8a90148d687551172966ef132",
+  "created_at_utc": "2026-09-02T15:51:23.053097Z",
+  "database_ready": true,
+  "dependency_edges": [
+    {
+      "dependency_logical_artifact_id": "36cd82b0bcdccc9cae2d478aa0aac63c8309f40f0454af0dd5a3acb35187337f",
+      "dependent_logical_artifact_id": "584b860132210bfc736abba481a4eb364e71709733dc087d8ffaf730e25bba7f",
+      "output_name": "rsi_14",
+      "role": "source_1"
+    }
+  ],
+  "description": "",
+  "display_name": "Test colecction D",
+  "first_timestamp_ms": 1542211200000,
+  "last_timestamp_ms": 1784462400000,
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "BTCUSD",
+    "timeframe": "4h"
+  },
+  "members": [
+    {
+      "artifact_id": "15df7908c9463368fc916441b1d0386db79f321d19bcd385e8bb3a9472b8e8fc",
+      "kind": "oscillator",
+      "logical_artifact_id": "36cd82b0bcdccc9cae2d478aa0aac63c8309f40f0454af0dd5a3acb35187337f",
+      "output_names": [
+        "rsi_14"
+      ],
+      "portable_recipe_id": "24870af5c13750e6f0f00fe72039fc81338f236db301b61bc8b8108cb7410e47",
+      "tool_key": "rsi",
+      "values_sha256": "a9761a6e5fc0ed012538cfc1d242b70b0a19e2ff9cbd6bd5e1e8cf8e53f4192d"
+    },
+    {
+      "artifact_id": "e009beaa7ad2770445347a1de9838975b80758a250f8585b85cd5199d419d2f0",
+      "kind": "indicator",
+      "logical_artifact_id": "0d60e26b6c6399a4644835f99a5e4f91a741cdb59c0dd12ed0f2b3d0e6466f8e",
+      "output_names": [
+        "sma_14"
+      ],
+      "portable_recipe_id": "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde",
+      "tool_key": "sma",
+      "values_sha256": "32bf926d66ab71b9cfcac11e1657440f61cdff0bafd26f6c47e04d8b427bd5fa"
+    },
+    {
+      "artifact_id": "d295a159abd1914270a30c2bc3bc47e735490041974b234433182adcf41bcd99",
+      "kind": "indicator",
+      "logical_artifact_id": "0b7395cac565b73b76969bde50a4b89b75e2c051cfb5c382ca77c5db0b6c2302",
+      "output_names": [
+        "fast_vwap",
+        "slow_vwap",
+        "vwap_color"
+      ],
+      "portable_recipe_id": "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+      "tool_key": "hck",
+      "values_sha256": "b875cc9dc2fdb6dcd5936dda1bb0000e20abd92aec81698adb00f1e7e4b494a4"
+    },
+    {
+      "artifact_id": "f801cfd30b0079150b6bbe00ddf3ab359130ef8e8a9cc50c93444e9f63baa7b1",
+      "kind": "construct",
+      "logical_artifact_id": "584b860132210bfc736abba481a4eb364e71709733dc087d8ffaf730e25bba7f",
+      "output_names": [
+        "research_source_1_ang_mtm_3"
+      ],
+      "portable_recipe_id": "3605b485df542811a8ca4c776e7c6cee8410f1169e1e190dedc002b606a81601",
+      "tool_key": "angle_momentum",
+      "values_sha256": "47cae9a70d344f9628712b8100b589ce7267f42bd4f0dd553a66346f9fb33169"
+    }
+  ],
+  "object_type": "artifact_collection_revision",
+  "presentation_order": [
+    "sma_14",
+    "research_source_1_ang_mtm_3",
+    "rsi_14",
+    "fast_vwap",
+    "slow_vwap",
+    "vwap_color"
+  ],
+  "previous_revision_id": "890f70139ad1a5ee7356e430d24c40a860f7fcf4c13cbe11cb96380e62e41bf9",
+  "revised_at_utc": "2026-09-02T15:54:06.849212Z",
+  "revision_id": "4cdc1086f6478ccb86474b03a3628120d2287b0392f976b54b50587b0e5ef9ac",
+  "root_logical_artifact_ids": [
+    "584b860132210bfc736abba481a4eb364e71709733dc087d8ffaf730e25bba7f",
+    "0d60e26b6c6399a4644835f99a5e4f91a741cdb59c0dd12ed0f2b3d0e6466f8e",
+    "36cd82b0bcdccc9cae2d478aa0aac63c8309f40f0454af0dd5a3acb35187337f",
+    "0b7395cac565b73b76969bde50a4b89b75e2c051cfb5c382ca77c5db0b6c2302"
+  ],
+  "schema_version": "1.0",
+  "selected_outputs": [
+    {
+      "column_name": "sma_14",
+      "logical_artifact_id": "0d60e26b6c6399a4644835f99a5e4f91a741cdb59c0dd12ed0f2b3d0e6466f8e",
+      "output_name": "sma_14"
+    },
+    {
+      "column_name": "research_source_1_ang_mtm_3",
+      "logical_artifact_id": "584b860132210bfc736abba481a4eb364e71709733dc087d8ffaf730e25bba7f",
+      "output_name": "research_source_1_ang_mtm_3"
+    },
+    {
+      "column_name": "rsi_14",
+      "logical_artifact_id": "36cd82b0bcdccc9cae2d478aa0aac63c8309f40f0454af0dd5a3acb35187337f",
+      "output_name": "rsi_14"
+    },
+    {
+      "column_name": "fast_vwap",
+      "logical_artifact_id": "0b7395cac565b73b76969bde50a4b89b75e2c051cfb5c382ca77c5db0b6c2302",
+      "output_name": "fast_vwap"
+    },
+    {
+      "column_name": "slow_vwap",
+      "logical_artifact_id": "0b7395cac565b73b76969bde50a4b89b75e2c051cfb5c382ca77c5db0b6c2302",
+      "output_name": "slow_vwap"
+    },
+    {
+      "column_name": "vwap_color",
+      "logical_artifact_id": "0b7395cac565b73b76969bde50a4b89b75e2c051cfb5c382ca77c5db0b6c2302",
+      "output_name": "vwap_color"
+    }
+  ],
+  "source_ohlcv": {
+    "csv_sha256": "05bf2e7e3397f670249645088357903e75cba196edd4f5b4b400f59e1b5bc3bd",
+    "first_timestamp_ms": 1542211200000,
+    "last_timestamp_ms": 1784462400000,
+    "market_id": {
+      "exchange": "bybit",
+      "market_type": "linear",
+      "symbol": "BTCUSD",
+      "timeframe": "4h"
+    },
+    "persistence_status": "committed",
+    "row_count": 16824,
+    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
+    "sidecar_sha256": "4ad14c2bc7cf6ff30434755c6f37179953c34e37015e92619220ee0c0eab7b7b",
+    "validation_status": "ok"
+  },
+  "source_portable_recipe_ids": [
+    "24870af5c13750e6f0f00fe72039fc81338f236db301b61bc8b8108cb7410e47",
+    "3605b485df542811a8ca4c776e7c6cee8410f1169e1e190dedc002b606a81601",
+    "7902437cc367cf1f15f0549426c82ad0742aac3748606df24a34a7258cc314e5",
+    "bc5ae24928595c5da9869bed4a6f27012056093df37ddde2df95423796092dde"
+  ],
+  "source_recipe_collection_id": null,
+  "source_recipe_collection_revision_id": null,
+  "support_logical_artifact_ids": [],
+  "validation_state": "valid"
+}

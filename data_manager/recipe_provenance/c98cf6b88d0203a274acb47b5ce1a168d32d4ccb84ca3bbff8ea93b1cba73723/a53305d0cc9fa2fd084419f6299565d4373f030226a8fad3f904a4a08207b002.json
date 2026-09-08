@@ -1,0 +1,19 @@
+{
+  "object_type": "portable_recipe_provenance",
+  "origin_market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "provenance_id": "a53305d0cc9fa2fd084419f6299565d4373f030226a8fad3f904a4a08207b002",
+  "recipe_id": "c98cf6b88d0203a274acb47b5ce1a168d32d4ccb84ca3bbff8ea93b1cba73723",
+  "schema_version": "1.0",
+  "study_description": "",
+  "study_display_name": "Percent Span Angle",
+  "study_entry_id": "entry_005",
+  "study_environment_content_hash": "4c86175d8eec93d1e57ca6b7a652c965c40f3e94b4e8f36a87fa80700b67fde1",
+  "study_environment_display_name": "XRP_TEST_C",
+  "study_environment_id": "env_6ac010a438604d4d90b50d7a00ad5cbd",
+  "study_environment_updated_at_utc": "2026-09-07T11:46:56.227366+00:00"
+}

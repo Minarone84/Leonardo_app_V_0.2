@@ -12,6 +12,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication, QObject, QPoint, QRect, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QGroupBox,
     QLineEdit,
     QMessageBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QWidget,
 )
+from shiboken6 import isValid
 
 from leonardo.artifacts import ManagedArtifactVersionKey, OHLCVSourceFingerprintV1
 from leonardo.core.window_registry import WindowRegistry
@@ -37,6 +39,15 @@ from leonardo.data_manager import (
     DataManagerStudyEntryPortability,
     DataManagerStudyEnvironmentEntry,
     DataManagerStudyEnvironmentInspection,
+)
+from leonardo.data_manager.models import (
+    DUPLICATE_MAINTENANCE_DOMAINS,
+    DuplicateMaintenanceCandidate,
+    DuplicateMaintenanceGroup,
+    DuplicateMaintenancePreflight,
+    DuplicateMaintenancePurgeDetail,
+    DuplicateMaintenancePurgeResult,
+    DuplicateMaintenanceScanResult,
 )
 from leonardo.data_manager.creation_models import deterministic_hash
 from leonardo.data_manager.direct_artifact import DataManagerDirectArtifactCatalog
@@ -105,7 +116,7 @@ def _selector_row(window: DataManagerSuiteWindow, symbol: str) -> int:
     assert dialog is not None
     table = dialog.table_for_id("data_manager.table.datasets")
     for row in range(table.rowCount()):
-        if table.item(row, 2).text() == symbol:
+        if table.item(row, 3).text() == symbol:
             return row
     raise AssertionError(f"selector row not found: {symbol}")
 
@@ -173,10 +184,32 @@ def test_dataset_selection_remains_functional_without_legacy_object_tables(qapp)
         dialog = window.dataset_selector_dialog()
         assert dialog is not None
         assert dialog.isVisible()
-        assert dialog.table_for_id("data_manager.table.datasets").columnCount() == 11
-        dialog.table_for_id("data_manager.table.datasets").selectRow(
-            _selector_row(window, "BTCUSDT")
+        table = dialog.table_for_id("data_manager.table.datasets")
+        assert tuple(
+            table.horizontalHeaderItem(column).text()
+            for column in range(table.columnCount())
+        ) == (
+            "Select",
+            "Exchange",
+            "Market Type",
+            "Symbol",
+            "Timeframe",
+            "Status",
+            "Persistence",
+            "Validation",
+            "Rows",
+            "First Data",
+            "Last Data",
+            "Details",
         )
+        row = _selector_row(window, "BTCUSDT")
+        cell = table.cellWidget(row, 0)
+        assert cell is not None
+        checkboxes = cell.findChildren(QCheckBox)
+        assert len(checkboxes) == 1
+        checkbox = checkboxes[0]
+        checkbox.setChecked(True)
+        table.selectRow(row)
         dialog.button_for_id("data_manager.dataset_selector.button.select").click()
         QCoreApplication.processEvents()
         assert selected == [MARKET]
@@ -197,6 +230,23 @@ def test_dataset_selection_remains_functional_without_legacy_object_tables(qapp)
         assert not dialog.button_for_id(
             "data_manager.dataset_selector.button.refresh"
         ).isEnabled()
+    finally:
+        window.close()
+
+
+def test_legacy_recipe_created_timestamp_uses_canonical_display_time(qapp) -> None:
+    window = DataManagerSuiteWindow()
+    table = QTableWidget(0, 7)
+    window._tables["data_manager.table.recipes"] = table
+    recipe = replace(
+        _snapshot().recipes[0],
+        created_at_utc=datetime(2026, 8, 9, 17, 42, 17, tzinfo=UTC),
+    )
+    try:
+        window._recipes = (recipe,)
+        window._populate_recipes()
+        assert table.item(0, 5).text() == "2026-08-09 19:42:17 CEST (+02:00)"
+        assert "2026-08-09T" not in table.item(0, 5).text()
     finally:
         window.close()
 
@@ -282,17 +332,83 @@ def test_rejected_dataset_remains_visible_but_cannot_be_selected(qapp) -> None:
         dialog = window.dataset_selector_dialog()
         assert dialog is not None
         table = dialog.table_for_id("data_manager.table.datasets")
-        table.selectRow(_selector_row(window, "XRPUSDT"))
+        row = _selector_row(window, "XRPUSDT")
+        table.selectRow(row)
         QCoreApplication.processEvents()
         assert window.selected_market_id() is None
-        assert "source changed" in table.item(
-            _selector_row(window, "XRPUSDT"), 10
-        ).text()
+        cell = table.cellWidget(row, 0)
+        assert cell is not None
+        checkboxes = cell.findChildren(QCheckBox)
+        assert len(checkboxes) == 1
+        checkbox = checkboxes[0]
+        assert not checkbox.isEnabled()
+        assert not checkbox.isChecked()
+        assert "source changed" in table.item(row, 11).text()
         assert not dialog.button_for_id(
             "data_manager.dataset_selector.button.select"
         ).isEnabled()
     finally:
         window.close()
+
+
+def test_recipe_artifact_materialization_dialog_is_single_owned_and_tracked(
+    qapp,
+) -> None:
+    tracked: list[tuple[object, str, str, str]] = []
+    window = DataManagerSuiteWindow(
+        floating_window_tracker=lambda *values: tracked.append(values)
+    )
+    snapshot = replace(
+        associated_product_snapshot(),
+        catalog=DataManagerCatalogSnapshot((_dataset(),)),
+    )
+    recipe = snapshot.portable_recipes.recipes[0]
+    collection = snapshot.recipe_collections.collections[0]
+    try:
+        window.set_product_catalogs(snapshot)
+        assert window.select_market(MARKET, emit_selection=False)
+        window.set_market_snapshot(_snapshot())
+        window.show_recipe_artifact_materialization_dialog(recipe, snapshot)
+        dialog = window.recipe_artifact_materialization_dialog()
+        assert dialog is not None
+        assert dialog.windowTitle() == "Create Artifact from Recipe"
+        assert dialog.target_market_id == MARKET
+        assert tracked == [
+            (
+                dialog,
+                "data_manager.recipe_artifact_materialization.window",
+                "Recipe Artifact Materialization",
+                "dialog",
+            )
+        ]
+
+        window.show_recipe_artifact_materialization_dialog(collection, snapshot)
+        assert window.recipe_artifact_materialization_dialog() is dialog
+        assert dialog.windowTitle() == "Create Artifacts from Recipe Collection"
+        assert dialog.source_labels["revision_id"].text() == collection.revision_id
+        assert len(tracked) == 1
+
+        window.set_busy(True, "materialization")
+        assert not dialog.preview_button.isEnabled()
+        window.set_busy(False)
+        window.clear_selected_market("Unavailable")
+        assert dialog.target_market_id is None
+        assert not dialog.preview_button.isEnabled()
+
+        dialog.close()
+        QCoreApplication.processEvents()
+        assert window.recipe_artifact_materialization_dialog() is None
+        window.show_recipe_artifact_materialization_dialog(recipe, snapshot)
+        reopened = window.recipe_artifact_materialization_dialog()
+        assert reopened is not None and reopened is not dialog
+        assert len(tracked) == 2
+        window.close()
+        QCoreApplication.processEvents()
+        assert window.recipe_artifact_materialization_dialog() is None
+        assert not isValid(reopened)
+    finally:
+        if isValid(window):
+            window.close()
 
 
 def test_catalog_details_span_body_below_workspace_and_operation(qapp) -> None:
@@ -855,6 +971,98 @@ def test_collection_dialog_tracking_identity_survives_create_edit_create(qapp) -
         window.close()
 
 
+def test_collection_inspection_signal_proxy_reuse_mode_switch_and_lifecycle(
+    qapp,
+) -> None:
+    from leonardo.data_manager import ArtifactCollectionValidation
+    from tests.gui_test.test_data_manager_catalogs import associated_product_snapshot
+    from tests.gui_test.test_data_manager_collection_inspection_dialog import (
+        _artifact_metadata,
+        _artifact_revision,
+        ROOT_ARTIFACT_ID,
+        ROOT_RECIPE_ID,
+        SUPPORT_ARTIFACT_ID,
+        SUPPORT_RECIPE_ID,
+    )
+    from tests.gui_test.test_data_manager_recipe_collection_dialog import (
+        _inspection,
+        _recipe,
+        ROOT_ID,
+        SUPPORT_ID,
+    )
+
+    window = DataManagerSuiteWindow()
+    window_closed = False
+    recipe_signals: list[object] = []
+    artifact_signals: list[object] = []
+    window.inspect_recipe_collection_requested.connect(recipe_signals.append)
+    window.inspect_artifact_collection_requested.connect(artifact_signals.append)
+    try:
+        snapshot = associated_product_snapshot()
+        window.set_product_catalogs(snapshot)
+        workspace = window._catalog_workspace
+        workspace.select_family("Recipe Collections")
+        recipe_entry = workspace._visible_values[0]
+        workspace.table.selectRow(0)
+        workspace.inspect_collection_button.click()
+        assert recipe_signals == [recipe_entry]
+
+        workspace.dataset_scope.setCurrentIndex(
+            workspace.dataset_scope.findData("all")
+        )
+        workspace.select_family("Artifact Collections")
+        artifact_entry = workspace._visible_values[0]
+        workspace.table.selectRow(0)
+        workspace.inspect_collection_button.click()
+        assert artifact_signals == [artifact_entry]
+
+        inspection = _inspection()
+        recipes = (_recipe(SUPPORT_ID, "sma"), _recipe(ROOT_ID, "ema"))
+        window.show_recipe_collection_inspection(inspection, recipes)
+        dialog = window.collection_inspection_dialog()
+        assert dialog is not None
+        assert dialog.windowTitle() == "Recipe Collection Inspection"
+
+        revision = _artifact_revision()
+        validation = ArtifactCollectionValidation(
+            revision.collection_id,
+            revision.revision_id,
+            True,
+            True,
+            (),
+            0,
+            3_600_000,
+            2,
+            2,
+        )
+        metadata = (
+            _artifact_metadata(
+                SUPPORT_ARTIFACT_ID, SUPPORT_RECIPE_ID, "sma"
+            ),
+            _artifact_metadata(ROOT_ARTIFACT_ID, ROOT_RECIPE_ID, "ema"),
+        )
+        window.show_artifact_collection_inspection(
+            revision, validation, metadata
+        )
+        assert window.collection_inspection_dialog() is dialog
+        assert dialog.windowTitle() == "Artifact Collection Inspection"
+
+        dialog.close()
+        qapp.processEvents()
+        assert window.collection_inspection_dialog() is None
+
+        window.show_recipe_collection_inspection(inspection, recipes)
+        reopened = window.collection_inspection_dialog()
+        assert reopened is not None and reopened is not dialog
+        window.close()
+        window_closed = True
+        qapp.processEvents()
+        assert window.collection_inspection_dialog() is None
+    finally:
+        if not window_closed:
+            window.close()
+
+
 def test_catalog_deletions_require_exact_confirmation_and_remain_distinct(
     qapp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -909,6 +1117,16 @@ def test_catalog_deletions_require_exact_confirmation_and_remain_distinct(
             assert emitted == []
             assert required_text in questions[-1][1]
             assert identity_text in questions[-1][1]
+            if family == "Recipe Collections":
+                assert "Member Recipes are not deleted" in questions[-1][1]
+                assert (
+                    "Artifact-domain objects are not deleted and do not block deletion."
+                    in questions[-1][1]
+                )
+                assert (
+                    "Deletion is refused if an Artifact Collection references it."
+                    not in questions[-1][1]
+                )
             answer[0] = QMessageBox.StandardButton.Yes
             button.click()
             assert emitted == [selected]
@@ -923,5 +1141,165 @@ def test_catalog_deletions_require_exact_confirmation_and_remain_distinct(
 
         window.set_busy(True, "deletion")
         assert all(not case[1].isEnabled() for case in cases)
+    finally:
+        window.close()
+
+
+def test_duplicate_maintenance_context_action_maps_each_catalog_domain(qapp) -> None:
+    del qapp
+    window = DataManagerSuiteWindow()
+    emitted: list[str] = []
+    window.duplicate_maintenance_requested.connect(emitted.append)
+    try:
+        window.set_product_catalogs(associated_product_snapshot())
+        button = window._buttons["data_manager.button.duplicate_maintenance"]
+        for family, expected in (
+            ("Recipes", "recipes"),
+            ("Recipe Collections", "recipe_collections"),
+            ("Artifacts", "artifacts"),
+            ("Artifact Collections", "artifact_collections"),
+        ):
+            window._catalog_workspace.select_family(family)
+            window._sync_actions()
+            assert button.isEnabled()
+            button.click()
+            assert emitted[-1] == expected
+
+        window._catalog_workspace.select_family("Databases")
+        window._sync_actions()
+        assert not button.isEnabled()
+        assert emitted == [
+            "recipes",
+            "recipe_collections",
+            "artifacts",
+            "artifact_collections",
+        ]
+    finally:
+        window.close()
+
+
+def test_duplicate_maintenance_dialogs_are_suite_owned_reused_and_closed(qapp) -> None:
+    tracked: list[tuple[str, object]] = []
+
+    def track(dialog, window_id, _title, _window_type) -> None:
+        tracked.append((window_id, dialog))
+
+    window = DataManagerSuiteWindow(floating_window_tracker=track)
+    recipes = DUPLICATE_MAINTENANCE_DOMAINS["recipes"]
+    collections = DUPLICATE_MAINTENANCE_DOMAINS["recipe_collections"]
+    first_preflight = DuplicateMaintenancePreflight(recipes, 25)
+    second_preflight = DuplicateMaintenancePreflight(collections, 4)
+    first_result = DuplicateMaintenanceScanResult(
+        first_preflight,
+        datetime(2026, 8, 20, tzinfo=UTC),
+        25,
+        (),
+    )
+    safe_group = DuplicateMaintenanceGroup(
+        collections,
+        "prc_11111111111111111111111111111111",
+        (
+            DuplicateMaintenanceCandidate(
+                "prc_22222222222222222222222222222222",
+                "SAFE",
+                "younger equivalent",
+            ),
+        ),
+        "Equivalent semantics",
+    )
+    second_result = DuplicateMaintenanceScanResult(
+        second_preflight,
+        datetime(2026, 8, 21, tzinfo=UTC),
+        4,
+        (safe_group,),
+    )
+    closed = False
+    try:
+        window.show_duplicate_maintenance_preflight(first_preflight)
+        preflight_dialog = window.duplicate_maintenance_preflight_dialog()
+        window.show_duplicate_maintenance_preflight(second_preflight)
+        assert window.duplicate_maintenance_preflight_dialog() is preflight_dialog
+        assert preflight_dialog.preflight is second_preflight
+
+        window.show_duplicate_maintenance_results(first_result)
+        results_dialog = window.duplicate_maintenance_results_dialog()
+        window.show_duplicate_maintenance_results(second_result)
+        assert window.duplicate_maintenance_results_dialog() is results_dialog
+        assert results_dialog.result is second_result
+        assert len(tracked) == 2
+
+        window.close()
+        closed = True
+        qapp.processEvents()
+        assert window.duplicate_maintenance_preflight_dialog() is None
+        assert window.duplicate_maintenance_results_dialog() is None
+    finally:
+        if not closed:
+            window.close()
+
+
+def test_duplicate_purge_confirmation_is_explicit_and_result_invalidates_scan(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del qapp
+    window = DataManagerSuiteWindow()
+    domain = DUPLICATE_MAINTENANCE_DOMAINS["recipe_collections"]
+    preflight = DuplicateMaintenancePreflight(domain, 2)
+    candidate = DuplicateMaintenanceCandidate(
+        "prc_22222222222222222222222222222222",
+        "SAFE",
+        "younger equivalent",
+    )
+    scan = DuplicateMaintenanceScanResult(
+        preflight,
+        datetime(2026, 8, 20, tzinfo=UTC),
+        2,
+        (
+            DuplicateMaintenanceGroup(
+                domain,
+                "prc_11111111111111111111111111111111",
+                (candidate,),
+                "Equivalent semantics",
+            ),
+        ),
+    )
+    purge = DuplicateMaintenancePurgeResult(
+        scan,
+        datetime(2026, 8, 21, tzinfo=UTC),
+        (
+            DuplicateMaintenancePurgeDetail(
+                domain,
+                candidate.object_id,
+                scan.groups[0].canonical_id,
+                "PURGED",
+                "deleted",
+            ),
+        ),
+    )
+    captured: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def execute(message_box: QMessageBox) -> int:
+        buttons = tuple(button.text() for button in message_box.buttons())
+        captured.append((message_box.windowTitle(), message_box.text(), buttons))
+        next(button for button in message_box.buttons() if button.text() == "Execute Purge").click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", execute)
+    try:
+        assert window.confirm_duplicate_maintenance_purge(scan)
+        assert captured[0][0] == "Duplicate Purge"
+        assert "Safe duplicate objects selected:\n1" in captured[0][1]
+        assert "No canonical winner will be deleted." in captured[0][1]
+        assert set(captured[0][2]) == {"Execute Purge", "Cancel"}
+
+        window.show_duplicate_maintenance_preflight(preflight)
+        window.show_duplicate_maintenance_results(scan)
+        old_result = window.duplicate_maintenance_results_dialog()
+        window.show_duplicate_maintenance_purge_result(purge)
+        assert window.duplicate_maintenance_preflight_dialog() is None
+        result_dialog = window.duplicate_maintenance_results_dialog()
+        assert result_dialog is not old_result
+        assert result_dialog.result is purge
+        assert result_dialog.windowTitle() == "Duplicate Maintenance Complete"
     finally:
         window.close()

@@ -1,0 +1,15 @@
+{
+  "created_at_utc": "2026-09-08T07:53:20.040722Z",
+  "database_id": "db_028f5cfa3e38487bb82d66355d4ca946",
+  "description": "This is a test database for XRP 4h",
+  "display_name": "XRP_DATABASE_TEST_A",
+  "market_id": {
+    "exchange": "bybit",
+    "market_type": "linear",
+    "symbol": "XRPUSDT",
+    "timeframe": "4h"
+  },
+  "object_type": "database_definition",
+  "schema_version": "1.0",
+  "seed_id": "seed_c9f489e8c5b449bc888669f49509a2f9"
+}

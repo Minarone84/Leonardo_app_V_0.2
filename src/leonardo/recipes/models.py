@@ -16,6 +16,7 @@ from leonardo.financial_tools import canonicalize_tool_key, get_financial_tool_s
 from .identity import (
     compute_portable_recipe_collection_revision_id,
     compute_portable_recipe_id,
+    compute_portable_recipe_origin_id,
     compute_portable_recipe_provenance_id,
 )
 
@@ -25,6 +26,17 @@ _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _COLLECTION_RE = re.compile(r"^prc_[0-9a-f]{32}$")
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 _OHLCV_COLUMNS = frozenset({"open", "high", "low", "close", "volume"})
+_ORIGIN_REQUIRED_DETAIL_KEYS = {
+    "study_environment": frozenset(
+        {"environment_id", "environment_content_hash", "entry_id"}
+    ),
+    "research_save": frozenset(),
+    "data_manager_artifact": frozenset(),
+}
+_ORIGIN_ALLOWED_DETAIL_KEYS = {
+    **_ORIGIN_REQUIRED_DETAIL_KEYS,
+    "research_save": frozenset({"study_id"}),
+}
 
 
 class PortableRecipeValidationError(ValueError):
@@ -373,6 +385,193 @@ class PortableRecipeV1:
 
 
 @dataclass(frozen=True, slots=True)
+class PortableRecipeOriginV1:
+    origin_id: str
+    origin_kind: str
+    origin_recorded_at_utc: datetime
+    details: Mapping[str, str]
+    schema_version: str = "1.0"
+    object_type: str = "portable_recipe_origin"
+
+    def __post_init__(self) -> None:
+        _sha(self.origin_id, "origin_id")
+        if (
+            not isinstance(self.origin_kind, str)
+            or self.origin_kind not in _ORIGIN_REQUIRED_DETAIL_KEYS
+        ):
+            raise PortableRecipeValidationError("unsupported portable Recipe origin kind")
+        if not isinstance(self.details, Mapping):
+            raise PortableRecipeValidationError("origin details must be a mapping")
+        details = dict(self.details)
+        detail_keys = frozenset(details)
+        if not _ORIGIN_REQUIRED_DETAIL_KEYS[self.origin_kind].issubset(
+            detail_keys
+        ) or not detail_keys.issubset(
+            _ORIGIN_ALLOWED_DETAIL_KEYS[self.origin_kind]
+        ):
+            raise PortableRecipeValidationError(
+                f"{self.origin_kind} origin details do not match their schema"
+            )
+        for key, value in details.items():
+            _identifier(key, "origin detail name")
+            if key == "environment_content_hash":
+                _sha(value, key)
+            else:
+                _identifier(value, key)
+        object.__setattr__(self, "details", MappingProxyType(details))
+        object.__setattr__(
+            self,
+            "origin_recorded_at_utc",
+            _utc(self.origin_recorded_at_utc, "origin_recorded_at_utc"),
+        )
+        if self.schema_version != "1.0" or self.object_type != "portable_recipe_origin":
+            raise PortableRecipeValidationError("unsupported portable Recipe origin schema")
+        if self.origin_id != compute_portable_recipe_origin_id(
+            self._identity_payload()
+        ):
+            raise PortableRecipeValidationError("origin_id does not match origin payload")
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        origin_kind: str,
+        origin_recorded_at_utc: datetime,
+        details: Mapping[str, str],
+    ) -> "PortableRecipeOriginV1":
+        identity = {
+            "schema_version": "1.0",
+            "object_type": "portable_recipe_origin",
+            "origin_kind": origin_kind,
+            "details": dict(details),
+        }
+        return cls(
+            origin_id=compute_portable_recipe_origin_id(identity),
+            origin_kind=origin_kind,
+            origin_recorded_at_utc=origin_recorded_at_utc,
+            details=details,
+        )
+
+    def _identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "object_type": self.object_type,
+            "origin_kind": self.origin_kind,
+            "details": dict(self.details),
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            **self._identity_payload(),
+            "origin_id": self.origin_id,
+            "origin_recorded_at_utc": self.origin_recorded_at_utc.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "PortableRecipeOriginV1":
+        data = _exact(
+            value,
+            {
+                "schema_version", "object_type", "origin_id", "origin_kind",
+                "origin_recorded_at_utc", "details",
+            },
+            "portable Recipe origin",
+        )
+        details = data["details"]
+        if not isinstance(details, Mapping):
+            raise PortableRecipeValidationError("origin details must be a mapping")
+        return cls(
+            origin_id=data["origin_id"],
+            origin_kind=data["origin_kind"],
+            origin_recorded_at_utc=_parse_utc(
+                data["origin_recorded_at_utc"], "origin_recorded_at_utc"
+            ),
+            details=dict(details),
+            schema_version=data["schema_version"],
+            object_type=data["object_type"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PortableRecipePersistenceMetadataV1:
+    recipe_id: str
+    first_persisted_at_utc: datetime | None
+    origins: tuple[PortableRecipeOriginV1, ...]
+    schema_version: str = "1.0"
+    object_type: str = "portable_recipe_persistence_metadata"
+
+    def __post_init__(self) -> None:
+        _sha(self.recipe_id, "recipe_id")
+        if self.first_persisted_at_utc is not None:
+            object.__setattr__(
+                self,
+                "first_persisted_at_utc",
+                _utc(self.first_persisted_at_utc, "first_persisted_at_utc"),
+            )
+        origins = tuple(self.origins)
+        if not all(isinstance(item, PortableRecipeOriginV1) for item in origins):
+            raise PortableRecipeValidationError(
+                "origins must contain portable Recipe origin records"
+            )
+        if len({item.origin_id for item in origins}) != len(origins):
+            raise PortableRecipeValidationError("origin identities must be unique")
+        object.__setattr__(
+            self, "origins", tuple(sorted(origins, key=lambda item: item.origin_id))
+        )
+        if (
+            self.schema_version != "1.0"
+            or self.object_type != "portable_recipe_persistence_metadata"
+        ):
+            raise PortableRecipeValidationError(
+                "unsupported portable Recipe persistence metadata schema"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "object_type": self.object_type,
+            "recipe_id": self.recipe_id,
+            "first_persisted_at_utc": (
+                None
+                if self.first_persisted_at_utc is None
+                else self.first_persisted_at_utc.isoformat()
+            ),
+            "origins": [item.to_dict() for item in self.origins],
+        }
+
+    @classmethod
+    def from_dict(
+        cls, value: Mapping[str, object]
+    ) -> "PortableRecipePersistenceMetadataV1":
+        data = _exact(
+            value,
+            {
+                "schema_version", "object_type", "recipe_id",
+                "first_persisted_at_utc", "origins",
+            },
+            "portable Recipe persistence metadata",
+        )
+        first_persisted = data["first_persisted_at_utc"]
+        return cls(
+            recipe_id=data["recipe_id"],
+            first_persisted_at_utc=(
+                None
+                if first_persisted is None
+                else _parse_utc(first_persisted, "first_persisted_at_utc")
+            ),
+            origins=tuple(
+                PortableRecipeOriginV1.from_dict(item)
+                for item in _persisted_array(data["origins"], "origins")
+            ),
+            schema_version=data["schema_version"],
+            object_type=data["object_type"],
+        )
+
+    def canonical_json_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class PortableRecipeProvenanceV1:
     provenance_id: str
     recipe_id: str
@@ -669,6 +868,8 @@ __all__ = (
     "PortableRecipeCollectionRevisionV1",
     "PortableRecipeDependencyV1",
     "PortableRecipeOHLCVInputV1",
+    "PortableRecipeOriginV1",
+    "PortableRecipePersistenceMetadataV1",
     "PortableRecipeProvenanceV1",
     "PortableRecipeV1",
     "PortableRecipeValidationError",

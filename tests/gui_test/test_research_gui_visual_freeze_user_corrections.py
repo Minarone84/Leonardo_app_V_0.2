@@ -545,6 +545,13 @@ def test_market_id_tables_use_four_canonical_display_columns(
         assert tuple(
             manage.chart_table.item(0, column).text() for column in range(1, 5)
         ) == expected_values
+        market_review = next(
+            notebook_manager._list.item(row)
+            for row in range(notebook_manager._list.count())
+            if notebook_manager._list.item(row).data(Qt.ItemDataRole.UserRole)
+            == "dev_notebook_market_review"
+        )
+        market_review.setCheckState(Qt.CheckState.Checked)
         assert tuple(
             notebook_manager._pages.item(0, column).text() for column in range(4)
         ) == expected_values
