@@ -1,11 +1,43 @@
 # Leonardo V2 Research Suite
 
-**Status:** Production implementation complete and accepted for freeze
-**Updated:** 2026-08-02
-**Data Manager acceptance:** Deferred to a separate task/conversation
+**Status:** Current implementation reference; bounded Research correction audit passed; personal visual/product acceptance remains separate
+**Updated:** 2026-10-08
+**Data Manager audit:** Corrections and lifecycle audit completed in the 2026-10-08 DMS handoff; personal user acceptance remains a separate record
 **Primary implementation:** `src/leonardo/research/`,
 `src/leonardo/gui/research/`, Research presenters, Financial Tools, and
 Artifact services
+
+## Reading this documentation
+
+This manual is the entry point to the Research Suite specification. Read the
+following four documents together, in order:
+
+| Document | What it specifies |
+|---|---|
+| This manual | Purpose, scope, vocabulary, supported features and user-visible behavior |
+| [Architecture and Leonardo integration](RESEARCH_ARCHITECTURE.md) | Production composition, responsibilities, shared services, execution boundaries, source map and reconstruction order |
+| [Workflows and lifecycles](RESEARCH_LIFECYCLES.md) | Preconditions, ordered actions, mutation points, success, cancellation, failure, disposal and surviving references |
+| [Data and interface contracts](RESEARCH_DATA_CONTRACTS.md) | Runtime identities, persisted fields, validation, compatibility, serialization, layout/navigation algorithms and verification matrix |
+
+**Visual companion:** [Research Suite - Complete Map (PDF)](Leonardo_V2_Research_Suite_Complete_Map.pdf)
+adds an illustrated overview of scope, production composition, authorities,
+workflows, object lifecycles and Leonardo integration. It includes bookmarks,
+layout diagrams, ownership tables and references to the detailed sections above.
+Use the map alongside these four manuals; it does not replace or shorten them.
+
+The reference describes the active implementation after the 2026-10-08 A4
+Notebook transition correction. Historical task records explain earlier work;
+they do not override this current reference. Names containing `restored` or
+`restoration` in the active code identify the production implementation, not a
+legacy fallback. The older `gui/windows/research_suite_window.py` and
+`gui/presenters/research_presenter.py` are not the production composition.
+
+The reconstruction target is Research Suite **inside Leonardo**, using the
+existing canonical Core, OHLCV, Financial Tools and Artifact contracts. Research
+does not duplicate those components' mathematical, storage or lifecycle
+authorities. The companion documents identify both the required interfaces and
+their authoritative implementations. They are a specification of existing
+behavior, not permission to change it.
 
 ## 1. Purpose
 
@@ -19,6 +51,29 @@ Environments, Workspace Snapshots, and Research Notebooks.
 
 The production Research Suite restores the proven Old Leonardo workflow and
 visual hierarchy without restoring the old architecture.
+
+### Scope and boundaries
+
+Research lets a user inspect validated historical market series, compare charts,
+calculate and inspect Studies, explicitly save reusable results, and record or
+restore research context. It can operate with locally accepted data without a
+live provider connection. A Potential Trade in a Notebook is an annotation; it
+does not create an order, submit a strategy or execute a trade.
+
+| Research owns or coordinates | Owned elsewhere or outside Research scope |
+|---|---|
+| Historical chart sessions, views and Studies | Provider downloads, OHLCV repair and validation: Connection/OHLCV Maintenance |
+| Financial Tool requests and result presentation | Financial formulas, parameter and output definitions: Financial Tools |
+| Explicit Study Save through canonical services | Artifact/Recipe identities, files and managed publication: Artifact and DMS authorities |
+| Study Environments, Workspace Snapshots, Notebooks | Database construction, revisions, append and collection management: DMS |
+| GUI progress, cancellation requests and window interaction | Task/window runtime truth and application shutdown: Core |
+| Visual historical investigation and written observations | Backtesting, Analysis engines, risk approval, trading/order execution |
+
+A transient Study is a result in one chart session. A saved Artifact is a durable
+calculation. An Environment stores Study definitions. A Snapshot embeds chart
+definitions and view state. A Notebook stores observations and has independent
+pool ownership. A chart's visible screen position is neither its session identity
+nor a durable object identifier.
 
 The governing path is:
 
@@ -41,7 +96,7 @@ validation:
 - real application composition;
 - accepted-dataset catalog;
 - chart creation and lifecycle;
-- up to eight chart slots;
+- up to sixteen chart slots;
 - Scroll 4 and Fit 8 layouts;
 - detach and dock;
 - mixed-timeframe UTC navigation;
@@ -64,8 +119,9 @@ change requires a reproduced defect or an explicitly approved new task. “It
 might look nicer over there” is not a defect classification, despite centuries
 of interface design suggesting otherwise.
 
-The separate Data Manager end-to-end acceptance gate is not part of this freeze
-record and must be handled independently.
+The separate Data Manager corrections and lifecycle audit were completed in
+the 2026-10-08 DMS handoff. That evidence does not claim whole-product or personal
+user acceptance and remains separate from this Research freeze record.
 
 ## 3. Canonical authorities
 
@@ -193,14 +249,14 @@ Workspace must be reopened/restored.
 
 ### 8.1 Capacity and positions
 
-Research supports exactly eight logical chart slots.
+Research supports up to sixteen logical chart slots.
 
 The workspace owns:
 
 - stable chart/session identity;
-- positions 1 through 8;
+- positions 1 through 16;
 - active-chart context;
-- deterministic slot compaction;
+- compact visual layout of attached charts without renumbering session identity;
 - detached-position reservation;
 - dock-back identity;
 - no cross-chart mutable Study truth.
@@ -214,8 +270,19 @@ additional charts.
 
 #### Fit 8
 
-Fits up to eight charts within the available workspace using the accepted
+Fits up to eight charts per page within the available workspace using the accepted
 adaptive layout.
+
+With nine to sixteen attached charts, Fit 8 provides two vertically scrollable
+pages: the first eight charts and the remaining charts, in workspace order.
+Each page uses the same existing adaptive layout rules, including full-width
+charts for the applicable odd counts. Detached charts retain their reserved
+positions and existing dock-back behavior.
+
+Workspace Snapshots can save and restore up to sixteen charts. Existing
+snapshots remain readable without migration; snapshots containing more than
+eight charts require a build supporting the increased capacity. Append still
+rejects a result exceeding the maximum.
 
 ### 8.3 Chart creation
 
@@ -229,7 +296,12 @@ Exchange
 → create chart in next available position
 ```
 
-Dataset loading and resident-slice preparation run through Core tasks.
+Each new selector opening first refreshes the accepted dataset catalog through
+the existing Core task. Choices become available after the scan completes. An
+already visible selector is reused; repeated pending requests share one scan.
+Failures are shown and a later request can retry. Existing chart datasets and
+Studies keep their loaded sources; chart creation still uses canonical loader
+validation. Dataset loading and resident-slice preparation run through Core tasks.
 
 ### 8.4 Detach and dock
 
@@ -244,8 +316,11 @@ No duplicate chart session is created.
 ### 8.5 Close and reuse
 
 Closing a chart retires its presenter/session, releases its slot, compacts
-remaining chart positions where required, and leaves the suite usable for new
-charts.
+the visual arrangement of remaining attached charts, and leaves the suite usable
+for new charts. Logical slot IDs and reserved workspace positions are separate;
+remaining sessions are not recreated or renumbered. Closing the detached window
+with its window close control docks its chart; explicitly removing the chart
+retires the session.
 
 ## 9. Resident slices and refill
 
@@ -444,15 +519,16 @@ Chart Study full result
 → saved link returned to the in-session Study
 ```
 
-The calculation form does not expose the retired direct-save behavior. Save is a
-Study lifecycle operation.
+In the active Financial Tools form, Save calculates and applies the requested
+Study once, then invokes this existing Study Save path. Saving an existing Study
+persists its full result without recalculating it.
 
 Persistence is fenced against OHLCV changes before and during publication.
 
 ## 14. Recipe and Artifact persistence
 
-Artifacts and Recipes are stored beneath the canonical market root in
-`historical_data/`:
+Calculated Artifacts and their market-bound `ArtifactRecipeV1` records are
+stored beneath the canonical market root in `historical_data/`:
 
 ```text
 historical_data/
@@ -463,6 +539,13 @@ historical_data/
         ├── artifact.meta.json
         └── analysis.json        optional
 ```
+
+The active Research Save path also publishes global `PortableRecipeV1`
+definitions under `data_manager/recipes/` and managed Artifact version records
+under the market root's `artifact_versions/`. DMS uses these published objects
+through the existing canonical services. Portable Recipes are global definitions;
+managed Artifacts remain market/source-specific persisted results and are not
+runtime-owned by those definitions.
 
 Identifiers are deterministic lowercase SHA-256 values derived from canonical
 identity payloads.
@@ -629,9 +712,10 @@ Compatibility check
 Apply with rollback
 ```
 
-Create names must be unique. Update selects an existing Environment and uses
-its canonical name. Switching back to Create clears the name and keeps Save
-disabled until a new valid name is entered.
+Create names must be unique. Update selects an existing Environment and allows
+its display name to be edited under the existing naming validation. Switching
+back to Create clears the name and keeps Save disabled until a new valid name
+is entered.
 
 ### Dependency ordering
 
@@ -705,7 +789,11 @@ Notebook assignment, and closes stale administrative/chart-local secondary
 windows after successful replacement.
 
 A failed restore preserves a visible terminal failure state and uses rollback
-where required. It does not silently leave a half-replaced workspace.
+where required. Replace attempts reconstruction of the captured previous
+workspace; Append removes the charts added by that run. Rollback can itself fail
+if its inputs become unavailable: the UI reports that failure explicitly rather
+than claiming the old workspace was restored. The detailed recovery contract is
+in [Workflows and lifecycles](RESEARCH_LIFECYCLES.md#9-workspace-snapshot-restore).
 
 ## 20. Research Notebooks
 
@@ -744,8 +832,27 @@ Go to annotation timestamp
 
 Only one Notebook may be assigned to a Workspace Snapshot at a time.
 
-Dirty Notebook transitions use Save / Discard / Cancel decisions. Cancel aborts
-the requested transition or Clear operation without partial teardown.
+Dirty Notebook transitions use Save / Discard / Cancel decisions before any
+destructive transition. This includes closing the editor, Research Suite, or
+main window/Exit, and Workspace Replace or Append when the Notebook must change.
+Cancel preserves the current workspace and editor; main-window cancellation
+also preserves the other suites. Save defers the transition until success; an
+invalid draft or failed save keeps the editor open with a visible reason. An
+already pending save retains one continuation, while conflicting requests and
+other pending Notebook operations are refused through existing activity/status.
+
+Workspace restoration retains the outgoing buffer until success so failure and
+rollback can preserve it. After Save, the pending target and current workspace
+are checked again through compatibility preflight before teardown. Keeping the
+same Notebook open does not add a save prompt. A completed explicit Notebook
+save is not undone by a later restore failure. Clear retains its existing
+confirmation and dirty-change handling.
+
+During pending or active Workspace restore, Notebook Manager is busy and refresh
+requests are deferred using its existing identity. They cannot occupy the
+serialized Notebook task slot needed to open the assigned Notebook. A surviving
+Manager refreshes after refusal/failure/rollback; successful restore retires it.
+Closed or replaced Managers are not reopened by late results.
 
 Deleting a Notebook coordinates cleanup of Workspace references under one
 persistence fence.
@@ -769,6 +876,12 @@ Cancelling the confirmation changes nothing.
 
 A dirty Notebook Cancel decision aborts the entire Clear operation before
 partial teardown.
+
+If Save is chosen, successful Save continues Clear before starting any Manager
+refresh. A legitimate independent busy operation can still refuse Clear; the
+saved Notebook remains durable and a surviving Manager refreshes. Clear is not
+automatically retried. See the lifecycle reference for the complete decision
+table and busy boundary.
 
 ## 22. Core task integration
 
@@ -830,6 +943,9 @@ research.notebook.delete
 
 Runtime Manager receives task IDs, names, progress, cancellation, status,
 errors, correlation IDs, and operation metadata directly from TaskManager.
+Retired Research presenters drop queued and late GUI callbacks. A save already
+past its persistence fence may finish after the window closes; its real result
+remains authoritative in Core and cannot update a reopened Suite.
 
 Fast GUI interactions such as pan, zoom, style mutation, pane resize,
 visibility, focus, and detach/dock are correctly not represented as background
@@ -856,7 +972,7 @@ research_restoration.study_edit.<slot>.<study_id>
 research_restoration.studies_manager.<slot>
 research_restoration.study_style.<slot>.<study_id>
 research_restoration.go_to.<slot>
-research.environment_save.<slot>
+research.environment_save
 research.environment_manager.<active-slot-or-0>
 research.workspace_snapshot_save
 research.workspace_snapshot_manager
@@ -882,6 +998,7 @@ The following are permanent user-data roots:
 
 ```text
 historical_data/
+data_manager/          global Portable Recipes and their provenance
 study_environments/
 workspace_snapshots/
 research_notebooks/
@@ -896,7 +1013,7 @@ Tests use `tmp_path`, temporary directories, or injected stores.
 
 The following are not Research freeze defects:
 
-- final Data Manager GUI/user acceptance;
+- personal Data Manager GUI/user acceptance beyond the completed DMS audit;
 - application-wide Appearance Settings editor;
 - parent-child grouping for composite Runtime Manager tasks;
 - live OHLCV hot-reload into an already-open chart;

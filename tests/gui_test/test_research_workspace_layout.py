@@ -50,7 +50,7 @@ def test_logical_gaps_compact_visually_without_changing_slot_ids() -> None:
 
 @pytest.mark.parametrize(
     ("slot_ids", "mode"),
-    (((1, 1), "scroll_4"), ((0,), "scroll_4"), ((9,), "scroll_4"), (range(9), "fit_8")),
+    (((1, 1), "scroll_4"), ((0,), "scroll_4"), ((17,), "scroll_4"), (range(9), "fit_8")),
 )
 def test_invalid_layout_inputs_are_rejected(slot_ids, mode: str) -> None:
     with pytest.raises(ValueError):

@@ -11,10 +11,13 @@ from leonardo.data import MarketId
 from leonardo.financial_tools.models import UpdateStrategy
 
 from .creation_models import (
+    ArtifactCollectionDependencyV1,
+    ArtifactCollectionMemberV1,
     ArtifactCollectionRevisionV1,
     DatabaseRevisionManifest,
     DatabaseRevisionManifestV1,
     DatabaseRevisionManifestV2,
+    DatabaseRevisionManifestV3,
 )
 from .models import DataManagerArtifactMaterializationResult
 
@@ -26,7 +29,8 @@ _SOURCE_STATUSES = {
 }
 _ARTIFACT_STATUSES = {
     "CURRENT", "APPEND_AVAILABLE", "HISTORICAL_SOURCE_CHANGED",
-    "REBUILD_REQUIRED", "INVALID", "BLOCKED_BY_DEPENDENCY", "RECIPE_CHANGED",
+    "REBUILD_REQUIRED", "INVALID", "BLOCKED_BY_SOURCE",
+    "BLOCKED_BY_DEPENDENCY", "RECIPE_CHANGED",
 }
 _COLLECTION_STATUSES = {
     "CURRENT", "MEMBERS_REQUIRE_UPDATE", "BLOCKED_BY_DEPENDENCY",
@@ -34,12 +38,13 @@ _COLLECTION_STATUSES = {
     "DATABASE_READY", "NOT_DATABASE_READY",
 }
 _DATABASE_STATUSES = {
+    "INVALID",
     "CURRENT", "UPDATE_AVAILABLE", "WAITING_FOR_ARTIFACT_UPDATE",
     "REBUILD_REQUIRED", "SOURCE_INVALID", "COLLECTION_CHANGED",
-    "SCHEMA_CHANGED", "PREFIX_MISMATCH",
+    "SCHEMA_CHANGED", "PREFIX_MISMATCH", "BLOCKED_BY_DEPENDENCY",
 }
 _DATABASE_MODES = {"CURRENT", "APPEND", "REBUILD_REQUIRED", "BLOCKED"}
-_NODE_ACTIONS = {"REUSE_CURRENT", "UPDATE", "BLOCKED"}
+_NODE_ACTIONS = {"REUSE_CURRENT", "UPDATE", "RECREATE", "BLOCKED"}
 
 
 def _text(value: object, name: str, *, empty: bool = False) -> str:
@@ -264,6 +269,9 @@ class ArtifactUpdateNodePlan:
     context_rows: int
     revisable_tail_rows: int
     blockers: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    kind: str = ""
+    reconstruction_artifact_id: str | None = None
 
     def __post_init__(self) -> None:
         _sha(self.portable_recipe_id, "portable_recipe_id")
@@ -274,6 +282,7 @@ class ArtifactUpdateNodePlan:
         if self.action not in _NODE_ACTIONS:
             raise ValueError("unsupported Artifact update action")
         _optional_sha(self.current_artifact_id, "current_artifact_id")
+        _optional_sha(self.reconstruction_artifact_id, "reconstruction_artifact_id")
         dependencies = tuple(
             _sha(value, "dependency_logical_artifact_id")
             for value in self.dependency_logical_artifact_ids
@@ -284,6 +293,49 @@ class ArtifactUpdateNodePlan:
         _nonnegative(self.context_rows, "context_rows")
         _nonnegative(self.revisable_tail_rows, "revisable_tail_rows")
         object.__setattr__(self, "blockers", tuple(sorted(str(value) for value in self.blockers)))
+        object.__setattr__(self, "reasons", tuple(str(value) for value in self.reasons))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactUpdatePlan:
+    plan_id: str
+    market_id: MarketId
+    root_logical_artifact_ids: tuple[str, ...]
+    source_ohlcv: OHLCVSourceFingerprintV1 | None
+    members: tuple[ArtifactCollectionMemberV1, ...]
+    dependency_edges: tuple[ArtifactCollectionDependencyV1, ...]
+    execution_stages: tuple[tuple[str, ...], ...]
+    nodes: tuple[ArtifactUpdateNodePlan, ...]
+    blockers: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _sha(self.plan_id, "plan_id")
+        market = _market(self.market_id)
+        roots = tuple(_sha(value, "root_logical_artifact_id") for value in self.root_logical_artifact_ids)
+        if not roots or len(set(roots)) != len(roots):
+            raise ValueError("Artifact roots must be non-empty and unique")
+        object.__setattr__(self, "root_logical_artifact_ids", roots)
+        if self.source_ohlcv is not None and self.source_ohlcv.market_id != market:
+            raise ValueError("source_ohlcv must match market_id")
+        for name in ("members", "dependency_edges", "nodes", "blockers"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        object.__setattr__(self, "execution_stages", tuple(tuple(s) for s in self.execution_stages))
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.blockers) or any(node.action == "BLOCKED" for node in self.nodes)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactUpdateResult:
+    plan_id: str
+    materialization: DataManagerArtifactMaterializationResult
+    updated_logical_artifact_ids: tuple[str, ...]
+    recovered_logical_artifact_ids: tuple[str, ...]
+    reused_logical_artifact_ids: tuple[str, ...]
+    reconciled_collection_ids: tuple[str, ...]
+    awaiting_collection_ids: tuple[str, ...]
+    reconciliation_snapshot: DataManagerReconciliationSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +417,7 @@ class DatabaseUpdatePlan:
     column_names: tuple[str, ...]
     execution_stages: tuple[tuple[str, ...], ...]
     blockers: tuple[str, ...]
+    prerequisite_nodes: tuple[ArtifactUpdateNodePlan, ...] = ()
 
     def __post_init__(self) -> None:
         _sha(self.plan_id, "plan_id")
@@ -410,7 +463,7 @@ class DatabaseUpdateResult:
             raise ValueError("result mode must be APPEND or REBUILD_REQUIRED")
         if not isinstance(
             self.database_revision,
-            (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2),
+            (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2, DatabaseRevisionManifestV3),
         ):
             raise TypeError("database_revision must be a Database revision manifest")
         if not isinstance(self.reconciliation_snapshot, DataManagerReconciliationSnapshot):
@@ -420,6 +473,7 @@ class DatabaseUpdateResult:
 __all__ = (
     "ArtifactCollectionUpdatePlan", "ArtifactCollectionUpdateResult",
     "ArtifactUpdateNodePlan", "DataManagerArtifactCurrentness",
+    "ArtifactUpdatePlan", "ArtifactUpdateResult",
     "DataManagerCollectionCurrentness", "DataManagerDatabaseCurrentness",
     "DataManagerReconciliationSnapshot", "DataManagerSourceChange",
     "DatabaseUpdatePlan", "DatabaseUpdateResult",

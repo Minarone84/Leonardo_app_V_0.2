@@ -23,6 +23,13 @@ def test_public_package_exports_only_frozen_task_api() -> None:
         "build_source_token", "calculate_financial_tool", "canonicalize_tool_key", "get_financial_tool_spec",
         "list_financial_tool_specs", "resolve_output_names", "resolve_output_signals",
         "resolve_parameters", "validate_catalog",
+        "BinningPolicy", "BinningResult", "DynamicBinningProfile", "VariationAnalysis",
+        "VariationContext", "analyze_variation", "classify_dynamic_binning", "fit_dynamic_binning",
+        "DirectionalBinningPolicy", "DirectionalBinningProfile", "DirectionalBinningResult",
+        "DirectionalVariationAnalysis", "analyze_directional_variation",
+        "classify_directional_binning", "fit_directional_binning",
+        "UtcClassificationContext", "UtcClassificationResult", "get_utc_classification", "classify_utc_as_of",
+        "UtcEpisodeMetricsResult", "get_utc_episode_metrics", "measure_utc_as_of",
     )
 
 
@@ -30,6 +37,11 @@ def test_package_contains_only_authorized_task_modules() -> None:
     assert {path.name for path in PACKAGE.glob("*.py")} == {
         "__init__.py", "calculation.py", "calculation_models.py",
         "construct_input_eligibility.py", "models.py", "naming.py", "specifications.py",
+        "variation.py", "variation_models.py",
+        "directional_variation.py", "directional_variation_models.py",
+        "utc_classification.py", "utc_classification_models.py",
+        "utc_episode_metrics.py", "utc_episode_metrics_models.py",
+        "event_window_measurements.py",
     }
     assert {
         path.name
@@ -39,6 +51,8 @@ def test_package_contains_only_authorized_task_modules() -> None:
     assert {path.name for path in (PACKAGE / "_calculation").glob("*.py")} == {
         "__init__.py", "common.py", "constructs.py", "dynamic_binning.py", "indicators.py",
         "oscillators.py", "universal_trend_classifier.py",
+        "variation_analysis.py", "directional_binning.py", "utc_classification.py",
+        "utc_episode_metrics.py",
     }
 
 
@@ -143,6 +157,7 @@ def test_calculation_modules_preserve_private_dependency_boundary() -> None:
     )
     calculation_paths = (
         PACKAGE / "calculation.py", PACKAGE / "calculation_models.py",
+        PACKAGE / "variation.py", PACKAGE / "variation_models.py",
         *((PACKAGE / "_calculation").glob("*.py")),
     )
     for path in calculation_paths:
@@ -162,6 +177,7 @@ def test_no_public_registry_discovery_or_plugin_mechanism() -> None:
     forbidden_public_tokens = ("registry", "discover", "plugin")
     calculation_paths = (
         PACKAGE / "calculation.py", PACKAGE / "calculation_models.py",
+        PACKAGE / "variation.py", PACKAGE / "variation_models.py",
         *((PACKAGE / "_calculation").glob("*.py")),
     )
     for path in calculation_paths:

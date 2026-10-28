@@ -258,6 +258,17 @@ class DataManagerRecipeDerivationDialog(QDialog):
         self._busy = bool(busy)
         self._sync_controls()
 
+    def reviewed_plan_matches(self, plan: DataManagerRecipeDerivationPlan) -> bool:
+        reviewed = self._reviewed_plan
+        return (
+            isinstance(plan, DataManagerRecipeDerivationPlan)
+            and reviewed is not None
+            and not reviewed.blocked and not plan.blocked
+            and reviewed.environment_id == plan.environment_id == self.environment_id
+            and reviewed.root_entry_ids == plan.root_entry_ids == self.selected_root_entry_ids()
+            and reviewed.environment_content_hash == plan.environment_content_hash
+        )
+
     def set_plan(self, plan: DataManagerRecipeDerivationPlan) -> bool:
         if not isinstance(plan, DataManagerRecipeDerivationPlan):
             raise TypeError("plan must be a DataManagerRecipeDerivationPlan")

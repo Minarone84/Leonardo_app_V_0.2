@@ -1,5 +1,7 @@
 # GUI Theme System
 
+**Targeted revision: 2026-10-28 (R07).** Reconciles accepted R01-R06 and current source. Earlier edition dates and validation counts below remain historical; R08 integrated and R09 native acceptance are separate, not performed by this documentation revision.
+
 The application theme system is GUI-owned configuration and stylesheet
 generation. The current implementation uses typed theme tokens, the existing
 JSON/profile loading machinery, an explicit theme registry, and one Qt
@@ -10,6 +12,11 @@ startup.
 Only the currently bundled theme is documented here. A user-facing Appearance
 Settings editor is not implemented. User theme persistence and live theme
 switching are also not implemented.
+
+Theme colours accept only the existing `#RGB` or `#RRGGBB` formats with ASCII
+hexadecimal digits (0-9, A-F, a-f). Validation preserves mixed case and bundled
+palette values. Study Style has its separate uppercase-six-digit contract;
+application theme validation does not widen or replace that contract.
 
 Themes may affect colours, typography, spacing, borders, and component roles.
 They must not define object IDs, domain behaviour, provider calls, persistence,

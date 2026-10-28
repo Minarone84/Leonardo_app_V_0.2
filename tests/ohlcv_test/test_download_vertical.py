@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,198 @@ def test_preflight_is_non_mutating_and_reports_workload(tmp_path: Path) -> None:
     assert provider.closed is True
 
 
+class _GeneratedHistoryProvider(_FakeProvider):
+    def __init__(self, rows=6):
+        super().__init__()
+        self.rows = {"1m": tuple(index * 60_000 for index in range(1, rows + 1))}
+
+    def supported_timeframes(self, market):
+        return set(self.rows)
+
+    async def get_server_time_ms(self):
+        return max((ts for values in self.rows.values() for ts in values), default=0) + 60_000
+
+    async def oldest_historical_ohlcv_ts_ms(self, *, timeframe, **_kwargs):
+        return min(self.rows[timeframe], default=None)
+
+    async def fetch_ohlcv_historical(self, *, timeframe, start_ms=None, end_ms=None, limit=None, **_kwargs):
+        self.calls.append((timeframe, end_ms))
+        selected = [ts for ts in self.rows[timeframe] if (start_ms is None or ts >= start_ms) and (end_ms is None or ts <= end_ms)]
+        if limit:
+            selected = selected[-limit:]
+        return tuple(ProviderCandle(ts, 10, 12, 9, 11, 5) for ts in selected)
+
+
+def _file_state(path):
+    return (path.read_bytes(), path.stat().st_mtime_ns) if path.exists() else None
+
+
+@pytest.mark.parametrize("persistence", ["committed", "repaired"])
+def test_up_to_date_preserves_accepted_evidence(tmp_path, monkeypatch, persistence):
+    from leonardo.ohlcv.maintenance import OHLCVMaintenanceService
+    from leonardo.ohlcv.validation import CanonicalOHLCVValidator
+    from leonardo.research.catalog import AcceptedDatasetCatalog
+
+    provider = _GeneratedHistoryProvider()
+    service, store = _service(tmp_path, provider)
+    request = _request(start=None, end=None)
+    first = asyncio.run(service.run_batch(request)).results[0]
+    if persistence == "repaired":
+        store.mark_repaired(first.market_id, repair_record={"audit": "generated repair provenance"})
+    maintenance = OHLCVMaintenanceService(store, CanonicalOHLCVValidator())
+    assert maintenance.validate(first.market_id).accepted
+    before = [_file_state(path) for path in (store.csv_path(first.market_id), store.sidecar_path(first.market_id))]
+    catalog = AcceptedDatasetCatalog(store.root)
+    assert len(catalog.list_accepted()) == 1
+    calls = []
+    for name in ("write", "finalize"):
+        original = getattr(store, name)
+        def recorded(*args, _name=name, _original=original, **kwargs):
+            calls.append(_name)
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(store, name, recorded)
+    events = []
+    result = asyncio.run(service.run_batch(request, progress=events.append)).results[0]
+    assert [_file_state(path) for path in (store.csv_path(first.market_id), store.sidecar_path(first.market_id))] == before
+    assert calls == []
+    assert result.up_to_date and result.fetched_rows == 0
+    assert result.downloaded_first_ts_ms is None and result.downloaded_last_ts_ms is None
+    assert not any(event.kind == "page_persisted" for event in events)
+    assert any("evidence unchanged" in event.message for event in events)
+    assert not any("acceptance is still required" in event.message for event in events)
+    assert len(catalog.list_accepted()) == 1
+    assert store.read_sidecar(first.market_id).persistence_status == persistence
+    assert store.read_sidecar(first.market_id).validation_status == "ok"
+
+
+@pytest.mark.parametrize("state", ["partial", "unknown", "warning", "error", "missing", "invalid", "stale"])
+def test_up_to_date_does_not_repair_or_promote_unaccepted_evidence(tmp_path, state):
+    from leonardo.research.catalog import AcceptedDatasetCatalog
+
+    service, store = _service(tmp_path, _GeneratedHistoryProvider())
+    request = _request(start=None, end=None)
+    market = asyncio.run(service.run_batch(request)).results[0].market_id
+    path = store.sidecar_path(market)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if state == "missing":
+        path.unlink()
+    elif state == "invalid":
+        path.write_text("{invalid", encoding="utf-8")
+    else:
+        if state == "partial":
+            payload["persistence_status"] = "partial"
+        elif state == "stale":
+            payload["lineage"]["file_mtime_ns"] = 0
+        else:
+            payload["validation_status"] = state
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    before = (_file_state(store.csv_path(market)), _file_state(path))
+    assert AcceptedDatasetCatalog(store.root).list_accepted() == ()
+    result = asyncio.run(service.run_batch(request)).results[0]
+    assert (_file_state(store.csv_path(market)), _file_state(path)) == before
+    assert result.up_to_date
+    assert AcceptedDatasetCatalog(store.root).list_accepted() == ()
+
+
+def test_invalid_csv_update_fails_without_mutation(tmp_path):
+    service, store = _service(tmp_path, _GeneratedHistoryProvider())
+    request = _request(start=None, end=None)
+    market = asyncio.run(service.run_batch(request)).results[0].market_id
+    store.csv_path(market).write_text("broken,csv\n", encoding="utf-8")
+    before = (_file_state(store.csv_path(market)), _file_state(store.sidecar_path(market)))
+    with pytest.raises(ValueError, match="CSV columns"):
+        asyncio.run(service.run_batch(request))
+    assert (_file_state(store.csv_path(market)), _file_state(store.sidecar_path(market))) == before
+
+
+def test_real_update_still_resets_acceptance_and_reports_persistence(tmp_path):
+    from leonardo.ohlcv.maintenance import OHLCVMaintenanceService
+    from leonardo.ohlcv.validation import CanonicalOHLCVValidator
+
+    provider = _GeneratedHistoryProvider(3)
+    service, store = _service(tmp_path, provider)
+    request = _request(start=None, end=None)
+    market = asyncio.run(service.run_batch(request)).results[0].market_id
+    assert OHLCVMaintenanceService(store, CanonicalOHLCVValidator()).validate(market).accepted
+    provider.rows["1m"] += (240_000,)
+    events = []
+    item = asyncio.run(service.run_batch(request, progress=events.append)).results[0]
+    assert item.fetched_rows > 0 and not item.up_to_date
+    assert store.read_sidecar(market).validation_status == "unknown"
+    assert any(event.kind == "page_persisted" for event in events)
+
+
+@pytest.mark.parametrize("start", [60_000, None])
+def test_page_ceiling_leaves_incomplete_history_partial(tmp_path, monkeypatch, start):
+    from leonardo.research.catalog import AcceptedDatasetCatalog
+
+    provider = _GeneratedHistoryProvider()
+    service, store = _service(tmp_path, provider)
+    service.MAX_PAGES = 2
+    finalizations = []
+    original = store.finalize
+    def finalize(*args, **kwargs):
+        finalizations.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(store, "finalize", finalize)
+    events = []
+    with pytest.raises(RuntimeError, match="page.*ceiling"):
+        asyncio.run(service.run_batch(_request(start=start, end=360_000), progress=events.append))
+    market = canonicalize_market_id("fake", "linear", "BTCUSDT", "1m")
+    assert [c.ts_ms for c in store.read(market)] == [180_000, 240_000, 300_000, 360_000]
+    sidecar = store.read_sidecar(market)
+    assert sidecar.persistence_status == "partial" and sidecar.validation_status == "unknown"
+    assert not finalizations and provider.closed
+    assert events[-1].kind == "batch_failed"
+    assert not any(event.kind == "preliminary_validation_completed" for event in events)
+    assert AcceptedDatasetCatalog(store.root).list_accepted() == ()
+    async def reacquire():
+        async with service.operation_locks.acquire(market):
+            return True
+    assert asyncio.run(asyncio.wait_for(reacquire(), 1.0))
+
+
+@pytest.mark.parametrize("rows", [2, 4])
+def test_page_ceiling_allows_completion_at_or_before_last_page(tmp_path, rows):
+    service, store = _service(tmp_path, _GeneratedHistoryProvider(rows))
+    service.MAX_PAGES = 2
+    result = asyncio.run(service.run_batch(_request(start=60_000, end=rows * 60_000)))
+    assert result.results[0].total_rows == rows
+    assert store.read_sidecar(result.results[0].market_id).persistence_status == "committed"
+
+
+def test_provider_exhaustion_before_ceiling_still_completes(tmp_path):
+    service, store = _service(tmp_path, _GeneratedHistoryProvider(2))
+    service.MAX_PAGES = 3
+    result = asyncio.run(service.run_batch(_request(start=0, end=120_000)))
+    assert result.results[0].total_rows == 2
+    assert store.read_sidecar(result.results[0].market_id).persistence_status == "committed"
+
+
+def test_empty_provider_is_not_promoted_by_page_guard(tmp_path):
+    service, store = _service(tmp_path, _GeneratedHistoryProvider(0))
+    service.MAX_PAGES = 2
+    with pytest.raises(RuntimeError, match="no OHLCV candles"):
+        asyncio.run(service.run_batch(_request(start=0, end=120_000)))
+    assert not list(store.root.rglob("*.csv"))
+
+
+def test_ceiling_failure_preserves_an_earlier_completed_timeframe(tmp_path):
+    provider = _GeneratedHistoryProvider(2)
+    provider.rows["5m"] = tuple(index * 300_000 for index in range(1, 7))
+    service, store = _service(tmp_path, provider)
+    service.MAX_PAGES = 2
+    events = []
+    with pytest.raises(RuntimeError, match="page.*ceiling"):
+        asyncio.run(service.run_batch(_request(timeframes=("1m", "5m"), start=60_000, end=1_800_000), progress=events.append))
+    first = canonicalize_market_id("fake", "linear", "BTCUSDT", "1m")
+    second = canonicalize_market_id("fake", "linear", "BTCUSDT", "5m")
+    assert store.read_sidecar(first).persistence_status == "committed"
+    assert store.read_sidecar(second).persistence_status == "partial"
+    assert [e.timeframe for e in events if e.kind == "item_completed"] == ["1m"]
+    assert provider.closed
+
+
 def test_month_preflight_remains_indeterminate_and_uses_collision_safe_path(tmp_path: Path) -> None:
     provider = _FakeProvider()
     service, store = _service(tmp_path, provider)
@@ -208,6 +401,36 @@ def test_application_service_runs_preflight_and_download_through_core(tmp_path: 
     market = canonicalize_market_id("fake", "linear", "BTCUSDT", "1m")
     assert store.read_sidecar(market).validation_status == "unknown"
     runner.shutdown()
+
+
+def test_page_ceiling_delivers_failed_terminal_result_through_core(tmp_path):
+    from threading import Event
+
+    from leonardo.core.core_runner import CoreRunner
+    from leonardo.core.task_manager import TaskManager
+    from leonardo.ohlcv.application import HistoricalDownloadApplicationService
+
+    provider = _GeneratedHistoryProvider()
+    domain, store = _service(tmp_path, provider)
+    domain.MAX_PAGES = 2
+    runner = CoreRunner(TaskManager())
+    application = HistoricalDownloadApplicationService(runner, domain)
+    settled = Event()
+    results = []
+    runner.start()
+    try:
+        application.submit_download(
+            _request(end=360_000),
+            result_callback=lambda result: (results.append(result), settled.set()),
+        )
+        assert settled.wait(3.0)
+        assert len(results) == 1 and results[0].status == "failed"
+        assert "page ceiling" in results[0].error_message
+        market = canonicalize_market_id("fake", "linear", "BTCUSDT", "1m")
+        assert store.read_sidecar(market).persistence_status == "partial"
+        assert provider.closed
+    finally:
+        runner.shutdown()
 
 
 def test_automatic_preflight_uses_provider_candle_alignment_for_latest_closed(tmp_path: Path) -> None:

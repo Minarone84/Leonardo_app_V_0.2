@@ -32,7 +32,9 @@ from leonardo.data_manager import (
     DataManagerRecipeCollectionEntry,
     DataManagerStudyEnvironmentEntry,
     DataManagerDatabaseCatalogEntry,
+    DataManagerDatabaseSeedStatus,
     DatabaseSeedV1,
+    DatabaseSeedV2,
     database_collection_references,
 )
 from leonardo.gui.data_manager.table_presentation import (
@@ -59,6 +61,8 @@ CATALOG_FAMILIES = (
 _SCOPED_FAMILIES = {
     "Artifacts",
     "Artifact Collections",
+    "Database Seeds",
+    "Databases",
 }
 
 _COLUMNS = {
@@ -81,17 +85,17 @@ _COLUMNS = {
     ),
     "Artifact Collections": (
         "Exchange", "Market Type", "Asset", "Timeframe", "Name", "Roots",
-        "Supports", "Members", "Selected Outputs", "First TS", "Last TS",
-        "Database Ready", "State", "Currentness", "Collection ID", "Revision ID",
+        "Supports", "Members", "Selected Outputs", "State", "Collection ID",
+        "Revision ID",
     ),
     "Database Seeds": (
-        "Name", "Market", "Columns", "Range Start", "Range End", "Rows",
-        "First TS", "Last TS", "Created", "Validation", "Usage", "State",
+        "Name", "Market", "Columns", "Rows",
+        "First TS", "Last TS", "Created", "State", "Newer Source", "Usage",
         "Seed ID",
     ),
     "Databases": (
         "Name", "Market", "Rows", "Columns", "First TS", "Last TS",
-        "Currentness", "Update Mode", "Revisions", "State", "Seed ID",
+        "Revisions", "State", "Update Readiness", "Update Details", "Seed ID",
         "Collection Revision ID", "Database ID", "Current Revision ID",
     ),
 }
@@ -115,9 +119,9 @@ _UTC_COLUMNS = {
     "Study Environments": {"Updated"},
     "Recipe Collections": {"Updated"},
     "Artifacts": {"First TS", "Last TS", "Created"},
-    "Artifact Collections": {"First TS", "Last TS"},
+    "Artifact Collections": set(),
     "Database Seeds": {
-        "Range Start", "Range End", "First TS", "Last TS", "Created",
+        "First TS", "Last TS", "Created",
     },
     "Databases": {"First TS", "Last TS"},
 }
@@ -149,10 +153,13 @@ class DataManagerCatalogWorkspace(QWidget):
     delete_artifact_requested = Signal(object)
     delete_recipe_collection_requested = Signal(object)
     delete_artifact_collection_requested = Signal(object)
+    delete_database_seed_requested = Signal(object)
+    delete_database_requested = Signal(object)
     create_database_seed_requested = Signal()
+    append_database_seed_requested = Signal(object)
     create_seed_only_database_requested = Signal(object)
-    add_database_artifacts_requested = Signal(object)
-    add_database_collection_requested = Signal(object)
+    edit_database_artifacts_requested = Signal(object)
+    edit_database_collections_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -168,6 +175,7 @@ class DataManagerCatalogWorkspace(QWidget):
         self._materialization_actions_enabled = False
         self._deletion_actions_enabled = False
         self._create_database_seed_enabled = False
+        self._append_database_seed_enabled = False
         self._create_seed_only_database_enabled = False
         self._database_content_actions_enabled = False
         self._selected_market: MarketId | None = None
@@ -427,6 +435,20 @@ class DataManagerCatalogWorkspace(QWidget):
             center,
         )
         action_row.addWidget(self.delete_artifact_collection_button)
+        self.delete_database_seed_button = self._deletion_button(
+            "Delete Seed",
+            "data_manager.catalogs.action.delete_database_seed",
+            self._emit_delete_database_seed,
+            center,
+        )
+        action_row.addWidget(self.delete_database_seed_button)
+        self.delete_database_button = self._deletion_button(
+            "Delete Database",
+            "data_manager.catalogs.action.delete_database",
+            self._emit_delete_database,
+            center,
+        )
+        action_row.addWidget(self.delete_database_button)
         self.create_database_seed_button = QPushButton("Create Seed...", center)
         apply_identity(
             self.create_database_seed_button,
@@ -439,6 +461,15 @@ class DataManagerCatalogWorkspace(QWidget):
             self._emit_create_database_seed
         )
         action_row.addWidget(self.create_database_seed_button)
+        self.append_database_seed_button = QPushButton("Append Seed...", center)
+        apply_identity(
+            self.append_database_seed_button,
+            "data_manager.catalogs.action.append_database_seed",
+            object_type="button", display_label="Append Seed...",
+            action_id="data_manager.catalogs.action.append_database_seed",
+        )
+        self.append_database_seed_button.clicked.connect(self._emit_append_database_seed)
+        action_row.addWidget(self.append_database_seed_button)
         self.create_seed_only_database_button = QPushButton(
             "Create Database...", center
         )
@@ -453,34 +484,34 @@ class DataManagerCatalogWorkspace(QWidget):
             self._emit_create_seed_only_database
         )
         action_row.addWidget(self.create_seed_only_database_button)
-        self.add_database_artifacts_button = QPushButton(
-            "Add Artifact(s)...", center
+        self.edit_database_artifacts_button = QPushButton(
+            "Edit Artifacts...", center
         )
         apply_identity(
-            self.add_database_artifacts_button,
-            "data_manager.catalogs.action.add_database_artifacts",
+            self.edit_database_artifacts_button,
+            "data_manager.catalogs.action.edit_database_artifacts",
             object_type="button",
-            display_label="Add Artifact(s)...",
-            action_id="data_manager.catalogs.action.add_database_artifacts",
+            display_label="Edit Artifacts...",
+            action_id="data_manager.catalogs.action.edit_database_artifacts",
         )
-        self.add_database_artifacts_button.clicked.connect(
-            self._emit_add_database_artifacts
+        self.edit_database_artifacts_button.clicked.connect(
+            self._emit_edit_database_artifacts
         )
-        action_row.addWidget(self.add_database_artifacts_button)
-        self.add_database_collection_button = QPushButton(
-            "Add Artifact Collection...", center
+        action_row.addWidget(self.edit_database_artifacts_button)
+        self.edit_database_collections_button = QPushButton(
+            "Edit Collections...", center
         )
         apply_identity(
-            self.add_database_collection_button,
-            "data_manager.catalogs.action.add_database_collection",
+            self.edit_database_collections_button,
+            "data_manager.catalogs.action.edit_database_collections",
             object_type="button",
-            display_label="Add Artifact Collection...",
-            action_id="data_manager.catalogs.action.add_database_collection",
+            display_label="Edit Collections...",
+            action_id="data_manager.catalogs.action.edit_database_collections",
         )
-        self.add_database_collection_button.clicked.connect(
-            self._emit_add_database_collection
+        self.edit_database_collections_button.clicked.connect(
+            self._emit_edit_database_collections
         )
-        action_row.addWidget(self.add_database_collection_button)
+        action_row.addWidget(self.edit_database_collections_button)
         action_row.addStretch(1)
         center_layout.addLayout(action_row)
         center_layout.addWidget(self.table, 1)
@@ -591,6 +622,12 @@ class DataManagerCatalogWorkspace(QWidget):
         self._database_content_actions_enabled = enabled
         self._sync_context_actions()
 
+    def set_database_seed_append_enabled(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("Seed append action state must be a boolean")
+        self._append_database_seed_enabled = enabled
+        self._sync_context_actions()
+
     def set_inspection(
         self,
         fields: Iterable[tuple[str, object]],
@@ -681,12 +718,15 @@ class DataManagerCatalogWorkspace(QWidget):
         self.delete_artifact_collection_button.setVisible(
             family == "Artifact Collections"
         )
+        self.delete_database_seed_button.setVisible(family == "Database Seeds")
+        self.delete_database_button.setVisible(family == "Databases")
         self.create_database_seed_button.setVisible(family == "Database Seeds")
+        self.append_database_seed_button.setVisible(family == "Database Seeds")
         self.create_seed_only_database_button.setVisible(
             family in {"Database Seeds", "Databases"}
         )
-        self.add_database_artifacts_button.setVisible(family == "Databases")
-        self.add_database_collection_button.setVisible(family == "Databases")
+        self.edit_database_artifacts_button.setVisible(family == "Databases")
+        self.edit_database_collections_button.setVisible(family == "Databases")
         self.create_artifact_button.setEnabled(
             self._create_artifact_enabled and family == "Artifacts"
         )
@@ -910,26 +950,40 @@ class DataManagerCatalogWorkspace(QWidget):
         ):
             return
         value = self._selected_value()
-        selected_seed = value if isinstance(value, DatabaseSeedV1) else None
+        selected_seed = (
+            value if isinstance(value, (DatabaseSeedV1, DatabaseSeedV2)) else None
+        )
         self.create_seed_only_database_requested.emit(selected_seed)
 
-    def _emit_add_database_artifacts(self) -> None:
+    def _emit_append_database_seed(self) -> None:
         value = self._selected_value()
-        if (
-            self._database_content_actions_enabled
-            and self.current_family == "Databases"
-            and isinstance(value, DataManagerDatabaseCatalogEntry)
-        ):
-            self.add_database_artifacts_requested.emit(value)
+        if (self.current_family == "Database Seeds" and self._append_database_seed_enabled
+                and isinstance(value, (DatabaseSeedV1, DatabaseSeedV2))):
+            self.append_database_seed_requested.emit(value)
 
-    def _emit_add_database_collection(self) -> None:
+    def _emit_edit_database_artifacts(self) -> None:
         value = self._selected_value()
         if (
             self._database_content_actions_enabled
             and self.current_family == "Databases"
             and isinstance(value, DataManagerDatabaseCatalogEntry)
         ):
-            self.add_database_collection_requested.emit(value)
+            self.edit_database_artifacts_requested.emit(value)
+
+    def _emit_edit_database_collections(self) -> None:
+        value = self._selected_value()
+        if (
+            self._database_content_actions_enabled
+            and self.current_family == "Databases"
+            and isinstance(value, DataManagerDatabaseCatalogEntry)
+        ):
+            self.edit_database_collections_requested.emit(value)
+
+    def _emit_delete_database_seed(self) -> None:
+        self._emit_deletion("Database Seeds", self.delete_database_seed_requested)
+
+    def _emit_delete_database(self) -> None:
+        self._emit_deletion("Databases", self.delete_database_requested)
 
     def _emit_deletion(self, family: str, signal: object) -> None:
         value = self._selected_value()
@@ -1014,6 +1068,10 @@ class DataManagerCatalogWorkspace(QWidget):
         self.delete_artifact_collection_button.setEnabled(
             enabled_family == "Artifact Collections"
         )
+        self.delete_database_seed_button.setEnabled(
+            enabled_family == "Database Seeds"
+        )
+        self.delete_database_button.setEnabled(enabled_family == "Databases")
         self.create_database_seed_button.setEnabled(
             self._create_database_seed_enabled
             and self.current_family == "Database Seeds"
@@ -1022,13 +1080,18 @@ class DataManagerCatalogWorkspace(QWidget):
             self._create_seed_only_database_enabled
             and self.current_family in {"Database Seeds", "Databases"}
         )
+        self.append_database_seed_button.setEnabled(
+            self._append_database_seed_enabled and self.current_family == "Database Seeds"
+            and isinstance(value, (DatabaseSeedV1, DatabaseSeedV2))
+        )
         database_content_enabled = (
             self._database_content_actions_enabled
             and self.current_family == "Databases"
             and isinstance(value, DataManagerDatabaseCatalogEntry)
+            and value.current_manifest is not None
         )
-        self.add_database_artifacts_button.setEnabled(database_content_enabled)
-        self.add_database_collection_button.setEnabled(database_content_enabled)
+        self.edit_database_artifacts_button.setEnabled(database_content_enabled)
+        self.edit_database_collections_button.setEnabled(database_content_enabled)
 
     @staticmethod
     def _deletion_button(
@@ -1097,10 +1160,7 @@ class DataManagerCatalogWorkspace(QWidget):
         if family == "Artifact Collections":
             return tuple(
                 (
-                    _artifact_collection_row(
-                        item,
-                        _collection_currentness(snapshot, item.collection_id),
-                    ),
+                    _artifact_collection_row(item),
                     item,
                 )
                 for item in snapshot.artifact_collections
@@ -1108,8 +1168,26 @@ class DataManagerCatalogWorkspace(QWidget):
             )
         if family == "Database Seeds":
             usage = {item.definition.seed_id for item in snapshot.databases}
-            return tuple((_seed_row(item, item.seed_id in usage), item) for item in snapshot.database_seeds)
-        return tuple((_database_row(item), item) for item in snapshot.databases)
+            statuses = {
+                item.seed_id: item for item in snapshot.database_seed_statuses
+            }
+            return tuple(
+                (
+                    _seed_row(
+                        item,
+                        item.seed_id in usage,
+                        statuses.get(item.seed_id),
+                    ),
+                    item,
+                )
+                for item in snapshot.database_seeds
+                if self._market_is_visible(item.market_id)
+            )
+        return tuple(
+            (_database_row(item), item)
+            for item in snapshot.databases
+            if self._market_is_visible(item.definition.market_id)
+        )
 
     def _market_is_visible(self, market_id: MarketId) -> bool:
         return (
@@ -1125,9 +1203,6 @@ class DataManagerCatalogWorkspace(QWidget):
         if self.current_family == "Artifacts":
             candidates = snapshot.latest_reconciliation.artifacts
             identity_name = "logical_artifact_id"
-        elif self.current_family == "Artifact Collections":
-            candidates = snapshot.latest_reconciliation.collections
-            identity_name = "collection_id"
         elif self.current_family == "Databases":
             candidates = snapshot.latest_reconciliation.databases
             identity_name = "database_id"
@@ -1144,9 +1219,10 @@ class DataManagerCatalogWorkspace(QWidget):
         )
         if currentness is None:
             return ()
+        prefix = "update" if self.current_family == "Databases" else "currentness"
         return tuple(
             (
-                f"currentness.{name}",
+                f"{prefix}.{name}",
                 format_data_manager_value(name, getattr(currentness, name)),
             )
             for name in getattr(currentness, "__dataclass_fields__", {})
@@ -1228,6 +1304,10 @@ def _valid_deletion_target(family: str, value: object) -> bool:
             isinstance(value, ArtifactCollectionRevisionV1)
             and value.validation_state == "valid"
         )
+    if family == "Database Seeds":
+        return isinstance(value, (DatabaseSeedV1, DatabaseSeedV2))
+    if family == "Databases":
+        return isinstance(value, DataManagerDatabaseCatalogEntry)
     return False
 
 
@@ -1253,31 +1333,40 @@ def _managed_artifact_row(item, currentness: str) -> tuple[str, ...]:
     )
 
 
-def _artifact_collection_row(item, currentness: str) -> tuple[str, ...]:
+def _artifact_collection_row(item) -> tuple[str, ...]:
     return (
         *_market_columns(item.market_id), item.display_name,
         str(len(item.root_logical_artifact_ids)), str(len(item.support_logical_artifact_ids)),
         str(len(item.members)), str(len(item.selected_outputs)),
-        format_utc_timestamp_ms(item.first_timestamp_ms),
-        format_utc_timestamp_ms(item.last_timestamp_ms),
-        "yes" if item.database_ready else "no",
         item.validation_state,
-        currentness,
         item.collection_id, item.revision_id,
     )
 
 
-def _seed_row(item, in_use: bool) -> tuple[str, ...]:
+def _seed_row(
+    item,
+    in_use: bool,
+    status: DataManagerDatabaseSeedStatus | None,
+) -> tuple[str, ...]:
+    valid = True if status is None else status.valid
+    rejection_reason = "" if status is None else status.rejection_reason
+    newer_source = None if status is None else status.newer_source_available
     return (
         item.display_name, _market(item.market_id),
         ", ".join(item.selected_ohlcv_columns),
-        format_utc_timestamp_ms(item.selected_range_start_ms),
-        format_utc_timestamp_ms(item.selected_range_end_ms),
         str(item.source_row_count),
         format_utc_timestamp_ms(item.first_timestamp_ms),
         format_utc_timestamp_ms(item.last_timestamp_ms),
-        format_utc_datetime(item.created_at_utc), "valid",
-        "in use" if in_use else "unused", "valid", item.seed_id,
+        format_utc_datetime(item.created_at_utc),
+        _state(valid, rejection_reason),
+        (
+            "AVAILABLE"
+            if newer_source is True
+            else "UP TO DATE"
+            if newer_source is False
+            else "UNAVAILABLE"
+        ),
+        "in use" if in_use else "unused", item.seed_id,
     )
 
 
@@ -1292,10 +1381,10 @@ def _database_row(item) -> tuple[str, ...]:
         "" if manifest is None else str(manifest.column_count),
         "" if manifest is None else format_utc_timestamp_ms(manifest.first_timestamp_ms),
         "" if manifest is None else format_utc_timestamp_ms(manifest.last_timestamp_ms),
-        _database_currentness(currentness),
-        "CURRENT" if currentness is None or currentness.status == "CURRENT" else "REVIEW",
         str(item.revision_count),
         _state(item.valid, item.rejection_reason),
+        _database_update_readiness(currentness),
+        _database_update_details(currentness),
         definition.seed_id,
         (
             ""
@@ -1317,31 +1406,22 @@ _ARTIFACT_CURRENTNESS = {
     "REBUILD_REQUIRED": "UPDATE AVAILABLE",
     "RECIPE_CHANGED": "UPDATE AVAILABLE",
     "BLOCKED_BY_DEPENDENCY": "BLOCKED",
+    "BLOCKED_BY_SOURCE": "BLOCKED",
     "INVALID": "INVALID",
 }
 
-_COLLECTION_CURRENTNESS = {
+_DATABASE_UPDATE_READINESS = {
     "CURRENT": "CURRENT",
-    "DATABASE_READY": "CURRENT",
-    "MEMBERS_REQUIRE_UPDATE": "UPDATE AVAILABLE",
-    "PARTIALLY_ALIGNED": "UPDATE AVAILABLE",
-    "REBUILD_REQUIRED": "UPDATE AVAILABLE",
-    "NOT_DATABASE_READY": "UPDATE AVAILABLE",
+    "UPDATE_AVAILABLE": "APPEND READY",
+    "WAITING_FOR_ARTIFACT_UPDATE": "WAITING FOR ARTIFACTS",
     "BLOCKED_BY_DEPENDENCY": "BLOCKED",
-    "SOURCE_INVALID": "INVALID",
+    "SOURCE_INVALID": "SOURCE UNAVAILABLE",
+    "INVALID": "UNAVAILABLE",
+    "REBUILD_REQUIRED": "REVIEW REQUIRED",
+    "COLLECTION_CHANGED": "REVIEW REQUIRED",
+    "SCHEMA_CHANGED": "REVIEW REQUIRED",
+    "PREFIX_MISMATCH": "REVIEW REQUIRED",
 }
-
-_DATABASE_CURRENTNESS = {
-    "CURRENT": "CURRENT",
-    "UPDATE_AVAILABLE": "UPDATE AVAILABLE",
-    "REBUILD_REQUIRED": "UPDATE AVAILABLE",
-    "COLLECTION_CHANGED": "UPDATE AVAILABLE",
-    "SCHEMA_CHANGED": "UPDATE AVAILABLE",
-    "PREFIX_MISMATCH": "UPDATE AVAILABLE",
-    "WAITING_FOR_ARTIFACT_UPDATE": "BLOCKED",
-    "SOURCE_INVALID": "INVALID",
-}
-
 
 def _artifact_currentness(
     snapshot: DataManagerProductCatalogSnapshot,
@@ -1358,25 +1438,16 @@ def _artifact_currentness(
     return "VERIFYING" if row is None else _ARTIFACT_CURRENTNESS[row.status]
 
 
-def _collection_currentness(
-    snapshot: DataManagerProductCatalogSnapshot,
-    collection_id: str,
-) -> str:
-    row = next(
-        (
-            item
-            for item in snapshot.latest_reconciliation.collections
-            if item.collection_id == collection_id
-        ),
-        None,
-    )
-    return "VERIFYING" if row is None else _COLLECTION_CURRENTNESS[row.status]
-
-
-def _database_currentness(currentness: object | None) -> str:
+def _database_update_readiness(currentness: object | None) -> str:
     if currentness is None:
         return "VERIFYING"
-    return _DATABASE_CURRENTNESS[str(getattr(currentness, "status"))]
+    return _DATABASE_UPDATE_READINESS[str(getattr(currentness, "status"))]
+
+
+def _database_update_details(currentness: object | None) -> str:
+    if currentness is None:
+        return ""
+    return "; ".join(str(value) for value in getattr(currentness, "reasons", ()))
 
 
 def _inspection_fields(value: object) -> tuple[tuple[str, str], ...]:

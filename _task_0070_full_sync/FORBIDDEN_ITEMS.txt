@@ -1,1 +1,0 @@
-[PASS] No .git, datasets, environments, caches, pyc or pyo files packaged.

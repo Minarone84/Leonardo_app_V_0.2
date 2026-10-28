@@ -6,7 +6,9 @@ import csv
 import hashlib
 import json
 import os
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -678,7 +680,18 @@ class OHLCVStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp_path, path)
+            for attempt in range(5):
+                try:
+                    os.replace(temp_path, path)
+                    break
+                except OSError as error:
+                    if (
+                        sys.platform != "win32"
+                        or getattr(error, "winerror", None) not in (5, 32)
+                        or attempt == 4
+                    ):
+                        raise
+                    time.sleep(0.05)
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise

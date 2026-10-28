@@ -17,23 +17,17 @@ from leonardo.gui.data_manager.reconciliation import (
 )
 
 
-def test_window_reconciliation_runs_on_open_skips_busy_and_stops() -> None:
+def test_window_reconciliation_runs_once_on_open_and_stops() -> None:
     app = QApplication.instance() or QApplication([])
     del app
     calls: list[str] = []
-    busy = [False]
     coordinator = DataManagerReconciliationCoordinator(
         refresh_when_opened=lambda: calls.append("open"),
-        refresh_on_timer=lambda: calls.append("timer"),
-        is_busy=lambda: busy[0],
     )
+    coordinator.start()
     coordinator.start()
     assert calls == ["open"]
     assert coordinator.active
-    coordinator._on_timeout()
-    busy[0] = True
-    coordinator._on_timeout()
-    assert calls == ["open", "timer"]
     coordinator.stop()
     assert not coordinator.active
 

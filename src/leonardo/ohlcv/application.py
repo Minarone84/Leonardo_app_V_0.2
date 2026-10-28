@@ -24,12 +24,13 @@ from leonardo.ohlcv.maintenance import (
     MaintenanceDiscoveryReport,
     MaintenanceRepairPlan,
     MaintenanceRepairRangeResult,
+    MaintenanceRepairResult,
     MaintenanceSidecarReconstructionPlan,
     MaintenanceSidecarReconstructionResult,
     OHLCVMaintenanceService,
     repair_range_result,
 )
-from leonardo.ohlcv.models import DownloadBatchRequest, DownloadProgressEvent
+from leonardo.ohlcv.models import DownloadBatchRequest, DownloadBatchResult, DownloadProgressEvent
 from leonardo.ohlcv.operation_locks import OHLCVDatasetOperationLocks
 
 
@@ -542,43 +543,51 @@ class OHLCVMaintenanceApplicationService:
                     details={"download_event": event},
                 )
 
-            batches = await self._downloader.run_repair_batches(
+            result: MaintenanceRepairResult | None = None
+
+            def after_ranges(batches: tuple[DownloadBatchResult, ...]) -> None:
+                # Downloader owns the same MarketId lock until this synchronous
+                # finalizer and its canonical acceptance decision have settled.
+                nonlocal result
+                if len(batches) != len(plan.ranges):
+                    raise RuntimeError("repair execution did not return every reviewed range")
+                range_results: list[MaintenanceRepairRangeResult] = []
+                for repair_range, batch in zip(plan.ranges, batches, strict=True):
+                    if len(batch.results) != 1:
+                        raise RuntimeError("repair range did not return exactly one dataset result")
+                    range_results.append(repair_range_result(repair_range, batch.results[0]))
+
+                repaired_sidecar = self._maintenance.mark_repair_completed(
+                    plan,
+                    tuple(range_results),
+                    correlation_id=correlation_id,
+                )
+                reporter.report(
+                    "Repair persistence finalized; running canonical post-repair validation",
+                    current=len(plan.ranges) + 1,
+                    total=total_steps,
+                )
+                validation = self._maintenance.validate(
+                    plan.market_id,
+                    correlation_id=correlation_id,
+                )
+                result = self._maintenance.build_repair_result(
+                    plan,
+                    tuple(range_results),
+                    repaired_sidecar,
+                    validation,
+                    correlation_id=correlation_id,
+                )
+
+            await self._downloader.run_repair_batches(
                 requests,
                 before_first_write=lambda: self._maintenance.assert_repair_plan_current(plan),
+                after_ranges=after_ranges,
                 progress=on_download_progress,
                 correlation_id=correlation_id,
             )
-            if len(batches) != len(plan.ranges):
-                raise RuntimeError("repair execution did not return every reviewed range")
-            range_results: list[MaintenanceRepairRangeResult] = []
-            for repair_range, batch in zip(plan.ranges, batches, strict=True):
-                if len(batch.results) != 1:
-                    raise RuntimeError("repair range did not return exactly one dataset result")
-                range_results.append(repair_range_result(repair_range, batch.results[0]))
-
-            repaired_sidecar = await asyncio.to_thread(
-                self._maintenance.mark_repair_completed,
-                plan,
-                tuple(range_results),
-                correlation_id=correlation_id,
-            )
-            reporter.report(
-                "Repair persistence finalized; running canonical post-repair validation",
-                current=len(plan.ranges) + 1,
-                total=total_steps,
-            )
-            validation = await asyncio.to_thread(
-                self._maintenance.validate,
-                plan.market_id,
-                correlation_id=correlation_id,
-            )
-            result = self._maintenance.build_repair_result(
-                plan,
-                tuple(range_results),
-                repaired_sidecar,
-                validation,
-                correlation_id=correlation_id,
-            )
+            if result is None:
+                raise RuntimeError("repair finalizer did not return its result")
             reporter.report(
                 f"OHLCV repair completed: {result.outcome}",
                 current=total_steps,

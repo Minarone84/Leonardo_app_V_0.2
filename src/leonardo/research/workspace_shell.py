@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 from dataclasses import dataclass
 from threading import RLock
 
 
-MAX_RESEARCH_WORKSPACE_POSITIONS = 8
+MAX_RESEARCH_WORKSPACE_POSITIONS = MAX_RESEARCH_CHARTS
 
 
 class ResearchWorkspaceShellStateError(RuntimeError):
@@ -178,16 +180,16 @@ class ResearchWorkspaceShellState:
 
     @staticmethod
     def _require_slot_id(slot_id: int) -> int:
-        if type(slot_id) is not int or not 1 <= slot_id <= 8:
+        if type(slot_id) is not int or not 1 <= slot_id <= MAX_RESEARCH_CHARTS:
             raise ResearchWorkspaceShellStateError(
-                "slot_id must be an integer from 1 through 8"
+                "slot_id must be an integer from 1 through 16"
             )
         return slot_id
 
     @staticmethod
     def _require_position(position: int) -> int:
-        if type(position) is not int or not 1 <= position <= 8:
+        if type(position) is not int or not 1 <= position <= MAX_RESEARCH_CHARTS:
             raise ResearchWorkspaceShellStateError(
-                "workspace_position must be an integer from 1 through 8"
+                "workspace_position must be an integer from 1 through 16"
             )
         return position

@@ -131,7 +131,7 @@ class OscillatorStudyWidget(QWidget):
             raise TypeError("visible must be a boolean")
         if visible != self._show_time_axis:
             self._show_time_axis = visible
-            self._invalidate()
+            self.refresh_from_shared_state()
 
     def refresh_from_shared_state(self) -> None:
         if self._interaction is None or self._projection is None or self._presentation is None:
@@ -147,7 +147,7 @@ class OscillatorStudyWidget(QWidget):
         self._invalidate()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
-        self._invalidate()
+        self.refresh_from_shared_state()
         super().resizeEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802

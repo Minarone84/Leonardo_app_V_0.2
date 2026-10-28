@@ -679,8 +679,16 @@ class CanonicalOHLCVValidator:
                                     )
                                 )
                             elif month_step is not None:
-                                expected = _add_calendar_months(previous_timestamp, month_step)
-                                if timestamp != expected:
+                                try:
+                                    expected = _add_calendar_months(previous_timestamp, month_step)
+                                except (OverflowError, ValueError) as error:
+                                    issues.append(ValidationIssue(
+                                        "error", "timestamp_out_of_range",
+                                        f"calendar successor of {previous_timestamp} is unrepresentable: {error}",
+                                        row_number=row_number, column="ts_ms", timestamp_ms=timestamp,
+                                    ))
+                                    expected = None
+                                if expected is not None and timestamp != expected:
                                     issues.append(
                                         ValidationIssue(
                                             "warning",

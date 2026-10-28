@@ -22,6 +22,40 @@ from leonardo.core.task_manager import TaskManager
 from leonardo.core.window_registry import WindowRegistry
 
 
+@pytest.mark.parametrize("stop_method", ("stop_core_runtime", "shutdown"))
+def test_analysis_uses_owned_store_shared_runner_and_both_shutdown_paths(tmp_path, monkeypatch, stop_method):
+    from threading import Timer
+    app = LeonardoApp(load_default_config(tmp_path))
+    app.startup()
+    app.start_core_runtime()
+    assert app.context.analysis_service is app.analysis_service
+    assert app.analysis_domain._store is app.data_manager_creation_store
+    assert app.analysis_service._runner is app.core_runner
+    started, release, terminal = Event(), Event(), Event()
+    results = []
+    def blocked(*, checkpoint, progress):
+        started.set()
+        assert release.wait(3)
+        checkpoint()
+    monkeypatch.setattr(app.analysis_domain, "catalog", blocked)
+    session = app.analysis_service.begin_session()
+    app.analysis_service.submit_catalog(session, result_callback=lambda result: (results.append(result), terminal.set()),
+                                        callback_dispatcher=lambda callback: callback())
+    assert started.wait(2)
+    timer = Timer(.1, release.set)
+    timer.start()
+    try:
+        getattr(app, stop_method)(timeout=3)
+        assert terminal.wait(2) and results[0].status == "cancelled"
+        assert not app.analysis_service.is_busy(session)
+        assert not app.core_runner.is_running
+    finally:
+        release.set()
+        timer.join()
+        app.analysis_service.end_session(session)
+        app.shutdown()
+
+
 def test_app_starts_runs_background_job_and_shuts_down(tmp_path: Path) -> None:
     config = load_default_config(tmp_path)
     app = LeonardoApp(config)

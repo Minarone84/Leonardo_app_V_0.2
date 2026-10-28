@@ -259,6 +259,7 @@ class TaskManager:
                     severity = "error"
             correlation_id = record.correlation_id
             task_name = record.task_name
+            self._trim_history_locked()
 
         self._emit_audit(
             AuditEventV1(
@@ -300,12 +301,14 @@ class TaskManager:
             )
 
     def _trim_history_locked(self) -> None:
-        while len(self._order) > self._history_limit:
-            oldest = self._order[0]
+        index = 0
+        while len(self._order) > self._history_limit and index < len(self._order):
+            oldest = self._order[index]
             record = self._records.get(oldest)
             if record is not None and record.status in _ACTIVE_STATUSES:
-                break
-            self._order.pop(0)
+                index += 1
+                continue
+            self._order.pop(index)
             self._records.pop(oldest, None)
 
 

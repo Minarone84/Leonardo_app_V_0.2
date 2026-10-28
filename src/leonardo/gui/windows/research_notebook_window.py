@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -51,7 +51,7 @@ class ResearchNotebookWindow(QDialog):
     save_requested = Signal(object)
     close_requested = Signal()
     add_current_chart_requested = Signal()
-    go_to_requested = Signal(object, int)
+    go_to_requested = Signal(object, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -378,7 +378,10 @@ class ResearchNotebookWindow(QDialog):
         self._editor_changed()
 
     def _rebuild_pages(self) -> None:
-        self._tabs.clear()
+        while self._tabs.count():
+            container = self._tabs.widget(0)
+            self._tabs.removeTab(0)
+            container.deleteLater()
         for page in self._pages:
             container = QWidget(self._tabs)
             notes = self._table(
@@ -574,14 +577,18 @@ class ResearchNotebookWindow(QDialog):
         }[kind]
         table = container.findChild(QTableWidget, table_name)
         row = table.rowCount()
-        table.insertRow(row)
-        self._set_row(
-            table,
-            row,
-            f"{prefix}_{uuid4().hex}",
-            market_id,
-            values,
-        )
+        blocker = QSignalBlocker(table)
+        try:
+            table.insertRow(row)
+            self._set_row(
+                table,
+                row,
+                f"{prefix}_{uuid4().hex}",
+                market_id,
+                values,
+            )
+        finally:
+            del blocker
         resize_table_columns_to_contents(table)
         self._editor_changed()
 

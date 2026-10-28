@@ -97,6 +97,7 @@ class DownloadItemResult:
     downloaded_last_ts_ms: int | None
     preliminary_validation_status: str
     preliminary_validation_issues: tuple[str, ...]
+    up_to_date: bool = False
 
 
 @dataclass(frozen=True, slots=True)

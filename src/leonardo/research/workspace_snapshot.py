@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 import hashlib
 import json
 import math
@@ -241,8 +243,8 @@ class WorkspaceSnapshotChartV1:
 
     def __post_init__(self) -> None:
         _identifier(self.chart_ref, "chart_ref")
-        if not 1 <= _integer(self.workspace_position, "workspace_position") <= 8:
-            raise ResearchWorkspaceSnapshotValidationError("workspace_position must be 1..8")
+        if not 1 <= _integer(self.workspace_position, "workspace_position") <= MAX_RESEARCH_CHARTS:
+            raise ResearchWorkspaceSnapshotValidationError("workspace_position must be 1..16")
         if type(self.detached) is not bool or type(self.volume_visible) is not bool:
             raise ResearchWorkspaceSnapshotValidationError("chart flags must be boolean")
         _market(self.market_id)
@@ -406,8 +408,8 @@ class ResearchWorkspaceSnapshotV1:
         if not isinstance(self.workspace, WorkspaceSnapshotStateV1):
             raise ResearchWorkspaceSnapshotValidationError("workspace is invalid")
         charts = tuple(self.charts)
-        if not 1 <= len(charts) <= 8:
-            raise ResearchWorkspaceSnapshotValidationError("snapshot must contain one to eight charts")
+        if not 1 <= len(charts) <= MAX_RESEARCH_CHARTS:
+            raise ResearchWorkspaceSnapshotValidationError("snapshot must contain one to sixteen charts")
         if not all(isinstance(item, WorkspaceSnapshotChartV1) for item in charts):
             raise ResearchWorkspaceSnapshotValidationError("charts are invalid")
         if tuple(sorted(charts, key=lambda item: item.workspace_position)) != charts:

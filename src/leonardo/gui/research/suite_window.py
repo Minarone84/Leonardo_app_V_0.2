@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
@@ -48,6 +48,7 @@ class ResearchSuiteWindow(QMainWindow):
         self._dataset_summaries: tuple[AcceptedDatasetSummary, ...] = ()
         self._actions: dict[str, QAction] = {}
         self._quick_buttons: dict[str, QToolButton] = {}
+        self._close_guard: Callable[[], bool] | None = None
 
         self.workspace = ResearchWorkspaceWidget(self)
         self.setCentralWidget(self.workspace)
@@ -430,6 +431,12 @@ class ResearchSuiteWindow(QMainWindow):
     def _append_activity(self, message: str) -> None:
         self._activity_log.append(message)
 
+    def set_close_guard(self, guard: Callable[[], bool]) -> None:
+        self._close_guard = guard
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        if self._close_guard is not None and not self._close_guard():
+            event.ignore()
+            return
         self.closed.emit()
         super().closeEvent(event)

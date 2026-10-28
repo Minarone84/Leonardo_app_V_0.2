@@ -22,7 +22,8 @@ Research acceptance procedure.
 8. Confirm the bundled Leonardo theme is applied coherently across the open
    windows and local control states.
 9. Confirm unavailable suites remain honestly disabled or shell-only. Do not
-   extend Task 1064 Data Manager acceptance into the remaining Tasks 1065-1067.
+   infer current Data Manager acceptance from a historical task result; use the
+   focused current-candidate checks below and their recorded evidence.
 10. Close the Main Window and confirm tracked windows close and the shared Core
     runtime settles without a shutdown traceback or hanging process.
 
@@ -88,6 +89,46 @@ Treat this accepted behavior as the Data Manager regression baseline:
     close and Leonardo shuts down without a surviving worker, callback traceback,
     or native failure.
 
-Future Data Manager functional acceptance continues through Tasks 1065, 1066,
-and 1067. This baseline does not claim that the complete Data Manager workplan
-is finished and defines no speculative smoke steps for those tasks.
+This historical baseline remains regression evidence. Subsequent lifecycle,
+creation, content-edit and append work is implemented; the original task
+numbers do not describe the remaining current work.
+
+## Focused current-candidate Data Manager acceptance
+
+Use isolated/injected persistence and the current source. Preserve real user
+data and prior evidence. Setup through canonical services is fixture creation,
+not evidence that a GUI interaction passed.
+
+1. Open the Suite, complete warm-up and find saved objects in All Datasets with
+   no selected OHLCV, including a saved snapshot whose OHLCV was removed.
+2. Open a legacy snapshot whose original providers were deleted. Review and
+   apply a column removal, then reopen it. Confirm the remaining values and
+   original immutable revision are unchanged. Check both Database editor modes
+   retain their distinct identities.
+3. Preview an update with a genuinely missing required provider. Confirm it is
+   blocked and publishes nothing. Use explicit removal or existing recreation/
+   update actions before making a new plan.
+4. Update a snapshot that already recorded an exact future provider after an
+   unrelated original provider was removed. Confirm a reviewed append succeeds,
+   preserves its old prefix and does not invent historical attribution.
+5. Preview and execute a mixed raw/saved Batch Construct, then preview again.
+   Confirm the repeated calculation offers Reuse Current, keeps the existing
+   result and uses the existing terminal report and operation surface.
+6. Restart the isolated application and inspect the saved results. Close it and
+   check clean shutdown and unchanged real-data/Git inventories.
+
+The 7 October A2 audit passed. On 8 October all six focused checks above passed
+against the gate-tested candidate using isolated generated data and the native
+Windows Qt backend. Both editor modes were opened sequentially; distinct logical
+window identities are covered by source review and the GUI suite. Native Batch
+creation reported New: 1; replay reported New: 0, Reuse Current: 1, with no
+Artifact/OHLCV byte changes. Restart restored all three Databases and both
+Artifacts, and both visible application sessions shut down normally. The full
+repository gate passed 2,720 tests with seven skips. Real-data and Git preservation
+checks passed.
+
+Current candidate results, UI captures and exact persisted comparisons are under
+`Leo_V2_Task_Packages/20261008_DMS_Finalization`. These are agent-performed native
+checks; independent finishing-package review and personal user acceptance remain
+separate outstanding steps. The earlier intermittent Windows OHLCV replacement
+observation remains unresolved. A passing native run alone does not close it.

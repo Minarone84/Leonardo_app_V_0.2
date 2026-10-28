@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from leonardo.data import MarketId
 from leonardo.data_manager import DataManagerCatalogSnapshot, DataManagerDatasetEntry
+from leonardo.gui.style import apply_theme_stylesheet, load_default_theme
 from leonardo.gui.windows.data_manager_dataset_selector_dialog import (
     DATA_MANAGER_DATASET_SEARCH_HELP_WINDOW_ID,
     DATA_MANAGER_DATASET_SELECTOR_WINDOW_ID,
@@ -33,6 +34,125 @@ BYBIT_LINK = MarketId("bybit", "linear", "LINKUSDT", "1h")
 BYBIT_INVERSE = MarketId("bybit", "inverse", "BTCUSD", "1d")
 BINANCE_ETH = MarketId("binance", "spot", "ETHUSDT", "15m")
 REJECTED = MarketId("kraken", "spot", "XRPUSD", "1h")
+
+
+def _assert_dataset_attention_typography(dialog, active):
+    for table in (dialog._table, dialog._active_table):
+        items = [table.item(row, column) for row in range(table.rowCount())
+                 for column in range(table.columnCount())]
+        items.extend(table.horizontalHeaderItem(column) for column in range(table.columnCount()))
+        for item in items:
+            if item is None:
+                continue
+            if active:
+                assert item.data(Qt.ItemDataRole.ForegroundRole).color().name() == "#ff3b4d"
+                assert item.data(Qt.ItemDataRole.FontRole).bold()
+                assert item.font().bold()
+            else:
+                assert item.data(Qt.ItemDataRole.ForegroundRole) is None
+                assert item.data(Qt.ItemDataRole.FontRole) is None
+        if active:
+            assert "selection-color: #FF3B4D" in table.styleSheet()
+            assert "QTableWidget::item:selected { color: #FF3B4D; }" in table.styleSheet()
+            assert "color: #FF3B4D; font-weight: 700" in table.horizontalHeader().styleSheet()
+        else:
+            assert "#FF3B4D" not in table.styleSheet()
+            assert "#FF3B4D" not in table.horizontalHeader().styleSheet()
+        for checkbox in table.findChildren(QCheckBox):
+            assert "#ff3b4d" not in checkbox.styleSheet().lower()
+            assert "#2D78C4" in checkbox.styleSheet()
+
+
+def test_dataset_evidence_attention_pulse_typography_and_recovery_controls(qapp):
+    from PySide6.QtCore import QAbstractAnimation, QVariantAnimation
+
+    dialog = DataManagerDatasetSelectorDialog()
+    apply_theme_stylesheet(dialog, load_default_theme())
+    selected = []
+    refreshed = []
+    dialog.market_selected.connect(selected.append)
+    dialog.refresh_requested.connect(lambda: refreshed.append(True))
+    try:
+        dialog.set_catalog(_sorting_snapshot())
+        dialog.set_current_market(BYBIT_BTC)
+        dialog.clear_selection()
+        dialog.show()
+        dialog._show_search_help()
+        assert dialog._search_help_dialog.isVisible()
+        normal = dialog.styleSheet()
+        table = dialog.table_for_id("data_manager.table.datasets")
+        normal_font = table.font()
+        normal_table_styles = [(t.styleSheet(), t.horizontalHeader().styleSheet())
+                               for t in (dialog._table, dialog._active_table)]
+        dialog.set_dataset_evidence_attention(True)
+        assert not dialog._search_help_dialog.isVisible()
+        animation = dialog._attention_animation
+        assert animation.duration() == 4000
+        assert animation.loopCount() == -1
+        assert [(key, color.name()) for key, color in animation.keyValues()] == [
+            (0.0, "#142b45"), (0.5, "#315f8a"), (1.0, "#142b45")
+        ]
+        animation.setCurrentTime(2000)
+        dialog.set_dataset_evidence_attention(True)
+        assert dialog.findChildren(QVariantAnimation) == [animation]
+        assert animation.currentTime() == 2000
+        assert "#315f8a" in dialog.styleSheet()
+        assert "#FF3B4D" not in dialog.styleSheet()
+        qapp.processEvents()
+        assert table.rowCount() == 5 and dialog._active_table.rowCount() == 1
+        _assert_dataset_attention_typography(dialog, True)
+        assert tuple(table.horizontalHeaderItem(i).text() for i in range(12)) == (
+            "Select", "Exchange", "Market Type", "Symbol", "Timeframe", "Status",
+            "Persistence", "Validation", "Rows", "First Data", "Last Data", "Details",
+        )
+        dialog._on_sort_column(8)
+        assert [table.item(i, 8).text() for i in range(4)] == ["2", "10", "20", "100"]
+        _assert_dataset_attention_typography(dialog, True)
+        dialog.filter_for_id("data_manager.dataset_selector.filter.text").setText("LINK")
+        assert table.rowCount() == 1
+        _assert_dataset_attention_typography(dialog, True)
+        checkbox = table.cellWidget(0, 0).findChild(QCheckBox)
+        assert "#FF3B4D" not in checkbox.styleSheet()
+        assert "#2D78C4" in checkbox.styleSheet()
+        checkbox.click()
+        assert dialog.selected_market_id() == BYBIT_LINK
+        assert table.selectionModel().selectedRows()
+        _assert_dataset_attention_typography(dialog, True)
+        dialog.button_for_id("data_manager.dataset_selector.button.refresh").click()
+        assert refreshed == [True]
+        dialog.set_catalog(_sorting_snapshot())
+        _assert_dataset_attention_typography(dialog, True)
+        dialog.button_for_id("data_manager.dataset_selector.button.show_all").click()
+        assert table.rowCount() == 5
+        _assert_dataset_attention_typography(dialog, True)
+        btc_row = _row_for_symbol(dialog, "BTCUSDT")
+        table.cellWidget(btc_row, 0).findChild(QCheckBox).click()
+        assert dialog.selected_market_id() is None
+        assert not dialog.button_for_id("data_manager.dataset_selector.button.select").isEnabled()
+        rejected_row = _row_for_symbol(dialog, "XRPUSD")
+        assert not table.cellWidget(rejected_row, 0).findChild(QCheckBox).isEnabled()
+        table.cellWidget(btc_row, 0).findChild(QCheckBox).click()
+        dialog.button_for_id("data_manager.dataset_selector.button.filter_help").click()
+        assert dialog._search_help_dialog.isVisible()
+        dialog.button_for_id("data_manager.dataset_selector.button.select").click()
+        assert selected == [BYBIT_LINK]
+        dialog.set_dataset_evidence_attention(False)
+        dialog.set_dataset_evidence_attention(False)
+        qapp.processEvents()
+        assert animation.state() == QAbstractAnimation.State.Stopped
+        assert dialog.styleSheet() == normal
+        assert table.font() == normal_font
+        _assert_dataset_attention_typography(dialog, False)
+        assert [(t.styleSheet(), t.horizontalHeader().styleSheet())
+                for t in (dialog._table, dialog._active_table)] == normal_table_styles
+        dialog._on_sort_column(8)
+        dialog.filter_for_id("data_manager.dataset_selector.filter.text").setText("LINK")
+        assert table.rowCount() == 1
+        assert dialog.selected_market_id() == BYBIT_LINK
+        _assert_dataset_attention_typography(dialog, False)
+    finally:
+        dialog.set_dataset_evidence_attention(False)
+        dialog.close()
 
 
 @pytest.fixture(scope="module")

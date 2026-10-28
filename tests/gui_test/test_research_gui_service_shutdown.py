@@ -36,6 +36,18 @@ class _CloseEventCounter(QObject):
         return super().eventFilter(watched, event)
 
 
+def test_queued_and_late_callbacks_are_dropped_after_dispose() -> None:
+    qapp = QApplication.instance() or QApplication([])
+    window, presenter, _service, _summary, _registry = _tracked_presenter()
+    delivered = []
+    presenter._dispatch(lambda: delivered.append("queued"))
+    presenter.dispose()
+    presenter._dispatch(lambda: delivered.append("late"))
+    qapp.processEvents()
+    assert delivered == []
+    window.close()
+
+
 def _tracked_presenter():
     dataset, summary = _dataset_bundle()
     service = _ControlledDatasetService(dataset)
@@ -70,7 +82,8 @@ def test_dispose_with_catalog_active_cancels_once_and_is_idempotent() -> None:
     window, presenter, service, _summary, registry = _tracked_presenter()
     catalog_id = service.pending_ids("catalog")[0]
     presenter.open_new_chart()
-    assert registry.open_windows()
+    assert presenter._new_chart_open_requested
+    assert not presenter._new_chart_dialog.isVisible()
     assert presenter.dispose() is True
     assert presenter.dispose() is False
     assert service.cancel_counts[catalog_id] == 1
@@ -229,6 +242,7 @@ def test_clear_research_suite_confirms_resets_and_remains_usable(
         assert window.dataset_summaries == (summary,)
 
         window.action_for_text("New Chart...").trigger()
+        _complete_catalog(service, DatasetCatalogReport((summary,), ()))
         assert presenter._new_chart_dialog.isVisible()
     finally:
         presenter.dispose()

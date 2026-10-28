@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 from datetime import UTC, datetime
 import re
 
@@ -35,8 +37,8 @@ class ResearchGoToDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        if type(slot_id) is not int or not 1 <= slot_id <= 8:
-            raise ValueError("slot_id must be an integer from 1 through 8")
+        if type(slot_id) is not int or not 1 <= slot_id <= MAX_RESEARCH_CHARTS:
+            raise ValueError("slot_id must be an integer from 1 through 16")
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("session_id must be a non-empty string")
         if not isinstance(market_text, str):

@@ -26,6 +26,7 @@ from leonardo.data_manager import (
     ArtifactCollectionOutputV1,
     ArtifactCollectionRevisionV1,
     DataManagerCatalogSnapshot,
+    DataManagerDatabaseCurrentness,
     DataManagerManagedArtifactCatalog,
     DataManagerOperationError,
     DataManagerPortableRecipeCatalog,
@@ -33,6 +34,7 @@ from leonardo.data_manager import (
     DataManagerReconciliationSnapshot,
     DataManagerService,
     DataManagerStudyEnvironmentCatalog,
+    DatabaseDefinitionV1,
 )
 from leonardo.data_manager.creation_models import deterministic_hash
 from leonardo.data_manager.models import (
@@ -516,6 +518,85 @@ def test_product_catalog_scan_aggregates_each_family_once(monkeypatch) -> None:
         "collections",
         "seeds",
     ]
+
+
+def test_product_catalog_projects_invalid_database_snapshot_without_loading_payload(
+    monkeypatch,
+) -> None:
+    service = _service()
+    database_id = "db_" + "1" * 32
+    definition = DatabaseDefinitionV1(
+        database_id,
+        "Broken Database",
+        "",
+        MARKET,
+        "seed_" + "2" * 32,
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    currentness = DataManagerDatabaseCurrentness(
+        database_id,
+        "3" * 64,
+        MARKET,
+        "INVALID",
+        None,
+        None,
+        None,
+        0,
+        False,
+        ("Database values payload hash disagrees",),
+    )
+    reconciliation = DataManagerReconciliationSnapshot(
+        datetime(2026, 9, 13, tzinfo=UTC),
+        (),
+        (),
+        (),
+        (currentness,),
+        (),
+        "0" * 64,
+    )
+    service._updates._snapshot = reconciliation
+
+    monkeypatch.setattr(service, "list_database_ids", lambda: (database_id,))
+    monkeypatch.setattr(service, "load_database_definition", lambda _id: definition)
+    monkeypatch.setattr(
+        service,
+        "list_database_revisions",
+        lambda _id: pytest.fail("invalid snapshot payload must not be loaded"),
+    )
+    monkeypatch.setattr(service, "scan_catalog", lambda: DataManagerCatalogSnapshot(()))
+    monkeypatch.setattr(
+        service,
+        "scan_study_environments",
+        lambda: DataManagerStudyEnvironmentCatalog(()),
+    )
+    monkeypatch.setattr(
+        service,
+        "scan_portable_recipes",
+        lambda: DataManagerPortableRecipeCatalog(()),
+    )
+    monkeypatch.setattr(
+        service,
+        "list_recipe_collections",
+        lambda: DataManagerRecipeCollectionCatalog(()),
+    )
+    monkeypatch.setattr(
+        service,
+        "scan_managed_artifacts",
+        lambda: DataManagerManagedArtifactCatalog(()),
+    )
+    monkeypatch.setattr(service, "list_artifact_collections", lambda: ())
+    monkeypatch.setattr(service, "list_database_seeds", lambda: ())
+
+    snapshot = service.scan_product_catalogs()
+
+    assert len(snapshot.databases) == 1
+    entry = snapshot.databases[0]
+    assert entry.definition == definition
+    assert entry.current_manifest is None
+    assert entry.revision_count == 0
+    assert entry.currentness is currentness
+    assert not entry.valid
+    assert entry.rejection_reason == "Database values payload hash disagrees"
 
 
 def test_recipe_collection_catalog_projects_exact_current_member_ids(
@@ -1134,7 +1215,6 @@ def test_managed_artifact_and_artifact_collection_deletion_are_dependency_safe(
         "_artifact_collection_revisions_for_deletion_proof",
         lambda: (collection,),
     )
-    monkeypatch.setattr(service, "_database_revisions_for_deletion_proof", lambda: ())
     with pytest.raises(DataManagerOperationError, match="Artifact Collection"):
         service.delete_managed_artifact(MARKET, logical_id)
     assert artifacts.managed_deleted == []
@@ -1142,18 +1222,15 @@ def test_managed_artifact_and_artifact_collection_deletion_are_dependency_safe(
     monkeypatch.setattr(
         service, "_artifact_collection_revisions_for_deletion_proof", lambda: ()
     )
+
+    def unexpected_database_reference_read():
+        raise AssertionError("Database provenance must not block Artifact deletion")
+
     monkeypatch.setattr(
         service,
         "_database_revisions_for_deletion_proof",
-        lambda: (SimpleNamespace(
-            artifact_version_keys=(SimpleNamespace(logical_artifact_id=logical_id),),
-        ),),
+        unexpected_database_reference_read,
     )
-    with pytest.raises(DataManagerOperationError, match="Database"):
-        service.delete_managed_artifact(MARKET, logical_id)
-    assert artifacts.managed_deleted == []
-
-    monkeypatch.setattr(service, "_database_revisions_for_deletion_proof", lambda: ())
     deleted = service.delete_managed_artifact(MARKET, logical_id)
     assert deleted.logical_artifact_id == logical_id
     assert artifacts.managed_deleted == [(MARKET, logical_id)]
@@ -1171,6 +1248,7 @@ def test_managed_artifact_and_artifact_collection_deletion_are_dependency_safe(
     )
     assert service.delete_artifact_collection(expected_collection.collection_id) is expected_collection
     assert calls == [(expected_collection.collection_id, False)]
+
 
 
 def test_invalid_artifact_reference_evidence_refuses_before_mutation(
@@ -2007,7 +2085,7 @@ def test_artifact_duplicate_maintenance_uses_selected_dataframe_semantics(
     }
 
 
-def test_artifact_collection_duplicates_use_member_semantics_not_ids(
+def test_artifact_collection_duplicates_ignore_version_ids_but_keep_logical_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     artifacts = _Artifacts()
@@ -2031,15 +2109,15 @@ def test_artifact_collection_duplicates_use_member_semantics_not_ids(
         ),
         _artifact_collection_revision(
             collection_id="ac_22222222222222222222222222222222",
-            display_name="Different name",
+            display_name="Newer Artifact version",
             created_at_utc=datetime(2026, 8, 2, tzinfo=UTC),
             source=artifacts.source,
-            portable_recipe_id="6" * 64,
+            portable_recipe_id="3" * 64,
             artifact_id="7" * 64,
         ),
         _artifact_collection_revision(
             collection_id="ac_33333333333333333333333333333333",
-            display_name="Different input",
+            display_name="Different logical root",
             created_at_utc=datetime(2026, 8, 3, tzinfo=UTC),
             source=artifacts.source,
             portable_recipe_id="8" * 64,
@@ -2077,7 +2155,7 @@ def test_artifact_collection_duplicates_use_member_semantics_not_ids(
     }
 
 
-def test_artifact_collection_creation_reuses_semantic_members_across_ids(
+def test_artifact_collection_creation_reuses_across_versions_not_logical_roots(
     tmp_path: Path,
 ) -> None:
     artifacts = _Artifacts()
@@ -2136,15 +2214,15 @@ def test_artifact_collection_creation_reuses_semantic_members_across_ids(
         created_at_utc=datetime(2026, 8, 1, tzinfo=UTC),
     )
     reused = create(
-        portable_recipe_id="6" * 64,
+        portable_recipe_id="3" * 64,
         artifact_id="7" * 64,
-        display_name="Equivalent",
+        display_name="Equivalent newer version",
         created_at_utc=datetime(2026, 8, 2, tzinfo=UTC),
     )
     different = create(
         portable_recipe_id="8" * 64,
         artifact_id="9" * 64,
-        display_name="Different",
+        display_name="Different logical root",
         created_at_utc=datetime(2026, 8, 3, tzinfo=UTC),
     )
 
@@ -2213,7 +2291,7 @@ def test_duplicate_maintenance_artifact_history_is_excluded(
     assert result.historical_versions_excluded == 1
 
 
-def test_duplicate_maintenance_artifact_collection_safe_and_database_blocked(
+def test_duplicate_maintenance_artifact_collection_ignores_database_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     artifacts = _Artifacts()
@@ -2231,54 +2309,36 @@ def test_duplicate_maintenance_artifact_collection_safe_and_database_blocked(
         created_at_utc=datetime(2026, 8, 2, tzinfo=UTC),
         source=artifacts.source,
     )
-    revisions = {
-        older.collection_id: older,
-        younger.collection_id: younger,
-    }
+    revisions = {older.collection_id: older, younger.collection_id: younger}
     monkeypatch.setattr(
-        service.creation_store,
-        "list_collection_ids",
-        lambda: tuple(revisions),
+        service.creation_store, "list_collection_ids", lambda: tuple(revisions)
     )
     monkeypatch.setattr(
         service.creation_store,
         "load_collection",
         lambda collection_id: revisions[collection_id],
     )
+
+    def unexpected_database_reference_read():
+        raise AssertionError("Database provenance must not classify Collection deletion")
+
     monkeypatch.setattr(
         service,
         "_database_revisions_for_deletion_proof",
-        lambda: (),
+        unexpected_database_reference_read,
     )
-
-    preflight = service.prepare_duplicate_maintenance(
-        "artifact_collections", MARKET
-    )
-    safe = service.scan_duplicate_maintenance(preflight)
+    preflight = service.prepare_duplicate_maintenance("artifact_collections", MARKET)
+    result = service.scan_duplicate_maintenance(preflight)
     assert preflight.objects_to_check == 2
-    assert len(safe.groups) == 1
-    assert safe.groups[0].canonical_id == older.collection_id
-    assert safe.groups[0].duplicates[0].object_id == younger.collection_id
-    assert safe.groups[0].duplicates[0].classification == "SAFE"
-    assert safe.safe_to_purge == 1
+    assert len(result.groups) == 1
+    assert result.groups[0].canonical_id == older.collection_id
+    candidate = result.groups[0].duplicates[0]
+    assert candidate.object_id == younger.collection_id
+    assert candidate.classification == "SAFE"
+    assert candidate.blockers == ()
+    assert result.safe_to_purge == 1
+    assert result.blocked == 0
 
-    database = SimpleNamespace(
-        database_id="db_33333333333333333333333333333333",
-        revision_id="6" * 64,
-        collection_id=younger.collection_id,
-    )
-    monkeypatch.setattr(
-        service,
-        "_database_revisions_for_deletion_proof",
-        lambda: (database,),
-    )
-    blocked = service.scan_duplicate_maintenance(preflight)
-    candidate = blocked.groups[0].duplicates[0]
-    assert candidate.classification == "BLOCKED"
-    assert candidate.blockers == (
-        f"Database {database.database_id} revision {database.revision_id}",
-    )
-    assert blocked.blocked == 1
 
 
 def test_duplicate_maintenance_refuses_missing_or_stale_artifact_scope(
@@ -2406,7 +2466,7 @@ def test_duplicate_purge_is_partial_and_continues_after_ordinary_failure(
         service._portable_recipes.load_collection(second.collection_id)
 
 
-def test_duplicate_purge_deletes_artifact_collection_but_revalidates_database_blocker(
+def test_duplicate_purge_artifact_collection_ignores_database_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     artifacts = _Artifacts()
@@ -2426,42 +2486,26 @@ def test_duplicate_purge_deletes_artifact_collection_but_revalidates_database_bl
     )
     service.creation_store._publish_collection_revision(winner)
     service.creation_store._publish_collection_revision(duplicate)
-    monkeypatch.setattr(service, "_database_revisions_for_deletion_proof", lambda: ())
+
+    def unexpected_database_reference_read():
+        raise AssertionError("Database provenance must not block Collection purge")
+
+    monkeypatch.setattr(
+        service,
+        "_database_revisions_for_deletion_proof",
+        unexpected_database_reference_read,
+    )
     scan = service.scan_duplicate_maintenance(
         service.prepare_duplicate_maintenance("artifact_collections", MARKET)
     )
+    result = service.purge_duplicate_maintenance(scan)
 
-    purged = service.purge_duplicate_maintenance(scan)
-
-    assert purged.purged == 1
+    assert result.purged == 1
+    assert result.blocked_during_revalidation == 0
     assert service.creation_store.load_collection(winner.collection_id) == winner
     with pytest.raises(FileNotFoundError):
         service.creation_store.load_collection(duplicate.collection_id)
 
-    blocked_duplicate = _artifact_collection_revision(
-        collection_id="ac_33333333333333333333333333333333",
-        display_name="Blocked duplicate",
-        created_at_utc=datetime(2026, 8, 3, tzinfo=UTC),
-        source=artifacts.source,
-    )
-    service.creation_store._publish_collection_revision(blocked_duplicate)
-    scan = service.scan_duplicate_maintenance(
-        service.prepare_duplicate_maintenance("artifact_collections", MARKET)
-    )
-    database = SimpleNamespace(
-        database_id="db_44444444444444444444444444444444",
-        revision_id="6" * 64,
-        collection_id=blocked_duplicate.collection_id,
-    )
-    monkeypatch.setattr(
-        service, "_database_revisions_for_deletion_proof", lambda: (database,)
-    )
-
-    blocked = service.purge_duplicate_maintenance(scan)
-
-    assert blocked.purged == 0
-    assert blocked.blocked_during_revalidation == 1
-    assert service.creation_store.load_collection(blocked_duplicate.collection_id) == blocked_duplicate
 
 
 def test_duplicate_purge_zero_candidates_preserves_artifact_history(

@@ -36,12 +36,14 @@ from leonardo.data_manager import (
     DataManagerCollectionCurrentness,
     DataManagerDatabaseCatalogEntry,
     DataManagerDatabaseCurrentness,
+    DataManagerDatabaseSeedStatus,
     DataManagerRecipeCollectionEntry,
     DataManagerRecipeCollectionCatalog,
     DataManagerReconciliationSnapshot,
     DataManagerStudyEnvironmentCatalog,
     DataManagerStudyEnvironmentEntry,
     DatabaseDefinitionV1,
+    DatabaseSeedV1,
 )
 from leonardo.gui.data_manager.catalogs import CATALOG_FAMILIES, _COLUMNS
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
@@ -234,6 +236,39 @@ def _database_entry(
         datetime(2026, 8, 9, tzinfo=UTC),
     )
     return DataManagerDatabaseCatalogEntry(definition, None, 1, currentness)
+
+
+def _seed(
+    market: MarketId,
+    *,
+    seed_id: str,
+    name: str,
+) -> DatabaseSeedV1:
+    source = OHLCVSourceFingerprintV1(
+        market,
+        "1" * 64,
+        "2" * 64,
+        1,
+        TIMESTAMP_MS,
+        TIMESTAMP_MS,
+        "committed",
+        "ok",
+        "1.0",
+    )
+    return DatabaseSeedV1(
+        seed_id,
+        name,
+        "",
+        market,
+        source,
+        1,
+        TIMESTAMP_MS,
+        TIMESTAMP_MS,
+        ("open", "close"),
+        TIMESTAMP_MS,
+        TIMESTAMP_MS,
+        datetime.fromtimestamp(TIMESTAMP_MS / 1000, tz=UTC),
+    )
 
 
 def _environment(
@@ -459,7 +494,7 @@ def test_data_manager_top_level_tabs_and_catalog_ids_are_stable() -> None:
         assert tabs is not None
         assert tuple(
             tabs.tabText(index) for index in range(tabs.count())
-        ) == ("Catalogs", "Create Database", "Update & Reconcile")
+        ) == ("Catalogs", "Update & Reconcile")
         assert window._catalog_workspace.objectName() == "data_manager.catalogs.workspace"
         assert (
             window._catalog_workspace.table.objectName()
@@ -512,7 +547,13 @@ def test_catalog_detail_panels_and_content_are_independently_responsive() -> Non
         assert splitter.widget(0) is workspace.family_list
         assert splitter.widget(1) is workspace.table.parentWidget()
 
-        snapshot = associated_product_snapshot()
+        snapshot = replace(
+            associated_product_snapshot(),
+            database_seeds=(
+                _seed(MARKET_B, seed_id="seed_" + "9" * 32, name="Delete Seed"),
+            ),
+            databases=(_database_entry(None),),
+        )
         workspace.set_snapshot(snapshot)
         workspace.set_selected_market(MARKET_B)
         workspace.select_family("Artifacts")
@@ -579,7 +620,13 @@ def test_catalog_delete_actions_are_contextual_valid_exact_and_sort_stable(
             lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
         )
         workspace = window._catalog_workspace
-        snapshot = associated_product_snapshot()
+        snapshot = replace(
+            associated_product_snapshot(),
+            database_seeds=(
+                _seed(MARKET_B, seed_id="seed_" + "2" * 32, name="Delete Seed"),
+            ),
+            databases=(_database_entry(None),),
+        )
         window.set_product_catalogs(snapshot)
         workspace.set_selected_market(MARKET_B)
         workspace.dataset_scope.setCurrentIndex(
@@ -603,12 +650,22 @@ def test_catalog_delete_actions_are_contextual_valid_exact_and_sort_stable(
                 workspace.delete_artifact_collection_button,
                 workspace.delete_artifact_collection_requested,
             ),
+            "Database Seeds": (
+                workspace.delete_database_seed_button,
+                workspace.delete_database_seed_requested,
+            ),
+            "Databases": (
+                workspace.delete_database_button,
+                workspace.delete_database_requested,
+            ),
         }
         expected_ids = {
             "Recipes": "data_manager.catalogs.action.delete_recipe",
             "Recipe Collections": "data_manager.catalogs.action.delete_recipe_collection",
             "Artifacts": "data_manager.catalogs.action.delete_artifact",
             "Artifact Collections": "data_manager.catalogs.action.delete_artifact_collection",
+            "Database Seeds": "data_manager.catalogs.action.delete_database_seed",
+            "Databases": "data_manager.catalogs.action.delete_database",
         }
         for family in CATALOG_FAMILIES:
             workspace.select_family(family)
@@ -888,13 +945,29 @@ def test_scoped_artifact_families_use_exact_market_and_scope_visibility() -> Non
     window = DataManagerSuiteWindow()
     try:
         workspace = window._catalog_workspace
-        window.set_product_catalogs(associated_product_snapshot())
+        snapshot = associated_product_snapshot()
+        seed_a = _seed(MARKET_A, seed_id="seed_" + "1" * 32, name="A Seed")
+        seed_b = _seed(MARKET_B, seed_id="seed_" + "2" * 32, name="B Seed")
+        database = _database_entry(None)
+        window.set_product_catalogs(
+            replace(
+                snapshot,
+                database_seeds=(seed_a, seed_b),
+                databases=(database,),
+            )
+        )
         workspace.set_selected_market(MARKET_A)
         combo = workspace.dataset_scope
         for family in CATALOG_FAMILIES:
             workspace.select_family(family)
             assert workspace.scope_panel.isVisibleTo(workspace) is (
-                family in {"Artifacts", "Artifact Collections"}
+                family
+                in {
+                    "Artifacts",
+                    "Artifact Collections",
+                    "Database Seeds",
+                    "Databases",
+                }
             )
 
         workspace.select_family("Artifacts")
@@ -909,6 +982,20 @@ def test_scoped_artifact_families_use_exact_market_and_scope_visibility() -> Non
         combo.setCurrentIndex(combo.findData("current"))
         assert workspace.table.rowCount() == 1
         assert workspace.table.item(0, 2).text() == MARKET_B.symbol
+
+        workspace.select_family("Database Seeds")
+        assert workspace.table.rowCount() == 1
+        assert workspace._visible_values[0].market_id == MARKET_B
+        combo.setCurrentIndex(combo.findData("all"))
+        assert workspace.table.rowCount() == 2
+
+        workspace.select_family("Databases")
+        combo.setCurrentIndex(combo.findData("current"))
+        assert workspace.table.rowCount() == 1
+        workspace.set_selected_market(MARKET_A)
+        assert workspace.table.rowCount() == 0
+        combo.setCurrentIndex(combo.findData("all"))
+        assert workspace.table.rowCount() == 1
     finally:
         window.close()
 
@@ -932,13 +1019,123 @@ def test_product_catalog_column_schemas_are_exact_and_artifact_outputs_are_last(
     assert _COLUMNS["Artifact Collections"][-2:] == (
         "Collection ID", "Revision ID"
     )
+    assert "Database Ready" not in _COLUMNS["Artifact Collections"]
+    assert "Currentness" not in _COLUMNS["Artifact Collections"]
+    assert "First TS" not in _COLUMNS["Artifact Collections"]
+    assert "Last TS" not in _COLUMNS["Artifact Collections"]
+    assert _COLUMNS["Database Seeds"][-4:] == (
+        "State", "Newer Source", "Usage", "Seed ID"
+    )
+    assert _COLUMNS["Database Seeds"] == (
+        "Name", "Market", "Columns", "Rows", "First TS", "Last TS",
+        "Created", "State", "Newer Source", "Usage", "Seed ID",
+    )
+    assert "Range Start" not in _COLUMNS["Database Seeds"]
+    assert "Range End" not in _COLUMNS["Database Seeds"]
+    assert "Validation" not in _COLUMNS["Database Seeds"]
+    assert "Currentness" not in _COLUMNS["Databases"]
+    assert "Update Mode" not in _COLUMNS["Databases"]
+    assert "Update Readiness" in _COLUMNS["Databases"]
+    assert "Update Details" in _COLUMNS["Databases"]
     for family in ("Artifacts", "Artifact Collections"):
         columns = _COLUMNS[family]
         assert columns[:4] == ("Exchange", "Market Type", "Asset", "Timeframe")
         assert "Market" not in columns
         assert "Coverage" not in columns
-        assert "Currentness" in columns
+        if family == "Artifacts":
+            assert "Currentness" in columns
         assert "Origin Markets" not in columns
+
+
+@pytest.mark.parametrize(
+    ("valid", "newer_source_available", "expected_state", "expected_advisory"),
+    (
+        (True, True, "valid", "AVAILABLE"),
+        (True, False, "valid", "UP TO DATE"),
+        (True, None, "valid", "UNAVAILABLE"),
+        (False, None, "invalid: seed integrity failed", "UNAVAILABLE"),
+    ),
+)
+def test_database_seed_projects_integrity_and_newer_source_advisory_separately(
+    valid: bool,
+    newer_source_available: bool | None,
+    expected_state: str,
+    expected_advisory: str,
+) -> None:
+    window = DataManagerSuiteWindow()
+    try:
+        seed = replace(
+            _seed(MARKET_B, seed_id="seed_" + "3" * 32, name="Seed"),
+            source_row_count=2,
+            last_timestamp_ms=TIMESTAMP_MS + 3_600_000,
+        )
+        status = DataManagerDatabaseSeedStatus(
+            seed.seed_id,
+            valid,
+            "" if valid else "seed integrity failed",
+            newer_source_available,
+        )
+        snapshot = replace(
+            associated_product_snapshot(),
+            database_seeds=(seed,),
+            database_seed_statuses=(status,),
+        )
+        window.set_product_catalogs(snapshot)
+        workspace = window._catalog_workspace
+        workspace.set_selected_market(MARKET_B)
+        workspace.select_family("Database Seeds")
+
+        assert _column_values(workspace, "State") == (expected_state,)
+        assert _column_values(workspace, "Newer Source") == (expected_advisory,)
+        headings = tuple(
+            workspace.table.horizontalHeaderItem(column).text()
+            for column in range(workspace.table.columnCount())
+        )
+        assert headings == _COLUMNS["Database Seeds"]
+        assert "Range Start" not in headings
+        assert "Range End" not in headings
+        assert tuple(
+            workspace.table.item(0, column).text()
+            for column in range(workspace.table.columnCount())
+        ) == (
+            "Seed", MARKET_B.as_key(), "open, close", "2",
+            "2026-08-09 19:42:17 CEST (+02:00)",
+            "2026-08-09 20:42:17 CEST (+02:00)",
+            "2026-08-09 19:42:17 CEST (+02:00)",
+            expected_state, expected_advisory, "unused", seed.seed_id,
+        )
+        workspace.table.selectRow(0)
+        assert workspace._selected_value() is seed
+
+        other = replace(
+            seed,
+            seed_id="seed_" + "4" * 32,
+            display_name="Other Seed",
+            source_row_count=10,
+            first_timestamp_ms=TIMESTAMP_MS - 3_600_000,
+            last_timestamp_ms=TIMESTAMP_MS + 7_200_000,
+        )
+        workspace.set_snapshot(replace(snapshot, database_seeds=(other, seed)))
+        for label, expected_ids in (
+            ("Rows", (seed.seed_id, other.seed_id)),
+            ("Rows", (other.seed_id, seed.seed_id)),
+            ("First TS", (other.seed_id, seed.seed_id)),
+            ("Last TS", (seed.seed_id, other.seed_id)),
+        ):
+            _click_header(workspace, label)
+            assert _column_values(workspace, "Seed ID") == expected_ids
+            assert workspace._selected_value() is seed
+        assert _column_values(workspace, "Rows") == ("2", "10")
+        assert _column_values(workspace, "First TS") == (
+            "2026-08-09 19:42:17 CEST (+02:00)",
+            "2026-08-09 18:42:17 CEST (+02:00)",
+        )
+        assert _column_values(workspace, "Last TS") == (
+            "2026-08-09 20:42:17 CEST (+02:00)",
+            "2026-08-09 21:42:17 CEST (+02:00)",
+        )
+    finally:
+        window.close()
 
 
 @pytest.mark.parametrize(
@@ -991,21 +1188,7 @@ def test_artifact_currentness_uses_reconciliation_projection(
         window.close()
 
 
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    (
-        ("CURRENT", "CURRENT"),
-        ("MEMBERS_REQUIRE_UPDATE", "UPDATE AVAILABLE"),
-        ("PARTIALLY_ALIGNED", "UPDATE AVAILABLE"),
-        ("BLOCKED_BY_DEPENDENCY", "BLOCKED"),
-        ("SOURCE_INVALID", "INVALID"),
-        (None, "VERIFYING"),
-    ),
-)
-def test_artifact_collection_currentness_uses_reconciliation_projection(
-    status: str | None,
-    expected: str,
-) -> None:
+def test_artifact_collection_catalog_keeps_lifecycle_out_of_main_projection() -> None:
     window = DataManagerSuiteWindow()
     try:
         snapshot = associated_product_snapshot()
@@ -1013,9 +1196,11 @@ def test_artifact_collection_currentness_uses_reconciliation_projection(
         reconciliation = replace(
             snapshot.latest_reconciliation,
             collections=(
-                ()
-                if status is None
-                else (replace(row, status=status, reasons=("collection reason",)),)
+                replace(
+                    row,
+                    status="MEMBERS_REQUIRE_UPDATE",
+                    reasons=("historical collection reason",),
+                ),
             ),
         )
         window.set_product_catalogs(
@@ -1026,7 +1211,14 @@ def test_artifact_collection_currentness_uses_reconciliation_projection(
         workspace.select_family("Artifact Collections")
 
         assert _column_values(workspace, "State") == ("valid",)
-        assert _column_values(workspace, "Currentness") == (expected,)
+        headings = tuple(
+            workspace.table.horizontalHeaderItem(index).text()
+            for index in range(workspace.table.columnCount())
+        )
+        assert "Currentness" not in headings
+        assert "Database Ready" not in headings
+        assert "First TS" not in headings
+        assert "Last TS" not in headings
         workspace.table.selectRow(0)
         inspector = {
             workspace.inspector.item(index, 0).text(): workspace.inspector.item(
@@ -1034,9 +1226,10 @@ def test_artifact_collection_currentness_uses_reconciliation_projection(
             ).text()
             for index in range(workspace.inspector.rowCount())
         }
-        if status is not None:
-            assert inspector["currentness.status"] == status
-            assert "collection reason" in inspector["currentness.reasons"]
+        assert inspector["database_ready"] == "True"
+        assert "first_timestamp_ms" in inspector
+        assert "last_timestamp_ms" in inspector
+        assert not any(name.startswith("currentness.") for name in inspector)
     finally:
         window.close()
 
@@ -1045,14 +1238,16 @@ def test_artifact_collection_currentness_uses_reconciliation_projection(
     ("status", "expected"),
     (
         ("CURRENT", "CURRENT"),
-        ("UPDATE_AVAILABLE", "UPDATE AVAILABLE"),
-        ("REBUILD_REQUIRED", "UPDATE AVAILABLE"),
-        ("WAITING_FOR_ARTIFACT_UPDATE", "BLOCKED"),
-        ("SOURCE_INVALID", "INVALID"),
+        ("UPDATE_AVAILABLE", "APPEND READY"),
+        ("REBUILD_REQUIRED", "REVIEW REQUIRED"),
+        ("WAITING_FOR_ARTIFACT_UPDATE", "WAITING FOR ARTIFACTS"),
+        ("BLOCKED_BY_DEPENDENCY", "BLOCKED"),
+        ("SOURCE_INVALID", "SOURCE UNAVAILABLE"),
+        ("INVALID", "UNAVAILABLE"),
         (None, "VERIFYING"),
     ),
 )
-def test_database_currentness_uses_reconciliation_projection(
+def test_database_snapshot_state_is_separate_from_update_readiness(
     status: str | None,
     expected: str,
 ) -> None:
@@ -1082,15 +1277,29 @@ def test_database_currentness_uses_reconciliation_projection(
         window.set_product_catalogs(
             replace(
                 snapshot,
-                databases=(_database_entry(currentness),),
+                databases=(
+                    replace(
+                        _database_entry(currentness),
+                        valid=status != "INVALID",
+                        rejection_reason=(
+                            "database reason" if status == "INVALID" else ""
+                        ),
+                    ),
+                ),
                 latest_reconciliation=reconciliation,
             )
         )
         workspace = window._catalog_workspace
+        workspace.set_selected_market(MARKET_B)
         workspace.select_family("Databases")
 
-        assert _column_values(workspace, "State") == ("valid",)
-        assert _column_values(workspace, "Currentness") == (expected,)
+        assert _column_values(workspace, "State") == (
+            "invalid: database reason" if status == "INVALID" else "valid",
+        )
+        assert _column_values(workspace, "Update Readiness") == (expected,)
+        assert _column_values(workspace, "Update Details") == (
+            "" if status is None else "database reason",
+        )
         workspace.table.selectRow(0)
         inspector = {
             workspace.inspector.item(index, 0).text(): workspace.inspector.item(
@@ -1099,8 +1308,8 @@ def test_database_currentness_uses_reconciliation_projection(
             for index in range(workspace.inspector.rowCount())
         }
         if status is not None:
-            assert inspector["currentness.status"] == status
-            assert "database reason" in inspector["currentness.reasons"]
+            assert inspector["update.status"] == status
+            assert "database reason" in inspector["update.reasons"]
     finally:
         window.close()
 
@@ -1319,3 +1528,39 @@ def test_collection_inspection_action_is_contextual_exact_and_busy_fenced() -> N
         assert not button.isEnabled()
     finally:
         window.close()
+
+
+
+def test_a2_all_datasets_lists_saved_v5_and_artifacts_with_missing_source(tmp_path, monkeypatch):
+    from tests.data_manager_test.test_database_content_management import _a2_snapshot
+    from tests.data_manager_test.test_update_workflow import _domain, MARKET
+    qapp = QApplication.instance() or QApplication([])
+    service, artifacts, recipes, _historical = _domain(tmp_path)
+    original, _collection, _roots, _before = _a2_snapshot(service, recipes)
+    baseline = service.plan_database_content_edit(original.database_id)
+    edited = service.execute_database_content_edit(service.plan_database_content_edit(
+        original.database_id, remove_columns=(baseline.selected_outputs[0].column_name,)))
+    store = artifacts._ohlcv_store
+    store.csv_path(MARKET).unlink()
+    store.sidecar_path(MARKET).unlink()
+    service.invalidate_source(MARKET)
+    monkeypatch.setattr(artifacts, "load_artifact_by_id", lambda *a, **k: pytest.fail("catalog loaded Artifact values"))
+    service.reconcile_update_status(force=True)
+    snapshot = service.scan_product_catalogs()
+    assert any(entry.current_manifest == edited for entry in snapshot.databases)
+    window = DataManagerSuiteWindow()
+    try:
+        window.set_product_catalogs(snapshot)
+        catalog = window._catalog_workspace
+        catalog.set_selected_market(None)
+        catalog.dataset_scope.setCurrentIndex(catalog.dataset_scope.findData("current"))
+        catalog.select_family("Databases")
+        assert catalog.table.rowCount() == 0
+        catalog.dataset_scope.setCurrentIndex(catalog.dataset_scope.findData("all"))
+        assert catalog.table.rowCount() == len(snapshot.databases)
+        catalog.select_family("Artifacts")
+        assert catalog.table.rowCount() == len(snapshot.managed_artifacts.artifacts) > 0
+    finally:
+        window.close()
+        QCoreApplication.processEvents()
+        del qapp

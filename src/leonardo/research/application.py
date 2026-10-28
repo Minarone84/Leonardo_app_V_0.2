@@ -13,6 +13,7 @@ from leonardo.core.core_runner import (
     ProgressCallback,
     ProgressReporter,
     ResultCallback,
+    TaskProgress,
     TaskResult,
     TaskSubmission,
 )
@@ -235,6 +236,11 @@ class ResearchDatasetApplicationService:
         finished = Event()
         task_id_ref: list[str] = []
         correlation_id = uuid4().hex
+        dispatcher = callback_dispatcher or (lambda callback: callback())
+
+        def on_progress(event: TaskProgress) -> None:
+            if progress_callback is not None:
+                dispatcher(lambda: progress_callback(event))
 
         def on_result(result: TaskResult) -> None:
             finished.set()
@@ -242,14 +248,14 @@ class ResearchDatasetApplicationService:
             with self._lock:
                 self._cancellations.pop(task_id, None)
             if result_callback is not None:
-                result_callback(result)
+                dispatcher(lambda: result_callback(result))
 
         submission = self._core_runner.submit_blocking_job(
             job,
             task_name=task_name,
-            progress_callback=progress_callback,
+            progress_callback=on_progress if progress_callback is not None else None,
             result_callback=on_result,
-            callback_dispatcher=callback_dispatcher,
+            callback_dispatcher=None,
             allow_duplicate_name=allow_duplicate_name,
             correlation_id=correlation_id,
             metadata={"operation": operation, **metadata},

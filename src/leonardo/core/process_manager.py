@@ -82,6 +82,7 @@ class ProcessManager:
         self._launcher = launcher or _default_launcher
         self._logger = logger or logging.getLogger("leonardo")
         self._records: dict[str, _ProcessRecord] = {}
+        self._launching_ids: set[str] = set()
         self._lock = RLock()
 
     def launch(
@@ -100,33 +101,38 @@ class ProcessManager:
             raise ValueError("label must be a non-empty string")
         identity = process_id or uuid4().hex
         with self._lock:
-            if identity in self._records:
+            if identity in self._records or identity in self._launching_ids:
                 raise ValueError(f"Process already registered: {identity}")
+            self._launching_ids.add(identity)
         try:
-            handle = self._launcher(
-                normalized,
-                cwd=Path(cwd) if cwd is not None else None,
-                env=dict(env) if env is not None else None,
-            )
-        except Exception as exc:
-            self._logger.exception("Process launch failed: %s [%s]", label, identity)
-            if self._error_router is not None:
-                self._error_router.route_exception(
-                    exc,
-                    message=f"Process launch failed: {label}",
-                    process_id=identity,
-                    context={"command": normalized},
+            try:
+                handle = self._launcher(
+                    normalized,
+                    cwd=Path(cwd) if cwd is not None else None,
+                    env=dict(env) if env is not None else None,
                 )
-            raise
-        record = _ProcessRecord(
-            process_id=identity,
-            label=label.strip(),
-            command=normalized,
-            handle=handle,
-            pid=handle.pid,
-        )
-        with self._lock:
-            self._records[identity] = record
+            except Exception as exc:
+                self._logger.exception("Process launch failed: %s [%s]", label, identity)
+                if self._error_router is not None:
+                    self._error_router.route_exception(
+                        exc,
+                        message=f"Process launch failed: {label}",
+                        process_id=identity,
+                        context={"command": normalized},
+                    )
+                raise
+            record = _ProcessRecord(
+                process_id=identity,
+                label=label.strip(),
+                command=normalized,
+                handle=handle,
+                pid=handle.pid,
+            )
+            with self._lock:
+                self._records[identity] = record
+        finally:
+            with self._lock:
+                self._launching_ids.discard(identity)
         self._emit_audit(
             AuditEventV1(
                 event_type="process.started",

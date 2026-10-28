@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from time import perf_counter
-from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +10,9 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
+from leonardo.data import MarketId
+from leonardo.data_manager import ArtifactUpdateNodePlan, ArtifactUpdatePlan
+from leonardo.financial_tools.models import UpdateStrategy
 from leonardo.gui.data_manager.catalogs import DataManagerCatalogWorkspace
 from leonardo.gui.data_manager.update import DataManagerUpdateWorkspace
 
@@ -42,21 +44,37 @@ def test_large_catalog_and_dependency_plan_rendering_are_responsive() -> None:
     update = DataManagerUpdateWorkspace()
     try:
         nodes = tuple(
-            SimpleNamespace(
+            ArtifactUpdateNodePlan(
                 portable_recipe_id=f"{index:064x}",
                 logical_artifact_id=f"{index + 1000:064x}",
                 tool_key="sma",
+                kind="indicator",
                 role="ROOT",
-                action="CREATE",
-                update_strategy=SimpleNamespace(value="FULL_RECALCULATION"),
+                action="UPDATE",
+                current_artifact_id=f"{index + 2000:064x}",
+                dependency_logical_artifact_ids=(),
+                reasons=("OHLCV advanced",),
+                update_strategy=UpdateStrategy.FULL_RECALCULATION,
                 context_rows=0,
                 revisable_tail_rows=0,
                 blockers=(),
             )
             for index in range(100)
         )
+        roots = tuple(node.logical_artifact_id for node in nodes)
+        plan = ArtifactUpdatePlan(
+            plan_id="a" * 64,
+            market_id=MarketId("bybit", "linear", "BTCUSDT", "1m"),
+            root_logical_artifact_ids=roots,
+            source_ohlcv=None,
+            members=(),
+            dependency_edges=(),
+            execution_stages=(roots,),
+            nodes=nodes,
+            blockers=(),
+        )
         started = perf_counter()
-        update.set_artifact_plan(SimpleNamespace(nodes=nodes))
+        update.set_artifact_plan(plan)
         plan_elapsed = perf_counter() - started
         assert update.artifact_plan_table.rowCount() == 100
     finally:

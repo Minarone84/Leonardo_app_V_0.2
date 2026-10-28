@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
@@ -20,8 +22,8 @@ class ResearchDetachedChartWindow(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
-        if type(slot_id) is not int or not 1 <= slot_id <= 8:
-            raise ValueError("slot_id must be an integer from 1 through 8")
+        if type(slot_id) is not int or not 1 <= slot_id <= MAX_RESEARCH_CHARTS:
+            raise ValueError("slot_id must be an integer from 1 through 16")
         if not isinstance(chart_panel, ResearchChartPanel):
             raise TypeError("chart_panel must be a ResearchChartPanel")
         self._slot_id = slot_id

@@ -36,6 +36,7 @@ class _ControlledDatasetService(ResearchDatasetApplicationService):
         ] = {}
         self.cancel_counts: dict[str, int] = {}
         self._sequence = 0
+        self.catalog_report = DatasetCatalogReport((), ())
 
     def _submit(self, kind: str, callback, value) -> TaskSubmission:
         self._sequence += 1
@@ -64,6 +65,8 @@ class _ControlledDatasetService(ResearchDatasetApplicationService):
         error_message: str | None = None,
     ) -> None:
         _kind, callback, stored = self.pending.pop(task_id)
+        if _kind == "catalog" and status == "completed" and isinstance(value, DatasetCatalogReport):
+            self.catalog_report = value
         callback(
             TaskResult(
                 task_id,
@@ -171,6 +174,9 @@ def _complete_catalog(
 
 
 def _select_complete_summary(presenter: RestoredResearchLifecyclePresenter) -> None:
+    service = presenter._service
+    if presenter._active_catalog_task_id is not None:
+        _complete_catalog(service, service.catalog_report)
     dialog = presenter._new_chart_dialog
     summary = dialog._dataset_summaries[0]
     market = summary.market_id
@@ -210,6 +216,7 @@ def test_catalog_publishes_only_accepted_and_empty_state_is_honest() -> None:
         _complete_catalog(service, DatasetCatalogReport((), (rejection,)))
         assert window.action_for_text("New Chart...").isEnabled()
         presenter.open_new_chart()
+        _complete_catalog(service, DatasetCatalogReport((), (rejection,)))
         assert presenter._new_chart_dialog.info_label.text() == (
             "No accepted OHLCV datasets are available for Research."
         )
@@ -230,9 +237,11 @@ def test_catalog_failure_reuses_blank_dialog_and_creates_no_fixture_values() -> 
         assert window.action_for_text("New Chart...").isEnabled()
         first = presenter._new_chart_dialog
         presenter.open_new_chart()
+        _complete_catalog(service, DatasetCatalogReport((), ()))
         first.reject()
         _settle_qt()
         presenter.open_new_chart()
+        _complete_catalog(service, DatasetCatalogReport((), ()))
         assert presenter._new_chart_dialog is first
         assert first.exchange_combo.currentData() == ""
         assert window.workspace.chart_count() == 0
@@ -251,12 +260,12 @@ def test_catalog_failure_reuses_blank_dialog_and_creates_no_fixture_values() -> 
         window.close()
 
 
-def test_complete_selection_allows_duplicates_and_enforces_eight_charts() -> None:
+def test_complete_selection_allows_duplicates_and_enforces_sixteen_charts() -> None:
     _qapp = QApplication.instance() or QApplication([])
     window, presenter, service, summary = _presenter()
     try:
         _complete_catalog(service, DatasetCatalogReport((summary,), ()))
-        for expected_count in range(1, 9):
+        for expected_count in range(1, 17):
             presenter.open_new_chart()
             dialog = presenter._new_chart_dialog
             assert dialog.exchange_combo.currentData() == ""
@@ -270,9 +279,72 @@ def test_complete_selection_allows_duplicates_and_enforces_eight_charts() -> Non
         _select_complete_summary(presenter)
         presenter._new_chart_dialog.create_button.click()
         _settle_qt()
-        assert window.workspace.slot_ids() == tuple(range(1, 9))
-        assert presenter._workspace_state.chart_count == 8
-        assert len(service.pending_ids("load")) == 8
+        assert window.workspace.slot_ids() == tuple(range(1, 17))
+        assert presenter._workspace_state.chart_count == 16
+        assert len(service.pending_ids("load")) == 16
     finally:
         presenter.dispose()
         window.close()
+
+
+def test_selector_refresh_coalesces_and_reuses_visible_dialog() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    try:
+        _complete_catalog(service, DatasetCatalogReport((summary,), ()))
+        presenter.open_new_chart()
+        first_id = presenter._active_catalog_task_id
+        presenter.open_new_chart()
+        assert service.pending_ids("catalog") == (first_id,)
+        assert not presenter._new_chart_dialog.isVisible()
+        assert not presenter._new_chart_dialog.create_button.isEnabled()
+        _complete_catalog(service, DatasetCatalogReport((), ()))
+        dialog = presenter._new_chart_dialog
+        assert dialog.isVisible() and dialog._dataset_summaries == ()
+        presenter.open_new_chart()
+        assert service.pending_ids("catalog") == ()
+        assert presenter._new_chart_dialog is dialog
+        dialog.reject()
+        presenter.open_new_chart()
+        _complete_catalog(service, DatasetCatalogReport((summary,), ()))
+        assert dialog.isVisible() and dialog._dataset_summaries == (summary,)
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_failed_selector_scan_can_retry_and_rejects_old_result(status) -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    try:
+        _complete_catalog(service, DatasetCatalogReport((summary,), ()))
+        presenter.open_new_chart()
+        old_id = presenter._active_catalog_task_id
+        _, callback, _ = service.pending[old_id]
+        service.complete(old_id, status=status, error_message="scan interrupted")
+        assert not presenter._new_chart_dialog.isVisible()
+        assert "scan interrupted" in window._activity_log.toPlainText()
+        presenter.open_new_chart()
+        new_id = presenter._active_catalog_task_id
+        callback(TaskResult(old_id, "completed", value=DatasetCatalogReport((summary,), ())))
+        assert presenter._active_catalog_task_id == new_id
+        assert not presenter._new_chart_dialog.isVisible()
+        _complete_catalog(service, DatasetCatalogReport((), ()))
+        assert presenter._new_chart_dialog.isVisible()
+        assert presenter._new_chart_dialog._dataset_summaries == ()
+    finally:
+        presenter.dispose()
+        window.close()
+
+
+def test_retired_selector_scan_never_opens_dialog() -> None:
+    _qapp = QApplication.instance() or QApplication([])
+    window, presenter, service, summary = _presenter()
+    presenter.open_new_chart()
+    catalog_id = presenter._active_catalog_task_id
+    presenter.dispose()
+    service.complete(catalog_id, value=DatasetCatalogReport((summary,), ()))
+    assert not presenter._new_chart_dialog.isVisible()
+    assert not presenter._new_chart_open_requested
+    window.close()

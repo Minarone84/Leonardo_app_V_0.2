@@ -89,17 +89,91 @@ def _snapshot(
     )
 
 
-def _currentness(window: DataManagerSuiteWindow, family: str) -> str:
+def _lifecycle_projection(window: DataManagerSuiteWindow, family: str) -> str:
     workspace = window._catalog_workspace
     workspace.set_selected_market(MARKET_B)
     workspace.select_family(family)
+    label = "Currentness" if family == "Artifacts" else "Update Readiness"
     column = next(
         index
         for index in range(workspace.table.columnCount())
-        if workspace.table.horizontalHeaderItem(index).text() == "Currentness"
+        if workspace.table.horizontalHeaderItem(index).text() == label
     )
     assert workspace.table.rowCount() == 1
     return workspace.table.item(0, column).text()
+
+
+def test_selected_validation_recovers_through_composition_and_retains_currentness(qapp, tmp_path):
+    from leonardo.data_manager import DataManagerCatalogSnapshot, DataManagerDatasetEntry
+    maintenance_service = _FakeMaintenanceService(tmp_path)
+    entry = DataManagerDatasetEntry(maintenance_service.market, True, 3, 60_000, 180_000)
+    initial = replace(_snapshot("a", artifact_status="CURRENT", database_status="CURRENT"),
+                      catalog=DataManagerCatalogSnapshot((entry,)))
+    changed = replace(_snapshot("b", artifact_status="APPEND_AVAILABLE", database_status="WAITING_FOR_ARTIFACT_UPDATE"),
+                      catalog=initial.catalog)
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    composition = object.__new__(GuiCompositionRoot)
+    composition._data_manager_suite_presenter = None
+    composition._notify_data_manager_ohlcv_validation_accepted(entry.market_id)
+    assert composition._data_manager_suite_presenter is None
+    composition._data_manager_suite_presenter = presenter
+    maintenance_view = OhlcvMaintenanceWindow()
+    maintenance = OhlcvMaintenancePresenter(
+        maintenance_view, maintenance_service,
+        on_canonical_ohlcv_evidence_changed=composition._notify_data_manager_ohlcv_change,
+        on_canonical_ohlcv_validation_accepted=composition._notify_data_manager_ohlcv_validation_accepted,
+    )
+    try:
+        _settle_initial_warmup(service, snapshot=initial)
+        presenter._selected_market = entry.market_id
+        view.select_market(entry.market_id, emit_selection=False)
+        view.enter_dataset_evidence_changed_state(entry.market_id, "OHLCV evidence changed")
+        before = len(service.calls)
+        maintenance_view.button_for_id("validate").click()
+        maintenance_service.emit_validation_success()
+        qapp.processEvents()
+        assert not view.dataset_context_suspended
+        assert "operations restored" in view.status_text()
+        assert view._selected_dataset_table.rowCount() == 1
+        assert view._selected_dataset_entry is entry
+        assert len(service.cancelled) == 1
+        reconcile = service.calls[-1]
+        assert reconcile[0] == "reconcile_status" and service.reconcile_forces[-1]
+        reconcile[2](TaskResult(reconcile[1], "completed", changed.latest_reconciliation))
+        scan = service.calls[-1]
+        assert scan[0] == "scan_product_catalogs"
+        scan[2](TaskResult(scan[1], "completed", changed))
+        assert not view.dataset_context_suspended
+        assert view._selected_dataset_table.rowCount() == 1
+        from leonardo.data_manager import DataManagerMarketSnapshot
+        inspection = service.calls[-1]
+        assert inspection[0] == ("inspect", entry.market_id)
+        inspection[2](TaskResult(inspection[1], "completed", DataManagerMarketSnapshot(entry.market_id, entry, (), ())))
+        assert presenter._background_refresh_task_id is None
+        assert view._selected_dataset_table.rowCount() == 1
+        assert view._selected_dataset_entry is entry
+        assert view._selected_market == entry.market_id
+        assert presenter.selected_market_id == entry.market_id
+        assert "operations restored" in view.status_text()
+        from tests.gui_test.test_data_manager_suite_window import _assert_selected_dataset_typography
+        _assert_selected_dataset_typography(view, False)
+        view._catalog_workspace.select_family("Artifacts")
+        assert view._catalog_workspace.create_artifact_button.isEnabled()
+        assert _lifecycle_projection(view, "Artifacts") == "UPDATE AVAILABLE"
+        assert _lifecycle_projection(view, "Databases") == "WAITING FOR ARTIFACTS"
+        assert not view.dataset_context_suspended
+        assert [call[0] for call in service.calls[before:]] == [
+            "reconcile_status", "reconcile_status", "scan_product_catalogs", ("inspect", entry.market_id),
+        ]
+        presenter.dispose()
+        before = (view.status_text(), len(service.calls))
+        composition._notify_data_manager_ohlcv_validation_accepted(entry.market_id)
+        assert before == (view.status_text(), len(service.calls))
+    finally:
+        maintenance_view.close()
+        view.close()
 
 
 def test_open_data_manager_reconciles_changed_ohlcv_without_publishing_products(
@@ -131,11 +205,12 @@ def test_open_data_manager_reconciles_changed_ohlcv_without_publishing_products(
         on_canonical_ohlcv_evidence_changed=(
             composition._notify_data_manager_ohlcv_change
         ),
+        on_canonical_ohlcv_validation_accepted=composition._notify_data_manager_ohlcv_validation_accepted,
     )
     calls_before = len(data_service.calls)
     try:
-        assert _currentness(data_view, "Artifacts") == "CURRENT"
-        assert _currentness(data_view, "Databases") == "CURRENT"
+        assert _lifecycle_projection(data_view, "Artifacts") == "CURRENT"
+        assert _lifecycle_projection(data_view, "Databases") == "CURRENT"
 
         maintenance_view.button_for_id("validate").click()
         maintenance_service.emit_validation_success()
@@ -153,7 +228,7 @@ def test_open_data_manager_reconciles_changed_ohlcv_without_publishing_products(
         assert product_scan[0] == "scan_product_catalogs"
         product_scan[2](TaskResult(product_scan[1], "completed", changed))
 
-        assert _currentness(data_view, "Artifacts") == "UPDATE AVAILABLE"
+        assert _lifecycle_projection(data_view, "Artifacts") == "UPDATE AVAILABLE"
         workspace = data_view._catalog_workspace
         workspace.table.selectRow(0)
         inspector = {
@@ -172,7 +247,7 @@ def test_open_data_manager_reconciles_changed_ohlcv_without_publishing_products(
                 error_message="expected inspection settlement",
             )
         )
-        assert _currentness(data_view, "Databases") == "BLOCKED"
+        assert _lifecycle_projection(data_view, "Databases") == "WAITING FOR ARTIFACTS"
 
         calls_after_first = len(data_service.calls)
         assert maintenance_view.button_for_id("validate").isEnabled()
@@ -190,7 +265,7 @@ def test_open_data_manager_reconciles_changed_ohlcv_without_publishing_products(
         product_scan[2](TaskResult(product_scan[1], "completed", later))
         assert data_presenter._product_catalogs is later
 
-        assert _currentness(data_view, "Databases") == "UPDATE AVAILABLE"
+        assert _lifecycle_projection(data_view, "Databases") == "APPEND READY"
         assert [call[0] for call in data_service.calls[calls_before:]] == [
             "reconcile_status",
             "scan_product_catalogs",

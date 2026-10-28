@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,14 +17,18 @@ import pandas as pd
 from leonardo.artifacts import (
     ArtifactError,
     ArtifactLineageError,
+    ArtifactNotFoundError,
     ArtifactMetadataV1,
     ArtifactRecipeV1,
     ArtifactService,
     ArtifactSourceRefV1,
     ManagedArtifactVersionKey,
+    ManagedArtifactSummary,
     OHLCVSourceFingerprintV1,
 )
-from leonardo.data import MarketId
+from leonardo.data import MarketId, timeframe_duration_ms
+from leonardo.ohlcv.validation import _add_calendar_months
+from .creation_store import _database_nullable_columns, _snapshot_rows
 from leonardo.financial_tools import (
     FinancialToolCalculationResult,
     UpdateStrategy,
@@ -54,6 +58,8 @@ from .creation_models import (
     DatabaseRevisionManifest,
     DatabaseRevisionManifestV1,
     DatabaseRevisionManifestV2,
+    DatabaseRevisionManifestV3,
+    database_revision_from_dict,
     DataManagerCreationError,
     deterministic_hash,
 )
@@ -67,6 +73,8 @@ from .update_models import (
     ArtifactCollectionUpdatePlan,
     ArtifactCollectionUpdateResult,
     ArtifactUpdateNodePlan,
+    ArtifactUpdatePlan,
+    ArtifactUpdateResult,
     DataManagerArtifactCurrentness,
     DataManagerCollectionCurrentness,
     DataManagerDatabaseCurrentness,
@@ -78,6 +86,14 @@ from .update_models import (
 
 
 _NUMERIC_ATOL = 0.00005
+_UNSET = object()
+
+
+@dataclass(frozen=True)
+class _ArtifactGraph:
+    market_id: MarketId
+    members: tuple[ArtifactCollectionMemberV1, ...]
+    dependency_edges: tuple[ArtifactCollectionDependencyV1, ...]
 
 
 def _market_key(market: MarketId) -> tuple[str, str, str, str]:
@@ -139,7 +155,7 @@ class DataManagerUpdateWorkflow:
     ) -> DataManagerReconciliationSnapshot:
         cancelled = cancellation_requested or (lambda: False)
         self._check_reconciliation_cancelled(cancelled, "before catalog scanning")
-        report = self._catalog.scan()
+        report = self._catalog.scan_metadata()
         accepted_summaries = {
             item.market_id: item for item in report.accepted
         }
@@ -165,23 +181,31 @@ class DataManagerUpdateWorkflow:
                 collection_evidence.append((collection_id, str(exc)))
 
         database_revisions = {}
+        invalid_databases = {}
         database_evidence: list[tuple[str, str]] = []
         for database_id in self._creation.store.list_database_ids():
             try:
-                loaded = self._creation.load_database_revision(database_id)
+                loaded = self._creation.store.load_database_manifest(database_id)
                 database_revisions[database_id] = loaded
-                database_evidence.append((database_id, loaded.manifest.revision_id))
-                known_markets.add(loaded.manifest.market_id)
+                database_evidence.append((database_id, loaded.revision_id))
+                known_markets.add(loaded.market_id)
             except (DataManagerCreationError, OSError, ValueError) as exc:
                 failures.append(f"Database {database_id}: {exc}")
                 database_evidence.append((database_id, str(exc)))
+                try:
+                    definition = self._creation.load_database_definition(database_id)
+                    head = self._creation.store.load_database_head(database_id)
+                except (DataManagerCreationError, OSError, ValueError):
+                    continue
+                invalid_databases[database_id] = (definition, head, str(exc))
+                known_markets.add(definition.market_id)
 
         sources: dict[MarketId, OHLCVSourceFingerprintV1] = {}
         source_errors: dict[MarketId, str] = {}
         for market in sorted(accepted_summaries, key=_market_key):
             self._check_reconciliation_cancelled(cancelled, "before source capture")
             try:
-                sources[market] = self._artifacts.capture_accepted_source(market)
+                sources[market] = self._artifacts.source_metadata(market)
             except (ArtifactError, OSError, ValueError) as exc:
                 source_errors[market] = str(exc)
                 failures.append(f"{market.as_key()}: {exc}")
@@ -189,7 +213,7 @@ class DataManagerUpdateWorkflow:
         managed_by_market = {}
         for market in sorted(known_markets, key=_market_key):
             self._check_reconciliation_cancelled(cancelled, "before managed-market scan")
-            managed_by_market[market] = self._artifacts.list_managed_artifacts(market)
+            managed_by_market[market] = self._artifacts.list_managed_artifacts_metadata(market)
 
         previous_by_market: dict[MarketId, OHLCVSourceFingerprintV1] = {}
         for market in sorted(managed_by_market, key=_market_key):
@@ -200,9 +224,9 @@ class DataManagerUpdateWorkflow:
                 try:
                     previous_by_market.setdefault(
                         market,
-                        self._artifacts.load_artifact_by_id(
+                        self._artifacts.load_artifact_metadata(
                             market, item.artifact_id
-                        ).metadata.source_ohlcv,
+                        ).source_ohlcv,
                     )
                 except (ArtifactError, OSError, ValueError):
                     pass
@@ -210,7 +234,7 @@ class DataManagerUpdateWorkflow:
             previous_by_market.setdefault(collection.market_id, collection.source_ohlcv)
         for loaded in database_revisions.values():
             previous_by_market.setdefault(
-                loaded.manifest.market_id, loaded.manifest.source_ohlcv
+                loaded.market_id, loaded.source_ohlcv
             )
 
         source_changes = tuple(
@@ -220,11 +244,10 @@ class DataManagerUpdateWorkflow:
                 sources.get(market),
                 accepted_summaries.get(market),
                 cancelled,
-                source_error=source_errors.get(market),
+                source_error=source_errors.get(market), metadata_only=True,
             )
             for market in sorted(known_markets, key=_market_key)
         )
-        changes_by_market = {item.market_id: item for item in source_changes}
         signature = self._evidence_signature(
             accepted_summaries,
             sources,
@@ -257,14 +280,11 @@ class DataManagerUpdateWorkflow:
             failures,
             cancelled,
         )
-        collection_by_id = {item.collection_id: item for item in collections}
         databases = self._reconcile_databases(
-            collection_by_id,
-            collections_by_id,
             database_revisions,
-            changes_by_market,
+            invalid_databases,
+            sources,
             accepted_summaries,
-            managed_by_market,
             failures,
             cancelled,
         )
@@ -318,6 +338,7 @@ class DataManagerUpdateWorkflow:
         cancellation_requested: Callable[[], bool],
         *,
         source_error: str | None = None,
+        metadata_only: bool = False,
     ) -> DataManagerSourceChange:
         if previous_source is not None and previous_source.market_id != market:
             return DataManagerSourceChange(
@@ -352,19 +373,25 @@ class DataManagerUpdateWorkflow:
         elif (
             current.row_count < previous_source.row_count
             or current.last_timestamp_ms < previous_source.last_timestamp_ms
-            or current.first_timestamp_ms > previous_source.first_timestamp_ms
         ):
             status, reason = "TRUNCATED", "current source coverage is shorter"
-        elif current == previous_source:
-            status, reason = "UNCHANGED", "complete source fingerprint is unchanged"
-        elif current.row_count > previous_source.row_count and self._prefix_matches(
-            summary.csv_path, previous_source, cancellation_requested
+        elif (
+            self._creation._same_coverage(current, previous_source)
+            and current.csv_sha256 == previous_source.csv_sha256
         ):
-            status, reason = "APPEND_ONLY", "exact accepted CSV prefix is unchanged"
+            status, reason = "UNCHANGED", "accepted source data and coverage are unchanged"
+        elif current.row_count > previous_source.row_count and (metadata_only or self._prefix_matches(
+            summary.csv_path, previous_source, cancellation_requested
+        )):
+            status, reason = "APPEND_ONLY", (
+                "Advisory metadata coverage increased; operation must verify the prefix"
+                if metadata_only else "exact accepted CSV prefix is unchanged"
+            )
         else:
             status, reason = (
                 "HISTORICAL_MUTATION",
-                "accepted source evidence differs without an exact append-only prefix",
+                "Metadata fingerprint changed; operational verification required" if metadata_only
+                else "accepted source evidence differs without an exact append-only prefix",
             )
         return DataManagerSourceChange(
             market,
@@ -565,6 +592,32 @@ class DataManagerUpdateWorkflow:
             raise DataManagerOperationError(str(exc)) from exc
         return loaded
 
+    def _load_recreation_evidence(self, collection, member, members, edges):
+        logical_id = member.version_key.logical_artifact_id
+        try:
+            head = self._artifacts.load_artifact_head(collection.market_id, logical_id)
+            self._artifacts.load_artifact_by_id(collection.market_id, head.artifact_id)
+        except ArtifactNotFoundError:
+            pass
+        else:
+            raise DataManagerOperationError("existing invalid managed head cannot be recreated")
+        record = self._artifacts.load_artifact_version(
+            collection.market_id, logical_id, member.version_key.artifact_id
+        )
+        historical = self._artifacts.load_artifact_by_id(
+            collection.market_id, record.artifact_id
+        )
+        metadata = historical.metadata
+        summary = ManagedArtifactSummary(
+            record.logical_artifact_id, record.portable_recipe_id, record.market_id,
+            record.artifact_id, record.previous_artifact_id, metadata.recipe.tool_key,
+            metadata.recipe.kind, metadata.recipe.output_names, metadata.row_count,
+            metadata.first_timestamp_ms, metadata.last_timestamp_ms, metadata.created_at_utc,
+        )
+        return self._load_and_prove_member_artifact(
+            collection, member, summary, members, edges
+        )
+
     def _resolve_database_members(
         self,
         content: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2,
@@ -605,661 +658,618 @@ class DataManagerUpdateWorkflow:
             ))
         return tuple(resolved), heads
 
+    def plan_artifact_update(
+        self, market_id: MarketId, root_logical_artifact_ids: Sequence[str]
+    ) -> ArtifactUpdatePlan:
+        if not isinstance(market_id, MarketId):
+            raise TypeError("market_id must be a MarketId")
+        if isinstance(root_logical_artifact_ids, (str, bytes)):
+            raise TypeError("Artifact roots must be a sequence")
+        roots = tuple(sorted(set(root_logical_artifact_ids)))
+        if not roots:
+            raise ValueError("Select at least one logical Artifact root")
+        for logical_id in roots:
+            ManagedArtifactVersionKey(logical_id, "0" * 64)
+        summaries = {
+            item.logical_artifact_id: item
+            for item in self._artifacts.list_managed_artifacts_metadata(market_id)
+        }
+        # Build physical-version ownership once; portable Recipe storage is irrelevant.
+        owners: dict[str, set[str]] = {}
+        versions = {}
+        errors = {}
+        for logical_id in summaries:
+            try:
+                records = self._artifacts.list_artifact_versions(market_id, logical_id)
+                versions[logical_id] = records
+                for record in records:
+                    owners.setdefault(record.artifact_id, set()).add(logical_id)
+            except (ArtifactError, OSError, ValueError) as exc:
+                errors[logical_id] = str(exc)
+        source_error = None
+        try:
+            source = self._artifacts.capture_accepted_source(market_id)
+        except (ArtifactError, OSError, ValueError) as exc:
+            source = None
+            source_error = str(exc)
+        members = {}
+        loaded_by_id = {}
+        recovery = {}
+        edges = []
+        blockers = [] if source_error is None else [source_error]
+        pending = list(roots)
+        visited = set()
+        while pending:
+            logical_id = pending.pop(0)
+            if logical_id in visited:
+                continue
+            visited.add(logical_id)
+            try:
+                if logical_id in errors:
+                    raise DataManagerOperationError(errors[logical_id])
+                summary = summaries.get(logical_id)
+                if summary is None:
+                    raise DataManagerOperationError("no authoritative managed lineage")
+                if summary.valid:
+                    artifact_id = summary.artifact_id
+                else:
+                    try:
+                        self._artifacts.load_artifact_head(market_id, logical_id)
+                    except ArtifactNotFoundError:
+                        pass
+                    else:
+                        raise DataManagerOperationError("existing invalid head cannot be recovered")
+                    records = versions.get(logical_id, ())
+                    by_id = {record.artifact_id: record for record in records}
+                    tips = set(by_id) - {record.previous_artifact_id for record in records}
+                    if len(tips) != 1:
+                        raise DataManagerOperationError("surviving lineage has no unique tip")
+                    artifact_id = next(iter(tips))
+                    seen = set()
+                    cursor = artifact_id
+                    while cursor is not None:
+                        if cursor in seen or cursor not in by_id:
+                            raise DataManagerOperationError("surviving version chain is invalid")
+                        seen.add(cursor)
+                        cursor = by_id[cursor].previous_artifact_id
+                    if seen != set(by_id):
+                        raise DataManagerOperationError("surviving version chain is disconnected")
+                    recovery[logical_id] = artifact_id
+                record = self._artifacts.load_artifact_version(market_id, logical_id, artifact_id)
+                loaded = self._artifacts.load_artifact_by_id(market_id, artifact_id)
+                recipe = loaded.metadata.recipe
+                member = ArtifactCollectionMemberV1(
+                    ManagedArtifactVersionKey(logical_id, artifact_id),
+                    record.portable_recipe_id, recipe.tool_key, recipe.kind,
+                    recipe.output_names, loaded.metadata.values_sha256,
+                )
+                members[logical_id] = member
+                loaded_by_id[logical_id] = loaded
+                for ref in recipe.source_artifacts:
+                    candidates = owners.get(ref.artifact_id, set())
+                    if len(candidates) != 1:
+                        raise DataManagerOperationError(
+                            f"dependency {ref.role}: missing or ambiguous managed lineage"
+                        )
+                    dependency = next(iter(candidates))
+                    edges.append(ArtifactCollectionDependencyV1(
+                        dependency, logical_id, ref.role, ref.output_name
+                    ))
+                    pending.append(dependency)
+            except (ArtifactError, DataManagerCreationError, DataManagerOperationError,
+                    OSError, KeyError, ValueError) as exc:
+                blockers.append(f"{logical_id}: {exc}")
+        graph = _ArtifactGraph(market_id, tuple(members.values()), tuple(edges))
+        stages = ()
+        try:
+            if any(edge.dependency_logical_artifact_id not in members for edge in edges):
+                raise DataManagerOperationError("required dependency is unavailable")
+            stages = self._artifact_execution_stages(graph)
+        except (DataManagerOperationError, KeyError, ValueError) as exc:
+            blockers.append(str(exc))
+        incoming = self._incoming_collection_edges(graph)
+        nodes = {}
+        order = tuple(value for stage in stages for value in stage)
+        for logical_id in order:
+            member = members[logical_id]
+            loaded = loaded_by_id[logical_id]
+            metadata = loaded.metadata
+            node_blockers = []
+            try:
+                record = self._artifacts.load_artifact_version(
+                    market_id, logical_id, metadata.artifact_id
+                )
+                summary = ManagedArtifactSummary(
+                    logical_id, record.portable_recipe_id, market_id, record.artifact_id,
+                    record.previous_artifact_id, metadata.recipe.tool_key,
+                    metadata.recipe.kind, metadata.recipe.output_names, metadata.row_count,
+                    metadata.first_timestamp_ms, metadata.last_timestamp_ms,
+                    metadata.created_at_utc,
+                )
+                self._load_and_prove_member_artifact(
+                    graph, member, summary, members, incoming[logical_id]
+                )
+            except (ArtifactError, DataManagerOperationError, KeyError, ValueError) as exc:
+                node_blockers.append(str(exc))
+            change = self.classify_source_change(metadata.source_ohlcv, market_id)
+            if change.status in {"TRUNCATED", "IDENTITY_MISMATCH", "INVALID_SOURCE"}:
+                node_blockers.append(f"{change.status}: {change.reason}")
+            dependencies = tuple(dict.fromkeys(
+                edge.dependency_logical_artifact_id for edge in incoming[logical_id]
+            ))
+            if any(nodes[d].action == "BLOCKED" for d in dependencies):
+                node_blockers.append("required dependency cannot be safely updated")
+            refs = {ref.role: ref for ref in metadata.recipe.source_artifacts}
+            current_dependencies = all(
+                nodes[d].action == "REUSE_CURRENT" for d in dependencies
+            ) and all(
+                refs[edge.role].artifact_id == members[edge.dependency_logical_artifact_id].version_key.artifact_id
+                for edge in incoming[logical_id]
+            )
+            action = "UPDATE"
+            reasons = (change.reason if change.status != "UNCHANGED"
+                       else "Required dependency head/currentness changed",)
+            if logical_id in recovery:
+                action = "RECREATE"
+                reasons = ("Managed head missing; exact surviving Artifact lineage can be recovered.",)
+            elif change.status == "UNCHANGED" and current_dependencies:
+                action, reasons = "REUSE_CURRENT", ("Artifact and dependencies are current",)
+            if node_blockers or source is None:
+                action = "BLOCKED"
+            policy = get_financial_tool_spec(member.tool_key).update_policy
+            nodes[logical_id] = ArtifactUpdateNodePlan(
+                member.portable_recipe_id, logical_id, member.tool_key,
+                "ROOT" if logical_id in roots else "SUPPORT", action,
+                None if logical_id in recovery else metadata.artifact_id,
+                dependencies, policy.strategy,
+                policy.effective_context_rows(metadata.recipe.parameters),
+                policy.revisable_tail_rows, tuple(node_blockers), reasons,
+                member.kind, recovery.get(logical_id),
+            )
+        payload = {
+            "market": market_id.as_key(), "roots": roots,
+            "source": _source_payload(source),
+            "members": [member.to_dict() for member in graph.members],
+            "edges": [edge.to_dict() for edge in edges],
+            "nodes": [(n.logical_artifact_id, n.action, n.current_artifact_id,
+                       n.reconstruction_artifact_id, n.blockers) for n in nodes.values()],
+            "blockers": blockers,
+        }
+        return ArtifactUpdatePlan(
+            _hash_payload(payload), market_id, roots, source, graph.members,
+            graph.dependency_edges, stages, tuple(nodes.values()), tuple(blockers),
+        )
+
+    def execute_artifact_update(
+        self, plan: ArtifactUpdatePlan, *,
+        cancellation_requested: Callable[[], bool] | None = None,
+        before_publish: Callable[[], None] | None = None,
+    ) -> ArtifactUpdateResult:
+        if not isinstance(plan, ArtifactUpdatePlan):
+            raise TypeError("plan must be an ArtifactUpdatePlan")
+        if plan.blocked:
+            raise DataManagerOperationError("blocked Artifact update plan cannot execute")
+        if self.plan_artifact_update(plan.market_id, plan.root_logical_artifact_ids) != plan:
+            raise DataManagerOperationError("Artifact update plan is stale")
+        cancelled = cancellation_requested or (lambda: False)
+        publication_started = False
+        reviewed_heads = {node.logical_artifact_id: node.current_artifact_id for node in plan.nodes}
+
+        def publication_gate():
+            nonlocal publication_started
+            if cancelled():
+                raise DataManagerOperationError("Artifact update cancelled")
+            if self._artifacts.capture_accepted_source(plan.market_id) != plan.source_ohlcv:
+                raise DataManagerOperationError("Artifact update source changed after review")
+            for logical_id, expected_head in reviewed_heads.items():
+                try:
+                    actual_head = self._artifacts.load_artifact_head(plan.market_id, logical_id).artifact_id
+                except ArtifactNotFoundError:
+                    actual_head = None
+                if actual_head != expected_head:
+                    raise DataManagerOperationError("Artifact update head changed after review")
+            if not publication_started and before_publish is not None:
+                before_publish()
+            publication_started = True
+
+        if cancelled():
+            raise DataManagerOperationError("Artifact update cancelled")
+        if plan.source_ohlcv is None:
+            raise DataManagerOperationError("accepted OHLCV source is unavailable")
+        try:
+            frame = _dataset_frame(self._loader.load(plan.market_id, cancellation_requested=cancelled))
+            incoming = self._incoming_collection_edges(plan)
+            nodes = {node.logical_artifact_id: node for node in plan.nodes}
+            frames, metadata, artifact_ids = {}, {}, {}
+            prepared, recovered, updated, reused = [], [], [], []
+            for stage in plan.execution_stages:
+                for logical_id in stage:
+                    if cancelled():
+                        raise DataManagerOperationError("Artifact update cancelled")
+                    node = nodes[logical_id]
+                    current_id = node.current_artifact_id
+                    if node.action == "RECREATE":
+                        head = self._artifacts.restore_missing_managed_artifact_head(
+                            plan.market_id, logical_id, before_publish=publication_gate
+                        )
+                        if head.artifact_id != node.reconstruction_artifact_id:
+                            raise DataManagerOperationError("Recovered Artifact differs from reviewed evidence")
+                        current_id = head.artifact_id
+                        reviewed_heads[logical_id] = current_id
+                        recovered.append(logical_id)
+                    loaded = self._artifacts.load_artifact_by_id(plan.market_id, current_id)
+                    refs = tuple(ArtifactSourceRefV1(
+                        edge.role, artifact_ids[edge.dependency_logical_artifact_id], edge.output_name
+                    ) for edge in incoming[logical_id])
+                    change = self.classify_source_change(loaded.metadata.source_ohlcv, plan.market_id)
+                    if change.current_source != plan.source_ohlcv:
+                        raise DataManagerOperationError("Artifact update source changed after review")
+                    if (change.status == "UNCHANGED"
+                            and set(refs) == set(loaded.metadata.recipe.source_artifacts)):
+                        frames[logical_id], metadata[logical_id] = loaded.frame, loaded.metadata
+                        artifact_ids[logical_id] = current_id
+                        reused.append(logical_id)
+                        continue
+                    calculation = self._calculate_updated_node(
+                        loaded.metadata.recipe, replace(node, current_artifact_id=current_id),
+                        change, frame, frames, incoming[logical_id],
+                        dependency_refs=refs,
+                        full_fallback=True,
+                    )
+                    source_metadata = tuple({
+                        metadata[edge.dependency_logical_artifact_id].artifact_id:
+                        metadata[edge.dependency_logical_artifact_id]
+                        for edge in incoming[logical_id]
+                    }.values())
+                    candidate = self._artifacts.prepare_managed_calculation(
+                        plan.market_id, node.portable_recipe_id, calculation,
+                        expected_source=plan.source_ohlcv, source_artifacts=refs,
+                        source_metadata=source_metadata, previous_artifact_id=current_id,
+                        created_at_utc=self._clock(),
+                    )
+                    prepared.append(candidate)
+                    frames[logical_id] = calculation.to_frame()
+                    metadata[logical_id] = candidate.metadata
+                    artifact_ids[logical_id] = candidate.metadata.artifact_id
+                    updated.append(logical_id)
+            publication = None
+            if prepared:
+                publication = self._artifacts.publish_managed_artifact_graph(
+                    tuple(prepared), expected_source=plan.source_ohlcv,
+                    before_publish=publication_gate,
+                )
+            managed = {item.logical_artifact_id: item for item in self._artifacts.list_managed_artifacts_metadata(plan.market_id)}
+            materialization = DataManagerArtifactMaterializationResult(
+                plan_id=plan.plan_id, target_market_id=plan.market_id,
+                source_ohlcv=plan.source_ohlcv,
+                root_logical_artifact_ids=plan.root_logical_artifact_ids,
+                support_logical_artifact_ids=tuple(n for n in nodes if n not in plan.root_logical_artifact_ids),
+                created_artifact_ids=() if publication is None else publication.created_artifact_ids,
+                reused_artifact_ids=tuple(artifact_ids[n] for n in reused),
+                created_version_keys=() if publication is None else publication.created_version_keys,
+                reused_version_keys=tuple(ManagedArtifactVersionKey(n, artifact_ids[n]) for n in reused),
+                advanced_logical_artifact_ids=() if publication is None else publication.advanced_logical_artifact_ids,
+                managed_artifacts=tuple(self._managed_entry(managed[n]) for n in nodes),
+                verified_artifact_metadata=tuple(metadata.values()),
+            )
+            self.invalidate()
+            return ArtifactUpdateResult(
+                plan.plan_id, materialization, tuple(updated), tuple(recovered), tuple(reused),
+                (), (), self.reconcile_all(force=True),
+            )
+        except (ArtifactError, DataManagerCreationError, ArtifactMaterializationValidationError,
+                OSError, KeyError, ValueError) as exc:
+            raise DataManagerOperationError(str(exc)) from exc
+
     def plan_artifact_collection_update(
         self, collection_id: str
     ) -> ArtifactCollectionUpdatePlan:
-        try:
-            collection = self._creation.load_artifact_collection(collection_id)
-            source_change = self.classify_source_change(
-                collection.source_ohlcv, collection.market_id
-            )
-            members = {
-                member.version_key.logical_artifact_id: member
-                for member in collection.members
-            }
-            logical_stages = self._artifact_execution_stages(collection)
-            member_order = tuple(
-                logical_id for stage in logical_stages for logical_id in stage
-            )
-            roots = tuple(
-                members[logical_id].portable_recipe_id
-                for logical_id in collection.root_logical_artifact_ids
-            )
-            member_recipe_ids = tuple(
-                members[logical_id].portable_recipe_id for logical_id in member_order
-            )
-            execution_stages = tuple(
-                tuple(members[logical_id].portable_recipe_id for logical_id in stage)
-                for stage in logical_stages
-            )
-            managed_by_logical: dict[str, list[object]] = {}
-            for item in self._artifacts.list_managed_artifacts(collection.market_id):
-                managed_by_logical.setdefault(item.logical_artifact_id, []).append(item)
-            incoming = self._incoming_collection_edges(collection)
-            root_set = set(collection.root_logical_artifact_ids)
-            node_by_logical: dict[str, ArtifactUpdateNodePlan] = {}
-            nodes: list[ArtifactUpdateNodePlan] = []
-            plan_blockers: list[str] = []
-            current_source = source_change.current_source
-            for logical_id in member_order:
-                member = members[logical_id]
-                summaries = tuple(managed_by_logical.get(logical_id, ()))
-                summary = summaries[0] if len(summaries) == 1 else None
-                blockers: list[str] = []
-                edges = incoming[logical_id]
-                dependency_ids = tuple(dict.fromkeys(
-                    edge.dependency_logical_artifact_id for edge in edges
-                ))
-                if len(summaries) > 1:
-                    blockers.append("managed Artifact head is not unique")
-                for dependency_id in dependency_ids:
-                    dependency_node = node_by_logical.get(dependency_id)
-                    if dependency_node is None or dependency_node.action == "BLOCKED":
-                        blockers.append("dependency update is blocked")
-                current_artifact_id = None
-                loaded = None
-                if summary is None or not summary.valid:
-                    if len(summaries) <= 1:
-                        blockers.append(
-                            "managed Artifact is unavailable"
-                            if summary is None
-                            else summary.rejection_reason
-                        )
-                else:
-                    current_artifact_id = summary.artifact_id
-                    try:
-                        loaded = self._load_and_prove_member_artifact(
-                            collection, member, summary, members, edges
-                        )
-                    except (ArtifactError, DataManagerOperationError, KeyError, ValueError) as exc:
-                        blockers.append(str(exc))
-                recipe = None if loaded is None else loaded.metadata.recipe
-                if recipe is not None and recipe.tool_key == "dynamic_binning":
-                    blockers.append("dynamic_binning cannot be materialized")
-                action = "UPDATE"
-                if blockers or current_source is None:
-                    if current_source is None:
-                        blockers.append("accepted OHLCV source is unavailable")
-                    action = "BLOCKED"
-                elif loaded is not None:
-                    current_refs = {ref.role: ref for ref in loaded.metadata.recipe.source_artifacts}
-                    dependencies_reused = all(
-                        node_by_logical[dependency_id].action == "REUSE_CURRENT"
-                        for dependency_id in dependency_ids
-                    )
-                    refs_are_current = all(
-                        current_refs[edge.role].artifact_id
-                        == node_by_logical[
-                            edge.dependency_logical_artifact_id
-                        ].current_artifact_id
-                        for edge in edges
-                    )
-                    if (
-                        loaded.metadata.source_ohlcv == current_source
-                        and dependencies_reused
-                        and refs_are_current
-                    ):
-                        action = "REUSE_CURRENT"
-                policy = get_financial_tool_spec(member.tool_key).update_policy
-                try:
-                    context = policy.effective_context_rows(
-                        {} if recipe is None else recipe.parameters
-                    )
-                except (TypeError, ValueError) as exc:
-                    blockers.append(str(exc))
-                    context = 0
-                    action = "BLOCKED"
-                node = ArtifactUpdateNodePlan(
-                    portable_recipe_id=member.portable_recipe_id,
-                    logical_artifact_id=logical_id,
-                    tool_key=member.tool_key,
-                    role="ROOT" if logical_id in root_set else "SUPPORT",
-                    action=action,
-                    current_artifact_id=current_artifact_id,
-                    dependency_logical_artifact_ids=dependency_ids,
-                    update_strategy=policy.strategy,
-                    context_rows=context,
-                    revisable_tail_rows=policy.revisable_tail_rows,
-                    blockers=tuple(blockers),
-                )
-                nodes.append(node)
-                node_by_logical[logical_id] = node
-                plan_blockers.extend(
-                    f"{member.portable_recipe_id}: {value}" for value in blockers
-                )
-            starting_heads = tuple(
-                (node.logical_artifact_id, node.current_artifact_id)
-                for node in nodes
-                if node.current_artifact_id is not None
-            )
-            payload = {
-                "schema": "data_manager_artifact_collection_update_plan_v1",
-                "collection_id": collection.collection_id,
-                "collection_revision_id": collection.revision_id,
-                "source": _source_payload(current_source),
-                "source_status": source_change.status,
-                "roots": list(roots),
-                "members": list(member_recipe_ids),
-                "heads": [list(value) for value in sorted(starting_heads)],
-                "stages": [list(value) for value in execution_stages],
-                "nodes": [
-                    {
-                        "recipe_id": node.portable_recipe_id,
-                        "logical_id": node.logical_artifact_id,
-                        "action": node.action,
-                        "strategy": node.update_strategy.value,
-                        "context": node.context_rows,
-                        "tail": node.revisable_tail_rows,
-                        "blockers": list(node.blockers),
-                    }
-                    for node in nodes
-                ],
-            }
-            return ArtifactCollectionUpdatePlan(
-                plan_id=_hash_payload(payload),
-                collection_id=collection.collection_id,
-                collection_revision_id=collection.revision_id,
-                market_id=collection.market_id,
-                source_change=source_change,
-                source_ohlcv=current_source,
-                root_recipe_ids=roots,
-                member_recipe_ids=member_recipe_ids,
-                root_logical_artifact_ids=collection.root_logical_artifact_ids,
-                support_logical_artifact_ids=collection.support_logical_artifact_ids,
-                starting_artifact_heads=starting_heads,
-                execution_stages=execution_stages,
-                nodes=tuple(nodes),
-                blockers=tuple(plan_blockers),
-            )
-        except (
-            ArtifactError,
-            DataManagerCreationError,
-            ArtifactMaterializationValidationError,
-            FileNotFoundError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            if isinstance(exc, DataManagerOperationError):
-                raise
-            raise DataManagerOperationError(str(exc)) from exc
+        collection = self._creation.load_artifact_collection(collection_id)
+        validation = self._creation.validate_artifact_collection(collection_id, collection.revision_id)
+        source = collection.source_ohlcv
+        change = DataManagerSourceChange(
+            collection.market_id, "UNCHANGED", source, source,
+            source.last_timestamp_ms, source.last_timestamp_ms, 0,
+            "No-work compatibility evidence from immutable Collection",
+        )
+        members = {m.version_key.logical_artifact_id: m for m in collection.members}
+        return ArtifactCollectionUpdatePlan(
+            plan_id=_hash_payload({"collection": collection.to_dict(), "work": []}),
+            collection_id=collection.collection_id,
+            collection_revision_id=collection.revision_id,
+            market_id=collection.market_id,
+            source_change=change, source_ohlcv=source,
+            root_recipe_ids=tuple(members[n].portable_recipe_id for n in collection.root_logical_artifact_ids),
+            member_recipe_ids=tuple(m.portable_recipe_id for m in collection.members),
+            root_logical_artifact_ids=collection.root_logical_artifact_ids,
+            support_logical_artifact_ids=collection.support_logical_artifact_ids,
+            starting_artifact_heads=tuple((m.version_key.logical_artifact_id, m.version_key.artifact_id) for m in collection.members),
+            execution_stages=(), nodes=(), blockers=validation.blockers,
+        )
 
     def execute_artifact_collection_update(
-        self,
-        plan: ArtifactCollectionUpdatePlan,
-        *,
+        self, plan: ArtifactCollectionUpdatePlan, *,
         cancellation_requested: Callable[[], bool] | None = None,
         before_publish: Callable[[], None] | None = None,
     ) -> ArtifactCollectionUpdateResult:
         if not isinstance(plan, ArtifactCollectionUpdatePlan):
             raise TypeError("plan must be an ArtifactCollectionUpdatePlan")
-        if plan.blocked:
-            raise DataManagerOperationError("blocked Artifact Collection update plan cannot execute")
         cancelled = cancellation_requested or (lambda: False)
+        if cancelled():
+            raise DataManagerOperationError("Artifact Collection update cancelled")
         fresh = self.plan_artifact_collection_update(plan.collection_id)
         if fresh != plan:
             raise DataManagerOperationError("Artifact Collection update plan is stale")
-        if cancelled():
-            raise DataManagerOperationError("Artifact Collection update cancelled")
-        if plan.source_ohlcv is None:
-            raise DataManagerOperationError("accepted OHLCV source is unavailable")
-        try:
-            dataset = self._loader.load(
-                plan.market_id, cancellation_requested=cancelled
-            )
-            target_frame = _dataset_frame(dataset)
-            collection = self._creation.load_artifact_collection(plan.collection_id)
-            incoming = self._incoming_collection_edges(collection)
-            nodes = {node.logical_artifact_id: node for node in plan.nodes}
-            logical_by_recipe = {
-                node.portable_recipe_id: node.logical_artifact_id for node in plan.nodes
-            }
-            recipes: dict[str, ArtifactRecipeV1] = {}
-            frames: dict[str, pd.DataFrame] = {}
-            metadata: dict[str, ArtifactMetadataV1] = {}
-            artifact_ids: dict[str, str] = {}
-            calculations: dict[str, FinancialToolCalculationResult] = {}
-            operation_time = self._clock()
-            for stage in plan.execution_stages:
-                for recipe_id in stage:
-                    if cancelled():
-                        raise DataManagerOperationError(
-                            "Artifact Collection update cancelled"
-                        )
-                    logical_id = logical_by_recipe[recipe_id]
-                    node = nodes[logical_id]
-                    loaded = self._artifacts.load_artifact_by_id(
-                        plan.market_id, node.current_artifact_id
-                    )
-                    recipes[logical_id] = loaded.metadata.recipe
-                    if node.action == "REUSE_CURRENT":
-                        if node.current_artifact_id is None:
-                            raise DataManagerOperationError("reused node has no Artifact")
-                        frames[logical_id] = loaded.frame
-                        metadata[logical_id] = loaded.metadata
-                        artifact_ids[logical_id] = node.current_artifact_id
-                        continue
-                    recipe = recipes[logical_id]
-                    result = self._calculate_updated_node(
-                        recipe,
-                        node,
-                        plan.source_change,
-                        target_frame,
-                        frames,
-                        incoming[logical_id],
-                    )
-                    calculations[logical_id] = result
-                    frames[logical_id] = result.to_frame()
-            prepared = []
-            for recipe_id in plan.member_recipe_ids:
-                logical_id = logical_by_recipe[recipe_id]
-                node = nodes[logical_id]
-                if node.action == "REUSE_CURRENT":
-                    continue
-                refs = tuple(
-                    ArtifactSourceRefV1(
-                        edge.role,
-                        artifact_ids[edge.dependency_logical_artifact_id],
-                        edge.output_name,
-                    )
-                    for edge in incoming[logical_id]
-                )
-                source_metadata = tuple({
-                    metadata[edge.dependency_logical_artifact_id].artifact_id:
-                    metadata[edge.dependency_logical_artifact_id]
-                    for edge in incoming[logical_id]
-                }.values())
-                candidate = self._artifacts.prepare_managed_calculation(
-                    plan.market_id,
-                    recipe_id,
-                    calculations[logical_id],
-                    expected_source=plan.source_ohlcv,
-                    source_artifacts=refs,
-                    source_metadata=source_metadata,
-                    previous_artifact_id=node.current_artifact_id,
-                    created_at_utc=operation_time,
-                )
-                prepared.append(candidate)
-                artifact_ids[logical_id] = candidate.metadata.artifact_id
-                metadata[logical_id] = candidate.metadata
+        if fresh.blocked:
+            raise DataManagerOperationError("blocked Artifact Collection update plan cannot execute")
+        collection = self._creation.load_artifact_collection(plan.collection_id, plan.collection_revision_id)
+        entries = []
+        for member in collection.members:
             if cancelled():
                 raise DataManagerOperationError("Artifact Collection update cancelled")
-            if prepared:
-                publication = self._artifacts.publish_managed_artifact_graph(
-                    tuple(prepared),
-                    expected_source=plan.source_ohlcv,
-                    before_publish=before_publish,
-                )
-                created_ids = publication.created_artifact_ids
-                reused_ids = publication.reused_artifact_ids
-                created_keys = publication.created_version_keys
-                reused_keys = publication.reused_version_keys
-                advanced_ids = publication.advanced_logical_artifact_ids
-            else:
-                created_ids = ()
-                reused_ids = tuple(artifact_ids.values())
-                created_keys = ()
-                reused_keys = tuple(
-                    ManagedArtifactVersionKey(key, value)
-                    for key, value in artifact_ids.items()
-                )
-                advanced_ids = ()
-            current = {
-                item.logical_artifact_id: item
-                for item in self._artifacts.list_managed_artifacts(plan.market_id)
-            }
-            entries = tuple(
-                self._managed_entry(current[logical_by_recipe[recipe_id]])
-                for recipe_id in plan.member_recipe_ids
-            )
-            materialization = DataManagerArtifactMaterializationResult(
-                plan_id=plan.plan_id,
-                target_market_id=plan.market_id,
-                source_ohlcv=plan.source_ohlcv,
-                root_logical_artifact_ids=plan.root_logical_artifact_ids,
-                support_logical_artifact_ids=plan.support_logical_artifact_ids,
-                created_artifact_ids=tuple(created_ids),
-                reused_artifact_ids=tuple(
-                    dict.fromkeys(
-                        (*reused_ids, *(
-                            artifact_ids[logical_by_recipe[key]]
-                            for key in plan.member_recipe_ids
-                            if nodes[logical_by_recipe[key]].action == "REUSE_CURRENT"
-                        ))
-                    )
-                ),
-                created_version_keys=tuple(created_keys),
-                reused_version_keys=tuple(
-                    dict.fromkeys(
-                        (*reused_keys, *(
-                            ManagedArtifactVersionKey(
-                                logical_by_recipe[key], artifact_ids[logical_by_recipe[key]]
-                            )
-                            for key in plan.member_recipe_ids
-                            if nodes[logical_by_recipe[key]].action == "REUSE_CURRENT"
-                        ))
-                    )
-                ),
-                advanced_logical_artifact_ids=tuple(advanced_ids),
-                managed_artifacts=entries,
-            )
-            if prepared:
-                collection = self._creation.advance_artifact_collection(
-                    plan.collection_id, materialization
-                )
-            else:
-                collection = self._creation.load_artifact_collection(plan.collection_id)
-            self.invalidate()
-            snapshot = self.reconcile_all(force=True)
-            return ArtifactCollectionUpdateResult(
-                plan.plan_id, materialization, collection, snapshot
-            )
-        except DataManagerOperationError:
-            raise
-        except (
-            ArtifactError,
-            DataManagerCreationError,
-            ArtifactMaterializationValidationError,
-            FileNotFoundError,
-            KeyError,
-            ValueError,
-        ) as exc:
-            raise DataManagerOperationError(str(exc)) from exc
+            key = member.version_key
+            loaded = self._artifacts.load_artifact_by_id(collection.market_id, key.artifact_id)
+            record = self._artifacts.load_artifact_version(collection.market_id, key.logical_artifact_id, key.artifact_id)
+            meta = loaded.metadata
+            entries.append(DataManagerManagedArtifactEntry(
+                key.logical_artifact_id, member.portable_recipe_id, collection.market_id,
+                key.artifact_id, record.previous_artifact_id, member.tool_key, member.kind,
+                member.output_names, meta.row_count, meta.first_timestamp_ms,
+                meta.last_timestamp_ms, record.created_at_utc,
+            ))
+        materialization = DataManagerArtifactMaterializationResult(
+            plan_id=plan.plan_id, target_market_id=collection.market_id,
+            source_ohlcv=collection.source_ohlcv,
+            root_logical_artifact_ids=collection.root_logical_artifact_ids,
+            support_logical_artifact_ids=collection.support_logical_artifact_ids,
+            created_artifact_ids=(), created_version_keys=(), advanced_logical_artifact_ids=(),
+            reused_artifact_ids=tuple(m.version_key.artifact_id for m in collection.members),
+            reused_version_keys=tuple(m.version_key for m in collection.members),
+            managed_artifacts=tuple(entries),
+        )
+        self.invalidate()
+        return ArtifactCollectionUpdateResult(
+            plan.plan_id, materialization, collection,
+            self.reconcile_all(force=True, cancellation_requested=cancelled),
+        )
 
-    def plan_database_update(self, database_id: str) -> DatabaseUpdatePlan:
-        try:
-            loaded = self._creation.load_database_revision(database_id)
-            manifest = loaded.manifest
-            content: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2
-            if isinstance(manifest, DatabaseRevisionManifestV1):
-                content = self._creation.load_artifact_collection(
-                    manifest.collection_id
-                )
-            else:
-                content = manifest
-            source_change = self.classify_source_change(
-                manifest.source_ohlcv, manifest.market_id
-            )
-            managed = self._artifacts.list_managed_artifacts(manifest.market_id)
-            return self._plan_database_update_from_evidence(
-                database_id,
-                loaded,
-                content,
-                source_change,
-                managed,
-            )
-        except (DataManagerCreationError, ArtifactError, OSError, ValueError) as exc:
-            raise DataManagerOperationError(str(exc)) from exc
-
-    def _plan_database_update_from_evidence(
+    def _database_append_evidence(
         self,
         database_id,
-        loaded,
-        collection,
-        source_change,
-        managed_summaries,
-    ) -> DatabaseUpdatePlan:
+        cancellation_requested=None,
+        *,
+        captured_source=_UNSET,
+        accepted_summary=_UNSET,
+    ):
+        cancelled = cancellation_requested or (lambda: False)
+        self._check_reconciliation_cancelled(cancelled, "before Database integrity")
+        loaded = self._creation.store.read_trusted_database_revision(database_id)
         manifest = loaded.manifest
+        columns, old_rows, old_timestamps = _snapshot_rows(
+            loaded.values_csv, nullable_columns=_database_nullable_columns(manifest)
+        )
+        source = None
+        suffix = ()
+        blockers = []
+        mode, status = "CURRENT", "CURRENT"
+        reviewed = {}
+        outputs = ()
+        members = ()
+        reviewed_edges = ()
+        candidate = loaded.values_csv
         try:
-            blockers: list[str] = []
-            status = "CURRENT"
-            mode = "CURRENT"
-            current_source = source_change.current_source
-            resolved_members: tuple[ArtifactCollectionMemberV1, ...] = ()
-            heads: dict[str, str] = {}
-            if isinstance(manifest, DatabaseRevisionManifestV1):
-                heads = self._current_collection_heads(
-                    collection, managed_summaries=managed_summaries
-                )
-                resolved_members = collection.members
-            elif current_source is not None:
-                try:
-                    resolved_members, heads = self._resolve_database_members(
-                        collection, current_source, managed_summaries
-                    )
-                except DataManagerOperationError as exc:
-                    status, mode = "WAITING_FOR_ARTIFACT_UPDATE", "BLOCKED"
-                    blockers.append(str(exc))
-            member_ids = tuple(
-                item.version_key.logical_artifact_id for item in collection.members
+            self._check_reconciliation_cancelled(cancelled, "before Database source review")
+            source = (
+                self._artifacts.capture_accepted_source(manifest.market_id)
+                if captured_source is _UNSET
+                else captured_source
             )
-            old_member_ids = tuple(
-                item.logical_artifact_id for item in manifest.artifact_version_keys
+            summary = (
+                self._accepted_summary(manifest.market_id)
+                if accepted_summary is _UNSET
+                else accepted_summary
             )
-            if current_source is None:
-                status, mode = "SOURCE_INVALID", "BLOCKED"
+            if source is None or summary is None:
                 blockers.append("accepted OHLCV source is unavailable")
-            elif isinstance(manifest, DatabaseRevisionManifestV1) and (any(
-                heads.get(item.version_key.logical_artifact_id)
-                != item.version_key.artifact_id
-                for item in collection.members
-            ) or any(
-                self._artifacts.load_artifact_by_id(
-                    collection.market_id, item.version_key.artifact_id
-                ).metadata.source_ohlcv != current_source
-                for item in collection.members
-            )):
-                status, mode = "WAITING_FOR_ARTIFACT_UPDATE", "BLOCKED"
-                blockers.append("Artifact Collection members are not current")
-            candidate = None
-            if mode != "BLOCKED":
-                candidate = self._database_frame(
-                    self._creation.load_database_seed(manifest.seed_id),
-                    collection,
-                    members=resolved_members,
+                mode, status = "BLOCKED", "SOURCE_INVALID"
+            else:
+                raw = summary.csv_path.read_bytes()
+                self._check_reconciliation_cancelled(cancelled, "after Database source read")
+                # Source capture already established integrity (or reused exact
+                # DMS session evidence). This read supplies append values.
+                source_columns, source_rows, timestamps = _snapshot_rows(
+                    raw, row_count=source.row_count,
+                    first=source.first_timestamp_ms, last=source.last_timestamp_ms,
                 )
-                old = pd.read_csv(io.BytesIO(loaded.values_csv))
-                if set(member_ids) != set(old_member_ids):
-                    status, mode = "COLLECTION_CHANGED", "REBUILD_REQUIRED"
-                elif tuple(candidate.columns) != tuple(old.columns):
-                    status, mode = "SCHEMA_CHANGED", "REBUILD_REQUIRED"
-                elif not self._frame_prefix_equal(old, candidate):
-                    status, mode = "PREFIX_MISMATCH", "REBUILD_REQUIRED"
-                elif source_change.status in {
-                    "HISTORICAL_MUTATION", "TRUNCATED", "IDENTITY_MISMATCH"
-                }:
-                    status, mode = "REBUILD_REQUIRED", "REBUILD_REQUIRED"
-                elif len(candidate) > len(old):
-                    status, mode = "UPDATE_AVAILABLE", "APPEND"
-                elif (
-                    source_change.status in {"UNCHANGED", "APPEND_ONLY"}
-                    and (
-                        not isinstance(manifest, DatabaseRevisionManifestV1)
-                        or collection.revision_id == manifest.collection_revision_id
-                    )
-                    and tuple(item.version_key for item in resolved_members)
-                    == manifest.artifact_version_keys
-                ):
-                    status, mode = "CURRENT", "CURRENT"
-                else:
-                    status, mode = "REBUILD_REQUIRED", "REBUILD_REQUIRED"
-            columns = () if candidate is None else tuple(candidate.columns)
-            payload = {
-                "schema": "data_manager_database_update_plan_v1",
-                "database_id": database_id,
-                "revision_id": manifest.revision_id,
-                "source": _source_payload(current_source),
-                "source_status": source_change.status,
-                "collection_id": (
-                    collection.collection_id
-                    if isinstance(manifest, DatabaseRevisionManifestV1)
-                    else None
-                ),
-                "collection_revision_id": (
-                    collection.revision_id
-                    if isinstance(manifest, DatabaseRevisionManifestV1)
-                    else None
-                ),
-                "heads": [list(value) for value in sorted(heads.items())],
-                "columns": list(columns),
-                "mode": mode,
-                "status": status,
-                "blockers": sorted(blockers),
-            }
-            return DatabaseUpdatePlan(
-                plan_id=_hash_payload(payload),
-                database_id=database_id,
-                database_revision_id=manifest.revision_id,
-                market_id=manifest.market_id,
-                mode=mode,
-                status=status,
-                source_change=source_change,
-                source_ohlcv=current_source,
-                collection_id=(
-                    collection.collection_id
-                    if isinstance(manifest, DatabaseRevisionManifestV1)
-                    else None
-                ),
-                collection_revision_id=(
-                    collection.revision_id
-                    if isinstance(manifest, DatabaseRevisionManifestV1)
-                    else None
-                ),
-                starting_artifact_heads=tuple(heads.items()),
-                column_names=columns,
-                execution_stages=(("database",),),
-                blockers=tuple(blockers),
+                if (source.row_count < manifest.source_ohlcv.row_count
+                        or source.last_timestamp_ms < manifest.source_ohlcv.last_timestamp_ms
+                        or source.first_timestamp_ms != manifest.source_ohlcv.first_timestamp_ms):
+                    blockers.append("OHLCV source coverage conflict; repair or revalidate the source; stored Database remains valid")
+                    mode, status = "BLOCKED", "SOURCE_INVALID"
+        except (ArtifactError, OSError, ValueError) as exc:
+            blockers.append(str(exc))
+            mode, status = "BLOCKED", "SOURCE_INVALID"
+        if not blockers:
+            suffix_indices = tuple(i for i, ts in enumerate(timestamps) if ts > manifest.last_timestamp_ms)
+            suffix = tuple(timestamps[i] for i in suffix_indices)
+            if suffix:
+                mode, status = "APPEND", "UPDATE_AVAILABLE"
+                previous = manifest.last_timestamp_ms
+                step = timeframe_duration_ms(manifest.market_id.timeframe)
+                for offset, timestamp in enumerate(suffix):
+                    if offset % 1024 == 0:
+                        self._check_reconciliation_cancelled(cancelled, "during Database suffix review")
+                    expected = previous + step if step is not None else _add_calendar_months(previous, int(manifest.market_id.timeframe[:-1]))
+                    if timestamp != expected:
+                        blockers.append("accepted OHLCV suffix has a boundary or interior gap")
+                        mode, status = "BLOCKED", "SOURCE_INVALID"
+                        break
+                    previous = timestamp
+                if not loaded.values_csv.endswith(b"\n") or b"\r" in loaded.values_csv:
+                    blockers.append("legacy Database payload cannot support canonical append without normalization")
+                    mode, status = "BLOCKED", "SOURCE_INVALID"
+                if not blockers:
+                    try:
+                        self._check_reconciliation_cancelled(cancelled, "before Database provider review")
+                        members, _edges, outputs = self._creation._database_output_evidence(manifest)
+                        outputs = self._creation._database_append_outputs(manifest, outputs)
+                        # Preserve the existing missing-root diagnostic before graph review.
+                        for logical_id in dict.fromkeys(o.logical_artifact_id for o in outputs):
+                            self._artifacts.load_artifact_head(manifest.market_id, logical_id)
+                        reviewed, reviewed_edges = self._creation._review_content_output_evidence(
+                            manifest.market_id, outputs
+                        )
+                        slices = {}
+                        for output in outputs:
+                            self._check_reconciliation_cancelled(cancelled, "during Database provider review")
+                            slices[output.column_name] = self._creation._copy_output_slice(
+                                manifest.market_id, reviewed[output.logical_artifact_id], output, suffix,
+                                target_coverage=(source.row_count, source.first_timestamp_ms, source.last_timestamp_ms),
+                            )
+                    except (ArtifactError, DataManagerCreationError, OSError, KeyError, ValueError) as exc:
+                        blockers.append(str(exc))
+                        mode, status = "BLOCKED", "WAITING_FOR_ARTIFACT_UPDATE"
+                    if not blockers:
+                        buffer = io.StringIO(newline="")
+                        writer = csv.writer(buffer, lineterminator="\n")
+                        for offset, index in enumerate(suffix_indices):
+                            if offset % 1024 == 0:
+                                self._check_reconciliation_cancelled(cancelled, "during Database suffix serialization")
+                            row = dict(zip(source_columns, source_rows[index], strict=True))
+                            row.update({name: tokens[offset] for name, tokens in slices.items()})
+                            if any(name not in row for name in columns):
+                                raise DataManagerOperationError("Database output provider mapping is unprovable")
+                            writer.writerow([row[name] for name in columns])
+                        candidate = loaded.values_csv + buffer.getvalue().encode("utf-8")
+                        self._check_reconciliation_cancelled(cancelled, "before Database append validation")
+                        _header, _rows, full_index = _snapshot_rows(
+                            candidate, columns=columns,
+                            nullable_columns=_database_nullable_columns(manifest),
+                        )
+                        if full_index != (*old_timestamps, *suffix) or not candidate.startswith(loaded.values_csv):
+                            raise DataManagerOperationError("Database append changed stored rows")
+        return loaded, source, suffix, members, outputs, reviewed, reviewed_edges, candidate, mode, status, tuple(blockers)
+
+    def _plan_database_update(
+        self,
+        database_id,
+        *,
+        captured_source=_UNSET,
+        accepted_summary=_UNSET,
+        cancellation_requested=None,
+        include_prerequisites=True,
+        evidence=None,
+    ):
+        if evidence is None:
+            evidence = self._database_append_evidence(
+                database_id, cancellation_requested,
+                captured_source=captured_source, accepted_summary=accepted_summary,
             )
-        except (DataManagerCreationError, ArtifactError, OSError, ValueError) as exc:
-            raise DataManagerOperationError(str(exc)) from exc
-
-    def execute_database_append(
-        self,
-        plan: DatabaseUpdatePlan,
-        *,
-        cancellation_requested: Callable[[], bool] | None = None,
-        before_publish: Callable[[], None] | None = None,
-    ) -> DatabaseUpdateResult:
-        return self._execute_database_update(
-            plan,
-            required_mode="APPEND",
-            cancellation_requested=cancellation_requested,
-            before_publish=before_publish,
+        loaded, source, suffix, members, outputs, reviewed, reviewed_edges, candidate, mode, status, blockers = evidence
+        manifest = loaded.manifest
+        change = DataManagerSourceChange(
+            manifest.market_id, "INVALID_SOURCE" if source is None or status == "SOURCE_INVALID" else ("APPEND_ONLY" if suffix else "UNCHANGED"),
+            manifest.source_ohlcv, source, manifest.last_timestamp_ms,
+            None if source is None else source.last_timestamp_ms, len(suffix),
+            "Append-only snapshot reconciliation",
+        )
+        prerequisites = ()
+        if (include_prerequisites and status == "WAITING_FOR_ARTIFACT_UPDATE" and outputs
+                and all(o.logical_artifact_id is not None for o in outputs)):
+            try:
+                prerequisite = self.plan_artifact_update(
+                    manifest.market_id, tuple(sorted({o.logical_artifact_id for o in outputs}))
+                )
+                prerequisites = prerequisite.nodes
+                if prerequisite.blocked:
+                    status = "BLOCKED_BY_DEPENDENCY"
+            except (ArtifactError, DataManagerOperationError, ValueError, OSError):
+                status = "BLOCKED_BY_DEPENDENCY"
+        root_ids = {output.logical_artifact_id for output in outputs if output.logical_artifact_id is not None}
+        heads = tuple(sorted(
+            (key, member.version_key.artifact_id)
+            for key, member in reviewed.items() if key in root_ids
+        ))
+        payload = {"database": database_id, "head": manifest.revision_id,
+                   "source": _source_payload(source), "suffix": suffix,
+                   "reviewed": [m.to_dict() for _, m in sorted(reviewed.items())],
+                   "edges": [edge.to_dict() for edge in reviewed_edges],
+                   "candidate": hashlib.sha256(candidate).hexdigest(), "mode": mode, "status": status,
+                   "blockers": blockers}
+        return DatabaseUpdatePlan(
+            plan_id=_hash_payload(payload), database_id=database_id, database_revision_id=manifest.revision_id,
+            market_id=manifest.market_id, mode=mode, status=status, source_change=change,
+            source_ohlcv=source, collection_id=None, collection_revision_id=None,
+            starting_artifact_heads=heads, column_names=_snapshot_rows(
+                loaded.values_csv, nullable_columns=_database_nullable_columns(manifest)
+            )[0],
+            execution_stages=(("database",),) if mode == "APPEND" else (), blockers=blockers,
+            prerequisite_nodes=prerequisites,
         )
 
-    def execute_database_rebuild(
-        self,
-        plan: DatabaseUpdatePlan,
-        *,
-        cancellation_requested: Callable[[], bool] | None = None,
-        before_publish: Callable[[], None] | None = None,
-    ) -> DatabaseUpdateResult:
-        return self._execute_database_update(
-            plan,
-            required_mode="REBUILD_REQUIRED",
-            cancellation_requested=cancellation_requested,
-            before_publish=before_publish,
-        )
+    def plan_database_update(self, database_id):
+        return self._plan_database_update(database_id)
 
-    def _execute_database_update(
-        self,
-        plan: DatabaseUpdatePlan,
-        *,
-        required_mode: str,
-        cancellation_requested: Callable[[], bool] | None,
-        before_publish: Callable[[], None] | None,
-    ) -> DatabaseUpdateResult:
+    def execute_database_append(self, plan, *, cancellation_requested=None, before_publish=None):
         if not isinstance(plan, DatabaseUpdatePlan):
             raise TypeError("plan must be a DatabaseUpdatePlan")
-        fresh = self.plan_database_update(plan.database_id)
-        if fresh != plan:
-            raise DataManagerOperationError("Database update plan is stale")
-        if plan.mode != required_mode:
-            raise DataManagerOperationError(
-                f"Database update requires mode {required_mode}"
-            )
         cancelled = cancellation_requested or (lambda: False)
         if cancelled():
             raise DataManagerOperationError("Database update cancelled")
-        if plan.source_ohlcv is None:
-            raise DataManagerOperationError("accepted OHLCV source is unavailable")
-        try:
-            current = self._creation.load_database_revision(plan.database_id)
-            manifest = current.manifest
-            definition = self._creation.load_database_definition(plan.database_id)
-            if isinstance(manifest, DatabaseRevisionManifestV1):
-                if plan.collection_id is None:
-                    raise DataManagerOperationError(
-                        "V1 Database update requires an Artifact Collection"
-                    )
-                content: ArtifactCollectionRevisionV1 | DatabaseRevisionManifestV2 = (
-                    self._creation.load_artifact_collection(plan.collection_id)
-                )
-                members = content.members
-            else:
-                content = manifest
-                members, heads = self._resolve_database_members(
-                    content,
-                    plan.source_ohlcv,
-                    self._artifacts.list_managed_artifacts(plan.market_id),
-                )
-                if tuple(sorted(heads.items())) != plan.starting_artifact_heads:
-                    raise DataManagerOperationError(
-                        "Database Artifact heads changed before execution"
-                    )
-            seed = self._creation.load_database_seed(manifest.seed_id)
-            candidate = self._database_frame(seed, content, members=members)
-            if required_mode == "APPEND":
-                existing = pd.read_csv(io.BytesIO(current.values_csv))
-                additions = candidate.loc[
-                    candidate["ts_ms"] > manifest.last_timestamp_ms
-                ]
-                if additions.empty:
-                    raise DataManagerOperationError("Database append has no new aligned rows")
-                frame = pd.concat([existing, additions], ignore_index=True)
-            else:
-                frame = candidate
-            values = frame.to_csv(
-                index=False, lineterminator="\n", float_format="%.17g"
-            ).encode("utf-8")
-            revision = self._database_manifest(
-                definition,
-                manifest,
-                content,
-                plan.source_ohlcv,
-                frame,
-                values,
-                members=members,
-            )
+        evidence = self._database_append_evidence(plan.database_id, cancelled)
+        if self._plan_database_update(plan.database_id, evidence=evidence) != plan:
+            raise DataManagerOperationError("Database update plan is stale")
+        def verify():
             if cancelled():
                 raise DataManagerOperationError("Database update cancelled")
+            if (self._creation.store.load_database_manifest(plan.database_id).revision_id != plan.database_revision_id
+                    or self._artifacts.capture_accepted_source(plan.market_id) != plan.source_ohlcv):
+                raise DataManagerOperationError("Database update plan is stale")
+            for logical_id, artifact_id in plan.starting_artifact_heads:
+                if self._artifacts.load_artifact_head(plan.market_id, logical_id).artifact_id != artifact_id:
+                    raise DataManagerOperationError("Database update Artifact head changed")
+            if self._creation._database_append_outputs(manifest, saved_outputs) != outputs:
+                raise DataManagerOperationError("Database update legacy provider binding changed")
+            if self._creation._review_content_output_evidence(
+                plan.market_id, outputs
+            ) != (reviewed, reviewed_edges):
+                raise DataManagerOperationError("Database update Artifact evidence changed")
+        if plan.mode != "APPEND" or plan.blocked:
+            raise DataManagerOperationError("Database update requires mode APPEND")
+        loaded, source, suffix, members, outputs, reviewed, reviewed_edges, values, mode, status, blockers = evidence
+        manifest = loaded.manifest
+        new_members = self._creation._ordered_consumed_members(members, reviewed)
+        old_provenance = self._creation._database_value_provenance(manifest)
+        new_provenance = self._creation._capture_value_provenance(
+            manifest.market_id, outputs, {o.column_name: reviewed[o.logical_artifact_id] for o in outputs},
+            suffix[0], suffix[-1],
+        )
+        _old_members, _old_edges, saved_outputs = self._creation._database_output_evidence(manifest)
+        sources = self._creation._database_selection_sources(manifest)
+        provenance = self._creation._combine_value_provenance(
+            (old_provenance, new_provenance), saved_outputs, selection_sources=sources
+        )
+        revised_base = self._creation._database_v3_manifest(
+            manifest, values, new_members, reviewed_edges, saved_outputs,
+            sources, value_provenance=provenance,
+        )
+        payload = revised_base.to_dict(include_revision_id=False)
+        payload["source_ohlcv"] = source.to_dict()
+        payload["revision_id"] = deterministic_hash(payload)
+        revised = database_revision_from_dict(payload)
+        def publication_gate():
+            if before_publish is not None:
+                before_publish()
+            verify()
+        published = self._creation._publish_database_revision(
+            self._creation.load_database_definition(plan.database_id), revised, values,
+            expected_head_revision_id=plan.database_revision_id, before_publish=publication_gate,
+        )
+        self.invalidate()
+        return DatabaseUpdateResult(plan.plan_id, "APPEND", published, self.reconcile_all(force=True))
 
-            def publication_gate() -> None:
-                if cancelled():
-                    raise DataManagerOperationError("Database update cancelled")
-                if self._artifacts.capture_accepted_source(plan.market_id) != plan.source_ohlcv:
-                    raise DataManagerOperationError(
-                        "accepted OHLCV source changed before Database publication"
-                    )
-                if isinstance(manifest, DatabaseRevisionManifestV2):
-                    _members, current_heads = self._resolve_database_members(
-                        manifest,
-                        plan.source_ohlcv,
-                        self._artifacts.list_managed_artifacts(plan.market_id),
-                    )
-                    if tuple(sorted(current_heads.items())) != plan.starting_artifact_heads:
-                        raise DataManagerOperationError(
-                            "Database Artifact heads changed before publication"
-                        )
-                if before_publish is not None:
-                    before_publish()
-
-            published = self._creation.store.publish_database_revision(
-                definition,
-                revision,
-                values,
-                expected_head_revision_id=manifest.revision_id,
-                before_publish=publication_gate,
-            )
-            self.invalidate()
-            snapshot = self.reconcile_all(force=True)
-            return DatabaseUpdateResult(
-                plan.plan_id, required_mode, published, snapshot
-            )
-        except DataManagerOperationError:
-            raise
-        except (DataManagerCreationError, ArtifactError, OSError, ValueError) as exc:
-            raise DataManagerOperationError(str(exc)) from exc
+    def execute_database_rebuild(self, plan, **execution):
+        raise DataManagerOperationError("Database rebuild is retired; only append is supported")
 
     def _reconcile_artifacts(
         self,
@@ -1301,12 +1311,12 @@ class DataManagerUpdateWorkflow:
                             0, (), (summary.rejection_reason,),
                         )
                     else:
-                        loaded = self._artifacts.load_artifact_by_id(
+                        loaded = self._artifacts.load_artifact_metadata(
                             summary.market_id, summary.artifact_id
                         )
                         dependency_ids = tuple(
                             artifact_to_logical.get(ref.artifact_id, "")
-                            for ref in loaded.metadata.recipe.source_artifacts
+                            for ref in loaded.recipe.source_artifacts
                         )
                         if any(not value for value in dependency_ids):
                             raise ArtifactLineageError(
@@ -1315,13 +1325,19 @@ class DataManagerUpdateWorkflow:
                         if any(value not in resolved for value in dependency_ids):
                             continue
                         change = self._classify_captured_source(
-                            loaded.metadata.source_ohlcv,
+                            loaded.source_ohlcv,
                             summary.market_id,
                             sources.get(summary.market_id),
                             accepted_summaries.get(summary.market_id),
-                            cancellation_requested,
+                            cancellation_requested, metadata_only=True,
                         )
                         dependency_blocked = any(
+                            resolved[value].status in {
+                                "INVALID", "BLOCKED_BY_SOURCE", "BLOCKED_BY_DEPENDENCY",
+                            }
+                            for value in dependency_ids
+                        )
+                        dependency_changed = any(
                             resolved[value].status != "CURRENT" for value in dependency_ids
                         ) or any(
                             next(
@@ -1331,15 +1347,22 @@ class DataManagerUpdateWorkflow:
                             )
                             != next(
                                 ref.artifact_id
-                                for ref in loaded.metadata.recipe.source_artifacts
+                                for ref in loaded.recipe.source_artifacts
                                 if artifact_to_logical.get(ref.artifact_id) == value
                             )
                             for value in dependency_ids
                         )
-                        if dependency_blocked:
+                        reasons = (change.reason,)
+                        if change.status in {"INVALID_SOURCE", "IDENTITY_MISMATCH", "TRUNCATED"}:
+                            status = "BLOCKED_BY_SOURCE"
+                            reasons = (f"{change.status}: {change.reason}",)
+                        elif dependency_blocked:
                             status = "BLOCKED_BY_DEPENDENCY"
+                            reasons = ("Required Artifact dependency is invalid or blocked",)
                         elif change.status == "UNCHANGED":
-                            status = "CURRENT"
+                            status = "REBUILD_REQUIRED" if dependency_changed else "CURRENT"
+                            if dependency_changed:
+                                reasons = ("Required Artifact dependency head or currentness changed; recalculate in dependency order",)
                         elif change.status == "APPEND_ONLY":
                             status = "APPEND_AVAILABLE"
                         elif change.status == "HISTORICAL_MUTATION":
@@ -1359,7 +1382,7 @@ class DataManagerUpdateWorkflow:
                             change.current_through_ms,
                             change.missing_row_count,
                             dependency_ids,
-                            (() if status == "CURRENT" else (change.reason,)),
+                            (() if status == "CURRENT" else reasons),
                         )
                     resolved[summary.logical_artifact_id] = item
                 except (ArtifactError, OSError, ValueError) as exc:
@@ -1416,29 +1439,23 @@ class DataManagerUpdateWorkflow:
             try:
                 collection = collections_by_id[collection_id]
                 current = sources.get(collection.market_id)
-                statuses = [
-                    artifacts.get(member.version_key.logical_artifact_id)
-                    for member in collection.members
-                ]
-                blocked = sum(
-                    item is None or item.status in {"INVALID", "BLOCKED_BY_DEPENDENCY"}
-                    for item in statuses
-                )
-                stale = sum(item is None or item.status != "CURRENT" for item in statuses)
-                exact_heads = all(
-                    item is not None and item.artifact_id == member.version_key.artifact_id
-                    for item, member in zip(statuses, collection.members, strict=True)
-                )
-                if current is None:
-                    status, reasons = "SOURCE_INVALID", ("accepted source unavailable",)
-                elif blocked:
-                    status, reasons = "BLOCKED_BY_DEPENDENCY", ("Collection has blocked members",)
-                elif stale or not exact_heads:
-                    status, reasons = "MEMBERS_REQUIRE_UPDATE", ("Collection members require update",)
-                elif collection.last_timestamp_ms != current.last_timestamp_ms:
-                    status, reasons = "PARTIALLY_ALIGNED", ("Collection coverage is not current",)
-                else:
-                    status, reasons = "CURRENT", ()
+                blockers = []
+                physical_members = (tuple(ArtifactCollectionMemberV1.from_dict(record)
+                                          for record in collection.value_provenance["members"])
+                                    if hasattr(collection, "value_provenance") else collection.members)
+                for member in physical_members:
+                    try:
+                        metadata = self._artifacts.load_artifact_metadata(
+                            collection.market_id, member.version_key.artifact_id
+                        )
+                        if metadata.values_sha256 != member.values_sha256 or not self._creation._same_coverage(metadata.source_ohlcv, collection.source_ohlcv):
+                            blockers.append(f"Collection member metadata differs: {member.version_key.artifact_id}")
+                    except (ArtifactError, OSError, ValueError) as exc:
+                        blockers.append(str(exc))
+                stale = 0
+                blocked = 0 if not blockers else 1
+                status = "CURRENT" if not blockers else "BLOCKED_BY_DEPENDENCY"
+                reasons = tuple(blockers)
                 values.append(DataManagerCollectionCurrentness(
                     collection.collection_id,
                     collection.revision_id,
@@ -1457,64 +1474,70 @@ class DataManagerUpdateWorkflow:
 
     def _reconcile_databases(
         self,
-        collections,
-        collections_by_id,
         database_revisions,
-        source_changes,
+        invalid_databases,
+        sources,
         accepted_summaries,
-        managed_by_market,
         failures,
         cancellation_requested,
     ):
         values = []
         for database_id in sorted(database_revisions):
-            self._check_reconciliation_cancelled(
-                cancellation_requested, "before Database"
-            )
+            self._check_reconciliation_cancelled(cancellation_requested, "before Database")
+            manifest = database_revisions[database_id]
             try:
-                loaded_revision = database_revisions[database_id]
-                loaded = loaded_revision.manifest
-                if isinstance(loaded, DatabaseRevisionManifestV1):
-                    collection_revision = collections_by_id.get(loaded.collection_id)
-                    if collection_revision is None:
-                        raise DataManagerOperationError(
-                            "Database Artifact Collection is unavailable"
-                        )
-                else:
-                    collection_revision = loaded
-                source_change = self._classify_captured_source(
-                    loaded.source_ohlcv,
-                    loaded.market_id,
-                    source_changes[loaded.market_id].current_source,
-                    accepted_summaries.get(loaded.market_id),
-                    cancellation_requested,
-                )
-                plan = self._plan_database_update_from_evidence(
-                    database_id,
-                    loaded_revision,
-                    collection_revision,
-                    source_change,
-                    managed_by_market.get(loaded.market_id, ()),
-                )
-                collection = (
-                    None
-                    if plan.collection_id is None
-                    else collections.get(plan.collection_id)
-                )
+                current = sources.get(manifest.market_id)
+                through = None if current is None else current.last_timestamp_ms
+                newer = current is not None and through > manifest.last_timestamp_ms
+                status = "UPDATE_AVAILABLE" if newer else "CURRENT"
+                reasons = ("New source metadata is available; append checks run on request",) if newer else ()
+                if current is None:
+                    status = "SOURCE_INVALID"
+                    reasons = ("Accepted source metadata is unavailable; stored snapshot remains valid",)
+                elif (current.row_count < manifest.source_ohlcv.row_count
+                      or current.last_timestamp_ms < manifest.source_ohlcv.last_timestamp_ms
+                      or current.first_timestamp_ms != manifest.source_ohlcv.first_timestamp_ms):
+                    status = "SOURCE_INVALID"
+                    reasons = ("OHLCV source coverage conflict; repair or revalidate the source; stored snapshot remains valid",)
+                elif newer:
+                    _members, _edges, outputs = self._creation._database_output_evidence(manifest)
+                    try:
+                        outputs = self._creation._database_append_outputs(manifest, outputs)
+                        logical_ids = tuple(dict.fromkeys(o.logical_artifact_id for o in outputs))
+                    except (ArtifactError, DataManagerCreationError, OSError, ValueError) as exc:
+                        logical_ids = ()
+                        status = "WAITING_FOR_ARTIFACT_UPDATE"
+                        reasons = (str(exc), "Stored snapshot remains valid; saved columns can be removed")
+                    for logical_id in logical_ids:
+                        try:
+                            head = self._artifacts.load_artifact_head(manifest.market_id, logical_id)
+                            metadata = self._artifacts.load_artifact_metadata(manifest.market_id, head.artifact_id)
+                            if self._creation._same_coverage(metadata.source_ohlcv, current):
+                                continue
+                            reason = f"Artifact {logical_id} metadata does not cover the new source"
+                        except (ArtifactError, OSError, ValueError) as exc:
+                            reason = f"Artifact {logical_id} metadata unavailable: {exc}"
+                        status = "WAITING_FOR_ARTIFACT_UPDATE"
+                        reasons = (reason, "Exact append compatibility is checked on request")
+                        break
+                missing = 0 if current is None else max(0, current.row_count - manifest.source_ohlcv.row_count)
                 values.append(DataManagerDatabaseCurrentness(
-                    database_id,
-                    loaded.revision_id,
-                    loaded.market_id,
-                    plan.status,
-                    loaded.last_timestamp_ms,
-                    plan.source_change.current_through_ms,
-                    None if collection is None else collection.aligned_through_ms,
-                    plan.source_change.missing_row_count,
-                    plan.status != "PREFIX_MISMATCH",
-                    plan.blockers,
+                    database_id, manifest.revision_id, manifest.market_id, status,
+                    manifest.last_timestamp_ms, through, None,
+                    missing, True, reasons,
                 ))
-            except (DataManagerOperationError, DataManagerCreationError, OSError) as exc:
+            except (ArtifactError, DataManagerCreationError, OSError, ValueError) as exc:
                 failures.append(f"Database {database_id}: {exc}")
+                values.append(DataManagerDatabaseCurrentness(
+                    database_id, manifest.revision_id, manifest.market_id, "INVALID",
+                    manifest.last_timestamp_ms, None, None, 0, False, (str(exc),),
+                ))
+        for database_id in sorted(invalid_databases):
+            definition, head, reason = invalid_databases[database_id]
+            values.append(DataManagerDatabaseCurrentness(
+                database_id, head.revision_id, definition.market_id, "INVALID",
+                None, None, None, 0, False, (reason,),
+            ))
         return tuple(values)
 
     def _evidence_signature(
@@ -1550,7 +1573,7 @@ class DataManagerUpdateWorkflow:
         })
 
     def _accepted_summary(self, market: MarketId) -> AcceptedDatasetSummary | None:
-        result = self._catalog.inspect_market(market)
+        result = self._catalog.inspect_market_metadata(market)
         return result if isinstance(result, AcceptedDatasetSummary) else None
 
     def _prefix_matches(
@@ -1601,8 +1624,11 @@ class DataManagerUpdateWorkflow:
         target_frame,
         dependency_frames,
         incoming_edges,
+        *,
+        dependency_refs,
+        full_fallback: bool = False,
     ) -> FinancialToolCalculationResult:
-        refs_by_role = {ref.role: ref for ref in recipe.source_artifacts}
+        refs_by_role = {ref.role: ref for ref in dependency_refs}
 
         def calculate(frame, frames):
             dependencies = tuple(
@@ -1621,10 +1647,15 @@ class DataManagerUpdateWorkflow:
                 raise ArtifactMaterializationValidationError(
                     f"dependency result is unavailable: {missing}"
                 )
+            from .artifact_materialization import _utc_context
             return _calculate_artifact_recipe(
                 recipe,
                 frame,
                 tuple((ref, value) for ref, value in dependencies if value is not None),
+                utc_context=(_utc_context(
+                    recipe.market_id, source_change.current_source.csv_sha256, node.logical_artifact_id,
+                    recipe.parameters, frame, tuple(ref.artifact_id for ref, _ in dependencies),
+                ) if recipe.tool_key == "universal_trend_classifier" else None),
             )
 
         if (
@@ -1652,7 +1683,12 @@ class DataManagerUpdateWorkflow:
         new_overlap = replacement.loc[
             replacement["ts_ms"].isin(old_overlap["ts_ms"])
         ].reset_index(drop=True)
-        self._require_frames_equal(old_overlap, new_overlap, "overlap")
+        try:
+            self._require_frames_equal(old_overlap, new_overlap, "overlap")
+        except DataManagerOperationError as exc:
+            if not full_fallback or str(exc) != "overlap NaN-mask mismatch":
+                raise
+            return calculate(target_frame, dependency_frames)
         if preserve_count >= len(previous):
             preserved = previous
             terminal = int(previous["ts_ms"].iloc[-1])
@@ -1739,7 +1775,7 @@ class DataManagerUpdateWorkflow:
         managed_summaries=None,
     ) -> dict[str, str]:
         summaries = (
-            self._artifacts.list_managed_artifacts(collection.market_id)
+            self._artifacts.list_managed_artifacts_metadata(collection.market_id)
             if managed_summaries is None
             else managed_summaries
         )

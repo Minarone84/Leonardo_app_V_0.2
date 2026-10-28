@@ -8,6 +8,7 @@ from threading import RLock
 
 from leonardo.audit import AuditEventV1
 from leonardo.artifacts import ArtifactService
+from leonardo.analysis import AnalysisApplicationService, AnalysisService
 from leonardo.connection import ConnectionApplicationService, build_default_provider_registry
 from leonardo.core.action_registry import ActionRegistry
 from leonardo.core.audit_log import AuditLog, CompositeAuditSink, InMemoryAuditSink, JsonlAuditSink
@@ -76,6 +77,7 @@ class CoreContext:
     research_workspace_snapshot_service: ResearchWorkspaceSnapshotApplicationService
     research_notebook_service: ResearchNotebookApplicationService
     data_manager_service: DataManagerApplicationService
+    analysis_service: AnalysisApplicationService
 
 
 class LeonardoApp:
@@ -173,6 +175,8 @@ class LeonardoApp:
             self.core_runner,
             self.data_manager_domain,
         )
+        self.analysis_domain = AnalysisService(self.data_manager_creation_store)
+        self.analysis_service = AnalysisApplicationService(self.core_runner, self.analysis_domain)
         self.research_study_domain = ResearchStudyService(
             self.artifact_service,
             self.portable_recipe_store,
@@ -260,6 +264,7 @@ class LeonardoApp:
             research_workspace_snapshot_service=self.research_workspace_snapshot_service,
             research_notebook_service=self.research_notebook_service,
             data_manager_service=self.data_manager_service,
+            analysis_service=self.analysis_service,
         )
 
     @property
@@ -318,6 +323,7 @@ class LeonardoApp:
     def stop_core_runtime(self, *, timeout: float = 5.0) -> None:
         self.logger.info("Core runtime shutdown requested")
         self.data_manager_service.cancel_all_pending()
+        self.analysis_service.cancel_all_pending()
         self.core_runner.shutdown(timeout=timeout)
         self.logger.info("Core runtime shutdown completed")
 
@@ -338,6 +344,7 @@ class LeonardoApp:
         self.logger.info("Application shutdown requested")
         try:
             self.data_manager_service.cancel_all_pending()
+            self.analysis_service.cancel_all_pending()
             self.core_runner.shutdown(timeout=float(timeout))
             self.process_manager.shutdown(timeout=float(timeout))
             self.connection_registry.shutdown_tracking()

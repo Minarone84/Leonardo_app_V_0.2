@@ -40,17 +40,20 @@ from leonardo.data_manager import (
     DataManagerRecipeCollectionInspection,
     ArtifactCollectionRevisionV1,
     ArtifactCollectionValidation,
-    ArtifactCollectionUpdatePlan,
-    ArtifactCollectionUpdateResult,
+    ArtifactUpdatePlan,
+    ArtifactUpdateResult,
     ArtifactCollectionOutputV1,
     DatabaseUpdatePlan,
     DatabaseUpdateResult,
     DatabaseReadiness,
-    DatabaseContentAdditionPlan,
+    DatabaseContentEditPlan,
     DataManagerDatabaseCatalogEntry,
     DatabaseRevisionManifestV2,
+    DatabaseRevisionManifestV3,
     DatabaseSeedCreationPlan,
+    DatabaseSeedAppendPlan,
     DatabaseSeedV1,
+    DatabaseSeedV2,
     SeedOnlyDatabaseCreationPlan,
 )
 from leonardo.recipes import (
@@ -142,6 +145,7 @@ class DataManagerSuitePresenter(QObject):
             raise TypeError("service must be a DataManagerApplicationService")
         self._view = view
         self._service = service
+        self._service.begin_session()
         self._dispatcher = _QtCallbackDispatcher(self)
         self._catalog: DataManagerCatalogSnapshot | None = None
         self._market_snapshot: DataManagerMarketSnapshot | None = None
@@ -185,7 +189,7 @@ class DataManagerSuitePresenter(QObject):
         ) = None
         self._background_deferred_catalogs_refresh_selected_market = False
         self._background_selected_market_refresh_pending: MarketId | None = None
-        self._artifact_update_plan: ArtifactCollectionUpdatePlan | None = None
+        self._artifact_update_plan: ArtifactUpdatePlan | None = None
         self._database_update_plan: DatabaseUpdatePlan | None = None
         self._derivation_plan = None
         self._recipe_persistence = None
@@ -193,10 +197,6 @@ class DataManagerSuitePresenter(QObject):
         self._wire()
         self._reconciliation = DataManagerReconciliationCoordinator(
             refresh_when_opened=self._refresh_when_opened,
-            refresh_on_timer=self._refresh_on_timer,
-            is_busy=lambda: (
-                self._background_refresh_task_id is not None or self._disposed
-            ),
             parent=self,
         )
         self._reconciliation.start()
@@ -235,14 +235,64 @@ class DataManagerSuitePresenter(QObject):
             raise TypeError("market_id must be a MarketId")
         if self._disposed:
             return
-        self._view.set_status(
+        self._service.invalidate_source(market_id)
+        message = (
             f"OHLCV evidence changed for {market_id.as_key()}; "
             "verifying Data Manager currentness"
         )
+        if market_id == self._selected_market:
+            self._artifact_update_plan = None
+            self._database_update_plan = None
+            self._view.clear_update_artifact_plan()
+            self._view.clear_update_database_plan()
+            # Fence stale foreground results without cancelling their Core work.
+            self._market_generation += 1
+            # Warm-up must still finish and request its forced catch-up.
+            if self._active_operation not in {"reconcile_status", "scan_product_catalogs"}:
+                self._catalog_generation += 1
+            self._view.enter_dataset_evidence_changed_state(market_id, message)
+            for dialog in tuple(self._preview_dialogs):
+                dialog.close()
+            self._preview_dialogs.clear()
+            for dialog in tuple(self._reuse_result_dialogs):
+                dialog.close()
+            self._reuse_result_dialogs.clear()
+        self._view.set_status(message)
         if not self._initial_warmup_complete:
             self._external_ohlcv_change_pending = True
             return
         self._request_background_refresh(force=True)
+
+    def notify_ohlcv_validation_accepted(self, market_id: MarketId) -> None:
+        if not isinstance(market_id, MarketId):
+            raise TypeError("market_id must be a MarketId")
+        if not self._disposed:
+            self._service.invalidate_source(market_id)
+        if self._disposed or market_id != self._selected_market:
+            return
+        self._supersede_background_refresh()
+        self._view.clear_dataset_evidence_changed_state()
+        self._view.set_status(
+            f"OHLCV validated for {market_id.as_key()}; Data Manager operations restored"
+        )
+        self._background_selected_market_refresh_pending = market_id
+        if not self._initial_warmup_complete:
+            self._external_ohlcv_change_pending = True
+            return
+        self._request_background_refresh(force=True)
+
+    def _supersede_background_refresh(self) -> None:
+        task_id = self._background_refresh_task_id
+        self._background_refresh_generation += 1
+        self._background_refresh_task_id = None
+        self._background_refresh_stage = None
+        self._background_refresh_pending = False
+        self._background_refresh_pending_force = False
+        self._background_deferred_catalogs = None
+        self._background_deferred_catalogs_refresh_selected_market = False
+        self._background_selected_market_refresh_pending = None
+        if task_id is not None:
+            self._service.cancel(task_id)
 
     def _refresh_legacy_catalog(self) -> None:
         self._catalog_generation += 1
@@ -267,10 +317,6 @@ class DataManagerSuitePresenter(QObject):
         else:
             self._refresh_legacy_catalog()
 
-    def _refresh_on_timer(self) -> None:
-        if self._supports_product_catalogs() and self._initial_warmup_complete:
-            self._request_background_refresh(force=False)
-
     def _supports_product_catalogs(self) -> bool:
         return (
             hasattr(self._service, "_service")
@@ -280,6 +326,8 @@ class DataManagerSuitePresenter(QObject):
 
     def _request_background_refresh(self, *, force: bool) -> None:
         if self._disposed:
+            return
+        if not self._initial_warmup_complete:
             return
         if self._background_refresh_task_id is not None:
             self._background_refresh_pending = True
@@ -294,7 +342,7 @@ class DataManagerSuitePresenter(QObject):
             "reconcile",
             generation,
             lambda result: self._settle_background_reconciliation(
-                result, generation
+                result, generation, force=force
             ),
             lambda result: self._service.submit_reconcile_status(
                 force=force,
@@ -305,7 +353,7 @@ class DataManagerSuitePresenter(QObject):
         )
 
     def _settle_background_reconciliation(
-        self, result: TaskResult, generation: int
+        self, result: TaskResult, generation: int, *, force: bool
     ) -> None:
         if not self._background_result_is_current(
             result, generation, "reconcile"
@@ -318,7 +366,8 @@ class DataManagerSuitePresenter(QObject):
             return
         evidence_signature = result.value.evidence_signature
         if (
-            self._product_catalogs is not None
+            not force
+            and self._product_catalogs is not None
             and evidence_signature == self._background_evidence_signature
         ):
             self._finish_background_refresh()
@@ -773,6 +822,7 @@ class DataManagerSuitePresenter(QObject):
         if self._disposed:
             return
         self._disposed = True
+        self._service.end_session()
         self._reconciliation.stop()
         task_id = self._active_task_id
         background_task_id = self._background_refresh_task_id
@@ -899,6 +949,12 @@ class DataManagerSuitePresenter(QObject):
         self._view.catalog_delete_artifact_collection_requested.connect(
             self._delete_catalog_artifact_collection
         )
+        self._view.catalog_delete_database_seed_requested.connect(
+            self._delete_catalog_database_seed
+        )
+        self._view.catalog_delete_database_requested.connect(
+            self._delete_catalog_database
+        )
         self._view.duplicate_maintenance_requested.connect(
             self._prepare_duplicate_maintenance
         )
@@ -917,19 +973,20 @@ class DataManagerSuitePresenter(QObject):
         self._view.create_database_seed_requested.connect(
             self._open_database_seed_creation
         )
+        self._view.append_database_seed_requested.connect(self._plan_database_seed_append)
         self._view.create_seed_only_database_requested.connect(
             self._open_seed_only_database_creation
         )
-        self._view.add_database_artifacts_requested.connect(
+        self._view.edit_database_artifacts_requested.connect(
             lambda value: self._open_database_content(value, "artifacts")
         )
-        self._view.add_database_collection_requested.connect(
-            lambda value: self._open_database_content(value, "collection")
+        self._view.edit_database_collections_requested.connect(
+            lambda value: self._open_database_content(value, "collections")
         )
         self._view.database_content_preview_requested.connect(
             self._preview_database_content
         )
-        self._view.database_content_add_requested.connect(
+        self._view.database_content_apply_requested.connect(
             self._execute_database_content
         )
         self._view.database_seed_preview_requested.connect(
@@ -956,6 +1013,49 @@ class DataManagerSuitePresenter(QObject):
             return
         self._view.show_database_seed_dialog(dataset)
 
+    def _plan_database_seed_append(self, seed: object) -> None:
+        if self._disposed or self._active_task_id is not None or not isinstance(seed, (DatabaseSeedV1, DatabaseSeedV2)):
+            return
+        generation = self._catalog_generation
+        self._submit(
+            "plan_database_seed_append", generation,
+            lambda progress, result: self._service.submit_plan_database_seed_append(
+                seed.seed_id, progress_callback=progress, result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_database_seed_append_plan(result, seed.seed_id, generation),
+        )
+
+    def _settle_database_seed_append_plan(self, result, seed_id, generation) -> None:
+        if not (result.status == "completed" and isinstance(result.value, DatabaseSeedAppendPlan)
+                and result.value.seed.seed_id == seed_id):
+            self._report_failure("Database Seed append preview", result)
+            return
+        plan = result.value
+        if not plan.appended_row_count:
+            self._view.set_status("Database Seed is already current")
+            return
+        if not self._view.confirm_database_seed_append(plan):
+            self._view.set_status("Database Seed append cancelled")
+            return
+        if self._disposed or self._active_task_id is not None or generation != self._catalog_generation:
+            return
+        self._submit(
+            "execute_database_seed_append", generation,
+            lambda progress, result: self._service.submit_execute_database_seed_append(
+                plan, progress_callback=progress, result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_database_seed_append(result, plan),
+        )
+
+    def _settle_database_seed_append(self, result, plan) -> None:
+        if result.status == "completed" and isinstance(result.value, (DatabaseSeedV1, DatabaseSeedV2)) and result.value == plan.seed:
+            self._view.set_status("Database Seed append completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Database Seed append", result)
+
     def _open_seed_only_database_creation(self, selected_seed: object) -> None:
         snapshot = self._product_catalogs
         if (
@@ -964,7 +1064,7 @@ class DataManagerSuitePresenter(QObject):
             or snapshot is None
             or (
                 selected_seed is not None
-                and not isinstance(selected_seed, DatabaseSeedV1)
+                and not isinstance(selected_seed, (DatabaseSeedV1, DatabaseSeedV2))
             )
         ):
             return
@@ -981,13 +1081,65 @@ class DataManagerSuitePresenter(QObject):
             or snapshot is None
             or not isinstance(value, DataManagerDatabaseCatalogEntry)
             or value.current_manifest is None
-            or mode not in {"artifacts", "collection"}
+            or mode not in {"artifacts", "collections"}
         ):
             return
-        self._view.show_database_content_dialog(value, snapshot, mode=mode)
+        database_id = value.definition.database_id
+        starting_revision_id = value.current_manifest.revision_id
+        self._submit(
+            "prepare_database_content_edit",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_plan_database_content_edit(
+                database_id,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_open_database_content(
+                result, database_id, starting_revision_id, mode
+            ),
+        )
+
+    def _settle_open_database_content(
+        self,
+        result: TaskResult,
+        database_id: str,
+        starting_revision_id: str,
+        mode: str,
+    ) -> None:
+        snapshot = self._product_catalogs
+        if (
+            result.status == "completed"
+            and isinstance(result.value, DatabaseContentEditPlan)
+            and result.value.no_op
+            and not result.value.blocked
+            and snapshot is not None
+        ):
+            database = next(
+                (
+                    item
+                    for item in snapshot.databases
+                    if item.definition.database_id == database_id
+                ),
+                None,
+            )
+            if (
+                database is not None
+                and database.current_manifest is not None
+                and database.current_manifest.revision_id == starting_revision_id
+                and result.value.starting_revision_id == starting_revision_id
+            ):
+                self._view.show_database_content_dialog(
+                    database,
+                    snapshot,
+                    mode=mode,
+                    baseline_plan=result.value,
+                )
+                return
+        self._report_failure("Database content edit preparation", result)
 
     def _preview_database_content(
-        self, mode: str, database_id: str, selected_ids: object
+        self, mode: str, database_id: str, intent: object
     ) -> None:
         dialog = self._view.database_content_dialog()
         if (
@@ -995,37 +1147,31 @@ class DataManagerSuitePresenter(QObject):
             or self._active_task_id is not None
             or dialog is None
             or dialog.mode != mode
-            or not isinstance(selected_ids, tuple)
-            or not selected_ids
+            or not isinstance(intent, dict)
+            or set(intent) != {
+                "artifact_additions",
+                "collection_additions",
+                "remove_sources",
+                "remove_outputs",
+                "remove_columns",
+            }
         ):
             return
         context = dialog.context_key
-        if mode == "artifacts":
-            submit = lambda progress, result: (
-                self._service.submit_plan_database_artifact_addition(
-                    database_id,
-                    selected_ids,
-                    progress_callback=progress,
-                    result_callback=result,
-                    callback_dispatcher=self._dispatcher.dispatch,
-                )
-            )
-        elif mode == "collection" and len(selected_ids) == 1:
-            submit = lambda progress, result: (
-                self._service.submit_plan_database_collection_addition(
-                    database_id,
-                    selected_ids[0],
-                    progress_callback=progress,
-                    result_callback=result,
-                    callback_dispatcher=self._dispatcher.dispatch,
-                )
-            )
-        else:
-            return
         self._submit(
-            "plan_database_content_addition",
+            "plan_database_content_edit",
             self._catalog_generation,
-            submit,
+            lambda progress, result: self._service.submit_plan_database_content_edit(
+                database_id,
+                artifact_additions=tuple(intent["artifact_additions"]),
+                collection_additions=tuple(intent["collection_additions"]),
+                remove_sources=tuple(intent["remove_sources"]),
+                remove_outputs=tuple(intent["remove_outputs"]),
+                remove_columns=tuple(intent["remove_columns"]),
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
             lambda result: self._settle_database_content_preview(
                 result, dialog, context
             ),
@@ -1038,7 +1184,7 @@ class DataManagerSuitePresenter(QObject):
         if current is not dialog or current.context_key != context:
             return
         if result.status == "completed" and isinstance(
-            result.value, DatabaseContentAdditionPlan
+            result.value, DatabaseContentEditPlan
         ):
             current.set_plan(result.value)
             return
@@ -1052,16 +1198,16 @@ class DataManagerSuitePresenter(QObject):
             self._disposed
             or self._active_task_id is not None
             or dialog is None
-            or not isinstance(value, DatabaseContentAdditionPlan)
+            or not isinstance(value, DatabaseContentEditPlan)
             or dialog.reviewed_plan != value
         ):
             return
         context = dialog.context_key
         self._submit(
-            "execute_database_content_addition",
+            "execute_database_content_edit",
             self._catalog_generation,
             lambda progress, result: (
-                self._service.submit_execute_database_content_addition(
+                self._service.submit_execute_database_content_edit(
                     value,
                     progress_callback=progress,
                     result_callback=result,
@@ -1078,18 +1224,16 @@ class DataManagerSuitePresenter(QObject):
     ) -> None:
         current = self._view.database_content_dialog()
         if result.status == "completed" and isinstance(
-            result.value, DatabaseRevisionManifestV2
+            result.value, DatabaseRevisionManifestV3
         ):
             if current is dialog and current.context_key == context:
-                current.invalidate_preview(
-                    "Database content revision published; refreshing catalogs."
-                )
+                current.close()
             self._after_write_refresh()
             return
         if current is dialog and current.context_key == context:
             message = result.error_message or result.error_type or result.status
             current.invalidate_preview(str(message))
-        self._report_failure("Database content addition", result)
+        self._report_failure("Database content edit", result)
 
     def _preview_database_seed_creation(self, values: object) -> None:
         dialog = self._view.database_seed_dialog()
@@ -1115,8 +1259,6 @@ class DataManagerSuitePresenter(QObject):
                 selected_ohlcv_columns=tuple(
                     values.get("selected_ohlcv_columns") or ()
                 ),
-                selected_range_start_ms=values.get("selected_range_start_ms"),
-                selected_range_end_ms=values.get("selected_range_end_ms"),
                 progress_callback=progress,
                 result_callback=result,
                 callback_dispatcher=self._dispatcher.dispatch,
@@ -1169,7 +1311,9 @@ class DataManagerSuitePresenter(QObject):
     def _settle_database_seed_creation(
         self, result: TaskResult, dialog: object, context: tuple[object, ...]
     ) -> None:
-        if result.status == "completed" and isinstance(result.value, DatabaseSeedV1):
+        if result.status == "completed" and isinstance(
+            result.value, (DatabaseSeedV1, DatabaseSeedV2)
+        ):
             self._creation_seed = result.value
             current = self._view.database_seed_dialog()
             if current is dialog and current.context_key == context:
@@ -1257,7 +1401,7 @@ class DataManagerSuitePresenter(QObject):
         self, result: TaskResult, dialog: object, context: tuple[object, ...]
     ) -> None:
         if result.status == "completed" and isinstance(
-            result.value, DatabaseRevisionManifestV2
+            result.value, (DatabaseRevisionManifestV2, DatabaseRevisionManifestV3)
         ):
             current = self._view.database_creation_dialog()
             if current is dialog and current.context_key == context:
@@ -1935,12 +2079,19 @@ class DataManagerSuitePresenter(QObject):
             or roots != dialog.selected_root_logical_artifact_ids()
         ):
             return
+        edit_context = (
+            {"collection_id": dialog.collection_id,
+             "expected_revision_id": dialog.expected_revision_id}
+            if dialog.collection_id is not None
+            else {}
+        )
         self._submit(
             "plan_artifact_collection_selection",
             self._catalog_generation,
             lambda progress, result: self._service.submit_plan_artifact_collection_selection(
                 market_id,
                 roots,
+                **edit_context,
                 progress_callback=progress,
                 result_callback=result,
                 callback_dispatcher=self._dispatcher.dispatch,
@@ -2294,6 +2445,7 @@ class DataManagerSuitePresenter(QObject):
             or plan.blocked
             or plan.environment_id != environment_id
             or plan.root_entry_ids != roots
+            or not dialog.reviewed_plan_matches(plan)
         ):
             return
         generation = self._catalog_generation
@@ -2304,6 +2456,7 @@ class DataManagerSuitePresenter(QObject):
                 environment_id,
                 roots,
                 create_collection=create_collection,
+                expected_environment_content_hash=plan.environment_content_hash,
                 collection_display_name=collection_name,
                 collection_description=collection_description,
                 progress_callback=progress,
@@ -2362,6 +2515,10 @@ class DataManagerSuitePresenter(QObject):
             return
         if dialog is not expected_dialog or dialog is None or not dialog.isVisible():
             return
+        if dialog.environment_id != expected_environment_id:
+            return
+        self._catalog_derivation_plan = None
+        dialog.invalidate_preview("Recipe creation did not complete; Preview again.")
         self._report_failure("Recipe derivation persistence", result)
 
     def _open_direct_artifact_creation(self) -> None:
@@ -2774,6 +2931,48 @@ class DataManagerSuitePresenter(QObject):
             ),
         )
 
+    def _delete_catalog_database_seed(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, (DatabaseSeedV1, DatabaseSeedV2))
+        ):
+            return
+        expected = value.seed_id
+        self._submit(
+            "delete_database_seed",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_delete_database_seed(
+                expected,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_catalog_database_seed_deletion(
+                result, expected
+            ),
+        )
+
+    def _delete_catalog_database(self, value: object) -> None:
+        if (
+            self._disposed
+            or self._active_task_id is not None
+            or not isinstance(value, DataManagerDatabaseCatalogEntry)
+        ):
+            return
+        expected = value.definition.database_id
+        self._submit(
+            "delete_database",
+            self._catalog_generation,
+            lambda progress, result: self._service.submit_delete_database(
+                expected,
+                progress_callback=progress,
+                result_callback=result,
+                callback_dispatcher=self._dispatcher.dispatch,
+            ),
+            lambda result: self._settle_catalog_database_deletion(result, expected),
+        )
+
     def _settle_catalog_recipe_deletion(
         self, result: TaskResult, expected_recipe_id: str
     ) -> None:
@@ -2825,6 +3024,31 @@ class DataManagerSuitePresenter(QObject):
             self._after_write_refresh()
             return
         self._report_failure("Artifact Collection deletion", result)
+
+    def _settle_catalog_database_seed_deletion(
+        self, result: TaskResult, expected_seed_id: str
+    ) -> None:
+        if (
+            result.status == "completed"
+            and isinstance(result.value, (DatabaseSeedV1, DatabaseSeedV2))
+            and result.value.seed_id == expected_seed_id
+        ):
+            self._view.set_status("Database Seed deletion completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Database Seed deletion", result)
+
+    def _settle_catalog_database_deletion(
+        self, result: TaskResult, expected_database_id: str
+    ) -> None:
+        if result.status == "completed" and result.value == expected_database_id:
+            dialog = self._view.database_content_dialog()
+            if dialog is not None and dialog.context_key[0] == expected_database_id:
+                dialog.close()
+            self._view.set_status("Database deletion completed")
+            self._after_write_refresh()
+            return
+        self._report_failure("Database deletion", result)
 
     def _on_catalog_row_selected(self, family: str, value: object) -> None:
         if self._disposed or self._active_task_id is not None or value is None:
@@ -2942,17 +3166,19 @@ class DataManagerSuitePresenter(QObject):
         self._report_failure("Artifact history", result)
 
     def _on_update_action(self, action: str, payload: object) -> None:
+        if self._view.dataset_context_suspended:
+            return
         if self._disposed or self._active_task_id is not None or not isinstance(payload, dict):
             return
         generation = self._catalog_generation
         if action == "context_changed":
             scope = str(payload.get("scope") or "")
             if scope == "artifact" and self._artifact_update_plan is not None:
-                if payload.get("collection_id") != self._artifact_update_plan.collection_id:
+                if tuple(payload.get("root_logical_artifact_ids") or ()) != self._artifact_update_plan.root_logical_artifact_ids:
                     self._artifact_update_plan = None
                     self._view.clear_update_artifact_plan()
                     self._view.set_status(
-                        "Artifact update plan is stale after Collection selection changed"
+                        "Artifact update plan is stale after root selection changed"
                     )
             elif scope == "database" and self._database_update_plan is not None:
                 if payload.get("database_id") != self._database_update_plan.database_id:
@@ -2966,15 +3192,15 @@ class DataManagerSuitePresenter(QObject):
             self._request_background_refresh(force=True)
             return
         if action == "plan_artifact_update":
-            collection_id = str(payload.get("collection_id") or "")
-            if not collection_id:
-                self._view.set_status("Select an Artifact Collection explicitly")
+            roots = tuple(payload.get("root_logical_artifact_ids") or ())
+            if not roots or self._selected_market is None:
+                self._view.set_status("Select one or more Artifact roots explicitly")
                 return
             self._submit(
                 "plan_artifact_update",
                 generation,
-                lambda progress, result: self._service.submit_plan_artifact_collection_update(
-                    collection_id,
+                lambda progress, result: self._service.submit_plan_artifact_update(
+                    self._selected_market, roots,
                     progress_callback=progress,
                     result_callback=result,
                     callback_dispatcher=self._dispatcher.dispatch,
@@ -2990,13 +3216,13 @@ class DataManagerSuitePresenter(QObject):
                 self._artifact_update_plan = None
                 self._view.clear_update_artifact_plan()
                 self._view.set_status(
-                    "Artifact update plan is stale; plan the selected Collection again"
+                    "Artifact update plan is stale; preview the selected roots again"
                 )
                 return
             self._submit(
                 "execute_artifact_update",
                 generation,
-                lambda progress, result: self._service.submit_execute_artifact_collection_update(
+                lambda progress, result: self._service.submit_execute_artifact_update(
                     self._artifact_update_plan,
                     progress_callback=progress,
                     result_callback=result,
@@ -3033,26 +3259,12 @@ class DataManagerSuitePresenter(QObject):
                 "Database update plan is stale; plan the selected Database again"
             )
             return
-        if action == "execute_database_append":
-            if plan.mode != "APPEND":
-                self._view.set_status("Append requires a matching APPEND plan")
-                return
-            submit = self._service.submit_execute_database_append
-        elif action == "execute_database_rebuild":
-            if plan.mode != "REBUILD_REQUIRED":
-                self._view.set_status(
-                    "Rebuild requires a matching REBUILD_REQUIRED plan"
-                )
-                return
-            if not bool(payload.get("rebuild_confirmed")):
-                self._view.set_status("Confirm the full Database rebuild")
-                return
-            if not self._view.confirm_database_rebuild(plan):
-                self._view.set_status("Database rebuild cancelled")
-                return
-            submit = self._service.submit_execute_database_rebuild
-        else:
+        if action != "execute_database_append":
             return
+        if plan.mode != "APPEND":
+            self._view.set_status("Append requires a matching APPEND plan")
+            return
+        submit = self._service.submit_execute_database_append
         self._submit(
             action,
             generation,
@@ -3067,7 +3279,7 @@ class DataManagerSuitePresenter(QObject):
 
     def _settle_artifact_update_plan(self, result: TaskResult) -> None:
         if result.status == "completed" and isinstance(
-            result.value, ArtifactCollectionUpdatePlan
+            result.value, ArtifactUpdatePlan
         ):
             self._artifact_update_plan = result.value
             self._view.set_update_artifact_plan(result.value)
@@ -3091,11 +3303,13 @@ class DataManagerSuitePresenter(QObject):
 
     def _settle_update_write(self, result: TaskResult) -> None:
         if result.status == "completed" and isinstance(
-            result.value, ArtifactCollectionUpdateResult
+            result.value, ArtifactUpdateResult
         ):
             self._view.set_artifact_update_result(result.value)
             self._artifact_update_plan = None
+            self._database_update_plan = None
             self._view.clear_update_artifact_plan()
+            self._view.clear_update_database_plan()
             self._view.set_status("Update publication completed; refreshing reconciliation")
             self._after_write_refresh()
             return
@@ -3112,10 +3326,22 @@ class DataManagerSuitePresenter(QObject):
 
     def _artifact_update_plan_is_current(self, payload: dict) -> bool:
         plan = self._artifact_update_plan
-        if plan is None or str(payload.get("collection_id") or "") != plan.collection_id:
+        if (plan is None or plan.market_id != self._selected_market
+                or tuple(payload.get("root_logical_artifact_ids") or ()) != plan.root_logical_artifact_ids):
             return False
-        revision = self._current_artifact_collection_revision(plan.collection_id)
-        return revision is None or revision == plan.collection_revision_id
+        return self._artifact_plan_matches_catalog(plan)
+
+    def _artifact_plan_matches_catalog(self, plan: ArtifactUpdatePlan) -> bool:
+        catalogs = self._product_catalogs
+        if catalogs is None:
+            return True
+        heads = {item.logical_artifact_id: item.artifact_id for item in catalogs.managed_artifacts.artifacts
+                 if item.valid and item.market_id == plan.market_id}
+        if any(heads.get(node.logical_artifact_id) != node.current_artifact_id for node in plan.nodes):
+            return False
+        source = next((item.current_source for item in catalogs.latest_reconciliation.source_changes
+                       if item.market_id == plan.market_id), None)
+        return source is None or source == plan.source_ohlcv
 
     def _database_update_plan_is_current(self, payload: dict) -> bool:
         plan = self._database_update_plan
@@ -3154,9 +3380,9 @@ class DataManagerSuitePresenter(QObject):
 
     def _revalidate_plan_contexts(self) -> None:
         plan = self._artifact_update_plan
-        if plan is not None and self._current_artifact_collection_revision(
-            plan.collection_id
-        ) not in {None, plan.collection_revision_id}:
+        if plan is not None and (
+            plan.market_id != self._selected_market or not self._artifact_plan_matches_catalog(plan)
+        ):
             self._artifact_update_plan = None
             self._view.clear_update_artifact_plan()
             self._view.set_status("Artifact update plan became stale after catalog refresh")
@@ -3186,6 +3412,8 @@ class DataManagerSuitePresenter(QObject):
             self._clear_readiness("Database readiness became stale after catalog refresh")
 
     def _on_creation_action(self, action: str, payload: object) -> None:
+        if self._view.dataset_context_suspended:
+            return
         if self._disposed or self._active_task_id is not None or not isinstance(payload, dict):
             return
         market = self._selected_market
@@ -3230,6 +3458,7 @@ class DataManagerSuitePresenter(QObject):
             )
             return
         if action == "plan_recipe_derivation":
+            self._derivation_plan = None
             environment_id = str(payload.get("environment_id") or "")
             roots = tuple(payload.get("environment_root_entry_ids") or ())
             if not environment_id or not roots:
@@ -3258,6 +3487,14 @@ class DataManagerSuitePresenter(QObject):
                     "Select an Environment and explicit root entries."
                 )
                 return
+            plan = self._derivation_plan
+            if (
+                not isinstance(plan, DataManagerRecipeDerivationPlan)
+                or plan.blocked or plan.environment_id != environment_id
+                or plan.root_entry_ids != roots
+            ):
+                self._view.set_creation_summary("Preview again for the selected Environment and roots before creating Recipes.")
+                return
             self._submit(
                 "persist_recipe_derivation",
                 self._catalog_generation,
@@ -3265,6 +3502,7 @@ class DataManagerSuitePresenter(QObject):
                     environment_id,
                     roots,
                     create_collection=False,
+                    expected_environment_content_hash=plan.environment_content_hash,
                     progress_callback=progress,
                     result_callback=result,
                     callback_dispatcher=self._dispatcher.dispatch,
@@ -3298,19 +3536,11 @@ class DataManagerSuitePresenter(QObject):
                 return
             description = str(payload.get("seed_description", "")).strip()
             columns = tuple(payload.get("seed_columns") or ())
-            if not columns:
-                self._view.set_creation_summary("Select at least one OHLCV column.")
-                return
-            custom_range = payload.get("range_mode") == "custom"
-            try:
-                range_start = (
-                    int(str(payload.get("range_start") or "")) if custom_range else None
-                )
-                range_end = (
-                    int(str(payload.get("range_end") or "")) if custom_range else None
-                )
-            except ValueError:
-                self._view.set_creation_summary("Custom range timestamps must be integers.")
+            if columns not in (
+                ("open", "high", "low", "close"),
+                ("open", "high", "low", "close", "volume"),
+            ):
+                self._view.set_creation_summary("Select OHLC with optional Volume in canonical order.")
                 return
             self._submit(
                 "create_database_seed",
@@ -3320,8 +3550,6 @@ class DataManagerSuitePresenter(QObject):
                     name,
                     description=description,
                     selected_ohlcv_columns=columns,
-                    selected_range_start_ms=range_start,
-                    selected_range_end_ms=range_end,
                     progress_callback=progress, result_callback=result,
                     callback_dispatcher=self._dispatcher.dispatch,
                 ),
@@ -3919,6 +4147,7 @@ class DataManagerSuitePresenter(QObject):
                 f"blockers={len(result.value.blockers)}"
             )
             return
+        self._derivation_plan = None
         self._report_failure("Recipe derivation planning", result)
 
     def _settle_recipe_persistence(self, result: TaskResult) -> None:
@@ -3932,6 +4161,7 @@ class DataManagerSuitePresenter(QObject):
             )
             self._after_write_refresh()
             return
+        self._derivation_plan = None
         self._report_failure("Recipe persistence", result)
 
     def _settle_recipe_collection_write(self, result: TaskResult) -> None:
@@ -4311,6 +4541,10 @@ class DataManagerSuitePresenter(QObject):
 
     def _begin_market_inspection(self, market_id: MarketId) -> None:
         if market_id != self._selected_market:
+            self._artifact_update_plan = None
+            self._database_update_plan = None
+            self._view.clear_update_artifact_plan()
+            self._view.clear_update_database_plan()
             self._background_selected_market_refresh_pending = None
             self._invalidate_creation_context(
                 "Creation plans were cleared because Target OHLCV changed"
@@ -4668,6 +4902,20 @@ class DataManagerSuitePresenter(QObject):
     ) -> None:
         if self._active_task_id is not None or self._disposed:
             return
+        if self._view.dataset_context_suspended and operation not in {
+            "scan_catalog",
+            "reconcile_status",
+            "scan_product_catalogs",
+            "scan_creation_foundations",
+            "inspect_market",
+            "inspect_study_environment",
+            "inspect_portable_recipe",
+            "inspect_recipe_collection",
+            "inspect_managed_artifact",
+            "inspect_artifact_collection",
+            "inspect_database",
+        }:
+            return
         self._active_operation = operation
         operation_label = display_operation or operation
         self._view.set_busy(
@@ -4711,7 +4959,6 @@ class DataManagerSuitePresenter(QObject):
                 "execute_artifact_update",
                 "plan_database_update",
                 "execute_database_append",
-                "execute_database_rebuild",
                 "delete_portable_recipe",
                 "delete_recipe_collection",
                 "delete_managed_artifact",
@@ -4731,7 +4978,14 @@ class DataManagerSuitePresenter(QObject):
                 "duplicate_maintenance_scan_global",
                 "duplicate_maintenance_purge",
                 "plan_seed_only_database_creation",
+                "plan_database_seed_append",
+                "execute_database_seed_append",
                 "execute_seed_only_database_creation",
+                "prepare_database_content_edit",
+                "plan_database_content_edit",
+                "execute_database_content_edit",
+                "delete_database_seed",
+                "delete_database",
                 "plan_database_content_addition",
                 "execute_database_content_addition",
             }:
@@ -5071,27 +5325,114 @@ def _collection_rows(value: object) -> tuple[tuple[str, ...], ...]:
     )
 
 
+def _publication_evidence(
+    operation: str, result: TaskResult
+) -> tuple[tuple[str, str], ...] | None:
+    materialization_operations = {
+        "execute_recipe_artifact_materialization", "materialize_base_artifacts",
+    }
+    batch_operations = {"execute_construct_batch", "execute_batch_artifacts"}
+    recipe_collection_operations = {
+        "create_recipe_collection_from_catalog", "update_recipe_collection_from_catalog",
+    }
+    artifact_collection_operations = {
+        "create_artifact_collection_from_materialization", "edit_artifact_collection_from_selection",
+    }
+    if operation not in (
+        materialization_operations | batch_operations | recipe_collection_operations
+        | artifact_collection_operations | {"persist_recipe_derivation", "create_direct_artifact"}
+    ):
+        return None
+    if result.status != "completed":
+        return (
+            ("Published", "unknown"),
+            ("Publication evidence", f"Task {result.status}; result does not establish writes or rollback"),
+        )
+    value = result.value
+    materialization = None
+    collection = None
+    if operation == "persist_recipe_derivation" and isinstance(value, DataManagerRecipePersistenceResult):
+        published = bool(value.created_recipe_ids or value.new_provenance_ids or value.collection_outcome == "CREATED")
+        counts = (
+            f"Recipes created: {len(value.created_recipe_ids)}; reused: {len(value.reused_recipe_ids)}; "
+            f"Provenance new: {len(value.new_provenance_ids)}; existing: {len(value.existing_provenance_ids)}; "
+            f"Collection outcome: {value.collection_outcome}"
+        )
+        return (
+            ("Published", "yes" if published else "no"),
+            ("Publication evidence", counts if published else "Existing Recipes/provenance/Collection reused; " + counts),
+        )
+    if operation in materialization_operations and isinstance(value, DataManagerArtifactMaterializationResult):
+        materialization = value
+    elif operation == "create_direct_artifact" and isinstance(value, DataManagerDirectArtifactResult):
+        materialization = value.materialization
+    elif (
+        operation in batch_operations and isinstance(value, tuple) and len(value) == 2
+        and isinstance(value[0], DataManagerArtifactMaterializationResult)
+        and (value[1] is None or isinstance(value[1], ArtifactCollectionRevisionV1))
+    ):
+        materialization, collection = value
+    elif operation in recipe_collection_operations and isinstance(value, DataManagerRecipeCollectionInspection):
+        collection = value.collection
+    elif operation in artifact_collection_operations and isinstance(value, ArtifactCollectionRevisionV1):
+        collection = value
+    if materialization is not None:
+        published = bool(
+            materialization.created_artifact_ids or materialization.created_version_keys
+            or materialization.advanced_logical_artifact_ids
+        )
+        counts = (
+            f"Artifacts created: {len(materialization.created_artifact_ids)}; reused: {len(materialization.reused_artifact_ids)}; "
+            f"Versions created: {len(materialization.created_version_keys)}; reused: {len(materialization.reused_version_keys)}; "
+            f"Heads advanced: {len(materialization.advanced_logical_artifact_ids)}"
+        )
+        if published:
+            return (("Published", "yes"), ("Publication evidence", counts))
+        if collection is None:
+            return (
+                ("Published", "no"),
+                ("Publication evidence", "Existing outputs reused; no new Artifact/version/head reported; " + counts),
+            )
+        return (
+            ("Published", "unknown"),
+            ("Publication evidence", "Stored Collection revision returned; new/reused not reported; " + counts),
+            ("collection_id", collection.collection_id), ("revision_id", collection.revision_id),
+        )
+    if collection is not None:
+        return (
+            ("Published", "unknown"),
+            ("Publication evidence", "Stored Collection revision returned; new/reused not reported"),
+            ("collection_id", collection.collection_id), ("revision_id", collection.revision_id),
+        )
+    return (
+        ("Published", "unknown"),
+        ("Publication evidence", "Completed task returned no expected typed publication result"),
+    )
+
+
 def _operation_details(
     operation: str, task_id: str, result: TaskResult
 ) -> tuple[tuple[str, str], ...]:
     publication_operations = {
+        "execute_database_seed_append",
         "persist_recipe_derivation",
         "create_recipe_collection",
         "update_recipe_collection",
         "create_database_seed",
         "execute_database_seed_creation",
         "execute_seed_only_database_creation",
+        "execute_database_content_edit",
         "delete_seed",
         "materialize_base_artifacts",
         "execute_batch_artifacts",
         "create_artifact_collection",
+        "create_artifact_collection_from_selection",
         "revise_collection",
         "add_collection_branches",
         "remove_collection_branches",
         "build_database_revision",
         "execute_artifact_update",
         "execute_database_append",
-        "execute_database_rebuild",
         "create_direct_artifact",
     }
     details = [
@@ -5107,6 +5448,9 @@ def _operation_details(
             else "no",
         ),
     ]
+    publication = _publication_evidence(operation, result)
+    if publication is not None:
+        details[5:6] = publication
     for name, value in _object_fields(result.value):
         if name.endswith("_id") or name in {"mode", "status", "row_count", "column_count"}:
             details.append((name, str(value)))

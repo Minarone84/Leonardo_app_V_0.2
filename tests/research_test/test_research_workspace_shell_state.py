@@ -49,7 +49,7 @@ def test_frozen_placement_action_replay() -> None:
     assert list(state.attached_slot_ids()) == expected["attached_slot_order"]
     assert list(state.detached_slot_ids()) == expected["detached_slot_order"]
     assert list(state.reserved_positions()) == expected["reserved_positions"]
-    assert list(state.free_positions()) == expected["free_positions"]
+    assert list(state.free_positions()) == expected["free_positions"] + list(range(9, 17))
 
 
 def test_moves_swap_empty_and_reject_detached_without_mutation() -> None:
@@ -78,8 +78,8 @@ def test_detach_dock_remove_snapshots_and_validation() -> None:
     assert state.dock_slot(4) == ResearchChartPlacement(4, 1, False)
     assert state.dock_slot(4) == ResearchChartPlacement(4, 1, False)
     assert state.remove_slot(4) == ResearchChartPlacement(4, 1, False)
-    assert state.free_positions() == tuple(range(1, 9))
-    for invalid in (True, 0, 9, 1.0, "1"):
+    assert state.free_positions() == tuple(range(1, 17))
+    for invalid in (True, 0, 17, 1.0, "1"):
         with pytest.raises(ResearchWorkspaceShellStateError):
             state.register_slot(invalid)  # type: ignore[arg-type]
 
@@ -87,10 +87,10 @@ def test_detach_dock_remove_snapshots_and_validation() -> None:
 def test_registration_is_thread_safe_and_clear_is_defensive() -> None:
     state = ResearchWorkspaceShellState()
     with ThreadPoolExecutor(max_workers=8) as executor:
-        placements = tuple(executor.map(state.register_slot, range(1, 9)))
-    assert {item.slot_id for item in placements} == set(range(1, 9))
-    assert state.reserved_positions() == tuple(range(1, 9))
+        placements = tuple(executor.map(state.register_slot, range(1, 17)))
+    assert {item.slot_id for item in placements} == set(range(1, 17))
+    assert state.reserved_positions() == tuple(range(1, 17))
     snapshot = state.placements()
     state.clear()
-    assert len(snapshot) == 8
+    assert len(snapshot) == 16
     assert state.placements() == ()

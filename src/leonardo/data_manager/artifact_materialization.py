@@ -11,9 +11,10 @@ from typing import Protocol
 import pandas as pd
 
 from leonardo.artifacts import ArtifactRecipeV1, ArtifactSourceRefV1
-from leonardo.data import MarketId
+from leonardo.data import MarketId, timeframe_duration_ms
 from leonardo.financial_tools import (
     FinancialToolCalculationResult,
+    UtcClassificationContext,
     calculate_financial_tool,
     get_financial_tool_spec,
     resolve_output_signals,
@@ -51,6 +52,23 @@ class _ResolvedExecutionConfiguration:
 class _CalculatedMaterializationNode:
     result: FinancialToolCalculationResult
 
+
+
+def _utc_context(market_id, source_revision, logical_id, parameters, frame, dependency_ids=()):
+    """Accepted OHLCV timestamps denote bar opens; calendar periods remain calendar based."""
+    step = timeframe_duration_ms(market_id.timeframe)
+    if step is None:
+        months = int(market_id.timeframe[:-1])
+        closes = tuple(int((pd.Timestamp(int(t), unit="ms", tz="UTC")
+                            + pd.DateOffset(months=months)).value // 1_000_000) for t in frame.ts_ms)
+    else:
+        closes = tuple(int(t) + step for t in frame.ts_ms)
+    return UtcClassificationContext(
+        stream_id="/".join((market_id.exchange, market_id.market_type, market_id.symbol,
+                            market_id.timeframe, logical_id)),
+        input_revision=source_revision, dependency_ids=tuple(sorted(set(dependency_ids))),
+        bar_closed_at_ms=closes, canonical_window=int(parameters["trend_fractal_window"]),
+    )
 
 def _dataset_frame(dataset: _HistoricalDataset) -> pd.DataFrame:
     frame = pd.DataFrame(
@@ -271,6 +289,7 @@ def _calculate_recipe(
     recipes_by_id: Mapping[str, PortableRecipeV1],
     target_frame: pd.DataFrame,
     dependency_frames: Mapping[str, pd.DataFrame],
+    *, utc_context=None,
 ) -> _CalculatedMaterializationNode:
     _validate_recipe_execution(recipe, recipes_by_id)
     resolved = _resolve_execution_configuration(recipe)
@@ -312,6 +331,7 @@ def _calculate_recipe(
         frame,
         resolved.parameters,
         bindings=resolved.bindings,
+        utc_context=utc_context,
     )
     if result.output_names != recipe.output_names:
         raise ArtifactMaterializationValidationError(
@@ -329,6 +349,7 @@ def _calculate_artifact_configuration(
     output_names: tuple[str, ...],
     target_frame: pd.DataFrame,
     dependencies: Sequence[tuple[ArtifactSourceRefV1, pd.DataFrame]],
+    utc_context=None,
 ) -> FinancialToolCalculationResult:
     frame = target_frame.copy(deep=True)
     target_timestamps = tuple(int(value) for value in frame["ts_ms"])
@@ -366,6 +387,7 @@ def _calculate_artifact_configuration(
         frame,
         parameters,
         bindings=bindings,
+        utc_context=utc_context,
     )
     if (
         result.tool_key != tool_key
@@ -384,6 +406,7 @@ def _calculate_artifact_recipe(
     recipe: ArtifactRecipeV1,
     target_frame: pd.DataFrame,
     dependencies: Sequence[tuple[ArtifactSourceRefV1, pd.DataFrame]],
+    *, utc_context=None,
 ) -> FinancialToolCalculationResult:
     return _calculate_artifact_configuration(
         tool_key=recipe.tool_key,
@@ -393,6 +416,7 @@ def _calculate_artifact_recipe(
         output_names=recipe.output_names,
         target_frame=target_frame,
         dependencies=dependencies,
+        utc_context=utc_context,
     )
 
 

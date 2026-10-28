@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -184,10 +186,10 @@ class ResearchWorkspaceSnapshotService:
         current_count = len(occupied)
         if not _workspace_idle(current_workspace):
             blockers.append("target workspace is not idle")
-        if mode == "append" and current_count + len(snapshot.charts) > 8:
-            blockers.append("append exceeds the eight-chart workspace capacity")
+        if mode == "append" and current_count + len(snapshot.charts) > MAX_RESEARCH_CHARTS:
+            blockers.append("append exceeds the sixteen-chart workspace capacity")
         append_positions: tuple[tuple[str, int], ...] = ()
-        if mode == "append" and current_count + len(snapshot.charts) <= 8:
+        if mode == "append" and current_count + len(snapshot.charts) <= MAX_RESEARCH_CHARTS:
             append_positions = self.plan_append_positions(snapshot, occupied)
         blockers.extend(
             self._notebook_link.validate_notebook_reference(
@@ -251,15 +253,15 @@ class ResearchWorkspaceSnapshotService:
         if not isinstance(snapshot, ResearchWorkspaceSnapshotV1):
             raise TypeError("snapshot must be ResearchWorkspaceSnapshotV1")
         occupied = set(occupied_positions)
-        if any(type(item) is not int or not 1 <= item <= 8 for item in occupied):
-            raise ResearchWorkspaceSnapshotValidationError("occupied positions must be 1..8")
-        if len(occupied) + len(snapshot.charts) > 8:
+        if any(type(item) is not int or not 1 <= item <= MAX_RESEARCH_CHARTS for item in occupied):
+            raise ResearchWorkspaceSnapshotValidationError("occupied positions must be 1..16")
+        if len(occupied) + len(snapshot.charts) > MAX_RESEARCH_CHARTS:
             raise ResearchWorkspaceSnapshotValidationError("append exceeds workspace capacity")
         planned: list[tuple[str, int]] = []
         for chart in snapshot.charts:
             position = chart.workspace_position
             if position in occupied:
-                position = next(item for item in range(1, 9) if item not in occupied)
+                position = next(item for item in range(1, MAX_RESEARCH_CHARTS + 1) if item not in occupied)
             occupied.add(position)
             planned.append((chart.chart_ref, position))
         return tuple(planned)

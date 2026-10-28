@@ -81,3 +81,12 @@ updated_readme_files*/
 exports/
 tmp/
 temp/
+
+# Source-only checkpoint: exclude local runtime data and audit evidence
+/historical_data/
+/data_manager/
+/research_notebooks/
+/study_environments/
+/workspace_snapshots/
+/_task_*/
+/Leo_V2_Task_Packages/

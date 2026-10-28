@@ -1,13 +1,32 @@
 # Leonardo V2 Data Manager Suite
 
-**Status:** Task 1064 closed; Task 1065 lifecycle work accepted; Task 1066
-functional lifecycle work implemented and awaiting final closure correction plus
-combined native smoke; Database Build finalization follows in Task 1067
-**Updated:** 2026-09-05
+**Targeted revision: 2026-10-28 (R07).** Reconciles accepted R01-R06 and current source. Earlier edition dates and validation counts below remain historical; R08 integrated and R09 native acceptance are separate, not performed by this documentation revision.
+
+**Status:** The agreed lifecycle corrections and final DMS audit are complete.
+The current checkout also includes the later Open Notebooks shortcut and accepted
+Research corrections. Audit evidence, personal visual acceptance, and the remaining
+Windows file-access limitations are distinguished in section 18. This documentation
+edition changes no application behavior, ownership, persistence or real saved data.
+**Updated:** 2026-10-08
 **Primary implementation:** `src/leonardo/data_manager/`,
 `src/leonardo/recipes/`, `src/leonardo/artifacts/`,
 `src/leonardo/gui/data_manager/`, the Data Manager presenter, and Data Manager
 windows
+
+### Documentation set and reading order
+
+| Document | Purpose |
+|---|---|
+| [This entry manual](DATA_MANAGER.md) | Scope, active GUI, complete command context, ownership, source map and validation history |
+| [Architecture and integration](DATA_MANAGER_ARCHITECTURE.md) | Production composition, dependency direction, authorities, execution and cross-Area boundaries |
+| [Complete workflows and lifecycles](DATA_MANAGER_LIFECYCLES.md) | Creation, use, update, removal, deletion, cancellation, recovery and surviving references for every object family |
+| [Data and interface contracts](DATA_MANAGER_DATA_CONTRACTS.md) | Identity, schemas, serialization, algorithms, 31-model field inventory, generated examples and observable acceptance criteria |
+| [Data Manager Suite Complete Map](Leonardo_V2_Data_Manager_Suite_Complete_Map.pdf) | Visual navigation across the same system; an additive companion to all four manuals |
+
+Read this manual first, then architecture, lifecycles and contracts. The map can
+remain beside them as a visual index. Together they describe DMS within Leonardo;
+Financial Tools retain formula-level authority, Core retains runtime authority,
+and the canonical models/stores remain the executable format validators.
 
 ## 1. Purpose and current status
 
@@ -45,14 +64,20 @@ Current implementation status:
 | Typed Catalog and Select Dataset sorting | Implemented and accepted |
 | Task 1064 | **CLOSED** after final combined native smoke |
 | Task 1065 lifecycle work | Implemented and accepted |
-| Task 1066 functional lifecycle work | Implemented; final closure correction and combined native smoke pending |
-| Database update logic | Implemented |
-| Task 1067 - Database Build Finalization | Future work; not started |
+| Functional lifecycle and operation-side integrity checks | Completed baseline |
+| Database update logic | Implemented; explicit append preserves stored values |
+| Database creation/build | Implemented; Seed-only creation and explicit content edits |
+| A1 unchanged-source revalidation | Corrected; compatibility preserves historical evidence |
+| A3 download progress observer | Corrected in the GUI test |
+| A4 current policy documentation | Aligned with approved behavior |
+| A2 legacy V1/V2 Database editing | Implemented; correction package audit passed on 7 October |
+| Mixed raw/saved Batch replay | Corrected; raw selectors and ordered source roles participate in existing identity/compatibility checks |
 
-Task 1064 is closed and Task 1065 is incorporated into the accepted current
-Data Manager lifecycle. Task 1066 is not closed until its final correction and
-combined native smoke pass. Database Build finalization is the next major Data
-Manager-area work after Task 1066 closure.
+The completed lifecycle and F1–F4 work is the baseline. A1–A4 and the later Batch
+replay finding were resolved and included in the final DMS audit. Historical task
+numbers and earlier open statuses do not describe unfinished Database creation.
+Section 18 separates completed validation from historical observations and user
+acceptance; it does not reopen settled DMS architecture.
 
 ## 2. Scope and ownership
 
@@ -261,17 +286,30 @@ evidence.
 Required support members remain locked. User-editable output selection and
 Database column ordering must still produce a complete, unique, valid revision.
 
-Artifact Collections are semantic sets of Artifacts within one exact OHLCV
-fingerprint. Data Manager supports Create, Edit, Inspect, and Delete Artifact
-Collection. Successful publication is immediately projected into the current
-Data Manager catalog, with background reconciliation following as verification.
-Deleting an Artifact Collection does not delete member Artifacts. A Database
-dependency may legitimately block Artifact Collection deletion.
+Materialized compatibility has exactly three conditions: the same canonical
+OHLCV identity (exchange, market type, symbol and timeframe), the same row count,
+and the same first and last timestamps. Versions and fingerprints preserve
+provenance and each object's own integrity; differing historical fingerprints
+are not a fourth admission condition. This policy also applies to saved inputs
+in direct and batch calculations. Required input types and dependency order
+still apply, and a reviewed operation must retain its exact reviewed evidence.
+
+Data Manager supports Create, Edit, Inspect, and Delete Artifact Collection.
+Successful publication is immediately projected into the current catalog, with
+background reconciliation following as verification. Deleting an Artifact
+Collection does not delete member Artifacts. An owned Database snapshot remains
+readable after its original Collection is deleted; that import is historical
+provenance, not an ongoing Collection ownership dependency. The corrected legacy
+editing behavior and remaining future-provider proof limitation are recorded in
+section 17.
 
 ### 5.6 Database Seeds and Databases
 
-A Database Seed records the intended market, OHLCV columns, range, and creation
-metadata used to define Database input.
+A new Database Seed owns a snapshot of the full accepted OHLCV source, with
+mandatory Open/High/Low/Close and optional Volume. Its identity, source evidence
+and creation metadata remain explicit. A saved Seed may remain historical;
+explicit append preserves all old rows and cells. Legacy V1 Seeds remain
+reference-based and readable; V2 Seeds own their saved values.
 
 A Database has:
 
@@ -280,8 +318,17 @@ A Database has:
 - immutable revision values;
 - a mutable head identifying the current revision.
 
-Publishing an initial revision, appending, or rebuilding always creates a new
-revision. Previous revisions remain available.
+Initial publication, explicit content edits and append produce immutable
+Database revisions. Previous revisions remain available. Rebuild is retired;
+append never replaces historical cells or backfills historical NaNs.
+
+V1–V4 remain readable with their existing canonical encodings. An explicit edit
+may publish Database revision V5 when a legacy snapshot lacks its original
+column-to-Artifact binding or column-to-Collection ownership. V5 preserves the
+canonical original manifest and represents that missing information explicitly;
+it never invents an Artifact, Recipe or Collection identity. Known bindings and
+exact physical evidence keep their existing shapes. No-op edits publish nothing,
+and no migration rewrites existing files. Ordinary complete revisions remain V4.
 
 ## 6. Data Manager Suite shell
 
@@ -302,25 +349,29 @@ geometry.
 The Suite currently contains:
 
 ```text
-Header and active Market summary
-Actions
+Header: selected dataset identity + Open Notebooks...
+Top actions
 ├── Refresh
 ├── Select Dataset
 ├── Preview Dataset
-├── Preview Artifact
-├── Validate Artifact
-├── Create Artifact...
-├── Batch Constructs...
-├── Delete Artifact
-└── Delete Recipe
+└── Duplicate Maintenance
 
 Tabs
 ├── Catalogs
-├── Create Database
 └── Update & Reconcile
 
-Shared operation surface
+Catalogs: object-specific create, inspect, edit, update and delete actions
+Shared foreground operation surface
 ```
+
+There is no active Create Database tab. Catalogs > Databases > Create Database
+publishes a Seed-only Database; Artifact/Collection content is then added explicitly.
+The internal staged creation machinery remains an implementation detail.
+
+Open Notebooks opens or focuses the existing Research Suite and its Notebook
+Manager through the composition root. Research retains Notebook persistence,
+workspace assignments and dirty/restore admission. This is a navigation shortcut,
+not a DMS-owned Notebook pool. See the [Research lifecycle guide](../research_docs/RESEARCH_LIFECYCLES.md).
 
 The responsive body uses these canonical stretch relationships:
 
@@ -335,8 +386,9 @@ panels and tables expand with the Suite; no old fixed right rail is retained.
 
 The shared operation surface displays the operation name, TaskManager identity,
 state, progress, messages, structured details, terminal result, terminal error,
-and cancellation availability. It is the only live Data Manager progress,
-task-state, cancellation, and operation authority.
+and cancellation availability. It is the foreground presentation surface;
+Core's TaskManager remains the canonical task-state and cancellation authority.
+Background reconciliation is separately correlated through the same shared Core.
 
 ## 7. Active OHLCV dataset selection
 
@@ -499,6 +551,11 @@ OHLCV is intentionally absent from this family list because complete dataset
 browsing and selection live in the dedicated selector described in section 7.
 The backend product snapshot still includes OHLCV catalog evidence.
 
+The existing **All Datasets** scope lists saved Artifacts and Databases even when
+their original OHLCV is absent and no dataset is selected. The current-dataset
+scope still filters by the selected market. Missing source data blocks operations
+that need it, not inspection of saved snapshots or removal of saved columns.
+
 The Catalogs workspace contains:
 
 - family navigation;
@@ -578,8 +635,8 @@ Artifact identity or lineage: Recipe bindings may reference canonical OHLCV
 inputs, while only saved Artifact dependencies become Artifact lineage
 dependencies.
 
-The Suite Operation surface remains the only live progress, task-state,
-cancellation, and operation authority. Batch owns no second progress lifecycle.
+The Suite Operation surface presents foreground progress, state and cancellation
+from Core. Batch owns no second executor or canonical task lifecycle.
 Its local terminal report includes reviewed-plan-derived counts such as branches
 completed, `New`, and `Reuse Current`; that report closes independently while
 the Batch window remains open. Successful execution invalidates Preview, so a
@@ -599,23 +656,15 @@ history and are not treated as duplicate current Artifacts.
 
 ## 9. Creation workflow
 
-The current historical Database creation workflow still contains stages that
-overlap completed Recipe, Artifact, and Collection responsibilities. Task 1067
-will audit and simplify that overlap as part of Database Build Finalization. The
-final Task 1067 workflow is not defined here, and Database Seed remains part of
-the documented current implementation pending that audit.
+Database creation is implemented through explicit Catalog actions: create or
+select a Database Seed, preview and create a Seed-only Database, then use the
+separate Artifact and Artifact Collection editors to add or remove reviewed
+content. Recipe derivation, Artifact calculation and Collection creation remain
+independent optional operations rather than mandatory Database creation stages.
 
-The Create Database tab is an explicit nine-stage workspace:
-
-1. **Target OHLCV**
-2. **Database Seed**
-3. **Study Environments**
-4. **Recipes**
-5. **Base Artifacts**
-6. **Batch Artifacts**
-7. **Artifact Collection**
-8. **Database Review**
-9. **Build Database**
+The active Suite exposes Catalogs and Update & Reconcile. The retained internal
+nine-stage creation workspace is not an active Create Database tab. Creating a
+Database does not silently run that older sequence or update its inputs.
 
 ### 9.1 Target OHLCV
 
@@ -624,9 +673,15 @@ in the selector does not itself publish or calculate anything.
 
 ### 9.2 Database Seed
 
-The user may select an existing Seed or create a new Seed with explicit columns,
-range, display name, and description. Seed validation remains a domain
-responsibility.
+Select an existing Seed or create one with a display name, optional description,
+mandatory OHLC and optional Volume. New Seed creation always copies the full
+accepted source; it offers no selected-range or arbitrary-column trimming.
+Preview and execution use the same reviewed source evidence. Seed validation
+and persistence remain domain responsibilities.
+
+Historical Seeds may be kept as snapshots. Explicit append adds only the new
+suffix and preserves every old cell. Shorter or incompatible source coverage is
+a source conflict; it does not authorize shrinking the saved Seed.
 
 ### 9.3 Study Environment and Recipe sources
 
@@ -639,6 +694,8 @@ Recipe roots may come from:
 
 Environment derivation is an optional source, not a mandatory gateway to the
 portable Recipe library.
+
+Both GUI derivation routes pass `expected_environment_content_hash=plan.environment_content_hash` through the existing application command. Execution compares two freshly built plans and the reviewed hash before persistence, then reloads and compares the Environment after the publication gate and before writes. A changed saved definition requires Preview again. Programmatic `None` retains the explicit no-preview compatibility path and execution-time checks; GUI requests must carry their token. Equivalent Recipe reuse and provenance remain separate from that reviewed-intent check.
 
 ### 9.4 Planning and execution
 
@@ -683,6 +740,14 @@ identity, Seed identity, Collection revision, and publication mode.
 Publication requires explicit confirmation. Cancelling the confirmation submits
 no operation.
 
+The existing Artifact and Collection editors keep Preview and Apply. Addition
+checks only incoming objects, their required lineage and the three compatibility
+rules. Unrelated retained providers are not required. Removing an included output
+uses its saved Database column name and works after its original Artifact or
+Collection has been deleted. Base OHLCV columns cannot be removed this way.
+Unrecorded legacy attribution is labelled as such; ambiguous Collection ownership
+is not guessed. Retained cells and historical revisions remain unchanged.
+
 ## 10. Managed Artifact materialization
 
 Artifact materialization resolves one portable Recipe graph for one canonical
@@ -707,16 +772,20 @@ persisted values merely for display convenience.
 A failed or cancelled graph publication does not intentionally expose a partial
 new head set. Existing immutable versions remain available.
 
+R02 code/package resolution (2026-10-27) replaces the unresolved DMS-DOC-F1 status. Canonical Artifact readers/enumeration and deletion use the existing Windows-aware `_io_path` while preserving containment, link/junction refusal, exact allowed-name cleanup and propagated failures. IDs, formats and hierarchy do not change. Demonstrated ordinary-long-root DIRECT and RECIPE post-head source-change rollback restores owned payloads, market-local Recipes, heads and versions; legitimate global portable definitions remain distinct. Six file-symlink cases, actual UNC shares and native/registry behavior remain unexecuted. This is not universal crash atomicity, arbitrary-depth writer support or a repair of the earlier unidentified CSV replacement mechanism.
+
 ## 11. Update and reconciliation
 
-The Update & Reconcile tab contains six stages:
+The Update & Reconcile tab separates two reviewed operations:
 
-1. **Source Change Review**
-2. **Artifact Update Plan**
-3. **Artifact Execution**
-4. **Collection Validation**
-5. **Database Append or Rebuild Preview**
-6. **Commit Database Revision**
+- **Artifacts:** select the Artifacts to update, choose **Preview Update**, then
+  **Execute Reviewed Update** when the reviewed plan permits execution.
+- **Databases:** select a Database, choose **Preview Update**, then
+  **Append Database Revision** when the reviewed plan permits append.
+
+Each operation uses its own current reviewed plan. Database updates append a new
+revision; rebuild is retired, and Artifact recalculation remains a separate
+explicit action.
 
 ### 11.1 Reconciliation
 
@@ -736,62 +805,69 @@ Reconciliation never updates Artifacts or Databases by itself.
 
 ### 11.2 Artifact updates
 
-Artifact updates remain separate from Database updates.
+Artifact updates remain separate from Database updates. A reviewed root Artifact
+update plan records source evidence, current physical heads, dependency order,
+node actions (reuse, update, recreate or blocked), mathematical context and
+revisable-tail requirements, and blockers. Execution requires the current,
+unblocked plan and unchanged reviewed source/head evidence.
 
-A reviewed Artifact Collection update plan contains:
+Revalidating unchanged CSV data renews sidecar evidence without making the
+calculation stale. When canonical identity, CSV hash, row count and bounds are
+unchanged, and consumed references are unchanged, planning and execution reuse
+the existing Artifact versions. The CSV hash here detects actual source changes;
+it does not add another cross-object compatibility condition.
 
-- exact starting Collection revision;
-- current Artifact heads;
-- source evidence;
-- dependency-safe execution stages;
-- node actions such as reuse, update, or blocked;
-- context and revisable-tail requirements;
-- blockers.
-
-The Artifact execute button is enabled only for the current, unblocked plan whose
-Collection matches the current GUI selection. Busy-state changes or a different
-selection must not make a blocked or stale plan executable.
-
-Successful execution publishes new immutable Artifact versions and a new
-Artifact Collection revision. Old Artifact and Collection revisions remain
-available.
+Actual updates publish new immutable Artifact versions. They do not
+automatically advance Artifact Collections or change Database membership.
+Collections retain their saved revisions until explicitly edited; Collection
+validation/update remains a compatibility check without hidden recalculation.
+Old Artifact, Collection and Database revisions remain available.
 
 ### 11.3 Database planning
 
-A Database update plan has one mode:
+Current Database update planning returns `CURRENT`, `APPEND` or `BLOCKED`.
+Historical `REBUILD_REQUIRED` representation does not authorize a rebuild.
 
-```text
-CURRENT
-APPEND
-REBUILD_REQUIRED
-BLOCKED
-```
+Append requires a valid accepted source, a valid suffix and aligned evidence for
+the Database's fixed imported outputs. Larger source coverage may require
+explicit Artifact updates first. The existing Database cells, including NaNs,
+are preserved even where later calculations revise historical values.
 
-`APPEND` is permitted only when accepted source and Collection evidence preserve
-the exact existing Database prefix and compatible schema.
+Shorter source coverage, changed starting coverage or incompatible source
+identity is a source conflict. The stored Database remains a valid historical
+snapshot; it must not shrink. Plans report their actual blockers, and the GUI
+must not invent a different reason. Editing a source Collection does not change
+the Database's imported membership.
 
-Rebuild may be required by historical mutation, truncation, source identity
-mismatch, Collection change, schema change, or prefix mismatch. The plan must
-report the actual cause; the GUI must not replace it with one generic invented
-reason.
+Every remaining derived column needs a provable, usable provider only when a new
+suffix is appended. A missing provider can be resolved through the existing
+editor by removing its columns, or through existing calculation/update actions
+when the necessary Recipe, inputs and binding remain provable. Either route
+requires a fresh Database update plan. A validated exact appended segment can
+prove the logical provider for later appends without requiring unrelated
+deleted original candidates. Its current payload, dependencies and coverage
+still need to pass the existing checks. Without such proof, a surviving
+candidate alone cannot resolve an unknown legacy binding when deleted
+candidates leave ambiguity. Exact-provider segments cannot overlap the
+captured original unbound history.
 
 ### 11.4 Append and rebuild
 
-Append executes only a matching accepted `APPEND` plan.
+Append executes only a matching, unblocked `APPEND` plan after explicit review.
+It publishes a new immutable revision containing the original values plus the
+new suffix. It preserves every prior cell and NaN, with no historical backfill.
+Source and Artifact heads are checked again before publication.
 
-Rebuild executes only a matching accepted `REBUILD_REQUIRED` plan after explicit
-confirmation. The confirmation identifies the current Database revision, actual
-plan status, available source-change status and reason, target Collection
-revision, and the fact that publication creates a new immutable revision while
-preserving prior revisions.
+Database rebuild is retired and its execution endpoint rejects requests. A
+source conflict is not permission to replace or shrink a Database. Artifact
+updates never mutate old Database revisions, and Database updates never trigger
+hidden Artifact recalculation.
 
-Artifact updates never mutate old Database revisions. Database updates never
-trigger hidden Artifact updates.
-
-Database definitions, immutable revisions, readiness validation, currentness,
-update planning, append, rebuild, stale fencing, and revision publication are
-implemented. Database update logic is implemented. The remaining major
-Database work is Database creation/build finalization under Task 1067.
+Database creation, explicit content editing, immutable revisions, currentness,
+append planning, stale fencing and publication are implemented. Legacy no-op,
+removal and unrelated valid addition use the owned snapshot. Exact new append
+segments do not relabel legacy historical values. Current/no-op updates publish
+nothing and do not require providers for nonexistent new rows.
 
 ## 12. Initialization and reconciliation lifecycle
 
@@ -852,7 +928,6 @@ data_manager.plan_artifact_collection_update
 data_manager.execute_artifact_collection_update
 data_manager.plan_database_update
 data_manager.execute_database_append
-data_manager.execute_database_rebuild
 ```
 
 Only one Data Manager operation slot is exposed through the Suite. While busy,
@@ -862,6 +937,8 @@ Cancellation is cooperative. The application service requests cancellation and
 reports cancellation as complete only after TaskManager settles the task.
 Publication gates may reject a late cancellation after the operation has entered
 its non-interruptible publication boundary.
+
+The Operation view uses typed result evidence for `Published` and `Publication evidence`. New Artifacts, versions or advanced heads demonstrate publication; a materialization with only reused outputs and no returned Collection reports no new publication. A stored Collection revision alone does not reveal new versus reused and is reported as unknown. Construct batch combines its materialization result with the optional Collection result. Failed/cancelled status or an unexpected result type reports unknown, never inferred rollback. Recipe derivation separately reports created/reused Recipes, provenance and its explicit Collection outcome.
 
 ## 14. Window lifecycle and tracking
 
@@ -879,6 +956,10 @@ window tracker.
 | Artifact Collection management | `data_manager.artifact_collection.window` | One per Suite, reused across create/edit and closed with Suite |
 | Collection Inspection | `data_manager.collection_inspection.dialog` | One per Suite, reused across Recipe and Artifact Collections and closed with Suite |
 | Recipe Artifact Materialization | `data_manager.recipe_artifact_materialization.window` | One per Suite, reused and closed with Suite |
+| Database Seed creation | `data_manager.database_seed.window` | Bounded Suite child |
+| Database creation | `data_manager.database_creation.window` | Bounded Suite child |
+| Database Artifact editor | `data_manager.database_content.artifacts.window` | Distinct editor identity; closed with Suite |
+| Database Collection editor | `data_manager.database_content.collections.window` | Distinct editor identity; closed with Suite |
 | Duplicate Maintenance preflight | `data_manager.duplicate_maintenance.preflight.dialog` | One per Suite and closed with Suite |
 | Duplicate Maintenance results | `data_manager.duplicate_maintenance.results.dialog` | One per Suite and closed with Suite |
 
@@ -925,29 +1006,45 @@ remain distinct:
 - Recipe deletion follows Recipe-domain dependency rules.
 - Recipe Collection deletion follows Recipe-domain and portable-store rules
   only; Artifact-domain references do not block it.
-- managed Artifact deletion follows Artifact-lineage, Artifact Collection, and
-  Database dependencies where applicable.
-- Artifact Collection deletion follows Database dependencies where applicable.
+- managed Artifact deletion preserves genuine Artifact-lineage and Artifact
+  Collection dependencies; an owned Database snapshot is not an upstream
+  Artifact's deletion blocker.
+- Artifact Collection deletion removes that Collection's owned persistence,
+  leaving member Artifacts and previously imported Database snapshots intact.
+- Database and Seed deletion each remove only their own persistence. Original
+  inputs and other owned snapshots are not cascaded away.
 
 There is no dataset deletion from Data Manager, no automatic repair, no silent
 rebuild, and no command that updates every product indiscriminately.
 
-Database publication and rebuild use explicit confirmation. Cancelling a
-confirmation submits no operation.
+Database publication and supported mutation/deletion actions use explicit
+review or confirmation. Cancelling a confirmation submits no operation. Rebuild
+is not a supported alternative to append.
 
 ## 17. Completion and workplan position
 
-Task 1064 is **CLOSED**. Task 1065 is completed and incorporated into the
-accepted current Data Manager lifecycle. Task 1066 functional implementation is
-complete; final closure awaits Task 1066-R4 validation and the combined native
-Data Manager smoke. Task 1067 is future Database Build Finalization and has not
-started.
+The lifecycle work, seven operation-side integrity checks and original F1–F4
+corrections form the completed baseline. The separate A1/A3/A4 work addresses
+unchanged-source compatibility/reuse, a test-side file-access race and current
+documentation. It introduces no new authority, persistence schema or workflow.
+Completed lifecycle work is not reopened by this correction.
 
-The following Task 1066 lifecycle areas must not be reopened without a concrete
-regression: Recipes, Recipe Collections, Artifacts, Artifact Collections,
-Direct Artifact creation, Batch Constructs, Duplicate Maintenance,
-deletion/metadata ownership, refresh/reconciliation, window/runtime integration,
-and Database update logic.
+A2 originally failed because legacy V1/V2 edit planning loaded deleted upstream
+Artifacts or Collections. The bounded correction separates local snapshot edits
+from incoming-value and append checks. Its approved Database-only V5 extension
+preserves incomplete historical claims without introducing another store, writer,
+calculation workflow or automatic repair. V1–V4 files remain unchanged. A missing
+or unprovable future provider may still block append; local removal remains
+available. This is the remaining legacy attribution limit referenced in section
+5.5, not a requirement to retain upstream files for ordinary editing.
+
+The separate mixed raw/saved Batch replay issue was corrected on 8 October.
+The existing saved-Artifact semantic projection now includes raw OHLC inputs
+held in Construct parameters, and multi-source compatibility preserves numeric
+source-role order when raw and saved inputs are combined. Repeated execution
+reuses the unchanged result; changing the raw column remains a different
+calculation. No persisted IDs, schemas, financial formulas or user steps were
+changed. Existing historical values remain untouched.
 
 ## 18. Validation and acceptance
 
@@ -969,10 +1066,72 @@ Automated validation covers:
 - deterministic first-open warm-up and autonomous background reconciliation;
 - responsive Suite layout and central Catalog typed sorting.
 
-Task 1064's final combined native smoke passed. Task 1066 functional lifecycle
-implementation is complete, but Task 1066 remains open until this closure
-correction and the combined native Data Manager smoke pass. Task 1067 Database
-Build Finalization has not started. The current smoke authority is
+The earlier R5 candidate passed 2,617 tests with seven skips and completed an
+isolated native 1085 smoke with recorded visibility limitations. The subsequent
+5 October audit found A1–A4 and recorded 2,583 passes, seven skips and one GUI
+failure across its non-overlapping area suites; it did not run the broader full
+gate afterward. These are historical results for different candidates.
+
+A1/A3/A4 validation is recorded in its bounded execution report and individual
+gate receipts. That earlier partial phase made no native-smoke claim. Automated
+readiness, independent package review, native visual evidence and user acceptance
+remain separate states. This manual is not a replacement for those receipts.
+
+The A2 original-code probe reproduced two failures (V1/V2) and two passing
+controls (V3/V4). Its execution package records focused regression results,
+ordered area gates, the full repository gate and protection checks against the
+accepted PRE baseline. Those receipts, not this manual, determine automated
+readiness. The A2 implementation introduced no native-smoke claim. Its
+correction package passed audit on 7 October: the recorded full suite passed
+2,701 tests with seven skips, and the fresh audit passed 206 focused checks.
+The subsequent 8 October Batch correction has its own gate receipts and native
+evidence; its results below are historical validation for that completed candidate.
+
+The 8 October candidate passed all seven ordered validation gates; the full
+repository result is 2,720 passed and seven skipped. Its 19 added Batch regression
+cases passed. All six focused native checks in the smoke reference passed
+using generated data in an isolated persistence root, including restart and
+normal shutdown. The source and tests stayed identical to the gate-tested
+candidate; all 391 protected real-data files remained unchanged. These are
+agent-performed checks. The subsequent final audit is recorded under
+`Leo_V2_Task_Packages/20261008_DMS_Final_Acceptance_Audit`: its fresh full run
+also passed 2,720 tests with seven skips, and it reused the six matching native
+checks after verifying the code candidate. The agreed DMS correction and audit
+work is complete; personal user acceptance remains distinct from those receipts.
+
+The later two-file Open Notebooks shortcut passed 43 focused tests and eight
+isolated Windows smoke checks. The 2,720-test result predates that shortcut.
+The later Research A4 audit records 2,831 full-suite passes and seven skips on
+the checkout that includes it, followed by 115 offscreen checks and 21 native
+checks. These overlapping results must not be added together. The documentation
+edition uses focused existing tests, generated contracts and preservation checks;
+it makes no new full-suite or native application acceptance claim.
+
+The finishing-work evidence is under
+`Leo_V2_Task_Packages/20261008_DMS_Finalization`. The earlier intermittent
+Windows OHLCV replacement failure has not been causally closed: 130 traced GUI
+repetitions and 300 replacements during concurrent-reconciliation probes did not
+reproduce it. Passing replays do not establish a repair; no speculative writer
+change or retry policy was introduced. Controlled containment and existing
+Maintenance recovery were separately verified: Update Latest may leave an
+interior gap, which requires validation and reviewed Maintenance repair. The
+original intermittent replacement cause remains unidentified. Historical execution
+reports retain their original status and results.
+
+During the original 8 October documentation validation, a separate Windows long-path defect was
+reproduced using generated Artifacts under a deeply nested evidence root:
+publication succeeded, but ordinary-path metadata inspection rejected the saved
+payload inventory. The same bytes validated through an extended-path root. This
+is recorded in `20261008_DMS_Documentation_Complete_Map/LONG_PATH_FINDING.md` with
+the historical bounded proposed correction; no application fix was applied in that edition. R02 subsequently resolved DMS-DOC-F1 at code/package level on 2026-10-27; XA-DMS-F003 is its alias and 1097-R02-A1 a linked observation, not additional roots. See section 10 for the demonstrated boundary and unexecuted platform limits. It is not proof
+of the earlier CSV replacement cause and makes no claim about real user files.
+
+Compression, storage-format changes, large-file parallel loading and expansion
+of Analysis remain outside this documentation task. Current source review,
+examples, document checks and exact PRE/POST evidence are in
+`Leo_V2_Task_Packages/20261008_DMS_Documentation_Complete_Map`.
+
+The smoke reference is
 [`LIGHT_V2_APPLICATION_SMOKE.md`](../gui_docs/LIGHT_V2_APPLICATION_SMOKE.md).
 
 ## 19. Primary source map

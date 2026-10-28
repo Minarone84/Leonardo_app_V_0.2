@@ -17,6 +17,7 @@ class GuiWindowTracker(QObject):
         title: str,
         window_type: str,
         registry: WindowRegistry,
+        close_on_event: bool = True,
     ) -> None:
         super().__init__(window)
         if not isinstance(window, QWidget):
@@ -24,6 +25,7 @@ class GuiWindowTracker(QObject):
         if not isinstance(registry, WindowRegistry):
             raise TypeError("registry must be a WindowRegistry")
         self._window = window
+        self._close_on_event = close_on_event
         self._window_id = window_id
         self._registry = registry
         self._registry.register_window(
@@ -37,6 +39,13 @@ class GuiWindowTracker(QObject):
     def window_id(self) -> str:
         return self._window_id
 
+    def record_accepted_close(self) -> None:
+        try:
+            self._registry.request_window_close(self._window_id)
+        except KeyError:
+            pass
+        self._registry.close_window(self._window_id)
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self._window:
             if event.type() == QEvent.Type.Show:
@@ -46,10 +55,6 @@ class GuiWindowTracker(QObject):
                     self._registry.focus_window(self._window_id)
                 except RuntimeError:
                     pass
-            elif event.type() == QEvent.Type.Close:
-                try:
-                    self._registry.request_window_close(self._window_id)
-                except KeyError:
-                    pass
-                self._registry.close_window(self._window_id)
+            elif event.type() == QEvent.Type.Close and self._close_on_event:
+                self.record_accepted_close()
         return super().eventFilter(watched, event)

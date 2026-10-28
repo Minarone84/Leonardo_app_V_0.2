@@ -278,7 +278,10 @@ class DataManagerCollectionInspectionDialog(QDialog):
                 ("First Timestamp", format_utc_timestamp_ms(revision.first_timestamp_ms)),
                 ("Last Timestamp", format_utc_timestamp_ms(revision.last_timestamp_ms)),
                 ("Validation", validation_text),
-                ("Database Ready", "yes" if validation.database_ready else "no"),
+                (
+                    "Captured Database Ready (historical)",
+                    "yes" if revision.database_ready else "no",
+                ),
                 (
                     "Source Recipe Collection ID",
                     revision.source_recipe_collection_id or "",

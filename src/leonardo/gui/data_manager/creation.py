@@ -210,19 +210,12 @@ class DataManagerCreationWorkspace(QWidget):
         for column in ("open", "high", "low", "close", "volume"):
             check = QCheckBox(column, columns)
             check.setChecked(True)
+            check.setEnabled(column == "volume")
             object_id = f"data_manager.creation.check.seed_{column}"
             apply_identity(check, object_id, object_type="check_box")
             self.controls[object_id] = check
             columns_layout.addWidget(check)
         form.addRow("OHLCV Columns", columns)
-        range_mode = self._combo("data_manager.creation.combo.seed_range", page)
-        range_mode.addItem("Full accepted range", "full")
-        range_mode.addItem("Custom range", "custom")
-        start = self._line("data_manager.creation.input.range_start", page, "Start timestamp ms")
-        end = self._line("data_manager.creation.input.range_end", page, "End timestamp ms")
-        form.addRow("Range", range_mode)
-        form.addRow("Custom start", start)
-        form.addRow("Custom end", end)
         layout.addLayout(form)
         layout.addLayout(self._button_row(page, (
             ("data_manager.button.creation.create_seed", "Create Seed", "create_seed"),
@@ -496,9 +489,6 @@ class DataManagerCreationWorkspace(QWidget):
                 for column in ("open", "high", "low", "close", "volume")
                 if self.controls[f"data_manager.creation.check.seed_{column}"].isChecked()
             ),
-            "range_mode": self.value("data_manager.creation.combo.seed_range"),
-            "range_start": self.value("data_manager.creation.input.range_start"),
-            "range_end": self.value("data_manager.creation.input.range_end"),
             "environment_id": self.value("data_manager.creation.combo.environment"),
             "environment_root_entry_ids": _csv(self.value("data_manager.creation.input.environment_roots")),
             "recipe_mode": self.value("data_manager.creation.combo.recipe_mode"),

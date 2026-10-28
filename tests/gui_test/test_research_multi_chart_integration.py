@@ -24,7 +24,7 @@ from tests.gui_test.test_research_single_chart_integration import (
 )
 
 
-def test_composed_eight_chart_vertical_workflow(tmp_path: Path) -> None:
+def test_composed_sixteen_chart_vertical_workflow(tmp_path: Path) -> None:
     qapp = QApplication.instance() or QApplication([])
     config = replace(load_default_config(tmp_path), audit=AuditConfig(enabled=False))
     _write_accepted_dataset(config.paths.historical_data_dir)
@@ -40,10 +40,10 @@ def test_composed_eight_chart_vertical_workflow(tmp_path: Path) -> None:
         assert window is not None and presenter is not None
         _wait_until(lambda: bool(window.dataset_summaries))
         state = presenter._workspace_state
-        for _ in range(8):
+        for _ in range(16):
             _open_restored_chart(window, presenter)
-        assert state.slot_ids() == tuple(range(1, 9))
-        assert len({state.session_for(slot).session_id for slot in state.slot_ids()}) == 8
+        assert state.slot_ids() == tuple(range(1, 17))
+        assert len({state.session_for(slot).session_id for slot in state.slot_ids()}) == 16
         before = tuple(
             (slot, state.session_for(slot).session_id) for slot in state.slot_ids()
         )
@@ -61,7 +61,7 @@ def test_composed_eight_chart_vertical_workflow(tmp_path: Path) -> None:
         )
         _wait_until(lambda: state.session_for(1).study_count == 1)
         _wait_until(lambda: state.session_for(2).study_count == 1)
-        assert all(state.session_for(slot).study_count == 0 for slot in range(3, 9))
+        assert all(state.session_for(slot).study_count == 0 for slot in range(3, 17))
 
         window.workspace.set_active_slot(1)
         first_panel = window.workspace.chart_panel_for_slot(1)
@@ -97,7 +97,7 @@ def test_composed_eight_chart_vertical_workflow(tmp_path: Path) -> None:
         old_session = state.session_for(1)
         window.workspace.chart_panel_for_slot(1).close_button.click()
         assert old_session.is_disposed
-        assert state.slot_ids() == (2, 3, 4, 5, 6, 7, 8)
+        assert state.slot_ids() == tuple(range(2, 17))
         surviving = {slot: state.session_for(slot) for slot in state.slot_ids()}
         assert _open_restored_chart(window, presenter) == 1
         assert state.session_for(1).session_id != old_session.session_id

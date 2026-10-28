@@ -57,10 +57,13 @@ presentation-only text, number, and UTC sorting while preserving the selected
 domain identity; the one-row Active Dataset summary remains unsorted. Repeated
 open commands reuse the selector, and it closes with the Data Manager Suite.
 
-The Suite has three top-level tabs: Catalogs, Create Database, and Update &
-Reconcile. The main Catalogs family list exposes seven non-OHLCV product
-families; OHLCV selection is intentionally confined to the selector. Creation
-uses nine explicit stages and update uses six explicit stages. `Create
+The Suite has two top-level tabs: Catalogs and Update & Reconcile. The main
+Catalogs family list exposes seven non-OHLCV product families; OHLCV selection
+is intentionally confined to the selector. Database creation uses explicit
+Catalog actions: create or select a Database Seed, preview and create a Seed-only
+Database, then use the separate Artifact and Artifact Collection editors to add
+or remove reviewed content. Update & Reconcile has separate Artifacts and
+Databases tabs, each with explicit preview and execution actions. `Create
 Artifact...` provides accepted Direct Artifact creation, and `Batch
 Constructs...` provides reviewed Batch planning, execution, and a local terminal
 report.
@@ -84,8 +87,14 @@ ownership. The window owns only selection and presentation state; every read,
 write, plan, validation, and reconciliation operation delegates through
 `DataManagerApplicationService`.
 
-Task 1064 is closed. Tasks 1065, 1066, and 1067 remain. Use the [Data Manager
-manual](../data_manager_docs/DATA_MANAGER.md) for the current boundary.
+The lifecycle, creation, content-edit and append workflows are implemented.
+Database Artifact and Collection editors use distinct window identities; saved
+snapshot removal does not require deleted upstream providers. New appended
+values still require their current usable providers. The A2 correction package
+passed audit on 7 October 2026, followed by the bounded Batch replay correction.
+Use the [Data Manager manual](../data_manager_docs/DATA_MANAGER.md) for current
+validation evidence, the unresolved Windows observation and final acceptance
+status. Historical task numbers are not a current feature backlog.
 
 ## Window tracking
 

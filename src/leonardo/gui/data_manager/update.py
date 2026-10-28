@@ -1,447 +1,334 @@
-"""Explicit Data Manager update and reconciliation workspace."""
-
+"""Explicit Artifact-root and Database update review workspace."""
 from __future__ import annotations
 
 from functools import partial
-
-from PySide6.QtCore import QSignalBlocker, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QFormLayout,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QPushButton,
-    QStackedWidget,
-    QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
+    QCheckBox, QHBoxLayout, QLabel, QPushButton, QTabWidget,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
-
-from leonardo.data_manager import (
-    DataManagerProductCatalogSnapshot,
-    database_collection_references,
+from leonardo.data_manager import DataManagerProductCatalogSnapshot
+from leonardo.gui.data_manager.catalogs import (
+    _ARTIFACT_CURRENTNESS,
+    _database_update_details,
+    _database_update_readiness,
+    _state,
 )
-from leonardo.gui.data_manager.table_presentation import (
-    format_utc_timestamp_ms,
-    resize_data_manager_table,
-)
+from leonardo.gui.data_manager.table_presentation import format_utc_timestamp_ms, resize_data_manager_table
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
-UPDATE_STAGES = (
-    "1. Source Change Review",
-    "2. Artifact Update Plan",
-    "3. Artifact Execution",
-    "4. Collection Validation",
-    "5. Database Append or Rebuild Preview",
-    "6. Commit Database Revision",
-)
+# Retained package export; the workspace no longer has staged pages.
+UPDATE_STAGES = ()
 
 
 class DataManagerUpdateWorkspace(QWidget):
-    """Present explicit update decisions and complete reconciliation evidence."""
-
     action_requested = Signal(str, object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent=None):
         super().__init__(parent)
         apply_identity(self, "data_manager.update.workspace", object_type="workspace")
-        self.buttons: dict[str, QPushButton] = {}
+        self.buttons = {}
         self._busy = False
-        self._artifact_plan_collection_id: str | None = None
-        self._artifact_plan_executable = False
-        self._database_plan_database_id: str | None = None
-        self._database_plan_mode: str | None = None
-        self._artifact_result_active = False
-        self.stage_list = QListWidget(self)
-        self.stage_list.addItems(UPDATE_STAGES)
-        self.stage_list.setFixedWidth(260)
-        apply_identity(self.stage_list, "data_manager.update.list.stages", object_type="list")
-        self.stack = QStackedWidget(self)
-        apply_identity(self.stack, "data_manager.update.stack.stages", object_type="stack")
-        self.stage_list.currentRowChanged.connect(self.stack.setCurrentIndex)
-
-        self.collection_combo = QComboBox(self)
-        self.database_combo = QComboBox(self)
-        apply_identity(self.collection_combo, "data_manager.update.combo.collection", object_type="combo_box")
-        apply_identity(self.database_combo, "data_manager.update.combo.database", object_type="combo_box")
-        self.confirm_rebuild = QCheckBox("I confirm full Database rebuild", self)
-        apply_identity(self.confirm_rebuild, "data_manager.update.check.rebuild_confirmed", object_type="check_box")
-
-        self.reconciliation_tables = {
-            "sources": self._table("sources", ("Market", "Status", "Previous Through", "Current Through", "Missing Rows", "Reason")),
-            "artifacts": self._table("artifacts", ("Market", "Status", "Artifact Through", "OHLCV Through", "Missing Rows", "Reasons", "Logical Artifact ID")),
-            "collections": self._table("collections", ("Market", "Status", "Aligned Through", "OHLCV Through", "Stale", "Blocked", "Database Ready", "Reasons", "Collection ID")),
-            "databases": self._table("databases", ("Market", "Status", "Snapshot Through", "OHLCV Through", "Collection Through", "Missing Rows", "Prefix", "Reasons", "Database ID")),
-            "failures": self._table("failures", ("Failure",)),
-        }
-        source_page, source_layout = self._page("Source Change Review")
-        source_tabs = QTabWidget(source_page)
-        for key, label in (
-            ("sources", "Sources"),
-            ("artifacts", "Artifacts"),
-            ("collections", "Collections"),
-            ("databases", "Databases"),
-            ("failures", "Failures"),
-        ):
-            source_tabs.addTab(self.reconciliation_tables[key], label)
-        source_layout.addWidget(source_tabs, 1)
-        source_layout.addLayout(self._buttons(source_page, (
-            ("data_manager.update.button.refresh", "Refresh Reconciliation", "refresh_reconciliation"),
+        self._market = None
+        self._snapshot = None
+        self._artifact_plan = None
+        self._database_plan = None
+        self._checks = {}
+        self._database_ids = ()
+        self.tabs = QTabWidget(self)
+        apply_identity(self.tabs, "data_manager.update.tabs", object_type="tabs")
+        artifacts, layout = self._page()
+        self.artifact_candidates = self._table("artifact_candidates", (
+            "Select", "Tool", "Kind", "Artifact through", "OHLCV through",
+            "Currentness", "Reason", "Logical Artifact ID",
+        ))
+        layout.addWidget(self.artifact_candidates, 1)
+        layout.addLayout(self._buttons(artifacts, (
+            ("select_all", "Select All", "select_all"),
+            ("deselect_all", "Deselect All", "deselect_all"),
+            ("plan_artifacts", "Preview Update", "plan_artifact_update"),
         )))
-        self.stack.addWidget(source_page)
-
-        artifact_plan_page, artifact_plan_layout = self._page("Artifact Update Plan")
-        form = QFormLayout()
-        form.addRow("Artifact Collection", self.collection_combo)
-        artifact_plan_layout.addLayout(form)
-        self.artifact_plan_table = self._table(
-            "artifact_plan",
-            ("Tool", "Role", "Action", "Strategy", "Context", "Revisable Tail", "Blockers", "Recipe ID", "Logical Artifact ID"),
-        )
-        artifact_plan_layout.addWidget(self.artifact_plan_table, 1)
-        artifact_plan_layout.addLayout(self._buttons(artifact_plan_page, (
-            ("data_manager.update.button.plan_artifacts", "Plan Artifact Update", "plan_artifact_update"),
+        self.artifact_plan_table = self._table("artifact_plan", (
+            "Tool", "Kind/Role", "Action", "Reason", "Strategy", "Context",
+            "Revisable Tail", "Dependencies", "Logical Artifact ID",
+        ))
+        layout.addWidget(self.artifact_plan_table, 1)
+        layout.addLayout(self._buttons(artifacts, (
+            ("execute_artifacts", "Execute Reviewed Update", "execute_artifact_update"),
         )))
-        self.stack.addWidget(artifact_plan_page)
-
-        artifact_execute_page, artifact_execute_layout = self._page("Artifact Execution")
-        artifact_execute_layout.addWidget(QLabel("Execute only the reviewed immutable Artifact update plan.", artifact_execute_page))
-        artifact_execute_layout.addLayout(self._buttons(artifact_execute_page, (
-            ("data_manager.update.button.execute_artifacts", "Execute Artifact Update", "execute_artifact_update"),
+        self.artifact_report = self._table("artifact_report", ("Field", "Value"))
+        layout.addWidget(self.artifact_report)
+        self.tabs.addTab(artifacts, "Artifacts")
+        databases, layout = self._page()
+        self.database_candidates = self._table("database_candidates", (
+            "Name", "Current Revision", "Snapshot State", "Update Readiness",
+            "Update Details", "Snapshot Through", "OHLCV Through", "Database ID",
+        ))
+        layout.addWidget(self.database_candidates, 1)
+        layout.addLayout(self._buttons(databases, (
+            ("plan_database", "Preview Update", "plan_database_update"),
         )))
-        artifact_execute_layout.addStretch(1)
-        self.stack.addWidget(artifact_execute_page)
-
-        collection_page, collection_layout = self._page("Collection Validation")
-        self.collection_validation_table = self._table(
-            "collection_validation",
-            (
-                "State", "Selected Outputs", "First TS", "Last TS",
-                "Database Ready", "Reasons", "Collection ID", "Revision ID",
-                "Root Logical Artifact IDs", "Support Logical Artifact IDs",
-            ),
-        )
-        collection_layout.addWidget(self.collection_validation_table, 1)
-        collection_layout.addLayout(self._buttons(collection_page, (
-            ("data_manager.update.button.validate_collection", "Refresh Collection Validation", "refresh_reconciliation"),
-        )))
-        self.stack.addWidget(collection_page)
-
-        database_plan_page, database_plan_layout = self._page("Database Append or Rebuild Preview")
-        database_form = QFormLayout()
-        database_form.addRow("Database", self.database_combo)
-        database_plan_layout.addLayout(database_form)
-        self.database_plan_table = self._table(
-            "database_plan",
-            ("Mode", "Status", "Columns", "Stages", "Blockers", "Collection Revision ID", "Database ID"),
-        )
-        database_plan_layout.addWidget(self.database_plan_table, 1)
-        database_plan_layout.addLayout(self._buttons(database_plan_page, (
-            ("data_manager.update.button.plan_database", "Plan Database Update", "plan_database_update"),
-        )))
-        self.stack.addWidget(database_plan_page)
-
-        commit_page, commit_layout = self._page("Commit Database Revision")
-        commit_layout.addWidget(self.confirm_rebuild)
-        commit_layout.addLayout(self._buttons(commit_page, (
-            ("data_manager.update.button.append_database", "Append Database Revision", "execute_database_append"),
-            ("data_manager.update.button.rebuild_database", "Rebuild Database Revision", "execute_database_rebuild"),
+        self.database_plan_table = self._table("database_plan", ("Field", "Value"))
+        layout.addWidget(self.database_plan_table, 1)
+        layout.addLayout(self._buttons(databases, (
+            ("append_database", "Append Database Revision", "execute_database_append"),
         )))
         self.commit_report = self._table("commit_report", ("Field", "Value"))
-        commit_layout.addWidget(self.commit_report, 1)
-        self.stack.addWidget(commit_page)
-
-        right = QVBoxLayout()
-        right.addWidget(self.stack, 1)
-        layout = QHBoxLayout(self)
-        layout.addWidget(self.stage_list)
-        layout.addLayout(right, 1)
-        self.stage_list.setCurrentRow(0)
-        self.collection_combo.currentIndexChanged.connect(
-            lambda _index: self._selection_changed("artifact")
-        )
-        self.database_combo.currentIndexChanged.connect(
-            lambda _index: self._selection_changed("database")
-        )
+        layout.addWidget(self.commit_report)
+        self.tabs.addTab(databases, "Databases")
+        root = QVBoxLayout(self)
+        root.addWidget(self.tabs)
+        self.database_candidates.itemSelectionChanged.connect(self._database_selection_changed)
         self._sync_gating()
 
-    def set_busy(self, busy: bool) -> None:
+    def selected_roots(self):
+        return tuple(sorted(key for key, check in self._checks.items() if check.isChecked()))
+
+    def selected_database_id(self):
+        row = self.database_candidates.currentRow()
+        return self._database_ids[row] if 0 <= row < len(self._database_ids) else None
+
+    def set_market(self, market):
+        if self._market == market:
+            return
+        self._market = market
+        self.clear_artifact_plan()
+        self.clear_database_plan()
+        if self._snapshot is not None:
+            self.set_snapshot(self._snapshot)
+
+    def set_busy(self, busy):
         self._busy = bool(busy)
-        self.stage_list.setEnabled(not self._busy)
         self._sync_gating()
 
-    def set_snapshot(self, snapshot: DataManagerProductCatalogSnapshot) -> None:
+    def set_snapshot(self, snapshot):
         if not isinstance(snapshot, DataManagerProductCatalogSnapshot):
             raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
-        _set_combo(
-            self.collection_combo,
-            tuple((item.collection_id, item.display_name) for item in snapshot.artifact_collections),
-        )
-        _set_combo(
-            self.database_combo,
-            tuple((item.definition.database_id, item.definition.display_name) for item in snapshot.databases),
-        )
-        reconciliation = snapshot.latest_reconciliation
-        _set_rows(self.reconciliation_tables["sources"], tuple(
-            (
-                item.market_id.as_key(), item.status,
-                format_utc_timestamp_ms(item.previous_through_ms),
-                format_utc_timestamp_ms(item.current_through_ms),
-                str(item.missing_row_count), item.reason,
-            )
-            for item in reconciliation.source_changes
+        self._snapshot = snapshot
+        selected = set(self.selected_roots())
+        database_id = self.selected_database_id()
+        statuses = {item.logical_artifact_id: item for item in snapshot.latest_reconciliation.artifacts
+                    if item.market_id == self._market}
+        candidates = []
+        for artifact in snapshot.managed_artifacts.artifacts:
+            state = statuses.get(artifact.logical_artifact_id)
+            if artifact.market_id != self._market or not artifact.valid or state is None:
+                continue
+            if _ARTIFACT_CURRENTNESS[state.status] != "UPDATE AVAILABLE":
+                continue
+            candidates.append((artifact, state))
+        self._checks = {}
+        _set_rows(self.artifact_candidates, tuple(
+            ("", artifact.tool_key, artifact.kind, format_utc_timestamp_ms(state.artifact_through_ms),
+             format_utc_timestamp_ms(state.ohlcv_through_ms), "UPDATE AVAILABLE",
+             " | ".join(state.reasons), artifact.logical_artifact_id)
+            for artifact, state in candidates
         ))
-        _set_rows(self.reconciliation_tables["artifacts"], tuple(
-            (
-                item.market_id.as_key(), item.status,
-                format_utc_timestamp_ms(item.artifact_through_ms),
-                format_utc_timestamp_ms(item.ohlcv_through_ms),
-                str(item.missing_row_count), " | ".join(item.reasons),
-                item.logical_artifact_id,
-            )
-            for item in reconciliation.artifacts
-        ))
-        collection_rows = tuple(
-            (
-                item.market_id.as_key(), item.status,
-                format_utc_timestamp_ms(item.aligned_through_ms),
-                format_utc_timestamp_ms(item.ohlcv_through_ms),
-                str(item.stale_member_count), str(item.blocked_member_count),
-                "yes" if item.database_ready else "no", " | ".join(item.reasons),
-                item.collection_id,
-            )
-            for item in reconciliation.collections
+        for row, (artifact, _) in enumerate(candidates):
+            check = QCheckBox(self.artifact_candidates)
+            check.setChecked(artifact.logical_artifact_id in selected)
+            check.toggled.connect(self._artifact_selection_changed)
+            self._checks[artifact.logical_artifact_id] = check
+            self.artifact_candidates.setCellWidget(row, 0, check)
+        databases = tuple(
+            item
+            for item in snapshot.databases
+            if item.current_manifest is not None
+            and item.current_manifest.market_id == self._market
+            and item.currentness is not None
+            and item.valid
+            and _database_update_readiness(item.currentness) != "CURRENT"
         )
-        _set_rows(self.reconciliation_tables["collections"], collection_rows)
-        if not self._artifact_result_active:
-            _set_rows(self.collection_validation_table, tuple(
-                (
-                    item.status, "", "", "",
-                    "yes" if item.database_ready else "no",
-                    " | ".join(item.reasons), item.collection_id, "", "", "",
-                )
-                for item in reconciliation.collections
-            ))
-        _set_rows(self.reconciliation_tables["databases"], tuple(
+        blocker = QSignalBlocker(self.database_candidates)
+        self._database_ids = tuple(item.definition.database_id for item in databases)
+        _set_rows(self.database_candidates, tuple(
             (
-                item.market_id.as_key(), item.status,
-                format_utc_timestamp_ms(item.snapshot_through_ms),
-                format_utc_timestamp_ms(item.ohlcv_through_ms),
-                format_utc_timestamp_ms(item.collection_through_ms),
-                str(item.missing_row_count),
-                "valid" if item.prefix_integrity else "mismatch",
-                " | ".join(item.reasons), item.database_id,
+                item.definition.display_name,
+                item.current_manifest.revision_id,
+                _state(item.valid, item.rejection_reason),
+                _database_update_readiness(item.currentness),
+                _database_update_details(item.currentness),
+                format_utc_timestamp_ms(item.currentness.snapshot_through_ms),
+                format_utc_timestamp_ms(item.currentness.ohlcv_through_ms),
+                item.definition.database_id,
             )
-            for item in reconciliation.databases
+            for item in databases
         ))
-        _set_rows(
-            self.reconciliation_tables["failures"],
-            tuple((value,) for value in reconciliation.failures),
-        )
+        if database_id in self._database_ids:
+            self.database_candidates.selectRow(self._database_ids.index(database_id))
+        else:
+            self.database_candidates.clearSelection()
+            self.database_candidates.setCurrentCell(-1, -1)
+        del blocker
+        if self._artifact_plan is not None:
+            heads = {item.logical_artifact_id: item.artifact_id for item in snapshot.managed_artifacts.artifacts if item.valid}
+            source = next((item.current_source for item in snapshot.latest_reconciliation.source_changes
+                           if item.market_id == self._market), None)
+            if (self.selected_roots() != self._artifact_plan.root_logical_artifact_ids
+                    or any(heads.get(n.logical_artifact_id) != n.current_artifact_id
+                           for n in self._artifact_plan.nodes)
+                    or (source is not None and source != self._artifact_plan.source_ohlcv)):
+                self.clear_artifact_plan()
+        if self._database_plan is not None:
+            current = next(
+                (item for item in databases if item.definition.database_id == self._database_plan.database_id),
+                None,
+            )
+            if (
+                current is None
+                or current.current_manifest.revision_id != self._database_plan.database_revision_id
+                or current.currentness.status != self._database_plan.status
+            ):
+                self.clear_database_plan()
+        self._sync_gating()
 
-    def set_artifact_plan(self, plan) -> None:
+    def set_artifact_plan(self, plan):
+        self._artifact_plan = plan
         _set_rows(self.artifact_plan_table, tuple(
-            (
-                item.tool_key, item.role, item.action, item.update_strategy.value,
-                str(item.context_rows), str(item.revisable_tail_rows),
-                " | ".join(item.blockers), item.portable_recipe_id,
-                item.logical_artifact_id,
-            )
+            (item.tool_key, f"{item.kind} / {item.role}", item.action,
+             " | ".join((*item.reasons, *item.blockers)), item.update_strategy.value,
+             str(item.context_rows), str(item.revisable_tail_rows),
+             ", ".join(item.dependency_logical_artifact_ids), item.logical_artifact_id)
             for item in plan.nodes
-        ))
-        self._artifact_plan_collection_id = str(
-            getattr(plan, "collection_id", None)
-            or self.collection_combo.currentData()
-            or ""
-        ) or None
-        plan_blockers = tuple(getattr(plan, "blockers", ()) or ())
-        node_blocked = any(
-            bool(tuple(getattr(item, "blockers", ()) or ()))
-            for item in getattr(plan, "nodes", ())
-        )
-        self._artifact_plan_executable = not bool(
-            getattr(plan, "blocked", False)
-            or plan_blockers
-            or node_blocked
-        )
+        ) + tuple(("", "", "BLOCKED", reason, "", "", "", "", "") for reason in plan.blockers))
         self._sync_gating()
 
-    def set_database_plan(self, plan) -> None:
-        _set_rows(self.database_plan_table, ((
-            plan.mode, plan.status, ", ".join(plan.column_names),
-            str(len(plan.execution_stages)), " | ".join(plan.blockers),
-            plan.collection_revision_id or "", plan.database_id,
-        ),))
-        self._database_plan_database_id = plan.database_id
-        blocked = bool(getattr(plan, "blocked", plan.blockers))
-        self._database_plan_mode = None if blocked else plan.mode
-        self._sync_gating()
-
-    def clear_artifact_plan(self) -> None:
-        self._artifact_plan_collection_id = None
-        self._artifact_plan_executable = False
+    def clear_artifact_plan(self):
+        self._artifact_plan = None
         self.artifact_plan_table.setRowCount(0)
         self._sync_gating()
 
-    def clear_database_plan(self) -> None:
-        self._database_plan_database_id = None
-        self._database_plan_mode = None
+    def set_database_plan(self, plan):
+        self._database_plan = plan
+        change = plan.source_change
+        prerequisites = tuple(
+            f"{node.tool_key} [{node.action}]: "
+            + " | ".join((*node.reasons, *node.blockers))
+            for node in plan.prerequisite_nodes
+        )
+        _set_rows(self.database_plan_table, (
+            ("Database", plan.database_id),
+            ("Current Revision", plan.database_revision_id),
+            ("Update Readiness", _database_update_readiness(plan)),
+            ("Execution Mode", plan.mode),
+            ("Source Evidence", change.status),
+            ("Source Detail", change.reason),
+            ("Old Through", format_utc_timestamp_ms(change.previous_through_ms)),
+            ("Prospective Through", format_utc_timestamp_ms(change.current_through_ms)),
+            ("Row Impact", str(change.missing_row_count)),
+            ("Columns", ", ".join(plan.column_names)),
+            (
+                "Required Artifact Heads",
+                ", ".join(f"{key}: {value}" for key, value in plan.starting_artifact_heads),
+            ),
+            ("Artifact Prerequisites", " || ".join(prerequisites)),
+            ("Blockers", " | ".join(plan.blockers)),
+        ))
+        self._sync_gating()
+
+    def clear_database_plan(self):
+        self._database_plan = None
         self.database_plan_table.setRowCount(0)
         self._sync_gating()
 
-    def set_artifact_update_result(self, result) -> None:
-        revision = result.collection_revision
-        self._artifact_result_active = True
-        _set_rows(self.collection_validation_table, ((
-            revision.validation_state,
-            ", ".join(
-                f"{item.logical_artifact_id}:{item.output_name}->{item.column_name}"
-                for item in revision.selected_outputs
+    def set_artifact_update_result(self, result):
+        _set_rows(self.artifact_report, (
+            ("Updated", str(len(result.updated_logical_artifact_ids))),
+            ("Recovered managed heads (RECREATE)", str(len(result.recovered_logical_artifact_ids))),
+            ("Reused", str(len(result.reused_logical_artifact_ids))),
+            ("Failed", "0"),
+            (
+                "Advanced logical Artifact IDs",
+                ", ".join(result.materialization.advanced_logical_artifact_ids),
             ),
-            format_utc_timestamp_ms(revision.first_timestamp_ms),
-            format_utc_timestamp_ms(revision.last_timestamp_ms),
-            "yes" if revision.database_ready else "no",
-            "",
-            revision.collection_id,
-            revision.revision_id,
-            ", ".join(revision.root_logical_artifact_ids),
-            ", ".join(revision.support_logical_artifact_ids),
-        ),))
-
-    def set_database_update_result(self, result) -> None:
-        revision = result.database_revision
-        try:
-            references = database_collection_references(revision)
-            collection_revision_ids = tuple(
-                item.revision_id for item in references
-            )
-        except TypeError:
-            collection_revision_id = getattr(
-                revision, "collection_revision_id", None
-            )
-            collection_revision_ids = (
-                (collection_revision_id,) if collection_revision_id else ()
-            )
-        _set_rows(self.commit_report, tuple(
-            (name, value)
-            for name, value in (
-                ("mode", result.mode),
-                ("database_id", revision.database_id),
-                ("new_revision_id", revision.revision_id),
-                ("previous_revision_id", revision.previous_revision_id or ""),
-                (
-                    "collection_revision_id",
-                    ", ".join(collection_revision_ids),
-                ),
-                ("rows", str(revision.row_count)),
-                ("columns", str(revision.column_count)),
-                ("First TS", format_utc_timestamp_ms(revision.first_timestamp_ms)),
-                ("Last TS", format_utc_timestamp_ms(revision.last_timestamp_ms)),
-                ("values_hash", revision.values_sha256),
-            )
         ))
 
-    def _emit(self, action: str) -> None:
-        self.action_requested.emit(
-            action,
-            {
-                "collection_id": self.collection_combo.currentData(),
-                "database_id": self.database_combo.currentData(),
-                "rebuild_confirmed": self.confirm_rebuild.isChecked(),
-            },
-        )
+    def set_database_update_result(self, result):
+        revision = result.database_revision
+        _set_rows(self.commit_report, (
+            ("Mode", result.mode), ("Database", revision.database_id),
+            ("New Revision", revision.revision_id), ("Previous Revision", revision.previous_revision_id or ""),
+            ("Rows", str(revision.row_count)), ("Columns", str(revision.column_count)),
+            ("Through", format_utc_timestamp_ms(revision.last_timestamp_ms)),
+        ))
 
-    def _selection_changed(self, scope: str) -> None:
-        self._sync_gating()
-        self.action_requested.emit(
-            "context_changed",
-            {
-                "scope": scope,
-                "collection_id": self.collection_combo.currentData(),
-                "database_id": self.database_combo.currentData(),
-            },
-        )
+    def _artifact_selection_changed(self):
+        self.clear_artifact_plan()
+        self.action_requested.emit("context_changed", self._payload("artifact"))
 
-    def _sync_gating(self) -> None:
+    def _database_selection_changed(self):
+        self.clear_database_plan()
+        self.action_requested.emit("context_changed", self._payload("database"))
+
+    def _payload(self, scope=""):
+        return {
+            "scope": scope,
+            "market_id": self._market,
+            "root_logical_artifact_ids": self.selected_roots(),
+            "database_id": self.selected_database_id(),
+        }
+
+    def _emit(self, action):
+        if self._busy:
+            return
+        if action in {"select_all", "deselect_all"}:
+            for check in self._checks.values():
+                check.setChecked(action == "select_all")
+            return
+        self.action_requested.emit(action, self._payload())
+
+    def _sync_gating(self, *_):
+        if not self.buttons:
+            return
         for button in self.buttons.values():
             button.setEnabled(not self._busy)
-        artifact_matches = (
-            self._artifact_plan_executable
-            and self._artifact_plan_collection_id is not None
-            and self.collection_combo.currentData() == self._artifact_plan_collection_id
-        )
-        database_matches = (
-            self._database_plan_database_id is not None
-            and self.database_combo.currentData() == self._database_plan_database_id
-        )
+        for check in self._checks.values():
+            check.setEnabled(not self._busy)
+        roots = self.selected_roots()
+        plan = self._artifact_plan
+        self.buttons["data_manager.update.button.plan_artifacts"].setEnabled(not self._busy and bool(roots))
         self.buttons["data_manager.update.button.execute_artifacts"].setEnabled(
-            not self._busy and artifact_matches
-        )
+            not self._busy and plan is not None and not plan.blocked
+            and plan.market_id == self._market and plan.root_logical_artifact_ids == roots)
+        database = self._database_plan
+        matched = (database is not None and not database.blockers
+                   and database.database_id == self.selected_database_id())
+        self.buttons["data_manager.update.button.plan_database"].setEnabled(
+            not self._busy and self.selected_database_id() is not None)
         self.buttons["data_manager.update.button.append_database"].setEnabled(
-            not self._busy and database_matches and self._database_plan_mode == "APPEND"
-        )
-        self.buttons["data_manager.update.button.rebuild_database"].setEnabled(
-            not self._busy
-            and database_matches
-            and self._database_plan_mode == "REBUILD_REQUIRED"
+            not self._busy and matched and database.mode == "APPEND"
         )
 
-    def _table(self, suffix: str, columns: tuple[str, ...]) -> QTableWidget:
-        return configure_table(
-            QTableWidget(self),
-            object_id=f"data_manager.update.table.{suffix}",
-            columns=columns,
-            labels=columns,
-        )
+    def _table(self, suffix, columns):
+        return configure_table(QTableWidget(self), object_id=f"data_manager.update.table.{suffix}",
+                               columns=columns, labels=columns)
 
-    def _page(self, title: str) -> tuple[QWidget, QVBoxLayout]:
+    def _page(self):
         page = QWidget(self)
-        layout = QVBoxLayout(page)
-        heading = QLabel(title, page)
-        heading.setStyleSheet("font-weight: 600;")
-        layout.addWidget(heading)
-        return page, layout
+        return page, QVBoxLayout(page)
 
-    def _buttons(self, parent: QWidget, actions) -> QHBoxLayout:
+    def _buttons(self, parent, actions):
         layout = QHBoxLayout()
-        for object_id, label, action in actions:
+        for suffix, label, action in actions:
+            identity = f"data_manager.update.button.{suffix}"
             button = QPushButton(label, parent)
-            apply_identity(
-                button,
-                object_id,
-                object_type="button",
-                display_label=label,
-                action_id=object_id,
-            )
+            apply_identity(button, identity, object_type="button", action_id=identity)
             button.clicked.connect(partial(self._emit, action))
-            self.buttons[object_id] = button
+            self.buttons[identity] = button
             layout.addWidget(button)
         layout.addStretch(1)
         return layout
 
 
-def _set_combo(combo: QComboBox, values: tuple[tuple[str, str], ...]) -> None:
-    current = combo.currentData()
-    blocker = QSignalBlocker(combo)
-    combo.clear()
-    combo.addItem("Select explicitly", None)
-    for identity, label in values:
-        combo.addItem(label, identity)
-    if current is not None:
-        index = combo.findData(current)
-        if index >= 0:
-            combo.setCurrentIndex(index)
-    del blocker
-
-
-def _set_rows(table: QTableWidget, rows: tuple[tuple[str, ...], ...]) -> None:
+def _set_rows(table, rows):
+    sorting = table.isSortingEnabled()
+    table.setSortingEnabled(False)
     table.setRowCount(len(rows))
     for row, values in enumerate(rows):
         for column, value in enumerate(values):
-            table.setItem(row, column, QTableWidgetItem(value))
+            item = QTableWidgetItem(str(value))
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(row, column, item)
+    table.setSortingEnabled(sorting)
     resize_data_manager_table(table)

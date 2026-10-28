@@ -64,6 +64,268 @@ MARKET = MarketId("bybit", "linear", "BTCUSDT", "1h")
 REJECTED_MARKET = MarketId("bybit", "linear", "XRPUSDT", "4h")
 
 
+def _selected_dataset_values(window):
+    table = window._selected_dataset_table
+    return tuple(tuple(table.item(row, col).text() for col in range(table.columnCount()))
+                 for row in range(table.rowCount()))
+
+
+def _assert_selected_dataset_typography(window, active):
+    table = window._selected_dataset_table
+    items = [table.item(row, col) for row in range(table.rowCount())
+             for col in range(table.columnCount())]
+    items.extend(table.horizontalHeaderItem(col) for col in range(table.columnCount()))
+    for item in items:
+        if active:
+            assert item.foreground().color().name() == "#ff3b4d"
+            assert item.font().bold()
+        else:
+            assert item.data(Qt.ItemDataRole.ForegroundRole) is None
+            assert item.data(Qt.ItemDataRole.FontRole) is None
+
+
+def _assert_selector_normal(selector):
+    from PySide6.QtCore import QAbstractAnimation
+    from tests.gui_test.test_data_manager_dataset_selector_dialog import _assert_dataset_attention_typography
+    assert not selector._dataset_evidence_attention
+    assert selector._attention_animation.state() == QAbstractAnimation.State.Stopped
+    assert "#FF3B4D" not in selector.styleSheet()
+    _assert_dataset_attention_typography(selector, False)
+
+
+def test_selector_remains_normal_during_suspension_and_clears_dormant_attention(qapp):
+    window = DataManagerSuiteWindow()
+    try:
+        window.set_catalog(DataManagerCatalogSnapshot((_dataset(), replace(_dataset(), market_id=REJECTED_MARKET))))
+        window.select_market(MARKET, emit_selection=False)
+        window._show_dataset_selector()
+        selector = window.dataset_selector_dialog()
+        window.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        assert not selector.isVisible()
+        _assert_selector_normal(selector)
+        # A reusable dialog must also clear previously configured local attention.
+        selector.set_dataset_evidence_attention(True)
+        window._show_dataset_selector()
+        assert window.dataset_context_suspended and selector.isVisible()
+        _assert_selector_normal(selector)
+        assert selector.selected_market_id() is None
+        table = selector._table
+        table.cellWidget(0, 0).findChild(QCheckBox).click()
+        assert selector.selected_market_id() is not None
+        table.cellWidget(1, 0).findChild(QCheckBox).click()
+        assert selector.selected_market_id() is None
+        assert not selector.button_for_id("data_manager.dataset_selector.button.select").isEnabled()
+        _assert_selector_normal(selector)
+    finally:
+        window.close()
+
+
+def test_selected_dataset_warning_preserves_snapshot_through_refresh_and_recovers(qapp):
+    from PySide6.QtCore import QAbstractAnimation, QVariantAnimation
+
+    window = DataManagerSuiteWindow()
+    try:
+        window.set_catalog(DataManagerCatalogSnapshot((_dataset(),)))
+        window.select_market(MARKET, emit_selection=False)
+        window.show()
+        table = window._selected_dataset_table
+        original_entry = window._selected_dataset_entry
+        original_values = _selected_dataset_values(window)
+        normal_table = table.styleSheet()
+        normal_group = table.parentWidget().styleSheet()
+        normal_operation = window._operation_surface.styleSheet()
+        normal_window = window.styleSheet()
+        window.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        animation = window._selected_dataset_attention_animation
+        assert table.objectName() == "data_manager.selected_dataset.table"
+        assert table.rowCount() == 1 and table.isVisible()
+        assert window._selected_dataset_entry is original_entry
+        assert window._selected_market == MARKET
+        assert _selected_dataset_values(window) == original_values
+        _assert_selected_dataset_typography(window, True)
+        assert "border: 2px solid #FF3B4D" in table.styleSheet()
+        assert animation.state() == QAbstractAnimation.State.Running
+        assert animation.duration() == 4000
+        assert animation.loopCount() == -1
+        assert [(key, color.name()) for key, color in animation.keyValues()] == [
+            (0.0, "#142b45"), (0.5, "#315f8a"), (1.0, "#142b45")
+        ]
+        animation.pause()
+        for time_ms, color in ((0, "#142b45"), (2000, "#315f8a")):
+            animation.setCurrentTime(time_ms)
+            qapp.processEvents()
+            viewport = table.viewport()
+            pixel = viewport.grab().toImage().pixelColor(viewport.width() - 3, viewport.height() - 3)
+            assert pixel.name() == color
+            assert table.parentWidget().styleSheet() == normal_group
+            assert window._operation_surface.styleSheet() == normal_operation
+            assert window.styleSheet() == normal_window
+        animation.resume()
+        count = len(window.findChildren(QVariantAnimation))
+        window.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        assert window._selected_dataset_attention_animation is animation
+        assert len(window.findChildren(QVariantAnimation)) == count
+        assert animation.currentTime() >= 2000
+        window.button_for_id("data_manager.button.refresh").click()
+        changed = replace(_dataset(), row_count=42)
+        other = replace(_dataset(), market_id=REJECTED_MARKET)
+        window.set_catalog(DataManagerCatalogSnapshot((changed, other)))
+        window.set_market_snapshot(replace(_snapshot(), dataset=changed))
+        window.set_market_snapshot(None)
+        window.set_product_catalogs(replace(associated_product_snapshot(), catalog=DataManagerCatalogSnapshot((changed, other))))
+        window.clear_selected_market("Background changed")
+        assert window.select_market(REJECTED_MARKET, emit_selection=False)
+        assert window._selected_market == MARKET
+        assert window._selected_dataset_entry is original_entry
+        assert _selected_dataset_values(window) == original_values
+        _assert_selected_dataset_typography(window, True)
+        assert animation.state() == QAbstractAnimation.State.Running
+        window._on_dataset_selector_selected(MARKET)
+        assert window.dataset_context_suspended
+        assert animation.state() == QAbstractAnimation.State.Running
+        assert _selected_dataset_values(window) == original_values
+        _assert_selected_dataset_typography(window, True)
+        window._on_dataset_selector_selected(REJECTED_MARKET)
+        assert not window.dataset_context_suspended
+        assert window._selected_market == REJECTED_MARKET
+        assert window._selected_dataset_entry is other
+        _assert_selected_dataset_typography(window, False)
+        assert animation.state() == QAbstractAnimation.State.Stopped
+        assert table.styleSheet() == normal_table
+    finally:
+        window.close()
+
+
+def test_dataset_evidence_attention_closes_all_operational_children(qapp):
+    from tests.gui_test.test_data_manager_catalogs import _database_entry
+    from tests.gui_test.test_data_manager_recipe_collection_dialog import (
+        _inspection, _recipe, ROOT_ID, SUPPORT_ID,
+    )
+
+    window = DataManagerSuiteWindow()
+    snapshot = replace(
+        associated_product_snapshot(),
+        catalog=DataManagerCatalogSnapshot((_dataset(),)),
+    )
+    try:
+        window.set_product_catalogs(snapshot)
+        window.select_market(MARKET, emit_selection=False)
+        window.show()
+        window.show_artifact_creation_dialog(_direct_catalog())
+        window.show_construct_batch_dialog(_direct_catalog())
+        window.show_recipe_derivation_dialog(_environment_inspection())
+        window.show_recipe_collection_dialog(snapshot)
+        window.show_artifact_collection_dialog(snapshot)
+        window.show_recipe_artifact_materialization_dialog(
+            snapshot.portable_recipes.recipes[0], snapshot
+        )
+        window.show_database_seed_dialog(_dataset())
+        window.show_database_creation_dialog(snapshot)
+        window.show_database_content_dialog(_database_entry(None), snapshot, mode="artifacts")
+        window.show_recipe_collection_inspection(
+            _inspection(), (_recipe(SUPPORT_ID, "sma"), _recipe(ROOT_ID, "ema"))
+        )
+        preflight = DuplicateMaintenancePreflight(
+            DUPLICATE_MAINTENANCE_DOMAINS["recipes"], 2
+        )
+        window.show_duplicate_maintenance_preflight(preflight)
+        window.show_duplicate_maintenance_results(DuplicateMaintenanceScanResult(
+            preflight, datetime(2026, 8, 20, tzinfo=UTC), 2, ()
+        ))
+        children = (
+            window.artifact_creation_dialog(), window.construct_batch_dialog(),
+            window.recipe_derivation_dialog(), window.recipe_collection_dialog(),
+            window.artifact_collection_dialog(), window.recipe_artifact_materialization_dialog(),
+            window.database_seed_dialog(), window.database_creation_dialog(),
+            window.database_content_dialog(), window.collection_inspection_dialog(),
+            window.duplicate_maintenance_preflight_dialog(), window.duplicate_maintenance_results_dialog(),
+        )
+        assert len(children) == 12
+        assert all(child is not None and child.isVisible() for child in children)
+        window._show_dataset_selector()
+        selector = window.dataset_selector_dialog()
+        selector._show_search_help()
+        window.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        window.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        qapp.processEvents()
+        assert all(not isValid(child) or not child.isVisible() for child in children)
+        assert not selector.isVisible()
+        assert selector.selected_market_id() is None
+        assert not selector._search_help_dialog.isVisible()
+        assert window._dataset_context_suspended
+        assert window._operation_surface._dataset_evidence_attention
+        assert window._selected_dataset_table.rowCount() == 1
+    finally:
+        window.close()
+
+
+def test_dataset_evidence_attention_gates_every_family_and_recovers_only_by_selection(qapp):
+    from PySide6.QtWidgets import QPushButton
+    from tests.gui_test.test_data_manager_catalogs import EXPECTED_FAMILIES
+
+    window = DataManagerSuiteWindow()
+    selected = []
+    refreshed = []
+    window.market_selected.connect(selected.append)
+    window.refresh_requested.connect(lambda: refreshed.append(True))
+    snapshot = replace(
+        associated_product_snapshot(),
+        catalog=DataManagerCatalogSnapshot((_dataset(),)),
+    )
+    try:
+        window.set_product_catalogs(snapshot)
+        window.select_market(MARKET, emit_selection=False)
+        window.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        for name in ("refresh", "select_dataset"):
+            assert window.button_for_id(f"data_manager.button.{name}").isEnabled()
+        for name in ("preview_dataset", "duplicate_maintenance", "cancel_operation"):
+            assert not window.button_for_id(f"data_manager.button.{name}").isEnabled()
+        assert not window._operation_surface.clear_button.isEnabled()
+        workspace = window._catalog_workspace
+        for family in EXPECTED_FAMILIES:
+            workspace.select_family(family)
+            if workspace.table.rowCount():
+                workspace.table.selectRow(0)
+            assert workspace.isEnabled()
+            assert workspace.table.isEnabled()
+            assert workspace.inspector_panel().isEnabled()
+            assert workspace.history_panel().isEnabled()
+            assert not any(button.isEnabled() for button in workspace.findChildren(QPushButton))
+            assert not workspace.inspect_collection_button.isEnabled()
+        for child in (window._update_workspace,):
+            assert not any(button.isEnabled() for button in child.buttons.values())
+        for index in range(window._workspace_tabs.count()):
+            window._workspace_tabs.setCurrentIndex(index)
+            assert window._workspace_tabs.isTabEnabled(index)
+        window.button_for_id("data_manager.button.refresh").click()
+        assert refreshed == [True]
+        window.set_product_catalogs(snapshot)
+        window.select_market(MARKET, emit_selection=False)
+        window.set_status("Catalog refresh completed")
+        assert window._dataset_context_suspended
+        assert window.status_text() == "OHLCV evidence changed"
+        window._on_dataset_selector_selected(REJECTED_MARKET)
+        assert window._dataset_context_suspended
+        window._show_dataset_selector()
+        selector = window.dataset_selector_dialog()
+        assert not selector._dataset_evidence_attention
+        assert selector.selected_market_id() is None
+        window._on_dataset_selector_selected(MARKET)
+        assert selected == []
+        assert window._dataset_context_suspended
+        _assert_selected_dataset_typography(window, True)
+        window.set_catalog(DataManagerCatalogSnapshot((_dataset(), replace(_dataset(), market_id=REJECTED_MARKET))))
+        window._on_dataset_selector_selected(REJECTED_MARKET)
+        assert selected == [REJECTED_MARKET]
+        assert not window._dataset_context_suspended
+        assert not selector._dataset_evidence_attention
+        assert not window._operation_surface._dataset_evidence_attention
+        assert window.button_for_id("data_manager.button.preview_dataset").isEnabled()
+        assert window._operation_surface.clear_button.isEnabled()
+    finally:
+        window.close()
+
+
 @pytest.fixture(scope="module")
 def qapp():
     return QApplication.instance() or QApplication([])

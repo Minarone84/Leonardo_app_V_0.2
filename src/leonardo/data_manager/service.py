@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+from threading import RLock
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -41,6 +45,7 @@ from leonardo.financial_tools import (
 from leonardo.financial_tools.construct_input_eligibility import (
     FinancialToolInputCompatibilityError,
     FinancialToolInputSource,
+    financial_tool_source_role_schema,
     validate_financial_tool_inputs,
 )
 from leonardo.recipes import (
@@ -69,6 +74,7 @@ from leonardo.research import (
     DatasetCatalogReport,
     DatasetRejection,
     HistoricalDataset,
+    HistoricalDatasetLoadCancelled,
     HistoricalDatasetLoadError,
     HistoricalDatasetLoader,
     StudyEnvironmentEntryV1,
@@ -78,6 +84,8 @@ from leonardo.research import (
     StudyEnvironmentV1,
     StudyEnvironmentValidationError,
 )
+from leonardo.research.catalog import _dms_accepted_lookup
+from leonardo.research.dataset import _stat_fingerprint
 
 from .models import (
     DataManagerArtifactMaterializationNode,
@@ -110,6 +118,7 @@ from .models import (
     DataManagerStudyEnvironmentEntry,
     DataManagerStudyEnvironmentInspection,
     DataManagerDatabaseCatalogEntry,
+    DataManagerDatabaseSeedStatus,
     DuplicateMaintenanceCandidate,
     DuplicateMaintenanceDomain,
     DuplicateMaintenanceGroup,
@@ -124,6 +133,7 @@ from .artifact_materialization import (
     _calculate_artifact_configuration,
     _calculate_artifact_recipe,
     _calculate_recipe,
+    _utc_context,
     _dataset_frame,
     _plan_id,
     _source_refs,
@@ -141,24 +151,28 @@ from .creation_models import (
     BatchArtifactPlan,
     BatchArtifactRequest,
     DatabaseCollectionReferenceV2,
-    DatabaseContentAdditionPlan,
     DatabaseRevisionManifest,
     DatabaseReadiness,
     DatabaseDefinitionV1,
     DatabaseRevisionManifestV1,
     DatabaseRevisionManifestV2,
+    DatabaseRevisionManifestV3,
     DatabaseSeedV1,
+    DatabaseSeedV2,
     DatabaseSeedCreationPlan,
+    DatabaseSeedAppendPlan,
     DataManagerCreationError,
     SeedOnlyDatabaseCreationPlan,
     database_collection_references,
     deterministic_hash,
 )
 from .creation_service import DataManagerCreationWorkflow
-from .creation_store import DataManagerCreationStore
+from .creation_store import DataManagerCreationStore, DataManagerCreationStoreError
 from .update_models import (
     ArtifactCollectionUpdatePlan,
     ArtifactCollectionUpdateResult,
+    ArtifactUpdatePlan,
+    ArtifactUpdateResult,
     DataManagerReconciliationSnapshot,
     DatabaseUpdatePlan,
     DatabaseUpdateResult,
@@ -367,6 +381,17 @@ class _DirectArtifactMember:
     dependencies: tuple[_DirectArtifactDependency, ...]
 
 
+def _checked_operation(method):
+    @wraps(method)
+    def checked(self, *args, **kwargs):
+        with self._operation_checks(
+            progress=kwargs.get("progress"),
+            cancellation_requested=kwargs.get("cancellation_requested"),
+        ):
+            return method(self, *args, **kwargs)
+    return checked
+
+
 class DataManagerService:
     """Project canonical persisted truth into immutable Data Manager values."""
 
@@ -406,6 +431,11 @@ class DataManagerService:
         self._catalog = catalog
         self._loader = loader
         self._artifacts = artifacts
+        self._verification_lock = RLock()
+        self._source_evidence = {}
+        self._source_generations = {}
+        self._session_generation = 0
+        self._checks_active = ContextVar("dms_operation_owner", default=None)
         self._study_environments = study_environments
         self._portable_recipes = portable_recipes
         self._recipe_planner = recipe_planner
@@ -436,6 +466,111 @@ class DataManagerService:
     def creation_store(self) -> DataManagerCreationStore:
         return self._creation.store
 
+    def begin_session(self) -> None:
+        with self._verification_lock:
+            self._session_generation += 1
+            self._source_evidence.clear()
+
+    def end_session(self) -> None:
+        self.begin_session()
+
+    def invalidate_source(self, market_id: MarketId) -> None:
+        market = _canonical_market(market_id)
+        with self._verification_lock:
+            self._source_generations[market] = self._source_generations.get(market, 0) + 1
+            self._source_evidence.pop(market, None)
+        self._updates.invalidate()
+
+    def _checked_source(self, market: MarketId):
+        execution = self._checks_active.get() or {}
+        cancelled = execution.get("cancelled") or (lambda: False)
+        progress = execution.get("progress")
+        try:
+            if cancelled():
+                raise DataManagerOperationError("OHLCV integrity check cancelled")
+            with self._verification_lock:
+                generation = (self._session_generation, self._source_generations.get(market, 0))
+                if execution.get("session", generation[0]) != generation[0]:
+                    raise DataManagerOperationError("DMS session ended during checking")
+            source = self._artifacts.source_metadata(market)
+            summary = self._catalog.inspect_market_metadata(market)
+            if isinstance(summary, DatasetRejection):
+                raise ArtifactLineageError(f"{market.as_key()}: {summary.reason}")
+            with self._loader._lock_for(market):
+                with self._verification_lock:
+                    if cancelled():
+                        raise DataManagerOperationError("OHLCV integrity check cancelled")
+                    if generation != (self._session_generation, self._source_generations.get(market, 0)):
+                        raise DataManagerOperationError(f"OHLCV changed during checking: {market.as_key()}")
+                    cached = self._source_evidence.get(market)
+                # Atomic file replacement identity is cheap; strict parsing and
+                # hashing remain owned by the existing HistoricalDatasetLoader.
+                before = (_stat_fingerprint(summary.csv_path), _stat_fingerprint(summary.sidecar_path))
+                if (cached is not None and cached[0] == generation
+                        and cached[1] == source and cached[3] == before):
+                    current_source = self._artifacts.source_metadata(market)
+                    after = (_stat_fingerprint(summary.csv_path), _stat_fingerprint(summary.sidecar_path))
+                    with self._verification_lock:
+                        if (cancelled() or current_source != source or before != after
+                                or generation != (self._session_generation, self._source_generations.get(market, 0))):
+                            raise DataManagerOperationError(f"OHLCV changed during checking: {market.as_key()}")
+                        return source, cached[2]
+                with self._verification_lock:
+                    self._source_evidence.pop(market, None)
+                dataset = self._loader._parse(
+                    summary,
+                    progress=(None if progress is None else lambda current, total: progress(
+                        current, total, f"Checking OHLCV {market.as_key()}"
+                    )),
+                    cancellation_requested=cancelled,
+                )
+                current_source = self._artifacts.source_metadata(market)
+                after = (_stat_fingerprint(summary.csv_path), _stat_fingerprint(summary.sidecar_path))
+                if (dataset.file_sha256 != source.csv_sha256 or dataset.row_count != source.row_count
+                        or dataset.first_timestamp_ms != source.first_timestamp_ms
+                        or dataset.last_timestamp_ms != source.last_timestamp_ms):
+                    raise DataManagerOperationError(f"OHLCV payload and metadata disagree: {market.as_key()}")
+                with self._verification_lock:
+                    if (cancelled() or current_source != source or before != after
+                            or generation != (self._session_generation, self._source_generations.get(market, 0))):
+                        raise DataManagerOperationError(f"OHLCV changed during checking: {market.as_key()}")
+                    self._loader._publish_cache(dataset)
+                    # Axis stays at slot 2; no retained full-value cache here.
+                    self._source_evidence[market] = (generation, source, dataset.ts_ms, after)
+                return source, dataset.ts_ms
+        except Exception:
+            with self._verification_lock:
+                self._source_evidence.pop(market, None)
+            raise
+
+    def _checked_acceptance(self, catalog, market):
+        if catalog is not self._catalog:
+            return catalog.inspect_market(market)
+        self._checked_source(market)
+        return catalog.inspect_market_metadata(market)
+
+    @contextmanager
+    def _operation_checks(self, *, progress=None, cancellation_requested=None):
+        if self._checks_active.get() or not (
+            isinstance(self._artifacts, ArtifactService)
+            and isinstance(self._catalog, AcceptedDatasetCatalog)
+            and isinstance(self._loader, HistoricalDatasetLoader)
+        ):
+            yield
+            return
+        owner_token = self._checks_active.set({
+            "progress": progress, "cancelled": cancellation_requested,
+            "session": self._session_generation,
+        })
+        lookup_token = _dms_accepted_lookup.set(self._checked_acceptance)
+        try:
+            with self._artifacts._dms_operation(self._checked_source):
+                yield
+        finally:
+            _dms_accepted_lookup.reset(lookup_token)
+            self._checks_active.reset(owner_token)
+
+    @_checked_operation
     def create_database_seed(
         self,
         market_id: MarketId,
@@ -445,20 +580,17 @@ class DataManagerService:
         selected_ohlcv_columns: Sequence[str] = (
             "open", "high", "low", "close", "volume"
         ),
-        selected_range_start_ms: int | None = None,
-        selected_range_end_ms: int | None = None,
-    ) -> DatabaseSeedV1:
+    ) -> DatabaseSeedV2:
         result = self._creation.create_database_seed(
             market_id,
             display_name,
             description=description,
             selected_ohlcv_columns=selected_ohlcv_columns,
-            selected_range_start_ms=selected_range_start_ms,
-            selected_range_end_ms=selected_range_end_ms,
         )
         self._updates.invalidate()
         return result
 
+    @_checked_operation
     def plan_database_seed_creation(
         self, market_id: MarketId, display_name: str, **options
     ) -> DatabaseSeedCreationPlan:
@@ -466,13 +598,32 @@ class DataManagerService:
             market_id, display_name, **options
         )
 
+    @_checked_operation
     def execute_database_seed_creation(
         self, plan: DatabaseSeedCreationPlan, **execution
-    ) -> DatabaseSeedV1:
-        result = self._creation.execute_database_seed_creation(plan, **execution)
+    ) -> DatabaseSeedV2:
+        try:
+            result = self._creation.execute_database_seed_creation(plan, **execution)
+        except (DataManagerOperationError, HistoricalDatasetLoadCancelled) as exc:
+            raise DataManagerCreationError(str(exc)) from exc
         self._updates.invalidate()
         return result
 
+    @_checked_operation
+    def plan_database_seed_append(self, seed_id: str) -> DatabaseSeedAppendPlan:
+        try:
+            return self._creation.plan_database_seed_append(seed_id)
+        except DataManagerMarketUnavailableError as exc:
+            raise DataManagerCreationError(str(exc)) from exc
+
+    @_checked_operation
+    def execute_database_seed_append(self, plan: DatabaseSeedAppendPlan, **execution):
+        result = self._creation.execute_database_seed_append(plan, **execution)
+        if plan.appended_row_count:
+            self._updates.invalidate()
+        return result
+
+    @_checked_operation
     def plan_seed_only_database_creation(
         self, seed_id: str, display_name: str, **options
     ) -> SeedOnlyDatabaseCreationPlan:
@@ -480,14 +631,15 @@ class DataManagerService:
             seed_id, display_name, **options
         )
 
+    @_checked_operation
     def execute_seed_only_database_creation(
         self, plan: SeedOnlyDatabaseCreationPlan, **execution
-    ) -> DatabaseRevisionManifestV2:
+    ) -> DatabaseRevisionManifestV3:
         result = self._creation.execute_seed_only_database_creation(plan, **execution)
         self._updates.invalidate()
         return result
 
-    def list_database_seeds(self) -> tuple[DatabaseSeedV1, ...]:
+    def list_database_seeds(self) -> tuple[DatabaseSeedV1 | DatabaseSeedV2, ...]:
         return self._creation.list_database_seeds()
 
     def scan_creation_foundations(self):
@@ -500,20 +652,24 @@ class DataManagerService:
             self.list_database_ids(),
         )
 
-    def load_database_seed(self, seed_id: str) -> DatabaseSeedV1:
+    def load_database_seed(self, seed_id: str) -> DatabaseSeedV1 | DatabaseSeedV2:
         return self._creation.load_database_seed(seed_id)
 
-    def inspect_database_seed(self, seed_id: str) -> DatabaseSeedV1:
+    def inspect_database_seed(self, seed_id: str) -> DatabaseSeedV1 | DatabaseSeedV2:
         return self._creation.inspect_database_seed(seed_id)
 
     def validate_database_seed(self, seed_id: str) -> tuple[bool, tuple[str, ...]]:
         return self._creation.validate_database_seed(seed_id)
 
-    def delete_database_seed(self, seed_id: str) -> DatabaseSeedV1:
+    def database_seed_newer_source_available(self, seed_id: str) -> bool | None:
+        return self._creation.database_seed_newer_source_available(seed_id)
+
+    def delete_database_seed(self, seed_id: str) -> DatabaseSeedV1 | DatabaseSeedV2:
         result = self._creation.delete_database_seed(seed_id)
         self._updates.invalidate()
         return result
 
+    @_checked_operation
     def create_artifact_collection(
         self,
         materialization: DataManagerArtifactMaterializationResult,
@@ -523,6 +679,7 @@ class DataManagerService:
         source_recipe_collection_id: str | None = None,
         source_recipe_collection_revision_id: str | None = None,
         selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+        before_publish: Callable[[], None] | None = None,
     ) -> ArtifactCollectionRevisionV1:
         result = self._creation.create_artifact_collection(
             materialization,
@@ -531,9 +688,19 @@ class DataManagerService:
             source_recipe_collection_id=source_recipe_collection_id,
             source_recipe_collection_revision_id=source_recipe_collection_revision_id,
             selected_outputs=selected_outputs,
+            **self._collection_check_callbacks(before_publish),
         )
         self._updates.invalidate()
         return result
+
+    def _collection_check_callbacks(self, before_publish=None):
+        context = self._checks_active.get()
+        callbacks = {
+            "progress": None if context is None else context["progress"],
+            "cancellation_requested": None if context is None else context["cancelled"],
+            "before_publish": before_publish,
+        }
+        return {name: callback for name, callback in callbacks.items() if callback is not None}
 
     def find_equivalent_artifact_collection_for_materialization(
         self,
@@ -546,7 +713,7 @@ class DataManagerService:
             return None
         managed_by_id = {
             item.logical_artifact_id: item
-            for item in self._artifacts.list_managed_artifacts(plan.target_market_id)
+            for item in self._artifacts.list_managed_artifacts_metadata(plan.target_market_id)
         }
         try:
             projected = tuple(
@@ -580,7 +747,7 @@ class DataManagerService:
                 projected,
             )
             values = self._creation._collection_values_from_materialization(
-                materialization, selected_outputs
+                materialization, selected_outputs, metadata_only=True
             )
             return self.creation_store.find_equivalent_collection(
                 market_id=values["market_id"],
@@ -594,10 +761,14 @@ class DataManagerService:
         except (ArtifactError, DataManagerCreationError, KeyError, TypeError, ValueError) as exc:
             raise DataManagerOperationError(str(exc)) from exc
 
+    @_checked_operation
     def plan_artifact_collection_selection(
         self,
         market_id: MarketId,
         root_logical_artifact_ids: Sequence[str],
+        *,
+        collection_id: str | None = None,
+        expected_revision_id: str | None = None,
     ) -> ArtifactCollectionSelectionPlan:
         market = _canonical_market(market_id)
         if isinstance(root_logical_artifact_ids, (str, bytes, bytearray)):
@@ -614,8 +785,18 @@ class DataManagerService:
                 "root logical Artifact IDs must be unique"
             )
         try:
+            if collection_id is not None or expected_revision_id is not None:
+                if collection_id is None or expected_revision_id is None:
+                    raise DataManagerCreationError(
+                        "Collection edit context requires collection_id and expected_revision_id"
+                    )
+                removal = self._plan_saved_artifact_collection_removal(
+                    market, roots, collection_id, expected_revision_id
+                )
+                if removal is not None:
+                    return removal
             current_source = self._artifacts.capture_accepted_source(market)
-            summaries = tuple(self._artifacts.list_managed_artifacts(market))
+            summaries = tuple(self._artifacts.list_managed_artifacts_metadata(market))
             summaries_by_id: dict[str, list[ManagedArtifactSummary]] = {}
             for summary in summaries:
                 summaries_by_id.setdefault(summary.logical_artifact_id, []).append(
@@ -639,6 +820,9 @@ class DataManagerService:
                 for logical_id, values in summaries_by_id.items()
                 if len(values) == 1 and values[0].valid
             }
+            # A Collection combines the selected materialized snapshots. Current OHLCV
+            # growth is update information, not a fourth admission condition.
+            current_source = self._artifacts.load_artifact_metadata(market, managed[roots[0]].artifact_id).source_ohlcv
             versions_by_logical_id: dict[str, tuple[object, ...]] = {}
             version_owners: dict[str, tuple[str, str]] = {}
             for summary in managed.values():
@@ -683,12 +867,10 @@ class DataManagerService:
             visiting: set[str] = set()
 
             def collect(logical_id: str, artifact_id: str) -> None:
+                if logical_id in roots:
+                    artifact_id = managed[logical_id].artifact_id
                 previous = selected_physical.get(logical_id)
                 if previous is not None:
-                    if previous != artifact_id:
-                        raise ArtifactLineageError(
-                            "logical Artifact resolves to conflicting physical versions"
-                        )
                     return
                 if logical_id in visiting:
                     raise ArtifactLineageError(
@@ -718,8 +900,7 @@ class DataManagerService:
                 )
                 selected_physical[logical_id] = artifact_id
                 visiting.add(logical_id)
-                loaded = self._artifacts.load_artifact_by_id(market, artifact_id)
-                metadata = loaded.metadata
+                metadata = self._artifacts.load_artifact_metadata(market, artifact_id)
                 recipe = metadata.recipe
                 semantic_dependencies = tuple(
                     _DirectArtifactSemanticDependency(
@@ -732,7 +913,7 @@ class DataManagerService:
                 )
                 if (
                     metadata.artifact_id != artifact_id
-                    or metadata.source_ohlcv != current_source
+                    or not self._creation._same_coverage(metadata.source_ohlcv, current_source)
                     or recipe.market_id != market
                     or recipe.tool_key != descriptor.tool_key
                     or recipe.kind != descriptor.kind
@@ -745,7 +926,7 @@ class DataManagerService:
                     or recipe.output_names != summary.output_names
                 ):
                     raise ArtifactLineageError(
-                        "exact Artifact version metadata is inconsistent"
+                        f"Artifact {artifact_id}: source or exact version metadata disagrees"
                     )
                 if recipe.tool_key == "dynamic_binning":
                     raise ArtifactLineageError(
@@ -811,10 +992,8 @@ class DataManagerService:
 
             for logical_id in roots:
                 summary = managed[logical_id]
-                loaded = self._load_direct_managed_artifact(
-                    market, summary, current_source
-                )
-                if loaded.metadata.artifact_id != summary.artifact_id:
+                head = self._artifacts.load_artifact_head(market, logical_id)
+                if head.artifact_id != summary.artifact_id:
                     raise ArtifactLineageError(
                         "root managed Artifact is not its current head"
                     )
@@ -893,6 +1072,93 @@ class DataManagerService:
         except (ArtifactError, KeyError, TypeError, ValueError) as exc:
             raise DataManagerCreationError(str(exc)) from exc
 
+    def _plan_saved_artifact_collection_removal(
+        self,
+        market: MarketId,
+        roots: tuple[str, ...],
+        collection_id: str,
+        expected_revision_id: str,
+    ) -> ArtifactCollectionSelectionPlan | None:
+        current = self._creation.load_artifact_collection(collection_id)
+        if current.revision_id != expected_revision_id:
+            raise DataManagerCreationError(
+                "Artifact Collection revision changed before Edit"
+            )
+        if current.market_id != market:
+            raise DataManagerCreationError(
+                "Artifact Collection selection MarketId differs"
+            )
+        if not set(roots) < set(current.root_logical_artifact_ids):
+            return None
+        member_by_id = {
+            member.version_key.logical_artifact_id: member
+            for member in current.members
+        }
+        for logical_id in roots:
+            head = self._artifacts.load_artifact_head(market, logical_id)
+            if head.artifact_id != member_by_id[logical_id].version_key.artifact_id:
+                return None
+
+        required = self._creation._required_members(roots, current.dependency_edges)
+        member_order: list[str] = []
+        edges: list[ArtifactCollectionDependencyV1] = []
+        visiting: set[str] = set()
+
+        def collect(logical_id: str) -> None:
+            if logical_id in member_order:
+                return
+            if logical_id in visiting:
+                raise DataManagerCreationError("Collection removal dependency graph contains a cycle")
+            visiting.add(logical_id)
+            for edge in current.dependency_edges:
+                if edge.dependent_logical_artifact_id == logical_id:
+                    collect(edge.dependency_logical_artifact_id)
+                    edges.append(edge)
+            member_order.append(logical_id)
+            visiting.remove(logical_id)
+
+        for logical_id in roots:
+            collect(logical_id)
+        if set(member_order) != required:
+            raise DataManagerCreationError("Collection removal dependency closure disagrees")
+        stages: list[tuple[str, ...]] = []
+        complete: set[str] = set()
+        while len(complete) < len(member_order):
+            stage = tuple(
+                logical_id for logical_id in member_order
+                if logical_id not in complete
+                and all(
+                    edge.dependency_logical_artifact_id in complete
+                    for edge in edges
+                    if edge.dependent_logical_artifact_id == logical_id
+                )
+            )
+            if not stage:
+                raise DataManagerCreationError("Collection removal dependency graph contains a cycle")
+            stages.append(stage)
+            complete.update(stage)
+        ordered_ids = tuple(logical_id for stage in stages for logical_id in stage)
+        members = tuple(member_by_id[logical_id] for logical_id in ordered_ids)
+        identity = {
+            "market_id": {
+                "exchange": market.exchange, "market_type": market.market_type,
+                "symbol": market.symbol, "timeframe": market.timeframe,
+            },
+            "source_ohlcv": current.source_ohlcv.to_dict(),
+            "root_logical_artifact_ids": list(roots),
+            "members": [item.to_dict() for item in members],
+            "dependency_edges": [item.to_dict() for item in edges],
+            "execution_stages": [list(stage) for stage in stages],
+            "first_timestamp_ms": current.first_timestamp_ms,
+            "last_timestamp_ms": current.last_timestamp_ms,
+        }
+        return ArtifactCollectionSelectionPlan(
+            deterministic_hash(identity), market, current.source_ohlcv, roots,
+            tuple(logical_id for logical_id in ordered_ids if logical_id not in roots),
+            members, tuple(edges), tuple(stages),
+            current.first_timestamp_ms, current.last_timestamp_ms,
+        )
+
     def find_equivalent_artifact_collection_from_selection(
         self,
         plan: ArtifactCollectionSelectionPlan,
@@ -927,6 +1193,7 @@ class DataManagerService:
             before_publish=None,
         )
 
+    @_checked_operation
     def _create_artifact_collection_from_selection(
         self,
         plan: ArtifactCollectionSelectionPlan,
@@ -943,13 +1210,13 @@ class DataManagerService:
             raise DataManagerCreationError(
                 "Artifact Collection selection changed since Preview"
             )
-        if before_publish is not None:
-            before_publish()
         result = self._creation.create_artifact_collection_from_selection(
             plan,
             display_name,
             description=description,
             selected_outputs=selected_outputs,
+            before_publish=before_publish,
+            **self._collection_check_callbacks(),
         )
         self._updates.invalidate()
         return result
@@ -976,6 +1243,7 @@ class DataManagerService:
             before_publish=None,
         )
 
+    @_checked_operation
     def _edit_artifact_collection_from_selection(
         self,
         collection_id: str,
@@ -989,20 +1257,22 @@ class DataManagerService:
         before_publish: Callable[[], None] | None,
     ) -> ArtifactCollectionRevisionV1:
         fresh = self.plan_artifact_collection_selection(
-            plan.market_id, plan.root_logical_artifact_ids
+            plan.market_id, plan.root_logical_artifact_ids,
+            collection_id=collection_id,
+            expected_revision_id=expected_revision_id,
         )
         if fresh != plan:
             raise DataManagerCreationError(
                 "Artifact Collection selection changed since Preview"
             )
-        if before_publish is not None:
-            before_publish()
         result = self._creation.edit_artifact_collection_from_selection(
             collection_id,
             plan,
             display_name=display_name,
             description=description,
             selected_outputs=selected_outputs,
+            before_publish=before_publish,
+            **self._collection_check_callbacks(),
             presentation_order=presentation_order,
             expected_revision_id=expected_revision_id,
         )
@@ -1077,32 +1347,42 @@ class DataManagerService:
     ) -> ArtifactCollectionValidation:
         return self._creation.validate_artifact_collection(collection_id, revision_id)
 
+    @_checked_operation
     def revise_artifact_collection(self, collection_id: str, **changes) -> ArtifactCollectionRevisionV1:
-        result = self._creation.revise_artifact_collection(collection_id, **changes)
+        result = self._creation.revise_artifact_collection(
+            collection_id, **changes, **self._collection_check_callbacks()
+        )
         self._updates.invalidate()
         return result
 
+    @_checked_operation
     def add_artifact_collection_branches(
         self,
         collection_id: str,
         materialization: DataManagerArtifactMaterializationResult,
         *,
         selected_outputs: Sequence[ArtifactCollectionOutputV1] | None = None,
+        before_publish: Callable[[], None] | None = None,
     ) -> ArtifactCollectionRevisionV1:
         result = self._creation.add_collection_branches(
-            collection_id, materialization, selected_outputs=selected_outputs
+            collection_id, materialization, selected_outputs=selected_outputs,
+            before_publish=before_publish,
+            **self._collection_check_callbacks(),
         )
         self._updates.invalidate()
         return result
 
+    @_checked_operation
     def plan_batch_artifacts(self, request: BatchArtifactRequest) -> BatchArtifactPlan:
         return self._creation.plan_batch_artifacts(request)
 
+    @_checked_operation
     def execute_batch_artifacts(self, plan: BatchArtifactPlan, **execution):
         result = self._creation.execute_batch_artifacts(plan, **execution)
         self._updates.invalidate()
         return result
 
+    @_checked_operation
     def assess_database_readiness(
         self,
         seed_id: str,
@@ -1113,117 +1393,76 @@ class DataManagerService:
             seed_id, collection_id, collection_revision_id
         )
 
+    @_checked_operation
     def build_database_revision(
         self, seed_id: str, collection_id: str, **options
-    ) -> DatabaseRevisionManifestV1:
+    ) -> DatabaseRevisionManifestV3:
         result = self._creation.build_database_revision(seed_id, collection_id, **options)
         self._updates.invalidate()
         return result
 
+    @_checked_operation
     def plan_database_artifact_addition(
         self,
         database_id: str,
         root_logical_artifact_ids: Sequence[str],
-    ) -> DatabaseContentAdditionPlan:
-        definition = self._creation.load_database_definition(database_id)
-        selection = self.plan_artifact_collection_selection(
-            definition.market_id, root_logical_artifact_ids
-        )
-        members = {
-            item.version_key.logical_artifact_id: item
-            for item in selection.members
-        }
-        outputs = tuple(
-            ArtifactCollectionOutputV1(logical_id, output_name, output_name)
-            for logical_id in selection.root_logical_artifact_ids
-            for output_name in members[logical_id].output_names
-        )
-        return self._creation.plan_database_content_addition(
-            database_id,
-            selection,
-            selected_outputs=outputs,
-            source_kind="artifacts",
+    ):
+        manifest = self.creation_store.load_database_manifest(database_id)
+        outputs = []
+        for logical_id in root_logical_artifact_ids:
+            head = self._artifacts.load_artifact_head(manifest.market_id, logical_id)
+            loaded = self._artifacts.load_artifact_by_id(
+                manifest.market_id, head.artifact_id
+            )
+            outputs.extend(
+                ArtifactCollectionOutputV1(logical_id, name, name)
+                for name in loaded.metadata.recipe.output_names
+            )
+        return self._creation.plan_database_content_edit(
+            database_id, artifact_additions=tuple(outputs)
         )
 
+    @_checked_operation
     def plan_database_collection_addition(
         self,
         database_id: str,
         collection_id: str,
-    ) -> DatabaseContentAdditionPlan:
+    ):
         collection = self._creation.load_artifact_collection(collection_id)
-        validation = self._creation.validate_artifact_collection(
-            collection_id, collection.revision_id
-        )
-        if not validation.valid:
-            raise DataManagerCreationError(
-                "Artifact Collection is not current and valid: "
-                + "; ".join(validation.blockers)
-            )
-        selection = self.plan_artifact_collection_selection(
-            collection.market_id, collection.root_logical_artifact_ids
-        )
-        if (
-            selection.source_ohlcv != collection.source_ohlcv
-            or selection.members != collection.members
-            or selection.dependency_edges != collection.dependency_edges
-        ):
-            raise DataManagerCreationError(
-                "Artifact Collection no longer matches current managed Artifact truth"
-            )
-        reference = DatabaseCollectionReferenceV2(
-            collection.collection_id, collection.revision_id
-        )
-        return self._creation.plan_database_content_addition(
+        return self._creation.plan_database_content_edit(
             database_id,
-            selection,
-            selected_outputs=collection.selected_outputs,
-            source_kind="collection",
-            source_collection=reference,
+            collection_additions=(
+                DatabaseCollectionReferenceV2(
+                    collection_id, collection.revision_id
+                ),
+            ),
         )
 
-    def execute_database_content_addition(
-        self,
-        plan: DatabaseContentAdditionPlan,
-        *,
-        cancellation_requested: Callable[[], bool] | None = None,
-        before_publish: Callable[[], None] | None = None,
-    ) -> DatabaseRevisionManifestV2 | None:
-        if not isinstance(plan, DatabaseContentAdditionPlan):
-            raise TypeError("plan must be a DatabaseContentAdditionPlan")
-        if (
-            self.creation_store.load_database_head(
-                plan.database_id
-            ).revision_id
-            != plan.starting_revision_id
-        ):
-            raise DataManagerCreationError("Database head changed after Preview")
-        if self._artifacts.capture_accepted_source(plan.market_id) != plan.source_ohlcv:
-            raise DataManagerCreationError(
-                "Database update required before adding content."
-            )
-        if plan.source_kind == "artifacts":
-            current = self.plan_database_artifact_addition(
-                plan.database_id, plan.selected_root_logical_artifact_ids
-            )
-        else:
-            if plan.source_collection is None:
-                raise DataManagerCreationError(
-                    "Collection Database content plan has no Collection reference"
-                )
-            current = self.plan_database_collection_addition(
-                plan.database_id, plan.source_collection.collection_id
-            )
-        if current != plan:
-            raise DataManagerCreationError(
-                "Database content plan changed after Preview"
-            )
-        result = self._creation.execute_database_content_addition(
-            plan,
-            cancellation_requested=cancellation_requested,
-            before_publish=before_publish,
-        )
+    @_checked_operation
+    def plan_database_content_edit(self, database_id, **intent):
+        return self._creation.plan_database_content_edit(database_id, **intent)
+
+    @_checked_operation
+    def execute_database_content_edit(self, plan, **execution):
+        result = self._creation.execute_database_content_edit(plan, **execution)
         if result is not None:
             self._updates.invalidate()
+        return result
+
+    @_checked_operation
+    def execute_database_content_addition(self, plan, **execution):
+        return self.execute_database_content_edit(plan, **execution)
+
+    def delete_database(self, database_id, *, before_delete=None):
+        try:
+            result = self._creation.delete_database(
+                database_id, before_delete=before_delete
+            )
+        except DataManagerCreationStoreError as exc:
+            if str(exc).startswith("deletion committed; cleanup incomplete:"):
+                self._updates.invalidate()
+            raise
+        self._updates.invalidate()
         return result
 
     def reconcile_update_status(
@@ -1243,19 +1482,35 @@ class DataManagerService:
     def invalidate_update_status(self) -> None:
         self._updates.invalidate()
 
+    @_checked_operation
     def plan_artifact_collection_update(
         self, collection_id: str
     ) -> ArtifactCollectionUpdatePlan:
         return self._updates.plan_artifact_collection_update(collection_id)
 
+    @_checked_operation
+    def plan_artifact_update(
+        self, market_id: MarketId, root_logical_artifact_ids: Sequence[str]
+    ) -> ArtifactUpdatePlan:
+        return self._updates.plan_artifact_update(market_id, root_logical_artifact_ids)
+
+    @_checked_operation
+    def execute_artifact_update(
+        self, plan: ArtifactUpdatePlan, **execution
+    ) -> ArtifactUpdateResult:
+        return self._updates.execute_artifact_update(plan, **execution)
+
+    @_checked_operation
     def execute_artifact_collection_update(
         self, plan: ArtifactCollectionUpdatePlan, **execution
     ) -> ArtifactCollectionUpdateResult:
         return self._updates.execute_artifact_collection_update(plan, **execution)
 
+    @_checked_operation
     def plan_database_update(self, database_id: str) -> DatabaseUpdatePlan:
         return self._updates.plan_database_update(database_id)
 
+    @_checked_operation
     def execute_database_append(
         self, plan: DatabaseUpdatePlan, **execution
     ) -> DatabaseUpdateResult:
@@ -1283,14 +1538,17 @@ class DataManagerService:
         return self._creation.load_database_revision(database_id, revision_id)
 
     def scan_catalog(self) -> DataManagerCatalogSnapshot:
-        return _project_catalog(self._catalog.scan())
+        scan = getattr(self._catalog, "scan_metadata", self._catalog.scan)
+        return _project_catalog(scan())
 
+    @_checked_operation
     def inspect_market(self, market_id: MarketId) -> DataManagerMarketSnapshot:
         market = _canonical_market(market_id)
         dataset = self._require_accepted(market)
         recipes = tuple(_project_recipe(item) for item in self._artifacts.list_recipes(market))
+        list_artifacts = getattr(self._artifacts, "list_artifacts_metadata", self._artifacts.list_artifacts)
         artifacts = tuple(
-            _project_artifact(item) for item in self._artifacts.list_artifacts(market)
+            _project_artifact(item) for item in list_artifacts(market)
         )
         return DataManagerMarketSnapshot(market, dataset, recipes, artifacts)
 
@@ -1304,6 +1562,7 @@ class DataManagerService:
             cancellation_requested=None,
         )
 
+    @_checked_operation
     def _preview_dataset(
         self,
         market_id: MarketId,
@@ -1546,14 +1805,6 @@ class DataManagerService:
                     raise DataManagerOperationError(
                         "Artifact deletion refused: referenced by an Artifact Collection"
                     )
-            for revision in self._database_revisions_for_deletion_proof():
-                if any(
-                    key.logical_artifact_id == logical_artifact_id
-                    for key in revision.artifact_version_keys
-                ):
-                    raise DataManagerOperationError(
-                        "Artifact deletion refused: referenced by a Database"
-                    )
             deleted = self._artifacts.delete_managed_artifact(
                 market,
                 logical_artifact_id,
@@ -1625,6 +1876,13 @@ class DataManagerService:
         )
 
     def _require_accepted(self, market: MarketId) -> DataManagerDatasetEntry:
+        if isinstance(self._catalog, AcceptedDatasetCatalog) and isinstance(self._artifacts, ArtifactService):
+            try:
+                self._checked_source(market)
+            except ArtifactError as exc:
+                raise DataManagerMarketUnavailableError(str(exc)) from exc
+            summary = self._catalog.inspect_market_metadata(market)
+            return _project_catalog(DatasetCatalogReport((summary,), ())).accepted_market(market)
         snapshot = self.scan_catalog()
         accepted = snapshot.accepted_market(market)
         if accepted is not None:
@@ -1769,6 +2027,7 @@ class DataManagerService:
         root_entry_ids: tuple[str, ...],
         *,
         create_collection: bool,
+        expected_environment_content_hash: str | None = None,
         collection_display_name: str = "",
         collection_description: str = "",
     ) -> DataManagerRecipePersistenceResult:
@@ -1778,6 +2037,7 @@ class DataManagerService:
             create_collection=create_collection,
             collection_display_name=collection_display_name,
             collection_description=collection_description,
+            expected_environment_content_hash=expected_environment_content_hash,
             before_publish=None,
         )
 
@@ -1787,10 +2047,19 @@ class DataManagerService:
         root_entry_ids: tuple[str, ...],
         *,
         create_collection: bool,
+        expected_environment_content_hash: str | None = None,
         collection_display_name: str = "",
         collection_description: str = "",
         before_publish: Callable[[], None] | None,
     ) -> DataManagerRecipePersistenceResult:
+        if expected_environment_content_hash is not None and (
+            not isinstance(expected_environment_content_hash, str)
+            or len(expected_environment_content_hash) != 64
+            or any(char not in "0123456789abcdef" for char in expected_environment_content_hash)
+        ):
+            raise DataManagerOperationError(
+                "Reviewed Environment content hash must be 64 lowercase hexadecimal characters; Preview again"
+            )
         try:
             first = self._build_derivation_plan(
                 self._study_environments.load(environment_id), root_entry_ids
@@ -1798,6 +2067,13 @@ class DataManagerService:
             current = self._build_derivation_plan(
                 self._study_environments.load(environment_id), root_entry_ids
             )
+            if expected_environment_content_hash is not None and (
+                first.environment_content_hash != expected_environment_content_hash
+                or current.environment_content_hash != expected_environment_content_hash
+            ):
+                raise DataManagerOperationError(
+                    "Reviewed Study Environment content changed; Preview again before creating Recipes"
+                )
             if first != current:
                 raise DataManagerOperationError(
                     "Study Environment derivation changed before persistence"
@@ -1829,6 +2105,15 @@ class DataManagerService:
                 collection_members = graph.member_recipe_ids
             if before_publish is not None:
                 before_publish()
+            if expected_environment_content_hash is not None:
+                environment = self._study_environments.load(environment_id)
+                if (
+                    environment.content_hash != expected_environment_content_hash
+                    or environment.content_hash != current.environment_content_hash
+                ):
+                    raise DataManagerOperationError(
+                        "Reviewed Study Environment content changed at publication; Preview again before creating Recipes"
+                    )
             recipe_actions = self._recipe_persistence_actions(current.recipes)
             created_recipe_ids: list[str] = []
             reused_recipe_ids: list[str] = []
@@ -2260,6 +2545,7 @@ class DataManagerService:
         except (FileNotFoundError, StopIteration, PortableRecipeGraphError, PortableRecipeStoreError, PortableRecipeValidationError) as exc:
             raise DataManagerOperationError(str(exc)) from exc
 
+    @_checked_operation
     def plan_artifact_materialization(
         self, request: DataManagerArtifactMaterializationRequest
     ) -> DataManagerArtifactMaterializationPlan:
@@ -2328,7 +2614,7 @@ class DataManagerService:
 
             managed = {
                 item.logical_artifact_id: item
-                for item in self._artifacts.list_managed_artifacts(market)
+                for item in self._artifacts.list_managed_artifacts_metadata(market)
             }
             artifact_winners = self._current_artifact_semantic_winners(
                 market, source, tuple(managed.values())
@@ -2374,10 +2660,10 @@ class DataManagerService:
                 elif current is not None:
                     previous_artifact_id = current.artifact_id
                     try:
-                        loaded = self._artifacts.load_artifact_by_id(
+                        metadata = self._artifacts.load_artifact_metadata(
                             market, current.artifact_id
                         )
-                        if loaded.metadata.source_ohlcv != source:
+                        if metadata.source_ohlcv != source:
                             status = "CREATE"
                         elif any(
                             item.status != "REUSE_CURRENT"
@@ -2397,7 +2683,7 @@ class DataManagerService:
                             else:
                                 if (
                                     self._artifact_semantic_key(
-                                        market, current.artifact_id, source
+                                        market, current.artifact_id, source, metadata_only=True
                                     )
                                     == recipe_semantic_keys[recipe_id]
                                 ):
@@ -2467,6 +2753,7 @@ class DataManagerService:
         ) as exc:
             raise DataManagerOperationError(str(exc)) from exc
 
+    @_checked_operation
     def build_direct_artifact_catalog(
         self, market_id: MarketId
     ) -> DataManagerDirectArtifactCatalog:
@@ -2485,8 +2772,8 @@ class DataManagerService:
                 tuple[str, str],
                 list[object],
             ] = {}
-            for signal in list_construct_source_signals(self._artifacts, market):
-                if signal.source_ohlcv != source:
+            for signal in list_construct_source_signals(self._artifacts, market, metadata_only=True):
+                if not self._creation._same_coverage(signal.source_ohlcv, source):
                     continue
                 grouped.setdefault(
                     (signal.logical_artifact_id, signal.artifact_id), []
@@ -2494,7 +2781,7 @@ class DataManagerService:
             kind_order = {"indicator": 0, "oscillator": 1, "construct": 2}
             option_values: list[DataManagerDirectArtifactOption] = []
             for (logical_id, artifact_id), signals in grouped.items():
-                loaded = self._artifacts.load_artifact_by_id(market, artifact_id)
+                metadata = self._artifacts.load_artifact_metadata(market, artifact_id)
                 option_values.append(
                     DataManagerDirectArtifactOption(
                         market_id=market,
@@ -2503,12 +2790,12 @@ class DataManagerService:
                         tool_key=signals[0].tool_key,
                         kind=signals[0].kind,
                         display_name=_artifact_configuration_label(
-                            loaded.metadata.recipe
+                            metadata.recipe
                         ),
                         output_names=tuple(
                             signal.output_name for signal in signals
                         ),
-                        source_ohlcv=source,
+                        source_ohlcv=metadata.source_ohlcv,
                     )
                 )
             construct_options = tuple(
@@ -2522,13 +2809,13 @@ class DataManagerService:
                 )
             )
             peaks_options: list[DataManagerDirectArtifactOption] = []
-            for summary in self._artifacts.list_managed_artifacts(market):
+            for summary in self._artifacts.list_managed_artifacts_metadata(market):
                 if not summary.valid or summary.tool_key != "peaks_troughs":
                     continue
-                loaded = self._artifacts.load_artifact_by_id(
+                metadata = self._artifacts.load_artifact_metadata(
                     market, summary.artifact_id
                 )
-                if loaded.metadata.source_ohlcv != source:
+                if not self._creation._same_coverage(metadata.source_ohlcv, source):
                     continue
                 peaks_options.append(
                     DataManagerDirectArtifactOption(
@@ -2540,8 +2827,8 @@ class DataManagerService:
                         display_name=get_financial_tool_spec(
                             summary.tool_key
                         ).title,
-                        output_names=loaded.metadata.recipe.output_names,
-                        source_ohlcv=source,
+                        output_names=metadata.recipe.output_names,
+                        source_ohlcv=metadata.source_ohlcv,
                     )
                 )
             return DataManagerDirectArtifactCatalog(
@@ -2568,6 +2855,7 @@ class DataManagerService:
         ) as exc:
             raise DataManagerOperationError(str(exc)) from exc
 
+    @_checked_operation
     def create_direct_artifact(
         self, request: DataManagerDirectArtifactRequest
     ) -> DataManagerDirectArtifactResult:
@@ -2578,6 +2866,7 @@ class DataManagerService:
             before_publish=None,
         )
 
+    @_checked_operation
     def _create_direct_artifact(
         self,
         request: DataManagerDirectArtifactRequest,
@@ -2610,9 +2899,9 @@ class DataManagerService:
                         signal.output_name,
                     )
                     for signal in list_construct_source_signals(
-                        self._artifacts, request.market_id
+                        self._artifacts, request.market_id, metadata_only=True
                     )
-                    if signal.source_ohlcv == current_source
+                    if self._creation._same_coverage(signal.source_ohlcv, current_source)
                 }
                 for source in request.sources:
                     identity = (
@@ -2671,7 +2960,7 @@ class DataManagerService:
     ) -> tuple[dict[str, str], dict[str, ArtifactRecipeV1]]:
         managed = {
             item.logical_artifact_id: item
-            for item in self._artifacts.list_managed_artifacts(request.market_id)
+            for item in self._artifacts.list_managed_artifacts_metadata(request.market_id)
         }
         semantic_ids: dict[str, str] = {}
         recipes: dict[str, ArtifactRecipeV1] = {}
@@ -2710,7 +2999,7 @@ class DataManagerService:
         if (
             summary.market_id != market
             or loaded.metadata.artifact_id != summary.artifact_id
-            or loaded.metadata.source_ohlcv != expected_source
+            or not self._creation._same_coverage(loaded.metadata.source_ohlcv, expected_source)
             or recipe.market_id != market
             or recipe.tool_key != summary.tool_key
             or recipe.kind != summary.kind
@@ -2786,10 +3075,10 @@ class DataManagerService:
     ]:
         managed = {
             item.logical_artifact_id: item
-            for item in self._artifacts.list_managed_artifacts(market)
+            for item in self._artifacts.list_managed_artifacts_metadata(market)
         }
         artifact_winners = self._current_artifact_semantic_winners(
-            market, expected_source, tuple(managed.values())
+            market, expected_source, tuple(managed.values()), compatible_source=True
         )
         version_owners: dict[str, tuple[str, str]] = {}
         versions_by_logical_id: dict[str, tuple[object, ...]] = {}
@@ -2862,7 +3151,7 @@ class DataManagerService:
                     market, ref.artifact_id
                 )
                 if (
-                    exact_source.metadata.source_ohlcv != expected_source
+                    not self._creation._same_coverage(exact_source.metadata.source_ohlcv, expected_source)
                     or exact_source.metadata.recipe.market_id != market
                     or ref.output_name
                     not in exact_source.metadata.recipe.output_names
@@ -3063,7 +3352,11 @@ class DataManagerService:
                     market, current.artifact_id
                 )
                 if (
-                    loaded.metadata.source_ohlcv == expected_source
+                    self._creation._same_coverage(loaded.metadata.source_ohlcv, expected_source)
+                    and (
+                        logical_id not in root_logical_ids
+                        or loaded.metadata.source_ohlcv.csv_sha256 == expected_source.csv_sha256
+                    )
                     and all(
                         item.status == "REUSE_CURRENT"
                         for item in dependency_nodes
@@ -3186,6 +3479,8 @@ class DataManagerService:
                     signal.value_type,
                 )
             )
+        if financial_tool_source_role_schema(get_financial_tool_spec(member.tool_key)) == (("source_N",),):
+            sources.sort(key=lambda item: (len(item.role), item.role))
         try:
             validate_financial_tool_inputs(
                 get_financial_tool_spec(member.tool_key),
@@ -3206,12 +3501,12 @@ class DataManagerService:
     ) -> _DirectArtifactSemanticDescriptor:
         expected_descriptor: _DirectArtifactSemanticDescriptor | None = None
         for version in versions:
-            loaded = self._artifacts.load_artifact_by_id(
+            metadata = self._artifacts.load_artifact_metadata(
                 market, version.artifact_id
             )
-            recipe = loaded.metadata.recipe
+            recipe = metadata.recipe
             if (
-                loaded.metadata.artifact_id != version.artifact_id
+                metadata.artifact_id != version.artifact_id
                 or recipe.market_id != market
             ):
                 raise ArtifactLineageError(
@@ -3251,6 +3546,7 @@ class DataManagerService:
             )
         return expected_descriptor
 
+    @_checked_operation
     def _execute_direct_artifact_materialization(
         self,
         plan: DataManagerArtifactMaterializationPlan,
@@ -3285,7 +3581,7 @@ class DataManagerService:
         }
         current = {
             item.logical_artifact_id: item
-            for item in self._artifacts.list_managed_artifacts(
+            for item in self._artifacts.list_managed_artifacts_metadata(
                 plan.target_market_id
             )
         }
@@ -3325,7 +3621,10 @@ class DataManagerService:
                     loaded = self._artifacts.load_artifact_by_id(
                         plan.target_market_id, node.current_artifact_id
                     )
-                    if loaded.metadata.source_ohlcv != plan.source_ohlcv:
+                    if (
+                        not self._creation._same_coverage(loaded.metadata.source_ohlcv, plan.source_ohlcv)
+                        or (node.role == "ROOT" and loaded.metadata.source_ohlcv.csv_sha256 != plan.source_ohlcv.csv_sha256)
+                    ):
                         raise DataManagerOperationError(
                             "reused direct Artifact source changed"
                         )
@@ -3354,6 +3653,11 @@ class DataManagerService:
                             output_names=member.output_names,
                             target_frame=target_frame,
                             dependencies=dependencies,
+                            utc_context=(_utc_context(
+                                plan.target_market_id, plan.source_ohlcv.csv_sha256, node.logical_artifact_id,
+                                member.parameters, target_frame,
+                                tuple(d.logical_artifact_id for d in member.dependencies),
+                            ) if member.tool_key == "universal_trend_classifier" else None),
                         )
                     else:
                         source_recipe = self._artifacts.load_artifact_by_id(
@@ -3363,6 +3667,11 @@ class DataManagerService:
                             source_recipe,
                             target_frame,
                             dependencies,
+                            utc_context=(_utc_context(
+                                plan.target_market_id, plan.source_ohlcv.csv_sha256, node.logical_artifact_id,
+                                source_recipe.parameters, target_frame,
+                                tuple(d.logical_artifact_id for d in member.dependencies),
+                            ) if source_recipe.tool_key == "universal_trend_classifier" else None),
                         )
                     calculations[node.logical_artifact_id] = calculation
                     frames[node.logical_artifact_id] = calculation.to_frame()
@@ -3472,7 +3781,7 @@ class DataManagerService:
                 projected_reused_keys.append(key)
         managed_after = {
             item.logical_artifact_id: item
-            for item in self._artifacts.list_managed_artifacts(
+            for item in self._artifacts.list_managed_artifacts_metadata(
                 plan.target_market_id
             )
         }
@@ -3500,6 +3809,7 @@ class DataManagerService:
             tuple(projected_reused_keys),
             tuple(advanced_ids),
             projected,
+            verified_artifact_metadata=tuple(metadata.values()),
         )
         self._updates.invalidate()
         return result
@@ -3514,6 +3824,7 @@ class DataManagerService:
             before_publish=None,
         )
 
+    @_checked_operation
     def _execute_artifact_materialization(
         self,
         plan: DataManagerArtifactMaterializationPlan,
@@ -3604,6 +3915,11 @@ class DataManagerService:
                                 recipes,
                                 target_frame,
                                 frames_by_recipe,
+                                utc_context=(_utc_context(
+                                    plan.target_market_id, plan.source_ohlcv.csv_sha256, node.logical_artifact_id,
+                                    recipes[recipe_id].parameters, target_frame,
+                                    tuple(d.recipe_id for d in recipes[recipe_id].dependencies),
+                                ) if recipes[recipe_id].tool_key == "universal_trend_classifier" else None),
                             )
                         except (KeyError, TypeError, ValueError) as exc:
                             raise DataManagerOperationError(
@@ -3716,7 +4032,7 @@ class DataManagerService:
                     seen_reused_keys.add(version_key)
             managed_by_id = {
                 item.logical_artifact_id: item
-                for item in self._artifacts.list_managed_artifacts(plan.target_market_id)
+                for item in self._artifacts.list_managed_artifacts_metadata(plan.target_market_id)
             }
             projected = tuple(
                 _project_managed_artifact(managed_by_id[node.logical_artifact_id])
@@ -3741,6 +4057,7 @@ class DataManagerService:
                 reused_version_keys=tuple(projected_reused_keys),
                 advanced_logical_artifact_ids=tuple(advanced_ids),
                 managed_artifacts=projected,
+                verified_artifact_metadata=tuple(metadata_by_recipe.values()),
             )
             self._updates.invalidate()
             return result
@@ -3763,7 +4080,9 @@ class DataManagerService:
 
     def scan_managed_artifacts(self) -> DataManagerManagedArtifactCatalog:
         list_markets = getattr(self._artifacts, "list_managed_markets", None)
-        list_artifacts = getattr(self._artifacts, "list_managed_artifacts", None)
+        list_artifacts = getattr(self._artifacts, "list_managed_artifacts_metadata", None)
+        if list_artifacts is None:
+            list_artifacts = getattr(self._artifacts, "list_managed_artifacts", None)
         if not callable(list_markets) or not callable(list_artifacts):
             return DataManagerManagedArtifactCatalog(())
         values = tuple(
@@ -3785,30 +4104,70 @@ class DataManagerService:
         databases: list[DataManagerDatabaseCatalogEntry] = []
         for database_id in self.list_database_ids():
             definition = self.load_database_definition(database_id)
+            database_currentness = currentness.get(database_id)
+            if (
+                database_currentness is not None
+                and database_currentness.status == "INVALID"
+            ):
+                databases.append(
+                    DataManagerDatabaseCatalogEntry(
+                        definition=definition,
+                        current_manifest=None,
+                        revision_count=0,
+                        currentness=database_currentness,
+                        valid=False,
+                        rejection_reason="; ".join(database_currentness.reasons),
+                    )
+                )
+                continue
             revisions = self.list_database_revisions(database_id)
             current_manifest = (
                 None
                 if not revisions
-                else self.load_database_revision(database_id).manifest
+                else self.creation_store.load_database_manifest(database_id)
             )
             databases.append(
                 DataManagerDatabaseCatalogEntry(
                     definition=definition,
                     current_manifest=current_manifest,
                     revision_count=len(revisions),
-                    currentness=currentness.get(database_id),
+                    currentness=database_currentness,
+                )
+            )
+        catalog = self.scan_catalog()
+        study_environments = self.scan_study_environments()
+        portable_recipes = self.scan_portable_recipes()
+        recipe_collections = self.list_recipe_collections()
+        managed_artifacts = self.scan_managed_artifacts()
+        artifact_collections = self.list_artifact_collections()
+        seeds = self.list_database_seeds()
+        seed_statuses = []
+        for seed in seeds:
+            valid, reasons = True, ()
+            newer_source_available = (
+                self.database_seed_newer_source_available(seed.seed_id)
+                if valid
+                else None
+            )
+            seed_statuses.append(
+                DataManagerDatabaseSeedStatus(
+                    seed_id=seed.seed_id,
+                    valid=valid,
+                    rejection_reason="; ".join(reasons),
+                    newer_source_available=newer_source_available,
                 )
             )
         return DataManagerProductCatalogSnapshot(
-            catalog=self.scan_catalog(),
-            study_environments=self.scan_study_environments(),
-            portable_recipes=self.scan_portable_recipes(),
-            recipe_collections=self.list_recipe_collections(),
-            managed_artifacts=self.scan_managed_artifacts(),
-            artifact_collections=self.list_artifact_collections(),
-            database_seeds=self.list_database_seeds(),
+            catalog=catalog,
+            study_environments=study_environments,
+            portable_recipes=portable_recipes,
+            recipe_collections=recipe_collections,
+            managed_artifacts=managed_artifacts,
+            artifact_collections=artifact_collections,
+            database_seeds=seeds,
             databases=tuple(databases),
             latest_reconciliation=reconciliation,
+            database_seed_statuses=tuple(seed_statuses),
         )
 
     def prepare_duplicate_maintenance(
@@ -4448,6 +4807,8 @@ class DataManagerService:
         market: MarketId,
         source: OHLCVSourceFingerprintV1,
         summaries: Sequence[ManagedArtifactSummary],
+        *,
+        compatible_source: bool = False,
     ) -> dict[bytes, ManagedArtifactSummary]:
         grouped: dict[bytes, list[ManagedArtifactSummary]] = {}
         cache: dict[str, bytes] = {}
@@ -4456,7 +4817,8 @@ class DataManagerService:
                 continue
             try:
                 key = self._artifact_semantic_key(
-                    market, summary.artifact_id, source, cache
+                    market, summary.artifact_id, source, cache, metadata_only=True,
+                    compatible_source=compatible_source
                 )
             except (ArtifactError, AttributeError, FileNotFoundError, TypeError, ValueError):
                 continue
@@ -4494,7 +4856,7 @@ class DataManagerService:
                 "role": item.role,
                 "source": "object",
                 "object_semantic_key": self._artifact_semantic_key(
-                    market, item.artifact_id, source
+                    market, item.artifact_id, source, compatible_source=True
                 ).hex(),
                 "output_name": item.output_name,
             }
@@ -4528,6 +4890,8 @@ class DataManagerService:
         active: set[str] | None = None,
         *,
         require_source: bool = True,
+        metadata_only: bool = False,
+        compatible_source: bool = False,
     ) -> bytes:
         keys = {} if cache is None else cache
         visiting = set() if active is None else active
@@ -4539,20 +4903,35 @@ class DataManagerService:
                 "Artifact semantic dependency graph contains a cycle"
             )
         visiting.add(artifact_id)
-        loaded = self._artifacts.load_artifact_by_id(market, artifact_id)
-        metadata = loaded.metadata
+        metadata = (
+            self._artifacts.load_artifact_metadata(market, artifact_id)
+            if metadata_only
+            else self._artifacts.load_artifact_by_id(market, artifact_id).metadata
+        )
         recipe = metadata.recipe
         if (
             metadata.artifact_id != artifact_id
-            or (require_source and metadata.source_ohlcv != source)
+            or (require_source and not (
+                self._creation._same_coverage(metadata.source_ohlcv, source)
+                if compatible_source else metadata.source_ohlcv == source
+            ))
             or recipe.market_id != market
         ):
             raise ArtifactLineageError(
                 "Artifact semantic input disagrees with selected dataframe"
             )
         reference_roles = {item.role for item in recipe.source_artifacts}
+        schemas = financial_tool_source_role_schema(get_financial_tool_spec(recipe.tool_key))
+        selectors = {role: recipe.parameters.get(role) for roles in schemas for role in roles}
+        if schemas == (("source_N",),):
+            selectors = {f"source_{index}": column.strip() for index, column in enumerate(
+                str(recipe.parameters.get("source_columns", "")).split(","), start=1
+            )}
+        # Construct raw inputs can be stored in parameters rather than bindings.
+        raw_selectors = {role: column for role, column in selectors.items()
+                         if role not in reference_roles and column in ("open", "high", "low", "close")}
         inputs: list[dict[str, object]] = []
-        for role, value in recipe.bindings.items():
+        for role, value in {**raw_selectors, **recipe.bindings}.items():
             if role in reference_roles:
                 continue
             column = value
@@ -4577,6 +4956,8 @@ class DataManagerService:
                         keys,
                         visiting,
                         require_source=require_source,
+                        metadata_only=metadata_only,
+                        compatible_source=compatible_source,
                     ).hex(),
                     "output_name": reference.output_name,
                 }
@@ -4595,7 +4976,7 @@ class DataManagerService:
             object_semantic_parameters(
                 recipe.tool_key,
                 recipe.parameters,
-                has_object_inputs=bool(recipe.source_artifacts),
+                has_object_inputs=bool(recipe.source_artifacts or raw_selectors),
             ),
             tuple(sorted(inputs, key=lambda item: str(item["role"]))),
         )
@@ -4637,8 +5018,8 @@ class DataManagerService:
                 try:
                     semantic_key = self._artifact_collection_semantic_key_parts(
                         revision.market_id,
-                        revision.source_ohlcv,
-                        revision.members,
+                        revision.root_logical_artifact_ids,
+                        revision.selected_outputs,
                     )
                     grouped.setdefault(semantic_key, []).append(revision)
                 except (
@@ -4663,12 +5044,6 @@ class DataManagerService:
                 cancellation_requested,
             )
 
-        database_error = ""
-        try:
-            database_revisions = self._database_revisions_for_deletion_proof()
-        except (DataManagerOperationError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            database_revisions = ()
-            database_error = f"Database reference evidence is invalid: {exc}"
         groups: list[DuplicateMaintenanceGroup] = []
         for values in grouped.values():
             if len(values) < 2:
@@ -4678,25 +5053,12 @@ class DataManagerService:
             )
             duplicates: list[DuplicateMaintenanceCandidate] = []
             for revision in ordered[1:]:
-                blockers = tuple(
-                    dict.fromkeys(
-                        (
-                            (database_error,) if database_error else ()
-                        )
-                        + tuple(
-                            f"Database {item.database_id} revision {item.revision_id}"
-                            for item in database_revisions
-                            if revision.collection_id
-                            in _database_collection_ids_for_deletion_proof(item)
-                        )
-                    )
-                )
                 duplicates.append(
                     DuplicateMaintenanceCandidate(
                         revision.collection_id,
-                        "BLOCKED" if blockers else "SAFE",
+                        "SAFE",
                         "same canonical Artifact Collection semantic key",
-                        blockers,
+                        (),
                     )
                 )
             groups.append(
@@ -4712,28 +5074,18 @@ class DataManagerService:
     def _artifact_collection_semantic_key_parts(
         self,
         market_id: object,
-        source_ohlcv: object,
-        members: Sequence[ArtifactCollectionMemberV1],
+        root_logical_artifact_ids: Sequence[str],
+        selected_outputs: Sequence[ArtifactCollectionOutputV1],
     ) -> tuple[object, ...]:
         if not isinstance(market_id, MarketId):
             raise TypeError("Artifact Collection market_id must be a MarketId")
-        if not isinstance(source_ohlcv, OHLCVSourceFingerprintV1):
-            raise TypeError(
-                "Artifact Collection source_ohlcv must be an OHLCVSourceFingerprintV1"
-            )
-        cache: dict[str, bytes] = {}
         return (
-            source_ohlcv,
-            frozenset(
-                self._artifact_semantic_key(
-                    market_id,
-                    item.version_key.artifact_id,
-                    source_ohlcv,
-                    cache,
-                    require_source=False,
-                )
-                for item in members
-            ),
+            market_id,
+            tuple(sorted(set(root_logical_artifact_ids))),
+            tuple(sorted({
+                (item.logical_artifact_id, item.output_name, item.column_name)
+                for item in selected_outputs
+            })),
         )
 
     def _capture_duplicate_maintenance_source(
@@ -4802,7 +5154,7 @@ class DataManagerService:
         try:
             summary = next(
                 item
-                for item in self._artifacts.list_managed_artifacts(market)
+                for item in self._artifacts.list_managed_artifacts_metadata(market)
                 if item.logical_artifact_id == logical_artifact_id
             )
             if not summary.valid:
@@ -4840,10 +5192,9 @@ class DataManagerService:
                 raise ArtifactLineageError(
                     "managed history does not contain the current Artifact"
                 )
-            loaded = self._artifacts.load_artifact_by_id(
+            metadata = self._artifacts.load_artifact_metadata(
                 market, summary.artifact_id
             )
-            metadata: ArtifactMetadataV1 = loaded.metadata
             recipe: ArtifactRecipeV1 = metadata.recipe
             if (
                 metadata.artifact_id != summary.artifact_id
@@ -4893,19 +5244,44 @@ class DataManagerService:
                     if source.source_kind == "environment":
                         owner_id = source.source_entry_id
                     elif source.source_kind == "artifact":
-                        candidates = tuple(
-                            candidate.entry_id
-                            for candidate in entries[:index]
-                            if candidate.mode == "calculation"
-                            and candidate.kind == source.artifact_kind
-                            and candidate.tool_key == source.artifact_tool_key
-                            and source.output_name in candidate.expected_output_names
-                        )
+                        try:
+                            metadata = self._artifacts.load_artifact_metadata(
+                                environment.created_from, source.artifact_id
+                            )
+                            if (
+                                metadata.recipe.kind != source.artifact_kind
+                                or metadata.recipe.tool_key != source.artifact_tool_key
+                                or source.output_name not in metadata.recipe.output_names
+                            ):
+                                raise ArtifactLineageError(
+                                    "Artifact source metadata disagrees with Study binding"
+                                )
+                            exact_key = self._artifact_semantic_key(
+                                environment.created_from, source.artifact_id,
+                                metadata.source_ohlcv, require_source=False,
+                                metadata_only=True,
+                            )
+                            available = {recipe.recipe_id: recipe for recipe in recipes.values()}
+                            candidates = tuple(
+                                candidate.entry_id
+                                for candidate in entries[:index]
+                                if candidate.entry_id in recipes
+                                and candidate.kind == source.artifact_kind
+                                and candidate.tool_key == source.artifact_tool_key
+                                and candidate.expected_output_names == metadata.recipe.output_names
+                                and self._portable_recipes.semantic_key_for_recipe(
+                                    recipes[candidate.entry_id], recipes=available
+                                ) == exact_key
+                            )
+                        except (ArtifactError, PortableRecipeStoreError, OSError, ValueError) as exc:
+                            status = "MARKET_BOUND"
+                            reason = f"Artifact source equivalence is unprovable: {exc}"
+                            break
                         if len(candidates) != 1:
                             status = "MARKET_BOUND"
                             reason = (
-                                "Artifact source does not map to exactly one earlier "
-                                "calculation entry"
+                                "Artifact source does not map to exactly one equivalent "
+                                "earlier calculation entry"
                             )
                             break
                         owner_id = candidates[0]

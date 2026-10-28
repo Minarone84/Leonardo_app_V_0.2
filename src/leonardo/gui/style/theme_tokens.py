@@ -310,7 +310,11 @@ def _non_empty_string_at(data: Mapping[str, object], key: str) -> str:
 
 def _color_at(data: Mapping[str, object], key: str) -> str:
     value = _non_empty_string_at(data, key)
-    if not value.startswith("#") or len(value) not in {4, 7}:
+    if (
+        not value.startswith("#")
+        or len(value) not in {4, 7}
+        or any(character not in "0123456789abcdefABCDEF" for character in value[1:])
+    ):
         raise ThemeValidationError(f"{key} must be a hex color token")
     return value
 

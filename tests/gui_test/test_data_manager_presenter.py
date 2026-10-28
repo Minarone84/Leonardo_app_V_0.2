@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -23,7 +23,7 @@ from leonardo.data import MarketId
 from leonardo.data_manager import (
     BatchArtifactPlan,
     ArtifactCollectionRevisionV1,
-    ArtifactCollectionUpdateResult,
+    ArtifactUpdateResult,
     DataManagerApplicationService,
     DataManagerCatalogSnapshot,
     DataManagerDatasetEntry,
@@ -95,6 +95,321 @@ CATALOG = DataManagerCatalogSnapshot((DATASET,))
 CATALOG_BOTH = DataManagerCatalogSnapshot((DATASET, DATASET_B))
 MARKET_SNAPSHOT = DataManagerMarketSnapshot(MARKET, DATASET, (), ())
 MARKET_SNAPSHOT_B = DataManagerMarketSnapshot(MARKET_B, DATASET_B, (), ())
+
+
+def _exercise_immediate_validation_recovery():
+    from PySide6.QtCore import QAbstractAnimation
+    from tests.gui_test.test_data_manager_suite_window import (
+        _assert_selected_dataset_typography, _selected_dataset_values,
+    )
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    states = []
+    surface = view._operation_surface
+
+    def record(stage):
+        assert view._selected_dataset_table.rowCount() == 1
+        assert view._selected_market == MARKET and presenter.selected_market_id == MARKET
+        assert view._selected_dataset_entry is not None
+        states.append(dict(stage=stage, selected_rows=view._selected_dataset_table.rowCount(),
+                           suspended=view.dataset_context_suspended, selected_market=MARKET.as_key(),
+                           entry_present=view._selected_dataset_entry is not None,
+                           generation=presenter._background_refresh_generation,
+                           background_task=presenter._background_refresh_task_id,
+                           selected_animation=view._selected_dataset_attention_animation.state().name,
+                           status_animation=surface._attention_animation.state().name,
+                           create_artifact_enabled=view._catalog_workspace.create_artifact_button.isEnabled()))
+
+    def normal():
+        assert not view.dataset_context_suspended
+        _assert_selected_dataset_typography(view, False)
+        assert surface._attention_animation.state() == QAbstractAnimation.State.Stopped
+        assert view._selected_dataset_attention_animation.state() == QAbstractAnimation.State.Stopped
+        assert surface._status.palette() == normal_palette
+        assert surface._status.font() == normal_font
+        assert surface._status.styleSheet() == normal_status_style
+        assert view._selected_dataset_table.styleSheet() == normal_table_style
+        assert view._catalog_workspace.create_artifact_button.isEnabled()
+        assert "operations restored" in view.status_text()
+
+    try:
+        initial = _settle_initial_warmup(service)
+        presenter._selected_market = MARKET
+        view.select_market(MARKET, emit_selection=False)
+        view._catalog_workspace.select_family("Artifacts")
+        original = _selected_dataset_values(view)
+        view.ensurePolished()
+        normal_palette, normal_font = surface._status.palette(), surface._status.font()
+        normal_status_style = surface._status.styleSheet()
+        normal_table_style = view._selected_dataset_table.styleSheet()
+        presenter.notify_external_ohlcv_change(MARKET)
+        reconcile = service.calls[-1]
+        reconcile[2](TaskResult(reconcile[1], "completed", initial.latest_reconciliation))
+        older_scan = service.calls[-1]
+        assert older_scan[0] == "scan_product_catalogs"
+        assert view.dataset_context_suspended
+        assert surface._attention_animation.state() == QAbstractAnimation.State.Running
+        old_generation = presenter._background_refresh_generation
+        record("before_validation")
+        before = len(service.calls)
+        presenter.notify_ohlcv_validation_accepted(MARKET_B)
+        assert view.dataset_context_suspended
+        assert presenter._background_refresh_generation == old_generation
+        assert service.cancelled == [] and len(service.calls) == before
+        presenter.notify_ohlcv_validation_accepted(MARKET)
+        # No post-validation task has been settled: recovery is synchronous.
+        normal()
+        assert _selected_dataset_values(view) == original
+        assert presenter._background_refresh_generation > old_generation
+        assert service.cancelled == [older_scan[1]]
+        assert len(service.calls) == before + 1
+        forced = service.calls[-1]
+        assert forced[0] == "reconcile_status" and service.reconcile_forces[-1]
+        record("immediately_after_validation_callback")
+        stale = replace(initial, catalog=DataManagerCatalogSnapshot(()))
+        older_scan[2](TaskResult(older_scan[1], "completed", stale))
+        normal()
+        assert presenter._product_catalogs is initial
+        assert presenter._background_refresh_task_id == forced[1]
+        assert _selected_dataset_values(view) == original
+        record("after_old_callback_ignored")
+        forced[2](TaskResult(forced[1], "completed", initial.latest_reconciliation))
+        normal()
+        scan = service.calls[-1]
+        assert scan[0] == "scan_product_catalogs"
+        fresh_entry = replace(DATASET, row_count=5, last_timestamp_ms=4)
+        fresh = replace(initial, catalog=DataManagerCatalogSnapshot((fresh_entry,)))
+        scan[2](TaskResult(scan[1], "completed", fresh))
+        normal()
+        assert view._selected_dataset_entry is fresh_entry
+        record("fresh_accepted_catalog_settlement")
+        inspection = service.calls[-1]
+        assert inspection[0] == ("inspect", MARKET)
+        market_snapshot = replace(MARKET_SNAPSHOT, dataset=fresh_entry)
+        inspection[2](TaskResult(inspection[1], "completed", market_snapshot))
+        normal()
+        assert presenter._background_refresh_task_id is None
+        assert view._selected_dataset_entry is market_snapshot.dataset
+        record("after_fresh_background_settlement")
+        assert not any("execute" in str(call[0]) or "create" in str(call[0]) for call in service.calls)
+        with pytest.raises(TypeError, match="MarketId"):
+            presenter.notify_ohlcv_validation_accepted("not-a-market")
+        presenter.dispose()
+        before = (view.status_text(), len(service.calls))
+        presenter.notify_ohlcv_validation_accepted(MARKET)
+        assert (view.status_text(), len(service.calls)) == before
+        return states
+    finally:
+        view.close()
+
+
+def test_immediate_validation_recovery_fences_stale_catalog_and_preserves_final_row():
+    _exercise_immediate_validation_recovery()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_background_force_controls_same_signature_product_scan(force):
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        snapshot = _settle_initial_warmup(service)
+        presenter._request_background_refresh(force=force)
+        reconcile = service.calls[-1]
+        before = len(service.calls)
+        reconcile[2](TaskResult(reconcile[1], "completed", snapshot.latest_reconciliation))
+        assert len(service.calls) == before + int(force)
+        if force:
+            assert service.calls[-1][0] == "scan_product_catalogs"
+        else:
+            assert presenter._background_refresh_task_id is None
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize("old_stage", ["reconcile", "market", "deferred"])
+def test_validation_supersedes_old_background_stages_and_refreshes_same_slice(old_stage):
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        snapshot = _settle_initial_warmup(service)
+        presenter._selected_market = MARKET
+        view.select_market(MARKET, emit_selection=False)
+        view.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        presenter._request_background_refresh(force=True)
+        old = service.calls[-1]
+        old_value = snapshot.latest_reconciliation
+        if old_stage == "market":
+            old[2](TaskResult(old[1], "completed", old_value))
+            scan = service.calls[-1]
+            presenter._background_selected_market_refresh_pending = MARKET
+            scan[2](TaskResult(scan[1], "completed", snapshot))
+            old = service.calls[-1]
+            assert old[0] == ("inspect", MARKET)
+            old_value = MARKET_SNAPSHOT
+        stale = replace(snapshot, catalog=DataManagerCatalogSnapshot(()))
+        presenter._background_refresh_pending = True
+        presenter._background_refresh_pending_force = True
+        presenter._background_deferred_catalogs = stale
+        presenter._background_deferred_catalogs_refresh_selected_market = True
+        presenter._background_selected_market_refresh_pending = MARKET_B
+        presenter.notify_ohlcv_validation_accepted(MARKET)
+        fresh_reconcile = service.calls[-1]
+        assert not view.dataset_context_suspended
+        assert presenter._background_deferred_catalogs is None
+        assert not presenter._background_deferred_catalogs_refresh_selected_market
+        assert not presenter._background_refresh_pending
+        assert not presenter._background_refresh_pending_force
+        assert presenter._background_selected_market_refresh_pending == MARKET
+        old[2](TaskResult(old[1], "completed", old_value))
+        assert service.calls[-1] is fresh_reconcile
+        assert view._selected_dataset_table.rowCount() == 1
+        fresh_reconcile[2](TaskResult(fresh_reconcile[1], "completed", snapshot.latest_reconciliation))
+        scan = service.calls[-1]
+        scan[2](TaskResult(scan[1], "completed", snapshot))
+        # Identical product slice still receives fresh selected-market inspection.
+        inspection = service.calls[-1]
+        assert inspection[0] == ("inspect", MARKET)
+        inspection[2](TaskResult(inspection[1], "completed", MARKET_SNAPSHOT))
+        assert presenter._background_refresh_task_id is None
+        assert not view.dataset_context_suspended
+        assert view._selected_dataset_entry is DATASET
+        assert view._selected_dataset_table.rowCount() == 1
+    finally:
+        view.close()
+
+
+def test_new_evidence_and_explicit_other_selection_after_immediate_validation():
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        snapshot = _settle_initial_warmup(service, snapshot=_product_catalog("a", catalog=CATALOG_BOTH))
+        presenter._selected_market = MARKET
+        view.select_market(MARKET, emit_selection=False)
+        view.enter_dataset_evidence_changed_state(MARKET, "OHLCV evidence changed")
+        presenter.notify_ohlcv_validation_accepted(MARKET)
+        assert not view.dataset_context_suspended
+        presenter.notify_external_ohlcv_change(MARKET)
+        assert view.dataset_context_suspended
+        view._on_dataset_selector_selected(MARKET_B)
+        assert not view.dataset_context_suspended
+        assert presenter.selected_market_id == MARKET_B
+        inspection = service.calls[-1]
+        inspection[2](TaskResult(inspection[1], "completed", MARKET_SNAPSHOT_B))
+        presenter._apply_or_defer_background_catalogs(snapshot)
+        assert presenter.selected_market_id == MARKET_B
+        assert view._selected_market == MARKET_B
+        assert view._selected_dataset_table.rowCount() == 1
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize("changed,selected", [(MARKET, MARKET), (MARKET_B, MARKET), (MARKET, None)])
+def test_dataset_evidence_attention_exact_market_trigger_and_reconciliation(monkeypatch, changed, selected):
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    entered = []
+    original = view.enter_dataset_evidence_changed_state
+
+    def enter(market, message):
+        entered.append((market, message))
+        original(market, message)
+
+    monkeypatch.setattr(view, "enter_dataset_evidence_changed_state", enter)
+    try:
+        _settle_initial_warmup(service)
+        presenter._selected_market = selected
+        if selected is not None:
+            view.select_market(selected, emit_selection=False)
+        view.show_artifact_creation_dialog(_direct_catalog())
+        child = view.artifact_creation_dialog()
+        view._show_dataset_selector()
+        selector = view.dataset_selector_dialog()
+        before = len(service.calls)
+        presenter.notify_external_ohlcv_change(changed)
+        message = f"OHLCV evidence changed for {changed.as_key()}; verifying Data Manager currentness"
+        assert view.status_text() == message
+        assert entered == ([(changed, message)] if changed == selected else [])
+        assert view.dataset_context_suspended == (changed == selected)
+        assert child.isVisible() == (changed != selected)
+        assert not selector._dataset_evidence_attention
+        assert service.calls[before:][0][0] == "reconcile_status"
+        assert len(service.calls) == before + 1
+        assert service.reconcile_forces[-1] is True
+        assert service.cancelled == []
+        presenter.dispose()
+        previous = (view.status_text(), len(entered), len(service.calls))
+        presenter.notify_external_ohlcv_change(changed)
+        assert (view.status_text(), len(entered), len(service.calls)) == previous
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize("operation", ["build_direct_artifact_catalog", "duplicate_maintenance_preflight_global"])
+def test_dataset_evidence_attention_fences_existing_foreground_without_cancellation(operation):
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    reopened = []
+    try:
+        _settle_initial_warmup(service)
+        presenter._selected_market = MARKET
+        view.select_market(MARKET, emit_selection=False)
+        generation = (presenter._market_generation if operation == "build_direct_artifact_catalog"
+                      else presenter._catalog_generation)
+        presenter._submit(
+            operation, generation,
+            lambda progress, result: service._submit(operation, result, progress),
+            lambda result: (reopened.append(result), view.show_artifact_creation_dialog(_direct_catalog())),
+        )
+        foreground = service.calls[-1]
+        view.show_artifact_creation_dialog(_direct_catalog())
+        child = view.artifact_creation_dialog()
+        presenter.notify_external_ohlcv_change(MARKET)
+        assert presenter._active_task_id == foreground[1]
+        assert view._operation_surface._task_id.text() == foreground[1]
+        assert view._operation_surface._name.text() == operation
+        assert service.cancelled == []
+        assert view._operation_surface.cancel_button.isEnabled()
+        assert not child.isVisible()
+        service.progress_callbacks[foreground[1]](TaskProgress(foreground[1], "Still running", 1, 2))
+        assert view.status_text() == "Still running"
+        foreground[2](TaskResult(foreground[1], "completed", object()))
+        assert not view._operation_surface.cancel_button.isEnabled()
+        assert view.dataset_context_suspended
+        assert "OHLCV evidence changed" in view.status_text()
+        assert reopened == []
+        assert not child.isVisible()
+        assert service.cancelled == []
+        before = len(service.calls)
+        presenter._submit("execute_artifact_update", presenter._catalog_generation,
+                          lambda progress, result: service._submit("FORBIDDEN", result),
+                          lambda result: None)
+        assert len(service.calls) == before
+    finally:
+        view.close()
+
+
+def test_dataset_evidence_attention_during_selected_warmup_preserves_catchup():
+    view = DataManagerSuiteWindow()
+    service = _ControlledApplication(product_catalogs=True)
+    presenter = DataManagerSuitePresenter(view, service)
+    try:
+        presenter._selected_market = MARKET
+        presenter.notify_external_ohlcv_change(MARKET)
+        assert view.dataset_context_suspended
+        assert presenter._external_ohlcv_change_pending
+        _settle_initial_warmup(service)
+        assert presenter._initial_warmup_complete
+        assert service.calls[-1][0] == "reconcile_status"
+        assert service.reconcile_forces == [False, True]
+        assert view.dataset_context_suspended
+    finally:
+        view.close()
 
 
 def test_database_publication_coverage_uses_canonical_display_time(
@@ -871,8 +1186,8 @@ def _projected_artifact_collection(
 ) -> ArtifactCollectionRevisionV1:
     source = _deletion_values()[-1]
     revision = object.__new__(ArtifactCollectionRevisionV1)
-    for name in ArtifactCollectionRevisionV1.__dataclass_fields__:
-        object.__setattr__(revision, name, getattr(source, name))
+    for field in fields(ArtifactCollectionRevisionV1):
+        object.__setattr__(revision, field.name, getattr(source, field.name))
     object.__setattr__(revision, "collection_id", collection_id)
     object.__setattr__(revision, "revision_id", revision_id)
     object.__setattr__(revision, "display_name", display_name)
@@ -2317,11 +2632,19 @@ def test_construct_batch_preview_execute_and_closed_window_fencing() -> None:
         view.close()
 
 
-def test_batch_plan_summary_uses_artifact_counts() -> None:
+def test_contextual_batch_preview_reports_executable_branch_count() -> None:
     view = DataManagerSuiteWindow()
     service = _ControlledApplication()
     presenter = DataManagerSuitePresenter(view, service)
     try:
+        _settle_initial_scan(service)
+        presenter.focus_market(MARKET, source="research")
+        inspect = service.calls[-1]
+        inspect[2](TaskResult(inspect[1], "completed", MARKET_SNAPSHOT))
+        view.batch_constructs_requested.emit()
+        catalog_call = service.calls[-1]
+        catalog_call[2](TaskResult(catalog_call[1], "completed", _batch_catalog()))
+        dialog = view.construct_batch_dialog()
         request = expand_construct_batch(
             ConstructBatchExpansionRequest(
                 _batch_catalog(),
@@ -2332,15 +2655,12 @@ def test_batch_plan_summary_uses_artifact_counts() -> None:
             )
         )
         plan = _batch_plan(request)
-        presenter._pending_batch_plan_context = object()
-
-        presenter._settle_batch_plan(
-            TaskResult("task-batch-plan", "completed", plan)
-        )
-
-        assert view._creation_summary.text() == (
-            "Batch plan: 1 create/update Artifact(s), 0 reusable, blockers=0"
-        )
+        dialog.set_plan(plan)
+        assert len(plan.new_logical_artifact_ids) == 1
+        assert not plan.reusable_logical_artifact_ids
+        assert dialog.preview_table.rowCount() == 1
+        assert dialog.status_label.text() == "Preview ready: 1 executable branch(es)."
+        assert dialog.execute_button.isEnabled()
     finally:
         view.close()
 
@@ -2845,7 +3165,7 @@ def test_initial_warmup_uses_foreground_operation_progress_and_catalogs() -> Non
         assert view._progress.maximum() == 5
 
         calls_before = len(service.calls)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         presenter.refresh()
         assert len(service.calls) == calls_before
 
@@ -2876,7 +3196,7 @@ def test_initial_warmup_uses_foreground_operation_progress_and_catalogs() -> Non
         assert presenter._active_task_id is None
 
         calls_before = len(service.calls)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         background = service.calls[-1]
         assert len(service.calls) == calls_before + 1
         assert presenter._active_task_id is None
@@ -2949,7 +3269,7 @@ def test_initial_warmup_failure_is_visible_and_manual_refresh_retries(
         if failed_stage == "reconcile":
             assert [call[0] for call in service.calls] == ["reconcile_status"]
 
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         assert service.calls[-1] is failed
         presenter.refresh()
         assert service.calls[-1][0] == "reconcile_status"
@@ -3076,7 +3396,7 @@ def test_background_a_does_not_own_foreground_task_slot() -> None:
     presenter = DataManagerSuitePresenter(view, service)
     try:
         _settle_initial_warmup(service)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         assert presenter._active_task_id is None
         assert presenter._background_refresh_task_id == service.calls[-1][1]
     finally:
@@ -3107,7 +3427,7 @@ def test_background_b_does_not_take_over_foreground_busy_surface() -> None:
         busy_calls.clear()
         operation_calls.clear()
         progress_calls.clear()
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         assert busy_calls == []
         assert operation_calls == []
         assert progress_calls == []
@@ -3121,7 +3441,7 @@ def test_background_c_coexists_with_foreground_submission() -> None:
     presenter = DataManagerSuitePresenter(view, service)
     try:
         _settle_initial_warmup(service)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         background_id = presenter._background_refresh_task_id
         presenter._submit(
             "scan_catalog",
@@ -3148,7 +3468,7 @@ def test_background_d_prevents_self_overlap() -> None:
             "reconcile_status"
         )
         presenter.refresh()
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         assert [call[0] for call in service.calls].count(
             "reconcile_status"
         ) == warmup_reconciles + 1
@@ -3171,7 +3491,7 @@ def test_background_e_coalesces_force_for_next_pass() -> None:
     presenter = DataManagerSuitePresenter(view, service)
     try:
         _settle_initial_warmup(service)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         presenter.refresh()
         reconcile = service.calls[-1]
         reconcile[2](
@@ -3193,7 +3513,7 @@ def test_background_f_unchanged_evidence_is_complete_no_op() -> None:
         _settle_initial_warmup(service)
         applied.clear()
         calls_before = len(service.calls)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         reconcile = service.calls[-1]
         reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("a")))
         assert len(service.calls) == calls_before + 1
@@ -3211,7 +3531,7 @@ def test_background_g_changed_evidence_scans_products_once() -> None:
         initial_scans = [call[0] for call in service.calls].count(
             "scan_product_catalogs"
         )
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         reconcile = service.calls[-1]
         reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("b")))
         assert [call[0] for call in service.calls].count(
@@ -3233,7 +3553,7 @@ def test_background_h_unrelated_market_change_skips_selected_market_work() -> No
         applied.clear()
         presenter._selected_market = MARKET
         presenter._catalog = CATALOG
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         reconcile = service.calls[-1]
         reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("b")))
         scan = service.calls[-1]
@@ -3258,7 +3578,7 @@ def test_background_i_selected_market_change_inspects_without_busy_takeover() ->
         _settle_initial_warmup(service)
         presenter._selected_market = MARKET
         presenter._catalog = CATALOG
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         reconcile = service.calls[-1]
         reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("b")))
         scan = service.calls[-1]
@@ -3400,7 +3720,7 @@ def test_background_p_catalog_application_defers_until_foreground_settles() -> N
     try:
         _settle_initial_warmup(service)
         applied.clear()
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         reconcile = service.calls[-1]
         presenter._submit(
             "scan_catalog",
@@ -3435,7 +3755,7 @@ def test_background_q_disposal_cancels_and_fences_late_result() -> None:
     try:
         _settle_initial_warmup(service)
         applied.clear()
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         reconcile = service.calls[-1]
         presenter.dispose()
         reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("a")))
@@ -3501,7 +3821,7 @@ def test_write_refresh_supersedes_and_fences_stale_background_task() -> None:
     presenter = DataManagerSuitePresenter(view, service)
     try:
         initial = _settle_initial_warmup(service)
-        presenter._refresh_on_timer()
+        presenter._request_background_refresh(force=False)
         stale_reconciliation = service.calls[-1]
         stale_task_id = stale_reconciliation[1]
 
@@ -3529,7 +3849,7 @@ def test_write_refresh_supersedes_and_fences_stale_background_task() -> None:
 @pytest.mark.parametrize(
     ("result_type", "view_setter"),
     (
-        (ArtifactCollectionUpdateResult, "set_artifact_update_result"),
+        (ArtifactUpdateResult, "set_artifact_update_result"),
         (DatabaseUpdateResult, "set_database_update_result"),
     ),
 )
@@ -3561,7 +3881,7 @@ def _start_background_market_race(
     _settle_initial_warmup(service)
     presenter._selected_market = MARKET
     presenter._catalog = CATALOG
-    presenter._refresh_on_timer()
+    presenter._request_background_refresh(force=False)
     reconcile = service.calls[-1]
     reconcile[2](TaskResult(reconcile[1], "completed", _reconciliation("b")))
     product_scan = service.calls[-1]

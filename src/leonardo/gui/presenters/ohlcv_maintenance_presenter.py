@@ -53,6 +53,7 @@ class OhlcvMaintenancePresenter(QObject):
         view: OhlcvMaintenanceWindow,
         maintenance_service: OHLCVMaintenanceApplicationService,
         on_canonical_ohlcv_evidence_changed: Callable[[MarketId], None] | None = None,
+        on_canonical_ohlcv_validation_accepted: Callable[[MarketId], None] | None = None,
     ) -> None:
         super().__init__(view)
         self._view = view
@@ -60,6 +61,7 @@ class OhlcvMaintenancePresenter(QObject):
         self._on_canonical_ohlcv_evidence_changed = (
             on_canonical_ohlcv_evidence_changed
         )
+        self._on_canonical_ohlcv_validation_accepted = on_canonical_ohlcv_validation_accepted
         self._dispatcher = _QtCallbackDispatcher(self)
         self._datasets: tuple[MaintenanceDatasetSummary, ...] = ()
         self._repair_plan: MaintenanceRepairPlan | None = None
@@ -472,6 +474,8 @@ class OhlcvMaintenancePresenter(QObject):
     ) -> None:
         if result.sidecar_published and result.publication_changed:
             self._notify_canonical_evidence_changed(result.report.market_id)
+        if result.accepted and self._on_canonical_ohlcv_validation_accepted is not None:
+            self._on_canonical_ohlcv_validation_accepted(result.report.market_id)
 
     def _notify_canonical_evidence_changed(self, market_id: MarketId) -> None:
         callback = self._on_canonical_ohlcv_evidence_changed

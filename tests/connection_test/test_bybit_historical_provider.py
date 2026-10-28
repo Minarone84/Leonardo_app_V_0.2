@@ -108,6 +108,69 @@ def test_bybit_standard_kline_rejects_options_market() -> None:
         provider.supported_timeframes("options")
 
 
+@pytest.mark.parametrize("limit", [1, 2, 0, None, 1000])
+@pytest.mark.parametrize("timeframe,year", [("1m", 2026), ("1M", 2023), ("1M", 2024)])
+def test_earliest_discovery_does_not_depend_on_download_limit(tmp_path, monkeypatch, limit, timeframe, year):
+    from datetime import UTC, datetime
+
+    if timeframe == "1M":
+        timestamps = [int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000) for month in (2, 3, 4)]
+        now = int(datetime(year, 5, 1, tzinfo=UTC).timestamp() * 1000)
+    else:
+        first = int(datetime(year, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        timestamps = [first + index * 60_000 for index in range(6)]
+        now = timestamps[-1] + 60_000
+    provider = BybitHistoricalProvider()
+    calls = []
+
+    async def fake_get(path, *, params=None):
+        if path == "/v5/market/time":
+            return {"result": {"timeSecond": str(now // 1000)}, "time": now}
+        assert path == "/v5/market/kline"
+        calls.append(dict(params))
+        selected = [ts for ts in reversed(timestamps) if params.get("start", 0) <= ts <= params.get("end", now)]
+        return {"time": now, "result": {"list": [[str(ts), "10", "12", "9", "11", "5"] for ts in selected[:params["limit"]]]}}
+
+    monkeypatch.setattr(provider, "_public_get_json", fake_get)
+    oldest = asyncio.run(provider.oldest_historical_ohlcv_ts_ms(market="linear", symbol="BTCUSDT", timeframe=timeframe, limit=limit))
+    assert oldest == timestamps[0]
+    ordinary = asyncio.run(provider.fetch_ohlcv_historical(market="linear", symbol="BTCUSDT", timeframe=timeframe, limit=limit))
+    expected_limit = 1000 if limit in (None, 0) else limit
+    assert calls[-1]["limit"] == expected_limit
+    assert len(ordinary) == min(len(timestamps), expected_limit)
+
+    from leonardo.connection import ConnectionApplicationService, ProviderRegistry
+    from leonardo.core.audit_log import AuditLog, InMemoryAuditSink
+    from leonardo.core.connection_registry import ConnectionRegistry
+    from leonardo.ohlcv import DownloadBatchRequest, HistoricalDownloadService, OHLCVStore
+
+    registry = ProviderRegistry()
+    registry.register("bybit", lambda: provider)
+    store = OHLCVStore(tmp_path / "historical")
+    service = HistoricalDownloadService(
+        ConnectionApplicationService(registry, ConnectionRegistry()),
+        store, AuditLog(InMemoryAuditSink()), actor_id="tester",
+    )
+    result = asyncio.run(service.run_batch(DownloadBatchRequest(
+        "bybit", "linear", "BTCUSDT", (timeframe,), limit=limit,
+    )))
+    assert [candle.ts_ms for candle in store.read(result.results[0].market_id)] == timestamps
+
+
+@pytest.mark.parametrize("timestamps,expected", [((), None), ((60_000,), 60_000)])
+def test_earliest_discovery_empty_and_single_candle(monkeypatch, timestamps, expected):
+    provider = BybitHistoricalProvider()
+
+    async def fake_get(path, *, params=None):
+        if path == "/v5/market/time":
+            return {"result": {"timeSecond": "180"}, "time": 180_000}
+        selected = [ts for ts in reversed(timestamps) if params.get("start", 0) <= ts <= params.get("end", 180_000)]
+        return {"time": 180_000, "result": {"list": [[str(ts), "10", "12", "9", "11", "5"] for ts in selected[:params["limit"]]]}}
+
+    monkeypatch.setattr(provider, "_public_get_json", fake_get)
+    assert asyncio.run(provider.oldest_historical_ohlcv_ts_ms(market="linear", symbol="BTCUSDT", timeframe="1m", limit=1)) == expected
+
+
 def test_bybit_marks_current_month_candle_open(monkeypatch) -> None:
     from datetime import UTC, datetime
 

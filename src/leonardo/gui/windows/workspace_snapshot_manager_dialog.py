@@ -77,6 +77,9 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         self._summaries = tuple(summaries)
         self._snapshot: ResearchWorkspaceSnapshotV1 | None = None
         self._report: ResearchWorkspaceSnapshotCompatibilityReport | None = None
+        self._selection_revision = 0
+        self._compatibility_revision = 0
+        self._report_context = None
         layout = QVBoxLayout(self)
         self.snapshot_list = QListWidget(self)
         self.snapshot_list.setObjectName("research.workspace_snapshot_manager_dialog.list.snapshots")
@@ -156,7 +159,63 @@ class WorkspaceSnapshotManagerDialog(QDialog):
     def compatibility_report(self) -> ResearchWorkspaceSnapshotCompatibilityReport | None:
         return self._report
 
+    @property
+    def selection_revision(self) -> int:
+        return self._selection_revision
+
+    @property
+    def load_mode(self) -> str:
+        return "append" if self.append_radio.isChecked() else "replace"
+
+    def invalidate_selection(self) -> None:
+        self._selection_revision += 1
+        self._snapshot = None
+        self.name_edit.clear()
+        self.description_edit.clear()
+        self.chart_table.setRowCount(0)
+        self.invalidate_compatibility()
+
+    def invalidate_compatibility(self) -> None:
+        self._compatibility_revision += 1
+        self._report = None
+        self._report_context = None
+        self.compatibility_text.clear()
+        self._sync()
+
+    def compatibility_context(self):
+        item = self.snapshot_list.currentItem()
+        snapshot = self._snapshot
+        if (
+            item is None
+            or not item.data(257)
+            or snapshot is None
+            or item.data(256) != snapshot.snapshot_id
+        ):
+            return None
+        return (
+            self._selection_revision,
+            self._compatibility_revision,
+            snapshot.snapshot_id,
+            snapshot.content_hash,
+            snapshot.updated_at_utc,
+            self.load_mode,
+        )
+
+    @property
+    def reviewed_context(self):
+        context = self.compatibility_context()
+        if (
+            context is None
+            or self._report_context != context
+            or self._report is None
+            or self._report.snapshot_id != context[2]
+            or self._report.mode != context[5]
+        ):
+            return None
+        return context
+
     def set_summaries(self, summaries) -> None:
+        self.invalidate_selection()
         self._summaries = tuple(summaries)
         self.snapshot_list.clear()
         for summary in self._summaries:
@@ -169,8 +228,12 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         self._sync()
 
     def set_snapshot(self, snapshot: ResearchWorkspaceSnapshotV1) -> None:
+        selected_id = self.selected_snapshot_id
+        if selected_id is not None and selected_id != snapshot.snapshot_id:
+            return
+        self._selection_revision += 1
         self._snapshot = snapshot
-        self._report = None
+        self.invalidate_compatibility()
         self.name_edit.setText(snapshot.display_name)
         self.description_edit.setText(snapshot.description)
         self.chart_table.setRowCount(0)
@@ -193,8 +256,19 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         self.compatibility_text.clear()
         self._sync()
 
-    def set_compatibility(self, report: ResearchWorkspaceSnapshotCompatibilityReport) -> None:
+    def set_compatibility(
+        self, report: ResearchWorkspaceSnapshotCompatibilityReport, *, expected_context=None
+    ) -> None:
+        context = self.compatibility_context()
+        if (
+            context is None
+            or (expected_context is not None and expected_context != context)
+            or report.snapshot_id != context[2]
+            or report.mode != context[5]
+        ):
+            return
         self._report = report
+        self._report_context = context
         self.compatibility_text.setPlainText(
             "\n".join((*report.blockers, *report.warnings)) or "Compatible"
         )
@@ -206,8 +280,7 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         return button
 
     def _selection_changed(self, row: int) -> None:
-        self._snapshot = None
-        self._report = None
+        self.invalidate_selection()
         if 0 <= row < len(self._summaries):
             summary = self._summaries[row]
             self.compatibility_text.setPlainText(summary.rejection_reason or "")
@@ -216,31 +289,25 @@ class WorkspaceSnapshotManagerDialog(QDialog):
         self._sync()
 
     def _mode_changed(self) -> None:
-        self._report = None
-        if self._snapshot is not None:
+        self.invalidate_compatibility()
+        if self.compatibility_context() is not None:
             self.compatibility_requested.emit(
-                WorkspaceSnapshotLoadIntent(
-                    self._snapshot.snapshot_id,
-                    "append" if self.append_radio.isChecked() else "replace",
-                )
+                WorkspaceSnapshotLoadIntent(self.selected_snapshot_id, self.load_mode)
             )
         self._sync()
 
     def _emit_load(self) -> None:
-        if self._snapshot is None:
+        if self.reviewed_context is None or not self._report.compatible:
             return
         self.load_requested.emit(
-            WorkspaceSnapshotLoadIntent(
-                self._snapshot.snapshot_id,
-                "append" if self.append_radio.isChecked() else "replace",
-            )
+            WorkspaceSnapshotLoadIntent(self.selected_snapshot_id, self.load_mode)
         )
 
     def _emit_metadata(self) -> None:
-        if self._mode == "manage" and self._snapshot is not None:
+        if self._mode == "manage" and self.compatibility_context() is not None:
             self.metadata_requested.emit(
                 WorkspaceSnapshotMetadataIntent(
-                    self._snapshot.snapshot_id,
+                    self.selected_snapshot_id,
                     self.name_edit.text().strip(),
                     self.description_edit.text(),
                 )
@@ -266,12 +333,10 @@ class WorkspaceSnapshotManagerDialog(QDialog):
 
     def _sync(self) -> None:
         item = self.snapshot_list.currentItem()
-        valid = bool(item is not None and item.data(257))
         self.delete_button.setEnabled(item is not None)
-        self.metadata_button.setEnabled(valid and self._snapshot is not None)
+        self.metadata_button.setEnabled(
+            self._mode == "manage" and self.compatibility_context() is not None
+        )
         self.load_button.setEnabled(
-            valid
-            and self._snapshot is not None
-            and self._report is not None
-            and self._report.compatible
+            self.reviewed_context is not None and self._report.compatible
         )

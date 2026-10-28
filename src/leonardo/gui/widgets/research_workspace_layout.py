@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 from dataclasses import dataclass
 
 
@@ -54,19 +56,25 @@ def _validated_slot_ids(slot_ids: object, mode: str) -> tuple[int, ...]:
         supplied = tuple(slot_ids)  # type: ignore[arg-type]
     except TypeError as error:
         raise TypeError("slot_ids must be an iterable of integers") from error
-    if len(supplied) > 8:
-        raise ValueError("at most eight slot IDs are supported")
-    if any(type(slot_id) is not int or not 1 <= slot_id <= 8 for slot_id in supplied):
-        raise ValueError("slot IDs must be unique integers from 1 through 8")
+    if len(supplied) > MAX_RESEARCH_CHARTS:
+        raise ValueError("at most sixteen slot IDs are supported")
+    if any(type(slot_id) is not int or not 1 <= slot_id <= MAX_RESEARCH_CHARTS for slot_id in supplied):
+        raise ValueError("slot IDs must be unique integers from 1 through 16")
     if len(set(supplied)) != len(supplied):
-        raise ValueError("slot IDs must be unique integers from 1 through 8")
+        raise ValueError("slot IDs must be unique integers from 1 through 16")
     return supplied
 
 
 def _build_layout(
     ordered_slot_ids: tuple[int, ...], mode: str
 ) -> ResearchWorkspaceLayoutPlan:
-    positions = _positions(len(ordered_slot_ids))
+    paged = mode == "fit_8" and len(ordered_slot_ids) > 8
+    positions = (
+        _positions(8)
+        + tuple((row + 4, column, rows, columns)
+                for row, column, rows, columns in _positions(len(ordered_slot_ids) - 8))
+        if paged else _positions(len(ordered_slot_ids))
+    )
     items = tuple(
         ResearchWorkspaceLayoutItem(slot_id, visual_index, *position)
         for visual_index, (slot_id, position) in enumerate(
@@ -78,8 +86,8 @@ def _build_layout(
         vertical_scroll = "as_needed"
         minimum_height_ratio = max(1.0, row_count / 2.0)
     else:
-        vertical_scroll = "off"
-        minimum_height_ratio = 1.0
+        vertical_scroll = "as_needed" if paged else "off"
+        minimum_height_ratio = 2.0 if paged else 1.0
     return ResearchWorkspaceLayoutPlan(
         mode, items, row_count, vertical_scroll, minimum_height_ratio
     )
@@ -95,6 +103,6 @@ def _positions(count: int) -> tuple[tuple[int, int, int, int], ...]:
     if count == 3:
         return ((0, 0, 1, 2), (1, 0, 1, 1), (1, 1, 1, 1))
     positions = [(index // 2, index % 2, 1, 1) for index in range(count)]
-    if count in (5, 7):
+    if count >= 5 and count % 2:
         positions[-1] = (count // 2, 0, 1, 2)
     return tuple(positions)

@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 from html import escape
 
-from PySide6.QtCore import QSignalBlocker, Signal, Qt
+from PySide6.QtCore import QAbstractAnimation, QSignalBlocker, QVariantAnimation, Signal, Qt
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -245,6 +246,85 @@ class DataManagerDatasetSelectorDialog(QDialog):
         self._search_help_dialog: _DataManagerDatasetSearchHelpDialog | None = None
         self._build_dialog()
 
+        self._dataset_evidence_attention = False
+        self._attention_normal_stylesheet = ""
+        self._attention_table_stylesheets: dict[QTableWidget, tuple[str, str]] = {}
+        self._attention_animation = QVariantAnimation(self)
+        self._attention_animation.setDuration(4000)
+        self._attention_animation.setKeyValues([
+            (0.0, QColor("#142B45")),
+            (0.5, QColor("#315F8A")),
+            (1.0, QColor("#142B45")),
+        ])
+        self._attention_animation.setLoopCount(-1)
+        self._attention_animation.valueChanged.connect(self._set_attention_color)
+
+    def _set_attention_color(self, color: QColor) -> None:
+        if self._dataset_evidence_attention:
+            self.setStyleSheet(
+                self._attention_normal_stylesheet
+                + "QDialog#data_manager_dataset_selector_dialog "
+                + f"{{ background-color: {color.name()}; }}"
+            )
+
+    def _apply_dataset_attention_typography(self, active: bool) -> None:
+        for table in (self._table, self._active_table):
+            if table is None:
+                continue
+            header = table.horizontalHeader()
+            if active:
+                if table not in self._attention_table_stylesheets:
+                    self._attention_table_stylesheets[table] = (
+                        table.styleSheet(), header.styleSheet()
+                    )
+                table_style, header_style = self._attention_table_stylesheets[table]
+                table.setStyleSheet(
+                    table_style
+                    + "QTableWidget { selection-color: #FF3B4D; }"
+                    + "QTableWidget::item:selected { color: #FF3B4D; }"
+                )
+                header.setStyleSheet(
+                    header_style
+                    + "QHeaderView::section { color: #FF3B4D; font-weight: 700; }"
+                )
+            else:
+                table_style, header_style = self._attention_table_stylesheets.pop(table)
+                table.setStyleSheet(table_style)
+                header.setStyleSheet(header_style)
+            items = [
+                table.item(row, column)
+                for row in range(table.rowCount())
+                for column in range(table.columnCount())
+            ]
+            items.extend(table.horizontalHeaderItem(column) for column in range(table.columnCount()))
+            for item in items:
+                if item is None:
+                    continue
+                if active:
+                    item.setData(Qt.ItemDataRole.ForegroundRole, QBrush(QColor("#FF3B4D")))
+                    font = QFont(item.font())
+                    font.setBold(True)
+                    item.setFont(font)
+                else:
+                    item.setData(Qt.ItemDataRole.ForegroundRole, None)
+                    item.setData(Qt.ItemDataRole.FontRole, None)
+
+    def set_dataset_evidence_attention(self, active: bool) -> None:
+        if active:
+            self._close_search_help_dialog(0)
+            if not self._dataset_evidence_attention:
+                self._attention_normal_stylesheet = self.styleSheet()
+            self._dataset_evidence_attention = True
+            self._apply_dataset_attention_typography(True)
+            if self._attention_animation.state() != QAbstractAnimation.State.Running:
+                self._attention_animation.start()
+            self._set_attention_color(self._attention_animation.currentValue())
+        elif self._dataset_evidence_attention:
+            self._dataset_evidence_attention = False
+            self._attention_animation.stop()
+            self.setStyleSheet(self._attention_normal_stylesheet)
+            self._apply_dataset_attention_typography(False)
+
     def button_for_id(self, button_id: str) -> QPushButton:
         try:
             return self._buttons[button_id]
@@ -289,9 +369,14 @@ class DataManagerDatasetSelectorDialog(QDialog):
         if market_id is not None and not isinstance(market_id, MarketId):
             raise TypeError("market_id must be a MarketId or None")
         self._current_market = market_id
-        self._checked_markets = set() if market_id is None else {market_id}
+        self._checked_markets = (
+            set() if market_id is None or self._dataset_evidence_attention
+            else {market_id}
+        )
         self._populate_active_dataset()
-        self._populate(preferred_market=market_id)
+        self._populate(
+            preferred_market=None if self._dataset_evidence_attention else market_id
+        )
 
     def selected_market_id(self) -> MarketId | None:
         if len(self._checked_markets) != 1:
@@ -683,6 +768,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         visible = entry is not None
         label.setVisible(visible)
         table.setVisible(visible)
+        if self._dataset_evidence_attention:
+            self._apply_dataset_attention_typography(True)
         self._resize_dataset_tables()
 
     def _populate(self, preferred_market: MarketId | None = None) -> None:
@@ -744,6 +831,8 @@ class DataManagerDatasetSelectorDialog(QDialog):
         finally:
             self._populating = False
             del blocker
+        if self._dataset_evidence_attention:
+            self._apply_dataset_attention_typography(True)
         self._resize_dataset_tables()
         self._sync_actions()
 

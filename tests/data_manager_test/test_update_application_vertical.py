@@ -82,7 +82,9 @@ def test_explicit_reconciliation_stops_cooperatively_on_shutdown(
     assert not app.core_runner.is_running
 
 
-def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> None:
+def test_real_application_explicit_artifact_update_append_restart_without_rebuild(
+    tmp_path: Path,
+) -> None:
     historical = tmp_path / "historical_data"
     _accepted_dataset(historical, market=MARKET, rows=96)
     config = replace(load_default_config(tmp_path), audit=AuditConfig(enabled=False))
@@ -122,16 +124,12 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             seed.seed_id,
             collection.collection_id,
         )
-        assert collection.source_recipe_collection_id == recipe_collection.collection_id
-        assert (
-            collection.source_recipe_collection_revision_id
-            == recipe_collection.revision_id
-        )
         provenance = (
             collection.source_portable_recipe_ids,
             collection.source_recipe_collection_id,
             collection.source_recipe_collection_revision_id,
         )
+        collection_revision_id = collection.revision_id
         _completed(
             application.submit_delete_recipe_collection,
             recipe_collection.collection_id,
@@ -141,28 +139,34 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             app.portable_recipe_store.load_collection(recipe_collection.collection_id)
         with pytest.raises(FileNotFoundError):
             app.portable_recipe_store.load_recipe(recipe.recipe_id)
+
         _accepted_dataset(historical, market=MARKET, rows=104)
-        stale = _completed(application.submit_reconcile_status, force=True)
-        assert stale.collections[0].status == "MEMBERS_REQUIRE_UPDATE"
-        artifact_result = _completed(
-            application.submit_execute_artifact_collection_update,
+        waiting = _completed(application.submit_reconcile_status, force=True)
+        assert waiting.collections[0].status == "CURRENT"
+        assert waiting.collections[0].revision_id == collection_revision_id
+        assert waiting.databases[0].status == "WAITING_FOR_ARTIFACT_UPDATE"
+
+        _completed(
+            application.submit_execute_artifact_update,
             _completed(
-                application.submit_plan_artifact_collection_update,
-                collection.collection_id,
+                application.submit_plan_artifact_update,
+                MARKET,
+                materialization.root_logical_artifact_ids,
             ),
         )
         appended = _completed(
             application.submit_execute_database_append,
-            _completed(
-                application.submit_plan_database_update, database.database_id
-            ),
+            _completed(application.submit_plan_database_update, database.database_id),
         )
         assert appended.database_revision.previous_revision_id == database.revision_id
-        artifact_revision_id = artifact_result.collection_revision.revision_id
+        unchanged_collection = _completed(
+            application.submit_load_artifact_collection, collection.collection_id
+        )
+        assert unchanged_collection.revision_id == collection_revision_id
         assert (
-            artifact_result.collection_revision.source_portable_recipe_ids,
-            artifact_result.collection_revision.source_recipe_collection_id,
-            artifact_result.collection_revision.source_recipe_collection_revision_id,
+            unchanged_collection.source_portable_recipe_ids,
+            unchanged_collection.source_recipe_collection_id,
+            unchanged_collection.source_recipe_collection_revision_id,
         ) == provenance
     finally:
         app.shutdown()
@@ -182,6 +186,7 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             application.submit_load_artifact_collection,
             collection.collection_id,
         )
+        assert surviving_collection.revision_id == collection_revision_id
         assert (
             surviving_collection.source_portable_recipe_ids,
             surviving_collection.source_recipe_collection_id,
@@ -192,37 +197,42 @@ def test_real_application_update_append_restart_and_rebuild(tmp_path: Path) -> N
             application.submit_load_database_revision, database.database_id
         ).manifest.database_id == database.database_id
         current = application.latest_reconciliation_snapshot()
-        assert current.collections[0].revision_id == artifact_revision_id
+        assert current.collections[0].revision_id == collection_revision_id
         assert current.collections[0].status == "CURRENT"
         assert current.databases[0].status == "CURRENT"
 
+        revision_count = len(
+            _completed(application.submit_list_database_revisions, database.database_id)
+        )
         _publish_modified(historical, rows=104, mutate_row=20)
         changed = _completed(application.submit_reconcile_status, force=True)
-        assert changed.databases[0].status == "WAITING_FOR_ARTIFACT_UPDATE"
+        assert changed.collections[0].status == "CURRENT"
+        assert changed.databases[0].status == "CURRENT"
+        assert any(
+            item.status == "HISTORICAL_SOURCE_CHANGED"
+            for item in changed.artifacts
+        )
+
         _completed(
-            application.submit_execute_artifact_collection_update,
+            application.submit_execute_artifact_update,
             _completed(
-                application.submit_plan_artifact_collection_update,
-                collection.collection_id,
+                application.submit_plan_artifact_update,
+                MARKET,
+                materialization.root_logical_artifact_ids,
             ),
         )
-        rebuild_plan = _completed(
+        database_plan = _completed(
             application.submit_plan_database_update, database.database_id
         )
-        assert rebuild_plan.mode == "REBUILD_REQUIRED"
-        rebuilt = _completed(
-            application.submit_execute_database_rebuild, rebuild_plan
-        )
+        assert database_plan.mode == "CURRENT"
         assert len(
-            _completed(
-                application.submit_list_database_revisions, database.database_id
-            )
-        ) == 3
-        assert rebuilt.reconciliation_snapshot.databases[0].status == "CURRENT"
+            _completed(application.submit_list_database_revisions, database.database_id)
+        ) == revision_count
         final_collection = _completed(
             application.submit_load_artifact_collection,
             collection.collection_id,
         )
+        assert final_collection.revision_id == collection_revision_id
         assert (
             final_collection.source_portable_recipe_ids,
             final_collection.source_recipe_collection_id,

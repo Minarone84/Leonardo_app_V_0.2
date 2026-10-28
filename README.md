@@ -1,8 +1,8 @@
 # Leonardo Light V2
 
 Leonardo Light V2 is a modular desktop application for historical market data,
-financial research, persisted analytical artifacts, and future analysis and
-trading workflows.
+financial research, persisted analytical artifacts, retrospective data analysis
+and future trading workflows.
 
 The application is a modular monolith with:
 
@@ -14,9 +14,11 @@ The application is a modular monolith with:
 - runtime tracking for tasks, processes, connections, windows, actions, and
   audit evidence.
 
-This document describes the current repository state as of **2026-08-02**. Old
-task reports remain useful historical evidence, but they are not a substitute
-for the current source, tests, and the authoritative documents listed below.
+The original status summary was dated **2026-08-02**. This targeted
+**2026-10-28** revision reconciles the accepted R01-R06 repairs and implemented
+Analysis workflow. Historical task reports do not replace current source and
+manuals. R08 integrated validation and R09 native acceptance remain separate;
+this revision does not declare the final release frozen.
 
 ## Active governance
 
@@ -42,6 +44,8 @@ The governing architectural rule is:
 - [Core runtime](docs/core_docs/LIGHT_V2_RUNTIME.md)
 - [Connection Suite and historical download](docs/connection_docs/CONNECTION_SUITE.md)
 - [Research Suite](docs/research_docs/RESEARCH_SUITE.md)
+- [Data Manager](docs/data_manager_docs/DATA_MANAGER.md)
+- [Data Analysis Suite](docs/analysis_docs/DATA_ANALYSIS_SUITE.md)
 - [GUI shell](docs/gui_docs/LIGHT_V2_GUI_SHELL.md)
 - [GUI theme system](docs/gui_docs/GUI_THEME_SYSTEM.md)
 - [Application GUI smoke](docs/gui_docs/LIGHT_V2_APPLICATION_SMOKE.md)
@@ -79,7 +83,8 @@ Implemented:
 - bounded retries, rate-limit handling, progress, and cancellation;
 - canonical OHLCV persistence;
 - validation, repair, sidecar reconstruction, and controlled deletion;
-- cache invalidation after accepted OHLCV mutations.
+- source-evidence change notifications, including metadata-only and failed
+  partial writes, with independent DMS freshness checks before proof reuse.
 
 The top-level Connection Suite window remains a presentation shell. The real
 historical workflow is exposed through Historical Download Manager and OHLCV
@@ -88,14 +93,15 @@ and trading connections are not implemented.
 
 ### Research
 
-The restored production Research Suite is implementation-complete and accepted
-for freeze, with the separate Data Manager user-acceptance gate deferred.
+The production Research workflow and subsequent R01-R06 corrections have
+code/package evidence. Final integrated and native acceptance of the repaired
+candidate remain separate; the earlier freeze statement is historical.
 
 Implemented:
 
 - accepted-OHLCV catalog and full dataset loading;
 - resident chart slices and refill;
-- up to eight chart slots;
+- up to sixteen chart slots;
 - Scroll 4 and Fit 8 workspace modes;
 - chart create, close, detach, dock, and slot compaction;
 - mixed-timeframe UTC navigation and Pan Anchor;
@@ -111,16 +117,19 @@ Implemented:
 - long-lived Research window tracking.
 
 `dynamic_binning` remains globally available to the Financial Tools domain for
-future Analysis use, but is deliberately excluded from the Research catalog,
+the implemented Analysis workflow, but is deliberately excluded from the Research catalog,
 Research Study workflow, and Study Environments.
 
 ### Data Manager, Analysis, and Trading
 
 - Data Manager domain/application services exist and share the canonical
   Artifact and OHLCV authorities. Its final user workflow and acceptance are
-  handled separately from the Research freeze.
-- Analysis and Trading currently expose GUI suite shells only. Their domain
-  workflows are not complete.
+  handled through its own evidence and user-acceptance process.
+- Analysis supports saved-database retrospective Variation & Binning, trend-start
+  patterns, pinned refinement, linked inspection and bounded sensitivity. The
+  wider Suite remains incomplete and changeable; these tools do not establish
+  forecast accuracy or add cross-timeframe agents or trading.
+- Trading remains a GUI suite shell; its domain workflow is not implemented.
 
 ## Runtime data
 

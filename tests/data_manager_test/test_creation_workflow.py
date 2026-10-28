@@ -54,6 +54,7 @@ from leonardo.research import (
 )
 
 from tests.artifacts_test.test_artifact_service_roundtrip import _accepted_dataset
+from tests.data_manager_test.test_update_workflow import _revalidate_unchanged
 from tests.data_manager_test.test_artifact_materialization import _delta
 
 
@@ -376,12 +377,17 @@ def test_selection_plan_retains_exact_historical_support_and_rejects_conflict(
         (angle,), expected_source=artifacts.capture_accepted_source(market)
     ).managed_artifacts[0]
 
-    with pytest.raises(
-        DataManagerCreationError, match="conflicting physical versions"
-    ):
-        service.plan_artifact_collection_selection(
-            market, (root_a, root_b.logical_artifact_id)
+    events = []
+    with service._operation_checks(progress=lambda *event: events.append(event)):
+        mixed = service.create_artifact_collection_from_selection(
+            service.plan_artifact_collection_selection(market, (root_a, root_b.logical_artifact_id)),
+            "Distinct physical dependency versions",
         )
+    physical = {m["artifact_id"] for m in mixed.value_provenance["members"]}
+    assert {support_v1, replacement.metadata.artifact_id} <= physical
+    assert {event[2].split()[-1] for event in events} == physical
+    assert events[-1][:2] == (len(physical), len(physical))
+    assert service.validate_artifact_collection(mixed.collection_id).valid
 
 
 def test_selection_create_and_edit_reject_stale_plan_and_revision(
@@ -560,7 +566,7 @@ def test_selection_default_output_collision_requires_explicit_mapping(
     assert created.selected_outputs == explicit
 
 
-def test_selection_rejects_artifact_from_stale_accepted_source(
+def test_selection_accepts_matching_historical_artifact_after_source_growth(
     tmp_path: Path,
 ) -> None:
     market, service, artifacts, recipes = _domain(tmp_path)
@@ -571,11 +577,9 @@ def test_selection_rejects_artifact_from_stale_accepted_source(
     changed = _persistence_bytes(tmp_path / "historical")
     assert changed != before
 
-    with pytest.raises(
-        DataManagerCreationError,
-        match="metadata disagrees|OHLCV|source",
-    ):
-        service.plan_artifact_collection_selection(market, (root,))
+    plan = service.plan_artifact_collection_selection(market, (root,))
+    assert plan.source_ohlcv.row_count == 96
+    assert plan.source_ohlcv != artifacts.source_metadata(market)
     assert _persistence_bytes(tmp_path / "historical") == changed
 
 
@@ -796,15 +800,17 @@ def test_raw_ohlc_batch_materializes_with_native_bindings_and_no_fake_lineage(
     assert replay.branch_reuse_current == (True,)
 
 
+@pytest.mark.parametrize("revalidated", (False, True))
 def test_mixed_raw_and_artifact_batch_preserves_exact_artifact_lineage(
-    tmp_path: Path,
+    tmp_path: Path, revalidated,
 ) -> None:
     market, service, artifacts, recipes = _domain(tmp_path)
     sma_recipe = _leaf("sma", {"period": 3})
     base = _materialize(service, recipes, sma_recipe)
     sma = base.managed_artifacts[0]
+    source = _revalidate_unchanged(artifacts, market) if revalidated else base.source_ohlcv
     close = BatchArtifactSource.current_ohlcv(
-        "fast", market, base.source_ohlcv, "close"
+        "fast", market, source, "close"
     )
     saved = DataManagerDirectArtifactSource(
         "slow",
@@ -819,7 +825,7 @@ def test_mixed_raw_and_artifact_batch_preserves_exact_artifact_lineage(
         visible_output_names("delta", {}, (close, saved)),
     )
     request = BatchArtifactRequest(
-        market, base.source_ohlcv, (branch,), "individual"
+        market, source, (branch,), "individual"
     )
 
     plan = service.plan_batch_artifacts(request)
@@ -848,6 +854,25 @@ def test_mixed_raw_and_artifact_batch_preserves_exact_artifact_lineage(
         (item.role, item.recipe_id, item.output_name)
         for item in persisted.dependencies
     ) == (("slow", sma_recipe.recipe_id, sma.output_names[0]),)
+    saved_source = DataManagerDirectArtifactSource(
+        "source", sma.logical_artifact_id, sma.artifact_id, sma.output_names[0]
+    )
+    saved_branch = BatchArtifactBranchRequest(
+        "derivative", {"order": 1}, (saved_source,),
+        visible_output_names("derivative", {"order": 1}, (saved_source,)),
+    )
+    saved_request = BatchArtifactRequest(market, source, (saved_branch,), "individual")
+    service.execute_batch_artifacts(service.plan_batch_artifacts(saved_request))
+    replay, _ = service.execute_batch_artifacts(service.plan_batch_artifacts(saved_request))
+    assert replay.created_artifact_ids == ()
+    assert artifacts.list_artifact_versions(market, sma.logical_artifact_id)[0].artifact_id == sma.artifact_id
+    assert len(artifacts.list_artifact_versions(market, sma.logical_artifact_id)) == 1
+
+    if revalidated:
+        stale = service.plan_batch_artifacts(saved_request)
+        _revalidate_unchanged(artifacts, market)
+        with pytest.raises(DataManagerCreationError, match="OHLCV source changed"):
+            service.execute_batch_artifacts(stale)
 
 
 def test_raw_ohlc_batch_rejects_changed_fingerprint_before_artifact_publication(
@@ -907,7 +932,7 @@ def test_batch_plan_rejects_incompatible_collection_before_publication(
     )
     incompatible = SimpleNamespace(
         market_id=market,
-        source_ohlcv=replace(base.source_ohlcv, csv_sha256="f" * 64),
+        source_ohlcv=replace(base.source_ohlcv, row_count=97, last_timestamp_ms=base.source_ohlcv.last_timestamp_ms + 60_000),
     )
     monkeypatch.setattr(
         service._creation,
@@ -1380,12 +1405,12 @@ def test_batch_plan_and_execution_reject_stale_frozen_truth_before_artifact_publ
     frozen_signals = list_construct_source_signals(artifacts, market)
     monkeypatch.setattr(
         "leonardo.data_manager.creation_service.list_construct_source_signals",
-        lambda _artifacts, _market: frozen_signals,
+        lambda _artifacts, _market, *, metadata_only=False: frozen_signals,
     )
     original_summaries = artifacts.list_managed_artifacts(market)
     monkeypatch.setattr(
         artifacts,
-        "list_managed_artifacts",
+        "list_managed_artifacts_metadata",
         lambda _market: tuple(
             replace(item, artifact_id="e" * 64)
             if item.logical_artifact_id == source.logical_artifact_id
@@ -1422,7 +1447,7 @@ def test_batch_execution_rejects_disappeared_output_and_never_recurses_into_new_
 
     monkeypatch.setattr(
         "leonardo.data_manager.creation_service.list_construct_source_signals",
-        lambda _artifacts, _market: tuple(
+        lambda _artifacts, _market, *, metadata_only=False: tuple(
             item for item in original if item.output_name != exact.output_name
         ),
     )
@@ -1437,8 +1462,8 @@ def test_batch_execution_rejects_disappeared_output_and_never_recurses_into_new_
     original_owner = list_construct_source_signals
     monkeypatch.setattr(
         "leonardo.data_manager.creation_service.list_construct_source_signals",
-        lambda _artifacts, _market: calls.append(True)
-        or original_owner(_artifacts, _market),
+        lambda _artifacts, _market, *, metadata_only=False: calls.append(True)
+        or original_owner(_artifacts, _market, metadata_only=metadata_only),
     )
     service.execute_batch_artifacts(plan)
     assert calls == [True]
@@ -1450,22 +1475,30 @@ def test_database_seed_readiness_build_and_exact_reload(tmp_path: Path) -> None:
     materialization = _materialize(service, recipes, sma)
     collection = service.create_artifact_collection(materialization, "Feature set")
     seed = service.create_database_seed(
-        market, "BTC research", selected_ohlcv_columns=("open", "close", "volume")
+        market, "BTC research", selected_ohlcv_columns=("open", "high", "low", "close", "volume")
     )
 
     valid, blockers = service.validate_database_seed(seed.seed_id)
     readiness = service.assess_database_readiness(seed.seed_id, collection.collection_id)
     assert valid and blockers == ()
     assert readiness.ready
-    assert readiness.warmup_excluded_rows == 2
+    assert readiness.warmup_excluded_rows == 0
     manifest = service.build_database_revision(seed.seed_id, collection.collection_id)
     loaded = service.load_database_revision(manifest.database_id, manifest.revision_id)
 
     assert loaded.manifest == manifest
+    assert readiness.row_count == manifest.row_count == seed.row_count
+    assert manifest.first_timestamp_ms == seed.first_timestamp_ms
+    assert manifest.last_timestamp_ms == seed.last_timestamp_ms
+    from io import BytesIO
+
+    values = pd.read_csv(BytesIO(loaded.values_csv))
+    assert tuple(values["ts_ms"]) == service._loader.load(market).ts_ms
+    assert values["sma_3"].isna().tolist() == [True, True] + [False] * (seed.row_count - 2)
     definition = service.load_database_definition(manifest.database_id)
     assert definition.seed_id == seed.seed_id
     assert definition.market_id == market
-    assert loaded.values_csv.startswith(b"ts_ms,open,close,volume,")
+    assert loaded.values_csv.startswith(b"ts_ms,open,high,low,close,volume,")
     assert len(service.list_database_revisions(manifest.database_id)) == 1
     assert service.load_database_revision(manifest.database_id).manifest == manifest
 
@@ -1732,8 +1765,8 @@ def test_database_revisions_retain_exact_old_snapshots_and_protect_seed(tmp_path
     assert second.previous_revision_id == first.revision_id
     assert len(service.list_database_revisions(first.database_id)) == 2
     assert service.load_database_revision(first.database_id, first.revision_id) == first_loaded
-    with pytest.raises(DataManagerCreationError, match="referenced"):
-        service.delete_database_seed(seed.seed_id)
+    service.delete_database_seed(seed.seed_id)
+    assert service.load_database_revision(first.database_id, first.revision_id) == first_loaded
 
 
 def test_semantically_equivalent_collection_reuses_shared_artifact_versions(
@@ -1878,8 +1911,8 @@ def test_collection_semantics_ignore_member_version_output_and_order(
             order_variant.collection_id,
             version_variant.collection_id,
         }
-    ) == 1
-    assert mapping_variant == original
+    ) == 2
+    assert mapping_variant.collection_id != original.collection_id
     assert order_variant == original
     assert version_variant == original
 
@@ -1920,8 +1953,8 @@ def test_collection_semantics_include_source_and_ignore_recipe_collection_proven
 
     assert reused == first
     assert reused.source_recipe_collection_id == "prc_" + "a" * 32
-    assert source_variant.collection_id != first.collection_id
-    assert source_variant.source_ohlcv == changed_source
+    assert source_variant == first
+    assert source_variant.source_ohlcv == first.source_ohlcv
 
 
 def test_collection_revision_collision_reuses_oldest_peer_without_mutation(
@@ -2074,3 +2107,72 @@ def test_creation_operations_run_through_shared_core_runner(tmp_path: Path) -> N
         assert "data_manager.assess_database_readiness" in operations
     finally:
         runner.shutdown()
+
+
+@pytest.mark.parametrize("revalidated", (False, True))
+@pytest.mark.parametrize("tool,roles,raw_roles", (
+    ("delta", ("fast", "slow"), ("fast",)),
+    ("delta", ("fast", "slow"), ("slow",)),
+    ("delta", ("fast", "slow"), ("fast", "slow")),
+    ("braids", ("fast", "mid", "slow"), ("fast", "mid")),
+    ("braid_instability", ("fast", "mid", "slow"), ("mid",)),
+    ("trap_area", ("fast", "slow"), ("fast",)),
+    ("trap_area", ("fast", "mid", "slow"), ("mid", "slow")),
+    ("percent_span_angle", ("source_1", "source_2"), ("source_1",)),
+    ("angle_momentum", ("source_1", "source_2"), ("source_2",)),
+))
+def test_parameter_bound_raw_batch_replay_reuses_exact_saved_result(
+    tmp_path, revalidated, tool, roles, raw_roles,
+):
+    market, service, artifacts, recipes = _domain(tmp_path)
+    base = _materialize(service, recipes, _leaf("sma", {"period": 3}))
+    sma = base.managed_artifacts[0]
+
+    def request(source):
+        inputs = tuple(
+            BatchArtifactSource.current_ohlcv(role, market, source, ("close", "open", "high")[roles.index(role)])
+            if role in raw_roles else DataManagerDirectArtifactSource(
+                role, sma.logical_artifact_id, sma.artifact_id, sma.output_names[0]
+            )
+            for role in roles
+        )
+        branch = BatchArtifactBranchRequest(tool, {}, inputs, visible_output_names(tool, {}, inputs))
+        return BatchArtifactRequest(market, source, (branch,), "individual")
+
+    first, _ = service.execute_batch_artifacts(service.plan_batch_artifacts(request(base.source_ohlcv)))
+    root_id = first.root_logical_artifact_ids[0]
+    head = artifacts.load_artifact_head(market, root_id)
+    saved = artifacts.load_artifact_by_id(market, head.artifact_id)
+    history = artifacts.list_artifact_versions(market, root_id)
+    source = _revalidate_unchanged(artifacts, market) if revalidated else base.source_ohlcv
+    replay, _ = service.execute_batch_artifacts(service.plan_batch_artifacts(request(source)))
+    assert replay.created_artifact_ids == ()
+    assert replay.root_logical_artifact_ids == first.root_logical_artifact_ids
+    assert artifacts.load_artifact_head(market, root_id) == head
+    assert artifacts.list_artifact_versions(market, root_id) == history
+    after = artifacts.load_artifact_by_id(market, head.artifact_id)
+    assert after.metadata == saved.metadata
+    pd.testing.assert_frame_equal(after.frame, saved.frame)
+    assert tuple(ref.role for ref in after.metadata.recipe.source_artifacts) == tuple(
+        role for role in sorted(roles) if role not in raw_roles
+    )
+
+
+def test_mixed_batch_raw_column_remains_part_of_reuse_identity(tmp_path):
+    market, service, artifacts, recipes = _domain(tmp_path)
+    base = _materialize(service, recipes, _leaf("sma", {"period": 3}))
+    sma = base.managed_artifacts[0]
+    roots = {}
+    requests = {}
+    for column in ("open", "close"):
+        raw = BatchArtifactSource.current_ohlcv("fast", market, base.source_ohlcv, column)
+        saved = DataManagerDirectArtifactSource("slow", sma.logical_artifact_id, sma.artifact_id, sma.output_names[0])
+        branch = BatchArtifactBranchRequest("delta", {}, (raw, saved), visible_output_names("delta", {}, (raw, saved)))
+        requests[column] = BatchArtifactRequest(market, base.source_ohlcv, (branch,), "individual")
+        first, _ = service.execute_batch_artifacts(service.plan_batch_artifacts(requests[column]))
+        roots[column] = first.root_logical_artifact_ids
+    assert roots["open"] != roots["close"]
+    for column, request in requests.items():
+        replay, _ = service.execute_batch_artifacts(service.plan_batch_artifacts(request))
+        assert replay.created_artifact_ids == ()
+        assert replay.root_logical_artifact_ids == roots[column]

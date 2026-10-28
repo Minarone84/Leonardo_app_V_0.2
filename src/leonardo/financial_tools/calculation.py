@@ -150,8 +150,11 @@ def calculate_financial_tool(
     parameters: Mapping[str, object] | None = None,
     *,
     bindings: Mapping[str, object] | None = None,
+    utc_context=None,
 ) -> FinancialToolCalculationResult:
     key = canonicalize_tool_key(tool_key)
+    if utc_context is not None and key != "universal_trend_classifier":
+        raise ValueError("utc_context is only valid for UTC")
     spec = get_financial_tool_spec(key)
     validated = _validate_input(data, tuple(item.name for item in spec.data_inputs if item.required))
     resolved_parameters = resolve_parameters(key, parameters)
@@ -174,7 +177,10 @@ def calculate_financial_tool(
         raise RuntimeError(f"calculation output signal mismatch for {key}")
 
     working = validated.copy(deep=True)
-    outputs, analysis = _DISPATCH[key](working, resolved_parameters, resolved_bindings)
+    if key == "universal_trend_classifier":
+        outputs, analysis = _DISPATCH[key](working, resolved_parameters, resolved_bindings, utc_context=utc_context)
+    else:
+        outputs, analysis = _DISPATCH[key](working, resolved_parameters, resolved_bindings)
     if len(outputs) != len(output_names):
         raise RuntimeError(f"calculation output count mismatch for {key}")
 

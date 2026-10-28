@@ -25,13 +25,24 @@ class ConstructSourceSignal:
 def list_construct_source_signals(
     artifact_service: ArtifactService,
     market_id: MarketId,
+    *,
+    metadata_only: bool = False,
 ) -> tuple[ConstructSourceSignal, ...]:
     signals: list[ConstructSourceSignal] = []
-    for summary in artifact_service.list_managed_artifacts(market_id):
+    summaries = (
+        artifact_service.list_managed_artifacts_metadata(market_id)
+        if metadata_only
+        else artifact_service.list_managed_artifacts(market_id)
+    )
+    for summary in summaries:
         if not summary.valid:
             continue
-        loaded = artifact_service.load_artifact_by_id(market_id, summary.artifact_id)
-        recipe = loaded.metadata.recipe
+        metadata = (
+            artifact_service.load_artifact_metadata(market_id, summary.artifact_id)
+            if metadata_only
+            else artifact_service.load_artifact_by_id(market_id, summary.artifact_id).metadata
+        )
+        recipe = metadata.recipe
         if construct_input_policy(recipe.tool_key) == "none":
             continue
         configuration = {**recipe.parameters, **recipe.bindings}
@@ -56,7 +67,7 @@ def list_construct_source_signals(
                     kind=recipe.kind,
                     output_name=output_name,
                     label=resolved.label or output_name,
-                    source_ohlcv=loaded.metadata.source_ohlcv,
+                    source_ohlcv=metadata.source_ohlcv,
                 )
             )
     kind_order = {"indicator": 0, "oscillator": 1, "construct": 2}

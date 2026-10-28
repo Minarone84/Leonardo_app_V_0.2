@@ -214,14 +214,13 @@ class BybitHistoricalProvider:
                 high = midpoint
             else:
                 low = midpoint + 1
-        final_limit = _MAX_LIMIT if limit in (None, 0) else min(_MAX_LIMIT, max(1, int(limit)))
         rows = await self.fetch_ohlcv_historical(
             market=category,
             symbol=symbol,
             timeframe=canonical_timeframe,
             start_ms=max(0, high - step_ms),
             end_ms=min(server_time_ms, high + step_ms),
-            limit=final_limit,
+            limit=_MAX_LIMIT,
         )
         return rows[0].ts_ms if rows else None
 

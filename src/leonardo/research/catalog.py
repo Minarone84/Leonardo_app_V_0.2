@@ -8,6 +8,7 @@ CSV bytes still match accepted ``OHLCVSidecarV1`` evidence.
 from __future__ import annotations
 
 import hashlib
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,9 @@ from leonardo.ohlcv.store import OHLCVStore
 
 _ACCEPTED_PERSISTENCE_STATUSES = frozenset({"committed", "repaired"})
 _ACCEPTED_VALIDATION_STATUS = "ok"
+
+# Installed only around a DMS operation; shared Research callers stay strict.
+_dms_accepted_lookup = ContextVar("dms_accepted_lookup", default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +82,17 @@ class AcceptedDatasetCatalog:
         return self._root
 
     def scan(self) -> DatasetCatalogReport:
+        return self._scan(verify_payload=True)
+
+    def scan_metadata(self) -> DatasetCatalogReport:
+        """Discover accepted metadata without claiming a payload verification."""
+        return self._scan(verify_payload=False)
+
+    def _scan(self, *, verify_payload: bool) -> DatasetCatalogReport:
         accepted: list[AcceptedDatasetSummary] = []
         rejected: list[DatasetRejection] = []
         for candidate in self._candidate_directories():
-            result = self._inspect_candidate(candidate)
+            result = self._inspect_candidate(candidate, verify_payload=verify_payload)
             if isinstance(result, AcceptedDatasetSummary):
                 accepted.append(result)
             else:
@@ -119,6 +130,13 @@ class AcceptedDatasetCatalog:
             raise ValueError(f"market_id must already be canonical: {canonical!r}")
         return self._inspect_candidate(self._store.dataset_dir(market_id))
 
+    def inspect_market_metadata(self, market_id: MarketId):
+        if not isinstance(market_id, MarketId):
+            raise TypeError("market_id must be a MarketId")
+        return self._inspect_candidate(
+            self._store.dataset_dir(market_id), verify_payload=False
+        )
+
     def _candidate_directories(self) -> tuple[Path, ...]:
         if not self._root.exists():
             return ()
@@ -138,6 +156,8 @@ class AcceptedDatasetCatalog:
     def _inspect_candidate(
         self,
         dataset_dir: Path,
+        *,
+        verify_payload: bool = True,
     ) -> AcceptedDatasetSummary | DatasetRejection:
         identity_result = _market_from_dataset_dir(self._root, dataset_dir)
         if isinstance(identity_result, DatasetRejection):
@@ -223,7 +243,7 @@ class AcceptedDatasetCatalog:
 
         try:
             before = csv_path.stat()
-            current_sha256 = _sha256(csv_path)
+            current_sha256 = _sha256(csv_path) if verify_payload else sidecar.file_sha256
             after = csv_path.stat()
         except OSError as error:
             return DatasetRejection(

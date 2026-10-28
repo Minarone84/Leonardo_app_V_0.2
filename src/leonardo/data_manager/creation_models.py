@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
+import csv
+import io
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from types import MappingProxyType
+from typing import ClassVar
 
 from leonardo.artifacts import ManagedArtifactVersionKey, OHLCVSourceFingerprintV1
-from leonardo.data import MarketId, canonicalize_market_id
+from leonardo.data import MarketId, canonicalize_market_id, timeframe_duration_ms
+from leonardo.ohlcv.validation import _add_calendar_months
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -412,6 +416,9 @@ class ArtifactCollectionSelectionPlan:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactCollectionRevisionV1:
+    _SCHEMA_VERSION: ClassVar[str] = "1.0"
+    _EXTRA_FIELDS: ClassVar[frozenset[str]] = frozenset()
+
     collection_id: str
     revision_id: str
     display_name: str
@@ -498,7 +505,7 @@ class ArtifactCollectionRevisionV1:
         revised = _utc(self.revised_at_utc, "revised_at_utc")
         if revised < created:
             raise DataManagerCreationError("revised_at_utc cannot precede created_at_utc")
-        if self.schema_version != "1.0" or self.object_type != "artifact_collection_revision":
+        if self.schema_version != self._SCHEMA_VERSION or self.object_type != "artifact_collection_revision":
             raise DataManagerCreationError("unsupported Artifact Collection schema")
         object.__setattr__(self, "root_logical_artifact_ids", roots)
         object.__setattr__(self, "support_logical_artifact_ids", supports)
@@ -557,7 +564,7 @@ class ArtifactCollectionRevisionV1:
             "source_ohlcv", "first_timestamp_ms", "last_timestamp_ms", "validation_state",
             "database_ready", "previous_revision_id", "created_at_utc", "revised_at_utc",
         }
-        data = _exact(value, fields, "Artifact Collection revision")
+        data = _exact(value, fields | cls._EXTRA_FIELDS, "Artifact Collection revision")
         return cls(
             collection_id=data["collection_id"], revision_id=data["revision_id"],
             display_name=data["display_name"], description=data["description"],
@@ -578,7 +585,48 @@ class ArtifactCollectionRevisionV1:
             created_at_utc=_parse_utc(data["created_at_utc"], "created_at_utc"),
             revised_at_utc=_parse_utc(data["revised_at_utc"], "revised_at_utc"),
             schema_version=data["schema_version"], object_type=data["object_type"],
+            **{name: data[name] for name in cls._EXTRA_FIELDS},
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactCollectionRevisionV2(ArtifactCollectionRevisionV1):
+    """Keep logical selection lineage and record physical value/input providers."""
+
+    _SCHEMA_VERSION: ClassVar[str] = "2.0"
+    _EXTRA_FIELDS: ClassVar[frozenset[str]] = frozenset({"value_provenance"})
+
+    value_provenance: Mapping[str, object] = field(kw_only=True)
+    schema_version: str = "2.0"
+
+    def __post_init__(self) -> None:
+        ArtifactCollectionRevisionV1.__post_init__(self)
+        object.__setattr__(self, "value_provenance", _validate_value_provenance(
+            self.value_provenance, self.selected_outputs, self.market_id,
+            self.first_timestamp_ms, self.last_timestamp_ms,
+        ))
+        if len(self.value_provenance["outputs"]) != len(self.selected_outputs):
+            raise DataManagerCreationError("Collection outputs require one full-range physical provider each")
+
+    def to_dict(self, *, include_revision_id: bool = True) -> dict[str, object]:
+        payload = ArtifactCollectionRevisionV1.to_dict(
+            self, include_revision_id=include_revision_id
+        )
+        payload["value_provenance"] = _thaw(self.value_provenance)
+        return payload
+
+
+def artifact_collection_revision_from_dict(
+    value: Mapping[str, object],
+) -> ArtifactCollectionRevisionV1 | ArtifactCollectionRevisionV2:
+    if not isinstance(value, Mapping):
+        raise DataManagerCreationError("Artifact Collection revision must be a mapping")
+    version = value.get("schema_version")
+    if version == "1.0":
+        return ArtifactCollectionRevisionV1.from_dict(value)
+    if version == "2.0":
+        return ArtifactCollectionRevisionV2.from_dict(value)
+    raise DataManagerCreationError("unsupported Artifact Collection schema")
 
 
 @dataclass(frozen=True, slots=True)
@@ -900,17 +948,164 @@ class DatabaseSeedV1:
 
 
 @dataclass(frozen=True, slots=True)
-class DatabaseSeedCreationPlan:
-    plan_id: str
-    seed: DatabaseSeedV1
+class DatabaseSeedV2:
+    seed_id: str
+    display_name: str
+    description: str
+    market_id: MarketId
+    source_ohlcv: OHLCVSourceFingerprintV1
+    source_row_count: int
+    first_timestamp_ms: int
+    last_timestamp_ms: int
+    selected_ohlcv_columns: tuple[str, ...]
+    selected_range_start_ms: int
+    selected_range_end_ms: int
+    created_at_utc: datetime
+    row_count: int
+    column_count: int
+    values_sha256: str
+    schema_version: str = "2.0"
+    object_type: str = "database_seed"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.seed, DatabaseSeedV1):
-            raise TypeError("seed must be a DatabaseSeedV1")
+        _integer(self.row_count, "row_count", minimum=1)
+        _integer(self.column_count, "column_count", minimum=2)
+        _sha(self.values_sha256, "values_sha256")
+        if self.column_count != len(self.selected_ohlcv_columns) + 1:
+            raise DataManagerCreationError("Seed column count disagrees")
+        if tuple(self.selected_ohlcv_columns) != tuple(c for c in _OHLCV_COLUMNS if c in self.selected_ohlcv_columns):
+            raise DataManagerCreationError("Seed columns must be in canonical OHLCV order")
+        _identifier(self.seed_id, "seed_id", _SEED_RE)
+        _text(self.display_name, "display_name")
+        _text(self.description, "description", empty=True)
+        market = _market(self.market_id)
+        if not isinstance(self.source_ohlcv, OHLCVSourceFingerprintV1) or self.source_ohlcv.market_id != market:
+            raise DataManagerCreationError("source_ohlcv must match market_id")
+        source_rows = _integer(self.source_row_count, "source_row_count", minimum=1)
+        if self.row_count > source_rows:
+            raise DataManagerCreationError("Seed row count exceeds captured source rows")
+        first = _integer(self.first_timestamp_ms, "first_timestamp_ms")
+        last = _integer(self.last_timestamp_ms, "last_timestamp_ms")
+        start = _integer(self.selected_range_start_ms, "selected_range_start_ms")
+        end = _integer(self.selected_range_end_ms, "selected_range_end_ms")
+        if not first <= start <= end <= last:
+            raise DataManagerCreationError("selected source range must be inside source coverage")
+        columns = _strings(self.selected_ohlcv_columns, "selected_ohlcv_columns")
+        if any(item not in _OHLCV_COLUMNS for item in columns):
+            raise DataManagerCreationError("selected_ohlcv_columns contain unsupported values")
+        object.__setattr__(self, "selected_ohlcv_columns", columns)
+        object.__setattr__(self, "created_at_utc", _utc(self.created_at_utc, "created_at_utc"))
+        if self.schema_version != "2.0" or self.object_type != "database_seed":
+            raise DataManagerCreationError("unsupported Database Seed schema")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "row_count": self.row_count, "column_count": self.column_count, "values_sha256": self.values_sha256,
+            "schema_version": self.schema_version, "object_type": self.object_type,
+            "seed_id": self.seed_id, "display_name": self.display_name,
+            "description": self.description, "market_id": _market_dict(self.market_id),
+            "source_ohlcv": self.source_ohlcv.to_dict(), "source_row_count": self.source_row_count,
+            "first_timestamp_ms": self.first_timestamp_ms, "last_timestamp_ms": self.last_timestamp_ms,
+            "selected_ohlcv_columns": list(self.selected_ohlcv_columns),
+            "selected_range_start_ms": self.selected_range_start_ms,
+            "selected_range_end_ms": self.selected_range_end_ms,
+            "created_at_utc": _utc_text(self.created_at_utc),
+        }
+
+    def canonical_json_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "DatabaseSeedV2":
+        fields = {"row_count", "column_count", "values_sha256", "schema_version", "object_type", "seed_id", "display_name", "description",
+                  "market_id", "source_ohlcv", "source_row_count", "first_timestamp_ms",
+                  "last_timestamp_ms", "selected_ohlcv_columns", "selected_range_start_ms",
+                  "selected_range_end_ms", "created_at_utc"}
+        data = _exact(value, fields, "Database Seed")
+        return cls(
+            row_count=data["row_count"], column_count=data["column_count"], values_sha256=data["values_sha256"],
+            seed_id=data["seed_id"], display_name=data["display_name"], description=data["description"],
+            market_id=_market_from_dict(data["market_id"]),
+            source_ohlcv=OHLCVSourceFingerprintV1.from_dict(data["source_ohlcv"]),
+            source_row_count=data["source_row_count"], first_timestamp_ms=data["first_timestamp_ms"],
+            last_timestamp_ms=data["last_timestamp_ms"],
+            selected_ohlcv_columns=tuple(data["selected_ohlcv_columns"]),
+            selected_range_start_ms=data["selected_range_start_ms"],
+            selected_range_end_ms=data["selected_range_end_ms"],
+            created_at_utc=_parse_utc(data["created_at_utc"], "created_at_utc"),
+            schema_version=data["schema_version"], object_type=data["object_type"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseSeedCreationPlan:
+    plan_id: str
+    seed: DatabaseSeedV1 | DatabaseSeedV2
+    values_csv: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.seed, DatabaseSeedV2) and (not isinstance(self.values_csv, bytes) or sha256(self.values_csv).hexdigest() != self.seed.values_sha256):
+            raise DataManagerCreationError("Seed plan payload disagrees")
+        if not isinstance(self.seed, (DatabaseSeedV1, DatabaseSeedV2)):
+            raise TypeError("seed must be a Database Seed")
         if _sha(self.plan_id, "plan_id") != deterministic_hash(self.seed.to_dict()):
             raise DataManagerCreationError(
                 "plan_id does not match Database Seed creation truth"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseSeedAppendPlan:
+    plan_id: str
+    previous_seed_sha256: str
+    previous_values_sha256: str
+    previous_row_count: int
+    seed: DatabaseSeedV1 | DatabaseSeedV2
+    values_csv: bytes
+    source_ohlcv: OHLCVSourceFingerprintV1
+    appended_row_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.seed, (DatabaseSeedV1, DatabaseSeedV2)):
+            raise TypeError("seed must be a Database Seed")
+        _sha(self.previous_seed_sha256, "previous_seed_sha256")
+        _sha(self.previous_values_sha256, "previous_values_sha256")
+        _integer(self.previous_row_count, "previous_row_count", minimum=1)
+        _integer(self.appended_row_count, "appended_row_count", minimum=0)
+        if not isinstance(self.values_csv, bytes):
+            raise TypeError("values_csv must be bytes")
+        if not isinstance(self.source_ohlcv, OHLCVSourceFingerprintV1) or self.source_ohlcv.market_id != self.seed.market_id:
+            raise DataManagerCreationError("append source must match Seed market")
+        if self.appended_row_count and self.seed.source_ohlcv != self.source_ohlcv:
+            raise DataManagerCreationError("append candidate must match current source")
+        try:
+            rows = list(csv.reader(io.StringIO(self.values_csv.decode("utf-8")), strict=True))
+        except (UnicodeError, csv.Error) as exc:
+            raise DataManagerCreationError("append plan CSV is invalid") from exc
+        count = self.previous_row_count + self.appended_row_count
+        if len(rows) != count + 1 or tuple(rows[0]) != ("ts_ms", *self.seed.selected_ohlcv_columns):
+            raise DataManagerCreationError("append plan count/header disagrees")
+        digest = sha256(self.values_csv).hexdigest()
+        if isinstance(self.seed, DatabaseSeedV2) and (self.seed.row_count != count or self.seed.values_sha256 != digest):
+            raise DataManagerCreationError("append plan owned payload disagrees")
+        if not self.appended_row_count and (
+            self.previous_seed_sha256 != sha256(self.seed.canonical_json_bytes()).hexdigest()
+            or self.previous_values_sha256 != digest
+        ):
+            raise DataManagerCreationError("current append plan must preserve the Seed")
+        if _sha(self.plan_id, "plan_id") != deterministic_hash(self.identity_payload()):
+            raise DataManagerCreationError("plan_id does not match Seed append truth")
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "previous_seed_sha256": self.previous_seed_sha256,
+            "previous_values_sha256": self.previous_values_sha256,
+            "previous_row_count": self.previous_row_count,
+            "seed": self.seed.to_dict(),
+            "values_sha256": sha256(self.values_csv).hexdigest(),
+            "source_ohlcv": self.source_ohlcv.to_dict(),
+            "appended_row_count": self.appended_row_count,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1183,6 +1378,95 @@ class DatabaseContentAdditionPlan:
             "requires_v1_transition": self.requires_v1_transition,
             "blockers": list(self.blockers),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseLegacyOutputV1:
+    """A saved V1 column whose original logical provider was not recorded."""
+
+    column_name: str
+    output_name: str
+    legacy_revision_id: str
+
+    def __post_init__(self):
+        _column(self.column_name, "column_name")
+        _column(self.output_name, "output_name")
+        _sha(self.legacy_revision_id, "legacy_revision_id")
+
+    @property
+    def logical_artifact_id(self):
+        return None
+
+    def to_dict(self):
+        return {"column_name": self.column_name, "output_name": self.output_name,
+                "legacy_revision_id": self.legacy_revision_id}
+
+    @classmethod
+    def from_dict(cls, value):
+        return cls(**_exact(value, {"column_name", "output_name", "legacy_revision_id"},
+                            "legacy Database output"))
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseContentEditPlan:
+    plan_id: str
+    database_id: str
+    starting_revision_id: str
+    market_id: MarketId
+    source_ohlcv: OHLCVSourceFingerprintV1
+    artifact_additions: tuple[ArtifactCollectionOutputV1, ...]
+    collection_additions: tuple[DatabaseCollectionReferenceV2, ...]
+    remove_sources: tuple[tuple[str, str, str | None], ...]
+    remove_outputs: tuple[tuple[str, str], ...]
+    reviewed_members: tuple[ArtifactCollectionMemberV1, ...]
+    members: tuple[ArtifactCollectionMemberV1, ...]
+    dependency_edges: tuple[ArtifactCollectionDependencyV1, ...]
+    selected_outputs: tuple[ArtifactCollectionOutputV1 | DatabaseLegacyOutputV1, ...]
+    selection_sources: tuple[Mapping[str, object], ...]
+    values_csv: bytes
+    column_names: tuple[str, ...]
+    added_column_names: tuple[str, ...]
+    removed_column_names: tuple[str, ...]
+    ownership_changed: bool
+    blockers: tuple[str, ...] = ()
+    value_provenance: Mapping[str, object] | None = None
+    remove_columns: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        _sha(self.plan_id, "plan_id")
+        _identifier(self.database_id, "database_id", _DATABASE_RE)
+        _sha(self.starting_revision_id, "starting_revision_id")
+        object.__setattr__(self, "selection_sources", tuple(_freeze(dict(s)) for s in self.selection_sources))
+        if self.value_provenance is not None:
+            if not isinstance(self.value_provenance, Mapping):
+                raise DataManagerCreationError("value_provenance must be a mapping")
+            object.__setattr__(self, "value_provenance", _freeze(
+                _json_copy(self.value_provenance, "value_provenance")
+            ))
+
+    @property
+    def blocked(self):
+        return bool(self.blockers)
+
+    @property
+    def no_op(self):
+        return not self.added_column_names and not self.removed_column_names and not self.ownership_changed
+
+    @property
+    def source_kind(self):
+        return "collection" if self.collection_additions else "artifacts"
+
+    @property
+    def source_collection(self):
+        return self.collection_additions[0] if len(self.collection_additions) == 1 else None
+
+    @property
+    def row_count(self):
+        return len(self.values_csv.splitlines()) - 1
+
+    @property
+    def added_output_count(self):
+        return len(self.added_column_names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1598,14 +1882,509 @@ class DatabaseRevisionManifestV2:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DatabaseRevisionManifestV3:
+    _SCHEMA_VERSION: ClassVar[str] = "3.0"
+    _EXTRA_FIELDS: ClassVar[frozenset[str]] = frozenset()
+
+    database_id: str
+    revision_id: str
+    display_name: str
+    description: str
+    seed_id: str
+    market_id: MarketId
+    source_ohlcv: OHLCVSourceFingerprintV1
+    members: tuple[ArtifactCollectionMemberV1, ...]
+    dependency_edges: tuple[ArtifactCollectionDependencyV1, ...]
+    selected_outputs: tuple[ArtifactCollectionOutputV1, ...]
+    collection_sources: tuple[DatabaseCollectionReferenceV2, ...]
+    column_mapping: Mapping[str, str]
+    first_timestamp_ms: int
+    last_timestamp_ms: int
+    row_count: int
+    column_count: int
+    values_sha256: str
+    previous_revision_id: str | None
+    created_at_utc: datetime
+    selection_sources: tuple[Mapping[str, object], ...]
+    schema_version: str = "3.0"
+    object_type: str = "database_revision"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "selection_sources", _validate_selection_sources(self.selection_sources, self.selected_outputs, self.collection_sources,
+            legacy_database_id=self.database_id if self._SCHEMA_VERSION in {"5.0", "6.0"} else None))
+        _identifier(self.database_id, "database_id", _DATABASE_RE)
+        _sha(self.revision_id, "revision_id")
+        _text(self.display_name, "display_name")
+        _text(self.description, "description", empty=True)
+        _identifier(self.seed_id, "seed_id", _SEED_RE)
+        market = _market(self.market_id)
+        if (
+            not isinstance(self.source_ohlcv, OHLCVSourceFingerprintV1)
+            or self.source_ohlcv.market_id != market
+        ):
+            raise DataManagerCreationError("source_ohlcv must match market_id")
+        members = tuple(self.members)
+        edges = tuple(self.dependency_edges)
+        outputs = tuple(self.selected_outputs)
+        references = tuple(sorted(
+            self.collection_sources,
+            key=lambda item: (item.collection_id, item.revision_id),
+        ))
+        if not all(isinstance(item, ArtifactCollectionMemberV1) for item in members):
+            raise DataManagerCreationError("members contain invalid values")
+        if not all(
+            isinstance(item, ArtifactCollectionDependencyV1) for item in edges
+        ):
+            raise DataManagerCreationError("dependency_edges contain invalid values")
+        if not all(isinstance(item, (ArtifactCollectionOutputV1, DatabaseLegacyOutputV1)
+                          if self._SCHEMA_VERSION in {"5.0", "6.0"} else ArtifactCollectionOutputV1) for item in outputs):
+            raise DataManagerCreationError("selected_outputs contain invalid values")
+        if not all(
+            isinstance(item, DatabaseCollectionReferenceV2) for item in references
+        ):
+            raise DataManagerCreationError("collection_sources contain invalid values")
+        if len(references) != len(set(references)):
+            raise DataManagerCreationError("collection_sources must be unique")
+        _validate_database_v2_content(members, edges, outputs, references, provenance=True,
+                                      legacy_outputs=self._SCHEMA_VERSION in {"5.0", "6.0"})
+        mapping = _json_copy(dict(self.column_mapping), "column_mapping")
+        if not isinstance(mapping, dict) or not mapping:
+            raise DataManagerCreationError("column_mapping must not be empty")
+        for key, value in mapping.items():
+            _column(key, "column_mapping key")
+            _column(value, "column_mapping value")
+            if key != value:
+                raise DataManagerCreationError(
+                    "V2 Database column_mapping must contain identity mappings"
+                )
+        if "ts_ms" not in mapping:
+            raise DataManagerCreationError("V2 Database column_mapping requires ts_ms")
+        if len(set(mapping.values())) != len(mapping):
+            raise DataManagerCreationError(
+                "V2 Database column_mapping targets must be unique"
+            )
+        first = _integer(self.first_timestamp_ms, "first_timestamp_ms")
+        last = _integer(self.last_timestamp_ms, "last_timestamp_ms")
+        if first > last:
+            raise DataManagerCreationError("Database coverage is invalid")
+        _integer(self.row_count, "row_count", minimum=1)
+        columns = _integer(self.column_count, "column_count", minimum=2)
+        if len(mapping) != columns:
+            raise DataManagerCreationError(
+                "column_mapping must contain every Database column"
+            )
+        if any(item.column_name not in mapping for item in outputs):
+            raise DataManagerCreationError(
+                "selected output columns must exist in column_mapping"
+            )
+        _sha(self.values_sha256, "values_sha256")
+        if self.previous_revision_id is not None:
+            _sha(self.previous_revision_id, "previous_revision_id")
+        object.__setattr__(self, "members", members)
+        object.__setattr__(self, "dependency_edges", edges)
+        object.__setattr__(self, "selected_outputs", outputs)
+        object.__setattr__(self, "collection_sources", references)
+        object.__setattr__(self, "column_mapping", _freeze(mapping))
+        object.__setattr__(
+            self, "created_at_utc", _utc(self.created_at_utc, "created_at_utc")
+        )
+        if self.schema_version != self._SCHEMA_VERSION or self.object_type != "database_revision":
+            raise DataManagerCreationError("unsupported Database revision schema")
+        if self.revision_id != deterministic_hash(
+            self.to_dict(include_revision_id=False)
+        ):
+            raise DataManagerCreationError(
+                "revision_id does not match Database manifest"
+            )
+
+    @property
+    def artifact_version_keys(self) -> tuple[ManagedArtifactVersionKey, ...]:
+        return tuple(item.version_key for item in self.members)
+
+    @property
+    def artifact_payload_hashes(self) -> tuple[str, ...]:
+        return tuple(item.values_sha256 for item in self.members)
+
+    @property
+    def portable_recipe_ids(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(item.portable_recipe_id for item in self.members))
+
+    def to_dict(self, *, include_revision_id: bool = True) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema_version": self.schema_version,
+            "object_type": self.object_type,
+            "database_id": self.database_id,
+            "display_name": self.display_name,
+            "description": self.description,
+            "seed_id": self.seed_id,
+            "market_id": _market_dict(self.market_id),
+            "source_ohlcv": self.source_ohlcv.to_dict(),
+            "members": [item.to_dict() for item in self.members],
+            "dependency_edges": [item.to_dict() for item in self.dependency_edges],
+            "selected_outputs": [item.to_dict() for item in self.selected_outputs],
+            "collection_sources": [item.to_dict() for item in self.collection_sources],
+            "selection_sources": [_thaw(item) for item in self.selection_sources],
+            "column_mapping": _thaw(self.column_mapping),
+            "first_timestamp_ms": self.first_timestamp_ms,
+            "last_timestamp_ms": self.last_timestamp_ms,
+            "row_count": self.row_count,
+            "column_count": self.column_count,
+            "values_sha256": self.values_sha256,
+            "previous_revision_id": self.previous_revision_id,
+            "created_at_utc": _utc_text(self.created_at_utc),
+        }
+        if include_revision_id:
+            payload["revision_id"] = self.revision_id
+        return payload
+
+    def canonical_json_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "DatabaseRevisionManifestV3":
+        data = _exact(value, {
+            "schema_version", "object_type", "database_id", "revision_id",
+            "display_name", "description", "seed_id", "market_id",
+            "source_ohlcv", "members", "dependency_edges", "selected_outputs",
+            "collection_sources", "selection_sources", "column_mapping", "first_timestamp_ms",
+            "last_timestamp_ms", "row_count", "column_count", "values_sha256",
+            "previous_revision_id", "created_at_utc",
+        } | cls._EXTRA_FIELDS, "Database revision")
+        return cls(
+            selection_sources=tuple(data["selection_sources"]),
+            database_id=data["database_id"],
+            revision_id=data["revision_id"],
+            display_name=data["display_name"],
+            description=data["description"],
+            seed_id=data["seed_id"],
+            market_id=_market_from_dict(data["market_id"]),
+            source_ohlcv=OHLCVSourceFingerprintV1.from_dict(data["source_ohlcv"]),
+            members=tuple(
+                ArtifactCollectionMemberV1.from_dict(item) for item in data["members"]
+            ),
+            dependency_edges=tuple(
+                ArtifactCollectionDependencyV1.from_dict(item)
+                for item in data["dependency_edges"]
+            ),
+            selected_outputs=tuple(
+                (DatabaseLegacyOutputV1.from_dict(item)
+                 if cls._SCHEMA_VERSION in {"5.0", "6.0"} and "legacy_revision_id" in item
+                 else ArtifactCollectionOutputV1.from_dict(item))
+                for item in data["selected_outputs"]
+            ),
+            collection_sources=tuple(
+                DatabaseCollectionReferenceV2.from_dict(item)
+                for item in data["collection_sources"]
+            ),
+            column_mapping=data["column_mapping"],
+            first_timestamp_ms=data["first_timestamp_ms"],
+            last_timestamp_ms=data["last_timestamp_ms"],
+            row_count=data["row_count"],
+            column_count=data["column_count"],
+            values_sha256=data["values_sha256"],
+            previous_revision_id=data["previous_revision_id"],
+            created_at_utc=_parse_utc(data["created_at_utc"], "created_at_utc"),
+            schema_version=data["schema_version"],
+            object_type=data["object_type"],
+            **{name: data[name] for name in cls._EXTRA_FIELDS},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseRevisionManifestV4(DatabaseRevisionManifestV3):
+    """Attribute stored columns, including appended segments, to physical Artifacts."""
+
+    _SCHEMA_VERSION: ClassVar[str] = "4.0"
+    _EXTRA_FIELDS: ClassVar[frozenset[str]] = frozenset({"value_provenance"})
+
+    value_provenance: Mapping[str, object] = field(kw_only=True)
+    schema_version: str = "4.0"
+
+    def __post_init__(self) -> None:
+        DatabaseRevisionManifestV3.__post_init__(self)
+        object.__setattr__(self, "value_provenance", _validate_value_provenance(
+            self.value_provenance, self.selected_outputs, self.market_id,
+            self.first_timestamp_ms, self.last_timestamp_ms, database_id=self.database_id,
+            legacy_sources=self.selection_sources if self._SCHEMA_VERSION in {"5.0", "6.0"} else None,
+        ))
+
+    def to_dict(self, *, include_revision_id: bool = True) -> dict[str, object]:
+        payload = DatabaseRevisionManifestV3.to_dict(
+            self, include_revision_id=include_revision_id
+        )
+        payload["value_provenance"] = _thaw(self.value_provenance)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseRevisionManifestV5(DatabaseRevisionManifestV4):
+    """Preserve incomplete legacy attribution without inventing provider identities."""
+
+    _SCHEMA_VERSION: ClassVar[str] = "5.0"
+    schema_version: str = "5.0"
+
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseRevisionManifestV6(DatabaseRevisionManifestV4):
+    """A revision-owned UTC payload with complete or explicit legacy provenance."""
+
+    _SCHEMA_VERSION: ClassVar[str] = "6.0"
+    _EXTRA_FIELDS: ClassVar[frozenset[str]] = frozenset({"value_provenance", "utc_classification"})
+    utc_classification: Mapping[str, object] = field(kw_only=True)
+    schema_version: str = "6.0"
+
+    def __post_init__(self):
+        descriptor = _exact(self.utc_classification, {"schema_version", "filename", "sha256"}, "UTC descriptor")
+        if descriptor["schema_version"] != "1.0" or descriptor["filename"] != "utc_classification.json":
+            raise DataManagerCreationError("invalid UTC classification descriptor")
+        _sha(descriptor["sha256"], "UTC classification sha256")
+        object.__setattr__(self, "utc_classification", _freeze(dict(descriptor)))
+        DatabaseRevisionManifestV4.__post_init__(self)
+
+    def to_dict(self, *, include_revision_id=True):
+        value = DatabaseRevisionManifestV4.to_dict(self, include_revision_id=include_revision_id)
+        value["utc_classification"] = _thaw(self.utc_classification)
+        return value
+
+
+def _validate_value_provenance(value, selected_outputs, market_id, first, last, *, database_id=None, legacy_sources=None):
+    fields = {"members", "dependency_edges", "outputs"}
+    if database_id is not None and isinstance(value, Mapping) and "legacy_revisions" in value:
+        fields.add("legacy_revisions")
+    data = _exact(value, fields, "value_provenance")
+    for name, records in data.items():
+        if not isinstance(records, (list, tuple)):
+            raise DataManagerCreationError(f"value_provenance.{name} must be a sequence")
+    legacy_revisions = {}
+    for record in data.get("legacy_revisions", ()):
+        if not isinstance(record, Mapping) or record.get("schema_version") not in {"1.0", "2.0", "3.0"}:
+            raise DataManagerCreationError("legacy provenance requires an original legacy Database manifest")
+        legacy = database_revision_from_dict(record)
+        if canonical_json_bytes(record) != legacy.canonical_json_bytes():
+            raise DataManagerCreationError("captured legacy provenance must be canonical")
+        if legacy.database_id != database_id or legacy.market_id != market_id:
+            raise DataManagerCreationError("legacy provenance Database or MarketId differs")
+        if legacy.revision_id in legacy_revisions:
+            raise DataManagerCreationError("legacy provenance revisions must be unique")
+        legacy_revisions[legacy.revision_id] = legacy
+    members = {}
+    for record in data["members"]:
+        if not isinstance(record, Mapping) or not isinstance(record.get("output_names"), (list, tuple)):
+            raise DataManagerCreationError("physical member output_names must be a sequence")
+        member = ArtifactCollectionMemberV1.from_dict(record)
+        identity = member.version_key.artifact_id
+        if identity in members:
+            raise DataManagerCreationError("physical members must have unique artifact_id values")
+        members[identity] = member
+
+    roles = set()
+    dependents = {identity: [] for identity in members}
+    indegree = {identity: 0 for identity in members}
+    for record in data["dependency_edges"]:
+        edge = _exact(record, {
+            "dependency_artifact_id", "dependent_artifact_id", "role", "output_name",
+        }, "physical dependency edge")
+        dependency = _sha(edge["dependency_artifact_id"], "dependency_artifact_id")
+        dependent = _sha(edge["dependent_artifact_id"], "dependent_artifact_id")
+        role = _text(edge["role"], "role")
+        output = _text(edge["output_name"], "output_name")
+        if dependency not in members or dependent not in members:
+            raise DataManagerCreationError("physical dependency edge references a non-member Artifact")
+        if output not in members[dependency].output_names:
+            raise DataManagerCreationError("physical dependency output is not provided by its Artifact")
+        key = (dependent, role)
+        if key in roles:
+            raise DataManagerCreationError("physical dependency roles must be unique per dependent")
+        roles.add(key)
+        dependents[dependency].append(dependent)
+        indegree[dependent] += 1
+    ready = [identity for identity, degree in indegree.items() if degree == 0]
+    consumed = 0
+    while ready:
+        identity = ready.pop()
+        consumed += 1
+        for dependent in dependents[identity]:
+            indegree[dependent] -= 1
+            if indegree[dependent] == 0:
+                ready.append(dependent)
+    if consumed != len(members):
+        raise DataManagerCreationError("physical dependency edges contain a cycle")
+
+    selected = {output.column_name: output for output in selected_outputs}
+    ends = {}
+    unbound_providers = {}
+    used_legacy = set()
+    if legacy_sources is not None:
+        for binding in selected_outputs:
+            if isinstance(binding, DatabaseLegacyOutputV1):
+                captured = legacy_revisions.get(binding.legacy_revision_id)
+                if (not isinstance(captured, DatabaseRevisionManifestV1)
+                        or captured.column_mapping.get(binding.output_name) != binding.column_name
+                        or binding.column_name in {"ts_ms", "open", "high", "low", "close", "volume"}):
+                    raise DataManagerCreationError("unbound output requires its captured V1 column")
+        for source in legacy_sources:
+            if source["source_kind"] != "legacy_snapshot":
+                continue
+            captured = legacy_revisions.get(source["source_revision_id"])
+            if captured is None or source["source_id"] != database_id:
+                raise DataManagerCreationError("legacy selection source requires its captured Database revision")
+            captured_outputs = ({column: name for name, column in captured.column_mapping.items()}
+                                if isinstance(captured, DatabaseRevisionManifestV1)
+                                else {o.column_name: o for o in captured.selected_outputs})
+            for column in source["column_names"]:
+                binding = selected[column]
+                claim = captured_outputs.get(column)
+                if (claim != binding.output_name if isinstance(captured, DatabaseRevisionManifestV1)
+                        else claim != binding):
+                    raise DataManagerCreationError("legacy selection source disagrees with captured binding")
+            used_legacy.add(captured.revision_id)
+    step = timeframe_duration_ms(market_id.timeframe)
+    for record in data["outputs"]:
+        is_legacy = isinstance(record, Mapping) and "legacy_revision_id" in record
+        unbound = legacy_sources is not None and is_legacy and "logical_artifact_id" not in record
+        segment_fields = {
+            "column_name", "output_name", "legacy_revision_id" if is_legacy else "artifact_id",
+            "first_timestamp_ms", "last_timestamp_ms",
+        }
+        if not unbound:
+            segment_fields.add("logical_artifact_id")
+        segment = _exact(record, segment_fields, "physical output segment")
+        column = _column(segment["column_name"], "column_name")
+        logical = None if unbound else _sha(segment["logical_artifact_id"], "logical_artifact_id")
+        output_name = _text(segment["output_name"], "output_name")
+        binding = selected.get(column)
+        if (binding is None or binding.output_name != output_name
+                or (not isinstance(binding, DatabaseLegacyOutputV1) and binding.logical_artifact_id != logical)
+                or (unbound and not isinstance(binding, DatabaseLegacyOutputV1))
+                or (is_legacy and isinstance(binding, DatabaseLegacyOutputV1) and not unbound)):
+            raise DataManagerCreationError("physical output segment disagrees with selected output binding")
+        start = _integer(segment["first_timestamp_ms"], "segment first_timestamp_ms")
+        end = _integer(segment["last_timestamp_ms"], "segment last_timestamp_ms")
+        if is_legacy:
+            identity = _sha(segment["legacy_revision_id"], "legacy_revision_id")
+            legacy = legacy_revisions.get(identity)
+            if legacy is None:
+                raise DataManagerCreationError("legacy output segment requires its captured legacy revision")
+            if isinstance(legacy, DatabaseRevisionManifestV1):
+                matched = (legacy.column_mapping.get(output_name) == column and
+                           (logical in {key.logical_artifact_id for key in legacy.artifact_version_keys}
+                            if not unbound else binding.legacy_revision_id == identity))
+            else:
+                matched = binding in legacy.selected_outputs
+            if not matched or not legacy.first_timestamp_ms <= start <= end <= legacy.last_timestamp_ms:
+                raise DataManagerCreationError("legacy output binding or coverage disagrees with captured revision")
+            used_legacy.add(identity)
+        else:
+            identity = _sha(segment["artifact_id"], "artifact_id")
+            if isinstance(binding, DatabaseLegacyOutputV1):
+                captured = legacy_revisions[binding.legacy_revision_id]
+                if start <= captured.last_timestamp_ms:
+                    raise DataManagerCreationError("exact future segment overlaps original legacy coverage")
+                if logical not in {key.logical_artifact_id for key in captured.artifact_version_keys}:
+                    raise DataManagerCreationError("future provider is outside the captured legacy identities")
+                if unbound_providers.setdefault(column, logical) != logical:
+                    raise DataManagerCreationError("future segments disagree on the legacy column provider")
+            member = members.get(identity)
+            if member is None or member.version_key.logical_artifact_id != logical or output_name not in member.output_names:
+                raise DataManagerCreationError("physical output segment is not provided by its Artifact")
+        if not first <= start <= end <= last:
+            raise DataManagerCreationError("physical output segment coverage is outside the revision range")
+        if column not in ends:
+            if start != first:
+                raise DataManagerCreationError("physical output segments must cover the revision start")
+        else:
+            previous = ends[column]
+            if start <= previous:
+                raise DataManagerCreationError("physical output segments must be ordered and nonoverlapping")
+            expected = (
+                previous + step if step is not None
+                else _add_calendar_months(previous, int(market_id.timeframe[:-1]))
+            )
+            if start != expected:
+                raise DataManagerCreationError("physical output segments must be contiguous")
+        ends[column] = end
+    if set(ends) != set(selected) or any(end != last for end in ends.values()):
+        raise DataManagerCreationError("physical output segments must cover every selected output and revision end")
+    if used_legacy != set(legacy_revisions):
+        raise DataManagerCreationError("legacy provenance contains an unused captured revision")
+    if not selected and any(data.values()):
+        raise DataManagerCreationError("empty Database value provenance requires empty structural tuples")
+    return _freeze(_json_copy(data, "value_provenance"))
+
+
+def _validate_selection_sources(sources, outputs, references, *, legacy_database_id=None):
+    columns = {item.column_name: item for item in outputs}
+    keys = set()
+    owned = set()
+    collections = set()
+    result = []
+    for source in sources:
+        data = _exact(source, {"source_kind", "source_id", "source_revision_id", "column_names"}, "selection source")
+        kind, identity, revision = data["source_kind"], data["source_id"], data["source_revision_id"]
+        if kind == "artifact":
+            _sha(identity, "source_id")
+            if revision is not None:
+                raise DataManagerCreationError("direct Artifact source revision must be null")
+        elif kind == "collection":
+            _identifier(identity, "source_id", _COLLECTION_RE)
+            _sha(revision, "source_revision_id")
+        elif kind == "legacy_snapshot" and legacy_database_id is not None:
+            if identity != legacy_database_id:
+                raise DataManagerCreationError("legacy selection source belongs to another Database")
+            _sha(revision, "source_revision_id")
+        else:
+            raise DataManagerCreationError("unsupported selection source kind")
+        key = (kind, identity, revision or "")
+        if key in keys:
+            raise DataManagerCreationError("duplicate selection source key")
+        keys.add(key)
+        raw_names = data["column_names"]
+        if not isinstance(raw_names, (list, tuple)) or not raw_names:
+            raise DataManagerCreationError(
+                "selection source column_names must be a nonempty sequence"
+            )
+        names = tuple(
+            sorted(
+                _column(name, "selection source column_name")
+                for name in raw_names
+            )
+        )
+        if len(names) != len(set(names)):
+            raise DataManagerCreationError(
+                "selection source column_names must be unique"
+            )
+        for name in names:
+            if name not in columns:
+                raise DataManagerCreationError("selection source column is not a selected output")
+            if kind == "artifact" and columns[name].logical_artifact_id != identity:
+                raise DataManagerCreationError("direct source owns another Artifact output")
+        if kind == "collection":
+            collections.add((identity, revision))
+        owned.update(names)
+        result.append(_freeze({**data, "column_names": names}))
+    if owned != set(columns):
+        raise DataManagerCreationError("every selected output requires an owner")
+    if collections != {(item.collection_id, item.revision_id) for item in references}:
+        raise DataManagerCreationError("Collection provenance disagrees with selection sources")
+    return tuple(sorted(result, key=lambda item: (item["source_kind"], item["source_id"], item["source_revision_id"] or "")))
+
+
 def _validate_database_v2_content(
     members: tuple[ArtifactCollectionMemberV1, ...],
     edges: tuple[ArtifactCollectionDependencyV1, ...],
     outputs: tuple[ArtifactCollectionOutputV1, ...],
     references: tuple[DatabaseCollectionReferenceV2, ...],
+    *, provenance: bool = False, legacy_outputs: bool = False,
 ) -> None:
+    if legacy_outputs:
+        columns = [o.column_name for o in outputs]
+        if len(columns) != len(set(columns)):
+            raise DataManagerCreationError("selected output columns must be unique")
+        outputs = tuple(o for o in outputs if not isinstance(o, DatabaseLegacyOutputV1))
     if not members:
-        if edges or outputs or references:
+        if edges or outputs or (references and not legacy_outputs):
             raise DataManagerCreationError(
                 "empty V2 Database content requires empty structural tuples"
             )
@@ -1665,7 +2444,7 @@ def _validate_database_v2_content(
         (item.logical_artifact_id, item.output_name) for item in outputs
     )
     output_columns = tuple(item.column_name for item in outputs)
-    if not outputs:
+    if not outputs and not provenance:
         raise DataManagerCreationError(
             "nonempty V2 Database content requires selected outputs"
         )
@@ -1689,13 +2468,13 @@ def _validate_database_v2_content(
             if dependency not in required:
                 required.add(dependency)
                 pending.append(dependency)
-    if required != set(member_by_id):
+    if not provenance and required != set(member_by_id):
         raise DataManagerCreationError(
             "members must exactly match selected-output dependency closure"
         )
 
 
-DatabaseRevisionManifest = DatabaseRevisionManifestV1 | DatabaseRevisionManifestV2
+DatabaseRevisionManifest = DatabaseRevisionManifestV1 | DatabaseRevisionManifestV2 | DatabaseRevisionManifestV3 | DatabaseRevisionManifestV4 | DatabaseRevisionManifestV5 | DatabaseRevisionManifestV6
 
 
 def database_revision_from_dict(
@@ -1708,6 +2487,16 @@ def database_revision_from_dict(
         return DatabaseRevisionManifestV1.from_dict(value)
     if version == "2.0":
         return DatabaseRevisionManifestV2.from_dict(value)
+    if version == "3.0":
+        return DatabaseRevisionManifestV3.from_dict(value)
+    if version == "4.0":
+        if "value_provenance" not in value:
+            raise DataManagerCreationError("unsupported Database revision schema: 4.0 requires value_provenance")
+        return DatabaseRevisionManifestV4.from_dict(value)
+    if version == "5.0":
+        return DatabaseRevisionManifestV5.from_dict(value)
+    if version == "6.0":
+        return DatabaseRevisionManifestV6.from_dict(value)
     raise DataManagerCreationError("unsupported Database revision schema")
 
 
@@ -1720,7 +2509,7 @@ def database_collection_references(
                 manifest.collection_id, manifest.collection_revision_id
             ),
         )
-    if isinstance(manifest, DatabaseRevisionManifestV2):
+    if isinstance(manifest, (DatabaseRevisionManifestV2, DatabaseRevisionManifestV3)):
         return manifest.collection_sources
     raise TypeError("manifest must be a Database revision manifest")
 
@@ -1751,3 +2540,4 @@ class DatabaseHeadV1:
 class LoadedDatabaseRevision:
     manifest: DatabaseRevisionManifest
     values_csv: bytes
+    utc_classification: bytes | None = None

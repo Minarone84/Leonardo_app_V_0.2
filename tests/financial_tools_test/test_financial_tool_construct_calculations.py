@@ -101,3 +101,18 @@ def test_dynamic_binning_payload_and_source_rejection() -> None:
         calculate_financial_tool("percent_span_angle", data, {"source_columns": "close", "window": 1})
     with pytest.raises(ValueError):
         calculate_financial_tool("braids", data, {"fast": "fast", "mid": None, "slow": "slow"})
+
+
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_dynamic_binning_rejects_infinity(value) -> None:
+    data = _frame(20)
+    data.loc[4, "fast"] = value
+    with pytest.raises(ValueError, match="source 'fast' at row 4 contains infinity"):
+        calculate_financial_tool("dynamic_binning", data, {"source_columns": "fast"})
+
+
+def test_dynamic_binning_rejects_generated_label_collision() -> None:
+    data = _frame(20)
+    data["fast_lab"] = data["fast"] + 1
+    with pytest.raises(ValueError, match="label names collide"):
+        calculate_financial_tool("dynamic_binning", data, {"source_columns": "fast,fast_lab"})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 
 import pandas as pd
 
@@ -12,9 +13,11 @@ from leonardo.artifacts import (
     ArtifactService,
     ArtifactSourceRefV1,
     LoadedArtifact,
+    PreparedManagedArtifact,
 )
 from leonardo.financial_tools import (
     FinancialToolCalculationResult,
+    UtcClassificationContext,
     calculate_financial_tool,
     get_financial_tool_spec,
     resolve_parameters,
@@ -29,6 +32,7 @@ from leonardo.recipes import (
     build_portable_recipe,
 )
 from leonardo.research.dataset import HistoricalDataset
+from leonardo.data import timeframe_duration_ms
 from leonardo.research.studies import (
     ChartStudy,
     PreparedStudy,
@@ -133,6 +137,8 @@ class ResearchStudyService:
             frame,
             parameters,
             bindings=bindings,
+            utc_context=(_utc_dataset_context(dataset, parameters, resolved)
+                         if request.tool_key == "universal_trend_classifier" else None),
         )
         _raise_if_cancelled(cancel, "calculation publication")
         _validate_result_timeline(result, dataset)
@@ -262,6 +268,8 @@ class ResearchStudyService:
             frame,
             parameters,
             bindings=bindings,
+            utc_context=(_utc_dataset_context(dataset, parameters, resolved)
+                         if request.tool_key == "universal_trend_classifier" else None),
         )
         _raise_if_cancelled(cancel, "calculation publication")
         _validate_result_timeline(result, dataset)
@@ -370,7 +378,7 @@ class ResearchStudyService:
                 raise StudyOperationCancelled(
                     "Study operation cancelled before persistence"
                 )
-            self._publish_portable_recipe(
+            prepared = self._publish_portable_recipe(
                 dataset,
                 study.saved_link.artifact_id,
                 study_id=study.study_id,
@@ -383,6 +391,10 @@ class ResearchStudyService:
                 expected_study=study,
                 expected_source_refs=refs,
                 expected_link=study.saved_link,
+            )
+            self._artifacts.publish_managed_artifact_graph(
+                prepared,
+                expected_source=prepared[-1].metadata.source_ohlcv,
             )
             return StudySaveOutcome(
                 study_id=study.study_id,
@@ -427,7 +439,7 @@ class ResearchStudyService:
                 expected_source_refs=refs,
                 expected_link=saved_link,
             )
-            self._publish_portable_recipe(
+            prepared = self._publish_portable_recipe(
                 dataset,
                 metadata.artifact_id,
                 study_id=study.study_id,
@@ -440,6 +452,10 @@ class ResearchStudyService:
                 expected_study=study,
                 expected_source_refs=refs,
                 expected_link=saved_link,
+            )
+            self._artifacts.publish_managed_artifact_graph(
+                prepared,
+                expected_source=prepared[-1].metadata.source_ohlcv,
             )
         except (
             ArtifactError,
@@ -472,13 +488,15 @@ class ResearchStudyService:
         artifact_id: str,
         *,
         study_id: str,
-    ) -> PortableRecipeV1:
+    ) -> tuple[PreparedManagedArtifact, ...]:
         store = self._portable_recipes
         if store is None:
             raise StudyValidationError(
                 "portable Recipe store is required for explicit Study Save"
             )
         published: dict[str, PortableRecipeV1] = {}
+        loaded_by_id: dict[str, LoadedArtifact] = {}
+        prepared: list[PreparedManagedArtifact] = []
         resolving: set[str] = set()
 
         def publish(current_artifact_id: str) -> PortableRecipeV1:
@@ -494,6 +512,7 @@ class ResearchStudyService:
                 loaded, result = self._load_current_research_artifact(
                     dataset, current_artifact_id
                 )
+                loaded_by_id[current_artifact_id] = loaded
                 dependencies = tuple(
                     PortableRecipeDependencyV1(
                         ref.role,
@@ -528,12 +547,35 @@ class ResearchStudyService:
                     origin_kind="research_save",
                     origin_details={"study_id": study_id},
                 )
+                metadata = loaded.metadata
+                managed = self._artifacts.prepare_managed_calculation(
+                    dataset.market_id,
+                    winner.recipe_id,
+                    result,
+                    expected_source=metadata.source_ohlcv,
+                    source_artifacts=metadata.recipe.source_artifacts,
+                    source_metadata=tuple(
+                        loaded_by_id[source_id].metadata
+                        for source_id in dict.fromkeys(
+                            ref.artifact_id for ref in metadata.recipe.source_artifacts
+                        )
+                    ),
+                    display_name=metadata.recipe.display_name,
+                    description=metadata.recipe.description,
+                    created_at_utc=metadata.created_at_utc,
+                )
+                if managed.metadata.artifact_id != current_artifact_id:
+                    raise StudyValidationError(
+                        "managed preparation changed the saved Artifact identity"
+                    )
+                prepared.append(managed)
                 published[current_artifact_id] = winner
                 return winner
             finally:
                 resolving.remove(current_artifact_id)
 
-        return publish(artifact_id)
+        publish(artifact_id)
+        return tuple(prepared)
 
     def _resolve_sources(
         self,
@@ -988,6 +1030,27 @@ def _validate_source_study(
         raise StudyValidationError("source Study fingerprint does not match active dataset")
     _validate_result_timeline(study.result, dataset)
 
+
+
+def _utc_dataset_context(dataset, parameters, sources):
+    resolved = resolve_parameters("universal_trend_classifier", parameters)
+    market = dataset.market_id
+    step = timeframe_duration_ms(market.timeframe)
+    closes = (tuple(int(t) + step for t in dataset.ts_ms) if step is not None else
+              tuple(int((pd.Timestamp(int(t), unit="ms", tz="UTC")
+                         + pd.DateOffset(months=int(market.timeframe[:-1]))).value // 1_000_000)
+                    for t in dataset.ts_ms))
+    configuration = sha256(repr(sorted(resolved.items())).encode("utf-8")).hexdigest()
+    dependencies = tuple(sorted({
+        ("artifact:" + item.artifact_ref.artifact_id if item.artifact_ref is not None
+         else "study:" + item.study_ref.study_id)
+        for item in sources if item.artifact_ref is not None or item.study_ref is not None
+    }))
+    return UtcClassificationContext(
+        stream_id="/".join((market.exchange, market.market_type, market.symbol, market.timeframe, configuration)),
+        input_revision=dataset.file_sha256, dependency_ids=dependencies,
+        bar_closed_at_ms=closes, canonical_window=int(resolved["trend_fractal_window"]),
+    )
 
 def _result_from_loaded_artifact(loaded: LoadedArtifact) -> FinancialToolCalculationResult:
     if not isinstance(loaded, LoadedArtifact):

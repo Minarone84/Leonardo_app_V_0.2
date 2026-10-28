@@ -60,6 +60,13 @@ def test_public_api_and_alias_are_exact() -> None:
         "build_source_token", "calculate_financial_tool",
         "canonicalize_tool_key", "get_financial_tool_spec", "list_financial_tool_specs",
         "resolve_output_names", "resolve_output_signals", "resolve_parameters", "validate_catalog",
+        "BinningPolicy", "BinningResult", "DynamicBinningProfile", "VariationAnalysis",
+        "VariationContext", "analyze_variation", "classify_dynamic_binning", "fit_dynamic_binning",
+        "DirectionalBinningPolicy", "DirectionalBinningProfile", "DirectionalBinningResult",
+        "DirectionalVariationAnalysis", "analyze_directional_variation",
+        "classify_directional_binning", "fit_directional_binning",
+        "UtcClassificationContext", "UtcClassificationResult", "get_utc_classification", "classify_utc_as_of",
+        "UtcEpisodeMetricsResult", "get_utc_episode_metrics", "measure_utc_as_of",
     )
     result = calculate_financial_tool("UTC", _utc_frame(), _utc_parameters())
     assert result.tool_key == "universal_trend_classifier"

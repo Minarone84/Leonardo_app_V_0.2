@@ -1,6 +1,8 @@
-"""Database content-management window for persisted Artifact outputs."""
+"""Database content-edit window for persisted Artifact outputs and captures."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QGuiApplication
@@ -18,18 +20,19 @@ from PySide6.QtWidgets import (
 )
 
 from leonardo.data_manager import (
+    ArtifactCollectionOutputV1,
     DataManagerDatabaseCatalogEntry,
     DataManagerProductCatalogSnapshot,
-    DatabaseContentAdditionPlan,
+    DatabaseCollectionReferenceV2,
+    DatabaseContentEditPlan,
+    DatabaseLegacyOutputV1,
 )
-from leonardo.gui.data_manager.table_presentation import (
-    format_utc_timestamp_ms,
-    resize_data_manager_table,
-)
+from leonardo.gui.data_manager.table_presentation import resize_data_manager_table
 from leonardo.gui.windows.shell_widgets import apply_identity, configure_table
 
 
-DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID = "data_manager.database_content.window"
+DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID = "data_manager.database_content.artifacts.window"
+DATA_MANAGER_DATABASE_COLLECTIONS_WINDOW_ID = "data_manager.database_content.collections.window"
 _CHECKBOX_STYLE = """
 QCheckBox::indicator { width: 16px; height: 16px; }
 QCheckBox::indicator:unchecked { border: 1px solid #8B949E; background: #0D1117; }
@@ -38,11 +41,39 @@ QCheckBox::indicator:disabled { border: 1px solid #484F58; background: #21262D; 
 """
 
 
+@dataclass(frozen=True, slots=True)
+class _ArtifactOutputChoice:
+    output: ArtifactCollectionOutputV1 | DatabaseLegacyOutputV1
+    tool_key: str
+    was_selected: bool
+    selectable: bool
+    status: str
+    owners: tuple[str, ...]
+
+    @property
+    def logical_artifact_id(self) -> str | None:
+        return self.output.logical_artifact_id
+
+    @property
+    def output_name(self) -> str:
+        return self.output.output_name
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectionSourceChoice:
+    collection_id: str
+    revision_id: str
+    column_names: tuple[str, ...]
+    was_selected: bool
+    selectable: bool
+    status: str
+
+
 class DataManagerDatabaseContentDialog(QDialog):
-    """Preview and publish immutable additions to one current Database."""
+    """Preview and publish one reviewed immutable Database content edit."""
 
     preview_requested = Signal(str, str, object)
-    add_requested = Signal(object)
+    apply_requested = Signal(object)
     closing = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -50,12 +81,13 @@ class DataManagerDatabaseContentDialog(QDialog):
         self._database: DataManagerDatabaseCatalogEntry | None = None
         self._snapshot: DataManagerProductCatalogSnapshot | None = None
         self._mode = "artifacts"
-        self._plan: DatabaseContentAdditionPlan | None = None
+        self._baseline_plan: DatabaseContentEditPlan | None = None
+        self._plan: DatabaseContentEditPlan | None = None
         self._busy = False
         self._source_values: list[object] = []
         self._source_checks: list[QCheckBox] = []
 
-        self.setWindowTitle("Add Database Content")
+        self.setWindowTitle("Edit Database Content")
         self.setObjectName("data_manager_database_content_dialog")
         self.setProperty("object_id", DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID)
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -63,8 +95,8 @@ class DataManagerDatabaseContentDialog(QDialog):
         if screen is not None:
             available = screen.availableGeometry()
             self.resize(
-                min(available.width(), max(760, int(available.width() * 0.60))),
-                min(available.height(), max(600, int(available.height() * 0.70))),
+                min(available.width(), max(860, int(available.width() * 0.65))),
+                min(available.height(), max(640, int(available.height() * 0.72))),
             )
 
         root = QVBoxLayout(self)
@@ -74,12 +106,10 @@ class DataManagerDatabaseContentDialog(QDialog):
             columns=("Field", "Value"),
             labels=("Field", "Value"),
         )
-        self.summary_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
+        self.summary_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         root.addWidget(self.summary_table)
 
-        self.source_label = QLabel("Artifact Selection", self)
+        self.source_label = QLabel("Artifact Outputs", self)
         apply_identity(
             self.source_label,
             "data_manager.database_content.label.source",
@@ -89,27 +119,53 @@ class DataManagerDatabaseContentDialog(QDialog):
         self.source_table = configure_table(
             QTableWidget(self),
             object_id="data_manager.database_content.table.sources",
-            columns=("Select", "Artifact", "Tool", "Outputs", "Status"),
-            labels=("Select", "Artifact", "Tool", "Outputs", "Status"),
+            columns=(
+                "Include",
+                "Artifact",
+                "Tool",
+                "Output",
+                "Database Column",
+                "Owners",
+                "Status",
+            ),
+            labels=(
+                "Include",
+                "Artifact",
+                "Tool",
+                "Output",
+                "Database Column",
+                "Owners",
+                "Status",
+            ),
         )
-        self.source_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
+        self.source_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         root.addWidget(self.source_table, 1)
 
         root.addWidget(QLabel("Preview", self))
         self.preview_table = configure_table(
             QTableWidget(self),
             object_id="data_manager.database_content.table.preview",
-            columns=("Status", "Artifact", "Output", "Database Column", "Origin"),
-            labels=("Status", "Artifact", "Output", "Database Column", "Origin"),
+            columns=(
+                "Action",
+                "Artifact",
+                "Output",
+                "Database Column",
+                "Owners Before",
+                "Owners After",
+            ),
+            labels=(
+                "Action",
+                "Artifact",
+                "Output",
+                "Database Column",
+                "Owners Before",
+                "Owners After",
+            ),
         )
-        self.preview_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
+        self.preview_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         root.addWidget(self.preview_table, 1)
 
-        self.preview_summary = QLabel("Preview required.", self)
+        self.preview_summary = QLabel("Preparing edit context...", self)
         apply_identity(
             self.preview_summary,
             "data_manager.database_content.label.preview_summary",
@@ -120,14 +176,14 @@ class DataManagerDatabaseContentDialog(QDialog):
 
         buttons = QHBoxLayout()
         self.preview_button = self._button("Preview", "preview")
-        self.add_button = self._button("Add to Database", "add")
+        self.apply_button = self._button("Apply Edit", "apply")
         self.close_button = self._button("Close", "close")
         self.preview_button.clicked.connect(self._emit_preview)
-        self.add_button.clicked.connect(self._emit_add)
+        self.apply_button.clicked.connect(self._emit_apply)
         self.close_button.clicked.connect(self.close)
         buttons.addWidget(self.preview_button)
         buttons.addStretch(1)
-        buttons.addWidget(self.add_button)
+        buttons.addWidget(self.apply_button)
         buttons.addWidget(self.close_button)
         root.addLayout(buttons)
         self._sync_controls()
@@ -137,17 +193,26 @@ class DataManagerDatabaseContentDialog(QDialog):
         return self._mode
 
     @property
-    def reviewed_plan(self) -> DatabaseContentAdditionPlan | None:
+    def baseline_plan(self) -> DatabaseContentEditPlan | None:
+        return self._baseline_plan
+
+    @property
+    def reviewed_plan(self) -> DatabaseContentEditPlan | None:
         return self._plan
 
     @property
     def context_key(self) -> tuple[object, ...]:
         manifest = None if self._database is None else self._database.current_manifest
+        intent = self.edit_intent()
         return (
             None if self._database is None else self._database.definition.database_id,
             None if manifest is None else manifest.revision_id,
             self._mode,
-            self.selected_source_ids(),
+            intent["artifact_additions"],
+            intent["collection_additions"],
+            intent["remove_sources"],
+            intent["remove_outputs"],
+            intent["remove_columns"],
         )
 
     def set_context(
@@ -156,111 +221,191 @@ class DataManagerDatabaseContentDialog(QDialog):
         snapshot: DataManagerProductCatalogSnapshot,
         *,
         mode: str,
+        baseline_plan: DatabaseContentEditPlan | None = None,
     ) -> None:
         if not isinstance(database, DataManagerDatabaseCatalogEntry):
             raise TypeError("database must be a DataManagerDatabaseCatalogEntry")
         if not isinstance(snapshot, DataManagerProductCatalogSnapshot):
             raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
-        if mode not in {"artifacts", "collection"}:
-            raise ValueError("mode must be artifacts or collection")
+        if mode not in {"artifacts", "collections"}:
+            raise ValueError("mode must be artifacts or collections")
+        self.setProperty(
+            "object_id",
+            DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID
+            if mode == "artifacts"
+            else DATA_MANAGER_DATABASE_COLLECTIONS_WINDOW_ID,
+        )
+        preserved = self._baseline_plan
         self._database = database
         self._snapshot = snapshot
         self._mode = mode
+        if baseline_plan is not None:
+            if not isinstance(baseline_plan, DatabaseContentEditPlan):
+                raise TypeError("baseline_plan must be a DatabaseContentEditPlan")
+            if not self._baseline_matches_context(baseline_plan):
+                raise ValueError("baseline plan does not match current Database")
+            if not baseline_plan.no_op or baseline_plan.blocked:
+                raise ValueError("baseline plan must be an unblocked no-op edit plan")
+            self._baseline_plan = baseline_plan
+        elif preserved is None or not self._baseline_matches_context(preserved):
+            self._baseline_plan = None
+        else:
+            self._baseline_plan = preserved
         self.setWindowTitle(
-            "Add Artifacts to Database"
+            "Edit Database Artifacts"
             if mode == "artifacts"
-            else "Add Artifact Collection to Database"
+            else "Edit Database Collections"
         )
         self._populate_summary()
         self._populate_sources()
-        self.invalidate_preview("Preview required.")
+        self.invalidate_preview(
+            "Preview required."
+            if self._baseline_plan is not None
+            else "Preparing edit context..."
+        )
 
     def selected_source_ids(self) -> tuple[str, ...]:
-        values: list[str] = []
+        """Return checked logical IDs for lightweight GUI/test inspection."""
+        selected: list[str] = []
         for checkbox, value in zip(
             self._source_checks, self._source_values, strict=True
         ):
-            if not checkbox.isEnabled() or not checkbox.isChecked():
+            if not checkbox.isChecked():
                 continue
-            if self._mode == "artifacts":
-                values.append(value.logical_artifact_id)
-            else:
-                values.append(value.collection_id)
-        return tuple(values)
+            if isinstance(value, _ArtifactOutputChoice):
+                if value.logical_artifact_id is not None and value.logical_artifact_id not in selected:
+                    selected.append(value.logical_artifact_id)
+            elif isinstance(value, _CollectionSourceChoice):
+                selected.append(value.collection_id)
+        return tuple(selected)
 
-    def set_plan(self, plan: DatabaseContentAdditionPlan) -> None:
-        if not isinstance(plan, DatabaseContentAdditionPlan):
-            raise TypeError("plan must be a DatabaseContentAdditionPlan")
+    def edit_intent(self) -> dict[str, tuple[object, ...]]:
+        artifact_additions: list[ArtifactCollectionOutputV1] = []
+        collection_additions: list[DatabaseCollectionReferenceV2] = []
+        remove_sources: list[tuple[str, str, str | None]] = []
+        remove_outputs: list[tuple[str, str]] = []
+        remove_columns: list[str] = []
+        for checkbox, value in zip(
+            self._source_checks, self._source_values, strict=True
+        ):
+            checked = checkbox.isChecked()
+            if isinstance(value, _ArtifactOutputChoice):
+                if checked and not value.was_selected:
+                    artifact_additions.append(value.output)
+                elif not checked and value.was_selected:
+                    remove_columns.append(value.output.column_name)
+            elif isinstance(value, _CollectionSourceChoice):
+                if checked and not value.was_selected:
+                    collection_additions.append(
+                        DatabaseCollectionReferenceV2(
+                            value.collection_id, value.revision_id
+                        )
+                    )
+                elif not checked and value.was_selected:
+                    remove_sources.append(
+                        ("collection", value.collection_id, value.revision_id)
+                    )
+        return {
+            "artifact_additions": tuple(artifact_additions),
+            "collection_additions": tuple(collection_additions),
+            "remove_sources": tuple(remove_sources),
+            "remove_outputs": tuple(remove_outputs),
+            "remove_columns": tuple(remove_columns),
+        }
+
+    def set_plan(self, plan: DatabaseContentEditPlan) -> None:
+        if not isinstance(plan, DatabaseContentEditPlan):
+            raise TypeError("plan must be a DatabaseContentEditPlan")
         if not self._plan_matches_context(plan):
-            raise ValueError("plan does not match current Database content context")
+            raise ValueError("plan does not match current Database edit context")
         self._plan = plan
-        self.preview_table.setRowCount(len(plan.output_preview_rows))
-        for row, item in enumerate(plan.output_preview_rows):
-            values = (
-                "BLOCKED" if item.status == "BLOCKED_COLLISION" else item.status.replace("_", " "),
-                item.artifact_id,
-                item.output_name,
-                item.column_name,
-                item.origin,
+        baseline = self._baseline_plan
+        if baseline is None:
+            raise ValueError("Database edit baseline is unavailable")
+        before_outputs = {
+            item.column_name: item
+            for item in baseline.selected_outputs
+        }
+        after_outputs = {
+            item.column_name: item
+            for item in plan.selected_outputs
+        }
+        before_owners = self._owners_by_column(baseline)
+        after_owners = self._owners_by_column(plan)
+        keys = sorted(
+            set(before_outputs) | set(after_outputs),
+            key=lambda column: (
+                (after_outputs.get(column) or before_outputs[column]).logical_artifact_id or "",
+                (after_outputs.get(column) or before_outputs[column]).output_name,
+                column,
+            ),
+        )
+        rows: list[tuple[str, ...]] = []
+        for key in keys:
+            before = before_outputs.get(key)
+            after = after_outputs.get(key)
+            output = after or before
+            if output is None:
+                continue
+            old_owners = before_owners.get(output.column_name, ())
+            new_owners = after_owners.get(output.column_name, ())
+            if before is None:
+                action = "ADD"
+            elif after is None:
+                action = "REMOVE"
+            elif old_owners != new_owners:
+                action = "OWNERSHIP"
+            else:
+                action = "KEEP"
+            rows.append(
+                (
+                    action,
+                    output.logical_artifact_id or "Not recorded",
+                    output.output_name,
+                    output.column_name,
+                    ", ".join(old_owners) or "-",
+                    ", ".join(new_owners) or "-",
+                )
             )
+        self.preview_table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
             for column, value in enumerate(values):
                 self.preview_table.setItem(row, column, QTableWidgetItem(value))
-        added_count = sum(
-            item.status == "ADD" for item in plan.output_preview_rows
-        )
-        included_count = sum(
-            item.status == "ALREADY_INCLUDED" for item in plan.output_preview_rows
-        )
-        collision_count = sum(
-            item.status == "BLOCKED_COLLISION" for item in plan.output_preview_rows
-        )
-        proposed_columns = tuple(plan.old_columns) + tuple(plan.new_columns)
+        resize_data_manager_table(self.preview_table)
+
         summary = "\n".join(
             (
-                f"Current schema: {', '.join(plan.old_columns)}",
-                f"Proposed schema: {', '.join(proposed_columns)}",
-                f"Current row count: {plan.old_row_count}",
-                f"Proposed row count: {plan.new_row_count}",
-                "Coverage: "
-                f"{format_utc_timestamp_ms(plan.first_timestamp_ms)} to "
-                f"{format_utc_timestamp_ms(plan.last_timestamp_ms)}",
-                f"Leading warmup exclusions: {plan.leading_warmup_exclusions}",
-                "Interior / later missing rows: "
-                f"{plan.non_leading_missing_rows}",
-                f"Added output count: {added_count}",
-                f"Already included count: {included_count}",
-                f"Collision count: {collision_count}",
+                f"Current schema: {', '.join(baseline.column_names)}",
+                f"Proposed schema: {', '.join(plan.column_names)}",
+                f"Rows preserved: {plan.row_count}",
+                "Added columns: " + (", ".join(plan.added_column_names) or "none"),
+                "Removed columns: " + (", ".join(plan.removed_column_names) or "none"),
+                f"Selection sources: {len(baseline.selection_sources)} → {len(plan.selection_sources)}",
+                f"Ownership changed: {'yes' if plan.ownership_changed else 'no'}",
             )
         )
-        if plan.requires_v1_transition:
+        manifest = None if self._database is None else self._database.current_manifest
+        if manifest is not None and manifest.schema_version == "3.0":
             summary += (
-                "\n\nThis Database currently uses the legacy V1 "
-                "collection-following revision format. Confirming this content "
-                "change will create a new V2 revision whose content membership "
-                "is owned by the Database. Existing V1 revisions and history "
-                "will remain unchanged."
+                "\nThis explicit content edit will publish a V4 Database revision "
+                "with captured ownership and value provenance. Historical revisions remain unchanged."
             )
+        elif manifest is not None and manifest.schema_version in {"1.0", "2.0"}:
+            summary += (
+                "\nThis explicit content edit will preserve the saved attribution, "
+                "including information not recorded by the original snapshot. Historical revisions remain unchanged."
+            )
+        if plan.no_op and not plan.blocked:
+            summary += "\nNo content or ownership change is requested."
         if plan.blockers:
-            summary += " Blocked: " + "; ".join(plan.blockers)
+            summary += "\nBlocked: " + "; ".join(plan.blockers)
         self.preview_summary.setText(summary)
-        resize_data_manager_table(self.preview_table)
         self._sync_controls()
 
     def set_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
         self.source_table.setEnabled(not self._busy)
         self._sync_controls()
-
-    def publication_succeeded(
-        self,
-        database: DataManagerDatabaseCatalogEntry,
-        snapshot: DataManagerProductCatalogSnapshot,
-    ) -> None:
-        mode = self._mode
-        self.set_context(database, snapshot, mode=mode)
-        self.preview_summary.setText(
-            "Database content revision published. Preview again for another addition."
-        )
 
     def invalidate_preview(self, message: str = "Preview required.") -> None:
         self._plan = None
@@ -289,6 +434,7 @@ class DataManagerDatabaseContentDialog(QDialog):
                 ("Current Revision", manifest.revision_id),
                 ("Current Rows", str(manifest.row_count)),
                 ("Current Columns", str(manifest.column_count)),
+                ("Schema", str(manifest.schema_version)),
             )
         self.summary_table.setRowCount(len(rows))
         for row, values in enumerate(rows):
@@ -297,161 +443,288 @@ class DataManagerDatabaseContentDialog(QDialog):
         resize_data_manager_table(self.summary_table)
 
     def _populate_sources(self) -> None:
-        database = self._database
-        snapshot = self._snapshot
         self._source_values = []
         self._source_checks = []
         self.source_table.setRowCount(0)
-        if database is None or snapshot is None or database.current_manifest is None:
+        if self._baseline_plan is None or self._snapshot is None:
             return
-        market = database.definition.market_id
-        source = database.current_manifest.source_ohlcv
-        database_current = (
-            database.currentness is not None
-            and database.currentness.status == "CURRENT"
-        )
         if self._mode == "artifacts":
-            values = tuple(
-                item
-                for item in snapshot.managed_artifacts.artifacts
-                if item.market_id == market
-            )
-            columns = ("Select", "Artifact", "Tool", "Outputs", "Status")
-            self.source_label.setText("Artifact Selection")
+            self._populate_artifact_outputs()
         else:
-            values = tuple(
-                item
-                for item in snapshot.artifact_collections
-                if item.market_id == market
-            )
-            columns = ("Select", "Collection", "Revision", "Outputs", "Status")
-            self.source_label.setText("Artifact Collection Selection")
-        self.source_table.setColumnCount(len(columns))
-        self.source_table.setHorizontalHeaderLabels(columns)
-        self.source_table.setRowCount(len(values))
-        self._source_values = list(values)
-        for row, value in enumerate(values):
-            if self._mode == "artifacts":
-                currentness = next(
-                    (
-                        item
-                        for item in snapshot.latest_reconciliation.artifacts
-                        if item.logical_artifact_id == value.logical_artifact_id
-                        and item.artifact_id == value.artifact_id
-                        and item.market_id == value.market_id
-                    ),
-                    None,
-                )
-                selectable = (
-                    database_current
-                    and value.valid
-                    and currentness is not None
-                    and currentness.status == "CURRENT"
-                )
-                if not database_current:
-                    status = "Database update required"
-                elif not value.valid:
-                    status = value.rejection_reason
-                elif selectable:
-                    status = "Current"
-                else:
-                    status = "Stale or source-incompatible"
-                texts = (
-                    value.logical_artifact_id,
-                    value.tool_key,
-                    ", ".join(value.output_names),
-                    status,
-                )
-            else:
-                selectable = (
-                    database_current
-                    and value.validation_state == "valid"
-                    and value.source_ohlcv == source
-                )
-                if not database_current:
-                    status = "Database update required"
-                elif selectable:
-                    status = "Current"
-                else:
-                    status = "Stale, invalid, or source-incompatible"
-                texts = (
-                    value.collection_id,
-                    value.revision_id,
-                    ", ".join(value.presentation_order),
-                    status,
-                )
-            checkbox = QCheckBox(self.source_table)
-            checkbox.setStyleSheet(_CHECKBOX_STYLE)
-            checkbox.setEnabled(selectable)
-            checkbox.stateChanged.connect(
-                lambda state, current=checkbox: self._source_toggled(current, state)
-            )
-            self._source_checks.append(checkbox)
-            self.source_table.setCellWidget(row, 0, checkbox)
-            for column, text in enumerate(texts, start=1):
-                self.source_table.setItem(row, column, QTableWidgetItem(str(text)))
+            self._populate_collection_sources()
         resize_data_manager_table(self.source_table)
 
-    def _source_toggled(self, checkbox: QCheckBox, state: int) -> None:
-        if not checkbox.isEnabled() and checkbox.isChecked():
-            checkbox.setChecked(False)
+    def _populate_artifact_outputs(self) -> None:
+        baseline = self._baseline_plan
+        snapshot = self._snapshot
+        if baseline is None or snapshot is None:
             return
-        self.invalidate_preview("Source selection changed; Preview again.")
+        live = {
+            item.logical_artifact_id: item
+            for item in snapshot.managed_artifacts.artifacts
+            if item.market_id == baseline.market_id
+        }
+        owners = self._owners_by_column(baseline)
+        existing = {
+            (item.logical_artifact_id, item.output_name): item
+            for item in baseline.selected_outputs
+        }
+        keys = set(existing)
+        for logical_id, artifact in live.items():
+            for output_name in artifact.output_names:
+                keys.add((logical_id, output_name))
+        choices: list[_ArtifactOutputChoice] = []
+        for logical_id, output_name in sorted(keys, key=lambda key: (key[0] or "", key[1])):
+            old = existing.get((logical_id, output_name))
+            artifact = live.get(logical_id)
+            output = old or ArtifactCollectionOutputV1(
+                logical_id, output_name, output_name
+            )
+            if old is not None:
+                selectable = True
+                if isinstance(old, DatabaseLegacyOutputV1):
+                    status = "Saved snapshot; original provider not recorded (removal allowed)"
+                elif artifact is None or not artifact.valid:
+                    status = "Included; live Artifact unavailable (removal allowed)"
+                else:
+                    status = "Included"
+            else:
+                selectable = artifact is not None and artifact.valid
+                status = (
+                    "Available"
+                    if selectable
+                    else "Unavailable: "
+                    + (
+                        "current Artifact not found"
+                        if artifact is None
+                        else artifact.rejection_reason
+                    )
+                )
+            choices.append(
+                _ArtifactOutputChoice(
+                    output=output,
+                    tool_key="" if artifact is None else artifact.tool_key,
+                    was_selected=old is not None,
+                    selectable=selectable,
+                    status=status,
+                    owners=owners.get(output.column_name, ()),
+                )
+            )
+        columns = (
+            "Include",
+            "Artifact",
+            "Tool",
+            "Output",
+            "Database Column",
+            "Owners",
+            "Status",
+        )
+        self.source_label.setText(
+            "Artifact Outputs — uncheck an included output to remove it from every owner"
+        )
+        self.source_table.setColumnCount(len(columns))
+        self.source_table.setHorizontalHeaderLabels(columns)
+        self.source_table.setRowCount(len(choices))
+        self._source_values = list(choices)
+        for row, value in enumerate(choices):
+            checkbox = self._checkbox(value.selectable, value.was_selected)
+            self._source_checks.append(checkbox)
+            self.source_table.setCellWidget(row, 0, checkbox)
+            texts = (
+                value.logical_artifact_id or "Not recorded",
+                value.tool_key or "-",
+                value.output_name,
+                value.output.column_name,
+                ", ".join(value.owners) or "-",
+                value.status,
+            )
+            for column, text in enumerate(texts, start=1):
+                self.source_table.setItem(row, column, QTableWidgetItem(str(text)))
+
+    def _populate_collection_sources(self) -> None:
+        baseline = self._baseline_plan
+        snapshot = self._snapshot
+        if baseline is None or snapshot is None:
+            return
+        captured: dict[tuple[str, str], tuple[str, ...]] = {}
+        for source in baseline.selection_sources:
+            if source["source_kind"] != "collection":
+                continue
+            revision_id = str(source["source_revision_id"] or "")
+            captured[(str(source["source_id"]), revision_id)] = tuple(
+                source["column_names"]
+            )
+        live = {
+            (item.collection_id, item.revision_id): item
+            for item in snapshot.artifact_collections
+            if item.market_id == baseline.market_id
+        }
+        keys = sorted(set(captured) | set(live))
+        choices: list[_CollectionSourceChoice] = []
+        for collection_id, revision_id in keys:
+            collection = live.get((collection_id, revision_id))
+            was_selected = (collection_id, revision_id) in captured
+            if was_selected:
+                selectable = True
+                status = (
+                    "Captured"
+                    if collection is not None
+                    else "Captured; live revision unavailable (removal allowed)"
+                )
+                column_names = captured[(collection_id, revision_id)]
+            else:
+                selectable = (
+                    collection is not None
+                    and collection.validation_state == "valid"
+                )
+                status = (
+                    "Available"
+                    if selectable
+                    else "Unavailable or invalid"
+                )
+                column_names = (
+                    ()
+                    if collection is None
+                    else tuple(item.column_name for item in collection.selected_outputs)
+                )
+            choices.append(
+                _CollectionSourceChoice(
+                    collection_id=collection_id,
+                    revision_id=revision_id,
+                    column_names=tuple(column_names),
+                    was_selected=was_selected,
+                    selectable=selectable,
+                    status=status,
+                )
+            )
+        columns = (
+            "Include",
+            "Collection",
+            "Captured Revision",
+            "Owned Database Columns",
+            "Status",
+        )
+        self.source_label.setText(
+            "Captured Collection Sources — each exact revision is an independent owner"
+        )
+        self.source_table.setColumnCount(len(columns))
+        self.source_table.setHorizontalHeaderLabels(columns)
+        self.source_table.setRowCount(len(choices))
+        self._source_values = list(choices)
+        for row, value in enumerate(choices):
+            checkbox = self._checkbox(value.selectable, value.was_selected)
+            self._source_checks.append(checkbox)
+            self.source_table.setCellWidget(row, 0, checkbox)
+            texts = (
+                value.collection_id,
+                value.revision_id,
+                ", ".join(value.column_names) or "-",
+                value.status,
+            )
+            for column, text in enumerate(texts, start=1):
+                self.source_table.setItem(row, column, QTableWidgetItem(str(text)))
+
+    def _checkbox(self, enabled: bool, checked: bool) -> QCheckBox:
+        checkbox = QCheckBox(self.source_table)
+        checkbox.setStyleSheet(_CHECKBOX_STYLE)
+        checkbox.setEnabled(enabled)
+        checkbox.setChecked(checked)
+        checkbox.stateChanged.connect(
+            lambda state, current=checkbox: self._source_toggled(current, state)
+        )
+        return checkbox
+
+    def _source_toggled(self, checkbox: QCheckBox, _state: int) -> None:
+        if not checkbox.isEnabled():
+            return
+        self.invalidate_preview("Selection changed; Preview again.")
 
     def _emit_preview(self) -> None:
         database = self._database
-        selected = self.selected_source_ids()
         if (
-            not self._busy
-            and database is not None
-            and database.current_manifest is not None
-            and selected
-            and (self._mode == "artifacts" or len(selected) == 1)
+            self._busy
+            or self._baseline_plan is None
+            or database is None
+            or database.current_manifest is None
+            or not self._has_edit_intent()
         ):
-            self.invalidate_preview("Planning Database content...")
-            self.preview_requested.emit(
-                self._mode, database.definition.database_id, selected
-            )
+            return
+        intent = self.edit_intent()
+        self.invalidate_preview("Planning Database content edit...")
+        self.preview_requested.emit(
+            self._mode, database.definition.database_id, intent
+        )
 
-    def _emit_add(self) -> None:
+    def _emit_apply(self) -> None:
         if not self._busy and self._plan is not None:
-            self.add_requested.emit(self._plan)
+            self.apply_requested.emit(self._plan)
 
     def _sync_controls(self) -> None:
-        selected = self.selected_source_ids()
-        selectable = bool(selected) and (
-            self._mode == "artifacts" or len(selected) == 1
+        can_preview = (
+            not self._busy
+            and self._baseline_plan is not None
+            and self._has_edit_intent()
         )
-        self.preview_button.setEnabled(not self._busy and selectable)
-        self.add_button.setEnabled(
+        self.preview_button.setEnabled(can_preview)
+        self.apply_button.setEnabled(
             not self._busy
             and self._plan is not None
             and self._plan_matches_context(self._plan)
             and not self._plan.blocked
-            and self._plan.has_additions
+            and not self._plan.no_op
         )
         self.close_button.setEnabled(True)
 
-    def _plan_matches_context(self, plan: DatabaseContentAdditionPlan) -> bool:
+    def _has_edit_intent(self) -> bool:
+        intent = self.edit_intent()
+        return any(intent.values())
+
+    def _baseline_matches_context(self, plan: DatabaseContentEditPlan) -> bool:
         database = self._database
         manifest = None if database is None else database.current_manifest
-        if database is None or manifest is None:
-            return False
-        if (
-            plan.database_id != database.definition.database_id
-            or plan.starting_revision_id != manifest.revision_id
-            or plan.market_id != database.definition.market_id
-            or plan.source_ohlcv != manifest.source_ohlcv
-            or plan.source_kind != self._mode
-        ):
-            return False
-        selected = self.selected_source_ids()
-        if self._mode == "artifacts":
-            return plan.selected_root_logical_artifact_ids == selected
-        return (
-            plan.source_collection is not None
-            and (plan.source_collection.collection_id,) == selected
+        return bool(
+            database is not None
+            and manifest is not None
+            and plan.database_id == database.definition.database_id
+            and plan.starting_revision_id == manifest.revision_id
+            and plan.market_id == database.definition.market_id
+            and plan.source_ohlcv == manifest.source_ohlcv
         )
+
+    def _plan_matches_context(self, plan: DatabaseContentEditPlan) -> bool:
+        if not self._baseline_matches_context(plan):
+            return False
+        intent = self.edit_intent()
+        return (
+            plan.artifact_additions == intent["artifact_additions"]
+            and plan.collection_additions == intent["collection_additions"]
+            and plan.remove_sources == intent["remove_sources"]
+            and plan.remove_outputs == intent["remove_outputs"]
+            and plan.remove_columns == intent["remove_columns"]
+        )
+
+    @staticmethod
+    def _owners_by_column(plan: DatabaseContentEditPlan) -> dict[str, tuple[str, ...]]:
+        owners: dict[str, list[str]] = {}
+        for source in plan.selection_sources:
+            label = DataManagerDatabaseContentDialog._owner_label(source)
+            for column_name in source["column_names"]:
+                owners.setdefault(str(column_name), []).append(label)
+        return {
+            column_name: tuple(sorted(labels))
+            for column_name, labels in owners.items()
+        }
+
+    @staticmethod
+    def _owner_label(source: object) -> str:
+        kind = str(source["source_kind"])
+        source_id = str(source["source_id"])
+        revision_id = source["source_revision_id"]
+        if kind == "collection":
+            return f"Collection {source_id} @ {revision_id}"
+        if kind == "legacy_snapshot":
+            return "Saved snapshot; original owner not recorded"
+        return f"Artifact {source_id}"
 
     def _button(self, label: str, suffix: str) -> QPushButton:
         button = QPushButton(label, self)

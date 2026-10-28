@@ -25,6 +25,71 @@ from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindo
 from tests.gui_test.test_data_manager_catalogs import empty_product_snapshot
 
 
+def test_dataset_evidence_attention_preserves_report_and_uses_one_smooth_pulse():
+    from PySide6.QtCore import QAbstractAnimation, QVariantAnimation
+    from PySide6.QtGui import QPalette
+
+    app = QApplication.instance() or QApplication([])
+    surface = operation_module.DataManagerOperationSurface()
+    try:
+        surface.begin("Existing operation")
+        surface.set_task_id("existing-task")
+        surface.append("Existing history")
+        history = surface.notes_text()
+        normal = surface.styleSheet()
+        surface._status.setStyleSheet("QLabel { border: 1px solid #123456; }")
+        normal_status = surface._status.styleSheet()
+        surface.show()
+        QApplication.processEvents()
+        normal_palette = surface._status.palette()
+        normal_font = surface._status.font()
+        group_pixel = surface.grab().toImage().pixelColor(surface.width() - 15, surface.height() - 15)
+        surface.set_dataset_evidence_attention(True, message="OHLCV evidence changed")
+        assert surface._status.palette().color(QPalette.ColorRole.WindowText).name() == "#ff3b4d"
+        assert surface._status.font().bold()
+        assert "border: 2px solid #FF3B4D" in surface._status.styleSheet()
+        animation = surface._attention_animation
+        assert animation.duration() == 4000
+        assert animation.loopCount() == -1
+        assert [(key, color.name()) for key, color in animation.keyValues()] == [
+            (0.0, "#142b45"), (0.5, "#315f8a"), (1.0, "#142b45")
+        ]
+        assert animation.state() == QAbstractAnimation.State.Running
+        animation.pause()
+        animation.setCurrentTime(2000)
+        assert surface.grab().toImage().pixelColor(surface.width() - 15, surface.height() - 15) == group_pixel
+        assert "#315f8a" in surface._status.styleSheet()
+        assert surface._status.objectName() == "data_manager.operation.status"
+        assert surface.styleSheet() == normal
+        animation.setCurrentTime(0)
+        assert "#142b45" in surface._status.styleSheet()
+        assert surface.styleSheet() == normal
+        animation.setCurrentTime(2000)
+        animation.resume()
+        surface.set_dataset_evidence_attention(True, message="Repeated evidence")
+        assert surface.findChildren(QVariantAnimation) == [animation]
+        assert animation.currentTime() == 2000
+        assert surface.status_text() == "Repeated evidence"
+        assert surface._name.text() == "Existing operation"
+        assert surface._task_id.text() == "existing-task"
+        assert surface.notes_text() == history
+        surface.set_dataset_evidence_attention(False)
+        surface.set_dataset_evidence_attention(False)
+        assert animation.state() == QAbstractAnimation.State.Stopped
+        assert surface.styleSheet() == normal
+        assert surface._status.styleSheet() == normal_status
+        assert surface._status.palette() == normal_palette
+        assert surface._status.font() == normal_font
+        surface.clear()
+        surface.set_dataset_evidence_attention(True, message="Idle attention")
+        assert surface._name.text() == "None"
+        assert surface._task_id.text() == ""
+    finally:
+        surface.set_dataset_evidence_attention(False)
+        surface.close()
+        del app
+
+
 def test_operation_surface_owns_current_report_history_and_readable_layout(
     monkeypatch,
 ) -> None:
@@ -196,32 +261,32 @@ def test_structured_update_results_populate_and_survive_catalog_refresh() -> Non
     del app
     window = DataManagerSuiteWindow()
     try:
-        revision = SimpleNamespace(
-            collection_id="ac_123",
-            revision_id="c" * 64,
-            validation_state="valid",
-            root_logical_artifact_ids=("a" * 64,),
-            support_logical_artifact_ids=("b" * 64,),
-            selected_outputs=(SimpleNamespace(
-                logical_artifact_id="a" * 64,
-                output_name="sma_20",
-                column_name="signal",
-            ),),
-            first_timestamp_ms=1000,
-            last_timestamp_ms=2000,
-            database_ready=True,
-        )
         window.set_artifact_update_result(
-            SimpleNamespace(collection_revision=revision)
+            SimpleNamespace(
+                updated_logical_artifact_ids=("a" * 64, "b" * 64),
+                recovered_logical_artifact_ids=("b" * 64,),
+                reused_logical_artifact_ids=("c" * 64,),
+                materialization=SimpleNamespace(
+                    advanced_logical_artifact_ids=("a" * 64, "b" * 64),
+                ),
+            )
         )
-        table = window._update_workspace.collection_validation_table
-        assert table.item(0, 7).text() == "c" * 64
-        assert table.item(0, 8).text() == "a" * 64
-        assert table.item(0, 1).text().endswith("sma_20->signal")
-        assert table.item(0, 2).text() == "1970-01-01 01:00:01 CET (+01:00)"
-        assert table.item(0, 3).text() == "1970-01-01 01:00:02 CET (+01:00)"
+
+        def fields(table):
+            return {table.item(row, 0).text(): table.item(row, 1).text()
+                    for row in range(table.rowCount())}
+
+        table = window._update_workspace.artifact_report
+        expected_artifact_report = {
+            "Updated": "2",
+            "Recovered managed heads (RECREATE)": "1",
+            "Reused": "1",
+            "Failed": "0",
+            "Advanced logical Artifact IDs": ", ".join(("a" * 64, "b" * 64)),
+        }
+        assert fields(table) == expected_artifact_report
         window.set_product_catalogs(empty_product_snapshot())
-        assert table.item(0, 7).text() == "c" * 64
+        assert fields(table) == expected_artifact_report
 
         database = SimpleNamespace(
             database_id="db_123",
@@ -238,22 +303,19 @@ def test_structured_update_results_populate_and_survive_catalog_refresh() -> Non
             SimpleNamespace(mode="APPEND", database_revision=database)
         )
         report = window._update_workspace.commit_report
-        values = {
-            report.item(row, 0).text(): report.item(row, 1).text()
-            for row in range(report.rowCount())
+        expected_database_report = {
+            "Mode": "APPEND",
+            "Database": "db_123",
+            "New Revision": "d" * 64,
+            "Previous Revision": "e" * 64,
+            "Rows": "100",
+            "Columns": "3",
+            "Through": "1970-01-01 01:00:02 CET (+01:00)",
         }
-        assert values == {
-            "mode": "APPEND",
-            "database_id": "db_123",
-            "new_revision_id": "d" * 64,
-            "previous_revision_id": "e" * 64,
-            "collection_revision_id": "c" * 64,
-            "rows": "100",
-            "columns": "3",
-            "First TS": "1970-01-01 01:00:01 CET (+01:00)",
-            "Last TS": "1970-01-01 01:00:02 CET (+01:00)",
-            "values_hash": "f" * 64,
-        }
+        assert fields(report) == expected_database_report
+        window.set_product_catalogs(empty_product_snapshot())
+        assert fields(report) == expected_database_report
+        assert fields(table) == expected_artifact_report
     finally:
         window.close()
 
@@ -297,30 +359,6 @@ def test_database_confirmations_present_immutable_publication_evidence(
             )
         )
 
-        accepted = window.confirm_database_rebuild(SimpleNamespace(
-            database_id="db_123",
-            database_revision_id="d" * 64,
-            status="SCHEMA_CHANGED",
-            source_change=SimpleNamespace(
-                status="APPEND_ONLY",
-                reason="column mapping changed",
-            ),
-            collection_revision_id="c" * 64,
-        ))
-        assert not accepted
-        assert all(
-            value in messages[-1]
-            for value in (
-                "db_123",
-                "d" * 64,
-                "SCHEMA_CHANGED",
-                "APPEND_ONLY",
-                "column mapping changed",
-                "Target Artifact Collection revision",
-                "new immutable Database revision",
-                "Previous revisions remain unchanged",
-            )
-        )
     finally:
         window.close()
 

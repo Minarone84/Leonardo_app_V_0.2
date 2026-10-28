@@ -443,7 +443,10 @@ class DataManagerRecipeArtifactMaterializationDialog(QDialog):
             f"Stages: {len(plan.execution_stages)} | New: {statuses['NEW']} | "
             f"Reuse Current: {statuses['REUSE CURRENT']} | "
             f"Advance Lineage: {statuses['ADVANCE LINEAGE']} | "
-            f"BLOCKED: {statuses['BLOCKED']}"
+            f"BLOCKED: {statuses['BLOCKED']}\n"
+            "Before publication: check consumed Artifact inputs and new outputs. "
+            "Collection creation reuses completed checks for unchanged fresh outputs "
+            "and verifies membership and required dependencies."
         )
         self._sync_controls()
         return True
@@ -472,7 +475,11 @@ class DataManagerRecipeArtifactMaterializationDialog(QDialog):
                 f"Collection ID: {equivalent.collection_id}\n"
                 f"Revision ID: {equivalent.revision_id}"
             )
-        self.preview_summary.setText(f"{self.preview_summary.text()}\n{suffix}")
+        self.preview_summary.setText(
+            f"{self.preview_summary.text()}\n{suffix}\n"
+            "Collection progress reports actual input checks or completed-check reuse "
+            "before publication."
+        )
         self._sync_controls()
         return True
 

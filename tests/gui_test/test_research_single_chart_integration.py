@@ -72,6 +72,10 @@ def _write_accepted_dataset(root: Path, rows: int = 800) -> None:
 
 
 def _select_new_chart_dialog(presenter) -> None:
+    _wait_until(
+        lambda: presenter._new_chart_dialog.isVisible()
+        and presenter._active_catalog_task_id is None
+    )
     dialog = presenter._new_chart_dialog
     summary = dialog._dataset_summaries[0]
     market = summary.market_id

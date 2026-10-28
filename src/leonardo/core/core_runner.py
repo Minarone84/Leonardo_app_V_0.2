@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from threading import Event, Lock, Thread
 from typing import Any
 
-from leonardo.core.async_runtime import close_coroutine_if_needed
+from leonardo.core.async_runtime import close_coroutine_if_needed, normalize_task_name
 from leonardo.core.task_manager import TaskManager
 
 ProgressCallback = Callable[["TaskProgress"], None]
@@ -106,6 +106,8 @@ class CoreRunner:
         self._started = Event()
         self._lock = Lock()
         self._accepting = False
+        self._shutdown_future: ConcurrentFuture[None] | None = None
+        self._stop_requested = False
 
     @property
     def is_running(self) -> bool:
@@ -118,15 +120,25 @@ class CoreRunner:
 
     def start(self) -> None:
         with self._lock:
+            if self._shutdown_future is not None or self._stop_requested:
+                if self._thread is not None and self._thread.is_alive():
+                    raise RuntimeError("Core runner is shutting down")
+                if self._loop is not None and not self._loop.is_closed():
+                    raise RuntimeError("Core event loop cleanup did not complete")
             if self.is_running:
                 self._accepting = True
                 return
+            self._shutdown_future = None
+            self._stop_requested = False
             self._started.clear()
             self._thread = Thread(target=self._run_loop, name="LeonardoCore", daemon=True)
             self._thread.start()
         if not self._started.wait(5.0):
             raise RuntimeError("Core event loop failed to start")
-        self._accepting = True
+        with self._lock:
+            if self._shutdown_future is not None or self._stop_requested:
+                raise RuntimeError("Core runner is shutting down")
+            self._accepting = True
 
     def submit_job(
         self,
@@ -250,20 +262,37 @@ class CoreRunner:
         with self._lock:
             loop = self._loop
             thread = self._thread
-            if loop is None or thread is None:
-                self._accepting = False
-                return
             self._accepting = False
-        future = asyncio.run_coroutine_threadsafe(self._task_manager.cancel_all(), loop)
-        future.result(timeout=float(timeout))
-        loop.call_soon_threadsafe(loop.stop)
+            if loop is None or thread is None:
+                return
+            future = self._shutdown_future
+            if thread.is_alive() and future is None and not self._stop_requested:
+                future = asyncio.run_coroutine_threadsafe(self._task_manager.cancel_all(), loop)
+                self._shutdown_future = future
+        if future is not None:
+            future.result(timeout=float(timeout))
+        with self._lock:
+            if (
+                self._loop is loop
+                and self._thread is thread
+                and thread.is_alive()
+                and not self._stop_requested
+            ):
+                # A retry must not stop the loop again while it drains its executor.
+                self._stop_requested = True
+                loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=float(timeout))
         if thread.is_alive():
             raise TimeoutError("Core event loop did not stop within timeout")
+        if not loop.is_closed():
+            raise RuntimeError("Core event loop cleanup did not complete")
         with self._lock:
-            self._loop = None
-            self._thread = None
-            self._started.clear()
+            if self._loop is loop and self._thread is thread:
+                self._loop = None
+                self._thread = None
+                self._shutdown_future = None
+                self._stop_requested = False
+                self._started.clear()
 
     async def _schedule_job(
         self,
@@ -278,6 +307,7 @@ class CoreRunner:
         metadata: dict[str, object] | None,
         run_in_worker: bool,
     ) -> str:
+        normalize_task_name(task_name)
         task_id_ref = _TaskIdRef()
         reporter = ProgressReporter(
             self._task_manager,
@@ -358,6 +388,10 @@ class CoreRunner:
         try:
             loop.run_forever()
         finally:
+            with self._lock:
+                if self._loop is loop:
+                    self._accepting = False
+                    self._stop_requested = True
             pending = asyncio.all_tasks(loop)
             for task in pending:
                 task.cancel()
@@ -367,7 +401,8 @@ class CoreRunner:
             loop.run_until_complete(loop.shutdown_default_executor())
             loop.close()
             with self._lock:
-                self._worker_pool = None
+                if self._loop is loop:
+                    self._worker_pool = None
 
 
 def _inline_dispatch(callback: Callable[[], None]) -> None:

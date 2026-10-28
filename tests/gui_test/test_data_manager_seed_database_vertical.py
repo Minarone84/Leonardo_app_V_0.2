@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication
 from leonardo.core.app import LeonardoApp
 from leonardo.core.config import AuditConfig, load_default_config
 from leonardo.data import MarketId
-from leonardo.data_manager import DatabaseRevisionManifestV2
+from leonardo.data_manager import DatabaseRevisionManifestV3
 from leonardo.gui.presenters.data_manager_presenter import DataManagerSuitePresenter
 from leonardo.gui.windows.data_manager_suite_window import DataManagerSuiteWindow
 
@@ -122,8 +122,10 @@ def test_contextual_seed_only_database_vertical_and_window_lifecycle(
         products = window.product_catalogs()
         assert products is not None and len(products.databases) == 1
         manifest = products.databases[0].current_manifest
-        assert isinstance(manifest, DatabaseRevisionManifestV2)
-        assert manifest.members == manifest.collection_sources == ()
+        assert isinstance(manifest, DatabaseRevisionManifestV3)
+        assert manifest.members == ()
+        assert manifest.collection_sources == ()
+        assert manifest.selection_sources == ()
         assert products.databases[0].revision_count == 1
         database_lines = window._operation_surface.notes_text().splitlines()
         assert sum(

@@ -9,10 +9,11 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QCheckBox
 
-from leonardo.data_manager import ArtifactCollectionOutputV1
+from leonardo.data_manager import DatabaseCollectionReferenceV2
+from leonardo.data_manager.creation_models import database_revision_from_dict, deterministic_hash
 from leonardo.gui.windows.data_manager_database_content_dialog import (
     DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID,
     DataManagerDatabaseContentDialog,
@@ -31,13 +32,22 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+def _dispose_dialog(dialog, qapp) -> None:
+    dialog.close()
+    dialog.deleteLater()
+    QCoreApplication.sendPostedEvents(
+        dialog,
+        QEvent.Type.DeferredDelete,
+    )
+    qapp.processEvents()
+
+
 def _context(tmp_path: Path):
     service, _artifacts, recipes, _historical = _domain(tmp_path)
-    _seed, database = _seed_database(service)
+    _seed, database = _seed_database(service, start_index=0)
     first = _materialize(service, recipes, _leaf("sma", {"period": 3}))
     second = _materialize(service, recipes, _leaf("ema", {"period": 4}))
-    collection_a = service.create_artifact_collection(first, "First")
-    collection_b = service.create_artifact_collection(second, "Second")
+    collection = service.create_artifact_collection(first, "Features")
     service.reconcile_update_status(force=True)
     snapshot = service.scan_product_catalogs()
     database_entry = next(
@@ -45,7 +55,7 @@ def _context(tmp_path: Path):
         for item in snapshot.databases
         if item.definition.database_id == database.database_id
     )
-    return service, snapshot, database_entry, first, second, collection_a, collection_b
+    return service, snapshot, database_entry, first, second, collection
 
 
 def _check(dialog: DataManagerDatabaseContentDialog, row: int) -> QCheckBox:
@@ -64,166 +74,227 @@ def _headers(table) -> tuple[str, ...]:
 def _artifact_row(
     dialog: DataManagerDatabaseContentDialog,
     logical_artifact_id: str,
+    output_name: str,
 ) -> int:
     return next(
         row
         for row, value in enumerate(dialog._source_values)
         if value.logical_artifact_id == logical_artifact_id
+        and value.output_name == output_name
     )
 
 
-def test_artifact_mode_checkboxes_preview_and_plan_states(qapp, tmp_path: Path) -> None:
-    service, snapshot, database, first, second, _ca, _cb = _context(tmp_path)
+def _collection_row(
+    dialog: DataManagerDatabaseContentDialog,
+    collection_id: str,
+    revision_id: str,
+) -> int:
+    return next(
+        row
+        for row, value in enumerate(dialog._source_values)
+        if value.collection_id == collection_id and value.revision_id == revision_id
+    )
+
+
+def _refresh(service, database_id: str):
+    service.reconcile_update_status(force=True)
+    snapshot = service.scan_product_catalogs()
+    database = next(
+        item for item in snapshot.databases
+        if item.definition.database_id == database_id
+    )
+    baseline = service.plan_database_content_edit(database_id)
+    assert baseline.no_op and not baseline.blocked
+    return snapshot, database, baseline
+
+
+def test_edit_artifacts_is_output_level_and_removes_all_owners(
+    qapp, tmp_path: Path
+) -> None:
+    service, snapshot, database, first, _second, collection = _context(tmp_path)
+    database_id = database.definition.database_id
+    baseline = service.plan_database_content_edit(database_id)
     dialog = DataManagerDatabaseContentDialog()
     try:
-        dialog.set_context(database, snapshot, mode="artifacts")
-        assert dialog.property("object_id") == DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID
-        assert dialog.windowTitle() == "Add Artifacts to Database"
-        assert tuple(
-            dialog.summary_table.item(row, 0).text()
-            for row in range(dialog.summary_table.rowCount())
-        ) == (
-            "Database Name",
-            "Database ID",
-            "Exchange",
-            "Market Type",
-            "Asset",
-            "Timeframe",
-            "Current Revision",
-            "Current Rows",
-            "Current Columns",
+        dialog.set_context(
+            database, snapshot, mode="artifacts", baseline_plan=baseline
         )
+        assert dialog.property("object_id") == DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID
+        assert dialog.windowTitle() == "Edit Database Artifacts"
         assert _headers(dialog.source_table) == (
-            "Select", "Artifact", "Tool", "Outputs", "Status"
+            "Include",
+            "Artifact",
+            "Tool",
+            "Output",
+            "Database Column",
+            "Owners",
+            "Status",
         )
         assert _headers(dialog.preview_table) == (
-            "Status", "Artifact", "Output", "Database Column", "Origin"
+            "Action",
+            "Artifact",
+            "Output",
+            "Database Column",
+            "Owners Before",
+            "Owners After",
         )
-        assert not dialog.preview_button.isEnabled()
-        first_check = _check(dialog, 0)
-        second_check = _check(dialog, 1)
-        assert "indicator:checked" in first_check.styleSheet()
-        assert "indicator:unchecked" in first_check.styleSheet()
-        first_check.setChecked(True)
-        second_check.setChecked(True)
-        assert dialog.preview_button.isEnabled()
-        assert len(dialog.selected_source_ids()) == 2
 
-        plan = service.plan_database_artifact_addition(
-            database.definition.database_id, dialog.selected_source_ids()
-        )
+        root = first.root_logical_artifact_ids[0]
+        row = _artifact_row(dialog, root, "sma_3")
+        checkbox = _check(dialog, row)
+        assert checkbox.isEnabled() and not checkbox.isChecked()
+        checkbox.setChecked(True)
+        intent = dialog.edit_intent()
+        assert intent["artifact_additions"][0].logical_artifact_id == root
+        plan = service.plan_database_content_edit(database_id, **intent)
         dialog.set_plan(plan)
-        assert dialog.preview_table.rowCount() == 2
-        assert set(
+        assert dialog.preview_table.item(0, 0).text() == "ADD"
+        assert dialog.apply_button.isEnabled()
+        direct_revision = service.execute_database_content_edit(plan)
+        assert direct_revision is not None
+
+        overlap = service.plan_database_content_edit(
+            database_id,
+            collection_additions=(
+                DatabaseCollectionReferenceV2(
+                    collection.collection_id, collection.revision_id
+                ),
+            ),
+        )
+        assert overlap.ownership_changed and not overlap.added_column_names
+        assert service.execute_database_content_edit(overlap) is not None
+        snapshot, database, baseline = _refresh(service, database_id)
+        dialog.set_context(
+            database, snapshot, mode="artifacts", baseline_plan=baseline
+        )
+        row = _artifact_row(dialog, root, "sma_3")
+        checkbox = _check(dialog, row)
+        assert checkbox.isChecked()
+        owners = dialog.source_table.item(row, 5).text()
+        assert "Artifact" in owners
+        assert collection.collection_id in owners
+        assert collection.revision_id in owners
+
+        checkbox.setChecked(False)
+        intent = dialog.edit_intent()
+        assert intent["remove_columns"] == ("sma_3",)
+        assert intent["remove_outputs"] == ()
+        removal = service.plan_database_content_edit(database_id, **intent)
+        assert removal.removed_column_names == ("sma_3",)
+        assert removal.selection_sources == ()
+        dialog.set_plan(removal)
+        assert dialog.preview_table.item(0, 0).text() == "REMOVE"
+        assert dialog.preview_table.item(0, 5).text() == "-"
+        assert dialog.apply_button.isEnabled()
+    finally:
+        _dispose_dialog(dialog, qapp)
+
+
+def test_edit_collections_displays_exact_captured_revisions_and_preserves_overlap(
+    qapp, tmp_path: Path
+) -> None:
+    service, _snapshot, database, _first, second, collection = _context(tmp_path)
+    database_id = database.definition.database_id
+    first_capture = service.execute_database_content_edit(
+        service.plan_database_collection_addition(database_id, collection.collection_id)
+    )
+    assert first_capture is not None
+    revised = service.add_artifact_collection_branches(
+        collection.collection_id, second
+    )
+    second_capture = service.execute_database_content_edit(
+        service.plan_database_content_edit(
+            database_id,
+            collection_additions=(
+                DatabaseCollectionReferenceV2(
+                    revised.collection_id, revised.revision_id
+                ),
+            ),
+        )
+    )
+    assert second_capture is not None
+    snapshot, database, baseline = _refresh(service, database_id)
+    dialog = DataManagerDatabaseContentDialog()
+    try:
+        dialog.set_context(
+            database, snapshot, mode="collections", baseline_plan=baseline
+        )
+        assert dialog.windowTitle() == "Edit Database Collections"
+        assert _headers(dialog.source_table) == (
+            "Include",
+            "Collection",
+            "Captured Revision",
+            "Owned Database Columns",
+            "Status",
+        )
+        first_row = _collection_row(
+            dialog, collection.collection_id, collection.revision_id
+        )
+        revised_row = _collection_row(
+            dialog, revised.collection_id, revised.revision_id
+        )
+        assert _check(dialog, first_row).isChecked()
+        assert _check(dialog, revised_row).isChecked()
+        assert dialog.source_table.item(first_row, 2).text() == collection.revision_id
+        assert dialog.source_table.item(revised_row, 2).text() == revised.revision_id
+
+        _check(dialog, first_row).setChecked(False)
+        intent = dialog.edit_intent()
+        assert intent["remove_sources"] == (
+            ("collection", collection.collection_id, collection.revision_id),
+        )
+        plan = service.plan_database_content_edit(database_id, **intent)
+        assert plan.removed_column_names == ()
+        assert plan.ownership_changed
+        dialog.set_plan(plan)
+        actions = {
             dialog.preview_table.item(row, 0).text()
             for row in range(dialog.preview_table.rowCount())
-        ) == {"ADD"}
-        for label in (
-            "Current schema:",
-            "Proposed schema:",
-            "Current row count:",
-            "Proposed row count:",
-            "Coverage:",
-            "Leading warmup exclusions:",
-            "Interior / later missing rows:",
-            "Added output count:",
-            "Already included count:",
-            "Collision count:",
-        ):
-            assert label in dialog.preview_summary.text()
-        assert dialog.add_button.isEnabled()
-        first_check.setChecked(False)
-        assert dialog.reviewed_plan is None
-        assert not dialog.add_button.isEnabled()
-
-        dialog.set_busy(True)
-        assert not dialog.source_table.isEnabled()
-        assert not dialog.preview_button.isEnabled()
-        assert dialog.close_button.isEnabled()
+        }
+        assert "OWNERSHIP" in actions
+        assert dialog.apply_button.isEnabled()
     finally:
-        dialog.close()
-        QCoreApplication.processEvents()
+        _dispose_dialog(dialog, qapp)
 
 
-def test_collection_mode_requires_exactly_one_check(qapp, tmp_path: Path) -> None:
-    service, snapshot, database, _first, _second, _ca, _cb = _context(tmp_path)
+def test_deleted_captured_collection_remains_visible_and_removable(
+    qapp, tmp_path: Path
+) -> None:
+    service, _snapshot, database, _first, _second, collection = _context(tmp_path)
+    database_id = database.definition.database_id
+    published = service.execute_database_content_edit(
+        service.plan_database_collection_addition(database_id, collection.collection_id)
+    )
+    assert published is not None
+    service.delete_artifact_collection(collection.collection_id)
+    snapshot, database, baseline = _refresh(service, database_id)
     dialog = DataManagerDatabaseContentDialog()
     try:
-        dialog.set_context(database, snapshot, mode="collection")
-        assert dialog.windowTitle() == "Add Artifact Collection to Database"
-        assert _headers(dialog.source_table) == (
-            "Select", "Collection", "Revision", "Outputs", "Status"
+        dialog.set_context(
+            database, snapshot, mode="collections", baseline_plan=baseline
         )
-        assert not dialog.preview_button.isEnabled()
-        _check(dialog, 0).setChecked(True)
-        assert dialog.preview_button.isEnabled()
-        _check(dialog, 1).setChecked(True)
-        assert len(dialog.selected_source_ids()) == 2
-        assert not dialog.preview_button.isEnabled()
-        assert not dialog.add_button.isEnabled()
-        _check(dialog, 1).setChecked(False)
-        plan = service.plan_database_collection_addition(
-            database.definition.database_id, dialog.selected_source_ids()[0]
+        row = _collection_row(
+            dialog, collection.collection_id, collection.revision_id
         )
+        checkbox = _check(dialog, row)
+        assert checkbox.isEnabled() and checkbox.isChecked()
+        assert "live revision unavailable" in dialog.source_table.item(row, 4).text()
+        checkbox.setChecked(False)
+        plan = service.plan_database_content_edit(database_id, **dialog.edit_intent())
+        assert not plan.blocked
+        assert plan.removed_column_names == ("sma_3",)
         dialog.set_plan(plan)
-        assert dialog.add_button.isEnabled()
+        assert dialog.apply_button.isEnabled()
     finally:
-        dialog.close()
-        QCoreApplication.processEvents()
+        _dispose_dialog(dialog, qapp)
 
 
-def test_artifact_candidates_require_exact_current_reconciliation(
-    qapp,
-    tmp_path: Path,
+def test_database_update_state_does_not_gate_safe_content_edit_candidates(
+    qapp, tmp_path: Path
 ) -> None:
-    _service, snapshot, database, first, second, _ca, _cb = _context(tmp_path)
-    stale_id = second.root_logical_artifact_ids[0]
-    stale_rows = tuple(
-        replace(
-            item,
-            status="APPEND_AVAILABLE",
-            direct_staleness=True,
-            reasons=("accepted OHLCV advanced",),
-        )
-        if item.logical_artifact_id == stale_id
-        else item
-        for item in snapshot.latest_reconciliation.artifacts
-    )
-    stale_snapshot = replace(
-        snapshot,
-        latest_reconciliation=replace(
-            snapshot.latest_reconciliation,
-            artifacts=stale_rows,
-        ),
-    )
-    dialog = DataManagerDatabaseContentDialog()
-    try:
-        dialog.set_context(database, stale_snapshot, mode="artifacts")
-        current_row = _artifact_row(dialog, first.root_logical_artifact_ids[0])
-        stale_row = _artifact_row(dialog, stale_id)
-        assert _check(dialog, current_row).isEnabled()
-        assert dialog.source_table.item(current_row, 4).text() == "Current"
-        assert not _check(dialog, stale_row).isEnabled()
-        assert dialog.source_table.item(stale_row, 4).text() == (
-            "Stale or source-incompatible"
-        )
-        _check(dialog, stale_row).setChecked(True)
-        assert not _check(dialog, stale_row).isChecked()
-        assert stale_id not in dialog.selected_source_ids()
-        assert dialog.reviewed_plan is None
-        assert not dialog.preview_button.isEnabled()
-    finally:
-        dialog.close()
-        QCoreApplication.processEvents()
-
-
-def test_non_current_database_disables_artifact_and_collection_sources(
-    qapp,
-    tmp_path: Path,
-) -> None:
-    _service, snapshot, database, _first, _second, _ca, _cb = _context(tmp_path)
+    service, snapshot, database, first, _second, collection = _context(tmp_path)
     assert database.currentness is not None
-    stale_database = replace(
+    non_current = replace(
         database,
         currentness=replace(
             database.currentness,
@@ -231,135 +302,122 @@ def test_non_current_database_disables_artifact_and_collection_sources(
             reasons=("accepted OHLCV advanced",),
         ),
     )
+    baseline = service.plan_database_content_edit(database.definition.database_id)
     dialog = DataManagerDatabaseContentDialog()
     try:
-        for mode in ("artifacts", "collection"):
-            dialog.set_context(stale_database, snapshot, mode=mode)
-            assert dialog.source_table.rowCount() > 0
-            for row in range(dialog.source_table.rowCount()):
-                checkbox = _check(dialog, row)
-                assert not checkbox.isEnabled()
-                assert dialog.source_table.item(row, 4).text() == (
-                    "Database update required"
-                )
-                checkbox.setChecked(True)
-                assert not checkbox.isChecked()
-            assert dialog.selected_source_ids() == ()
-            assert dialog.reviewed_plan is None
-            assert not dialog.preview_button.isEnabled()
-            assert not dialog.add_button.isEnabled()
+        dialog.set_context(
+            non_current, snapshot, mode="artifacts", baseline_plan=baseline
+        )
+        row = _artifact_row(
+            dialog, first.root_logical_artifact_ids[0], "sma_3"
+        )
+        assert _check(dialog, row).isEnabled()
+        assert dialog.source_table.item(row, 6).text() == "Available"
+
+        dialog.set_context(
+            non_current, snapshot, mode="collections", baseline_plan=baseline
+        )
+        row = _collection_row(
+            dialog, collection.collection_id, collection.revision_id
+        )
+        assert _check(dialog, row).isEnabled()
+        assert dialog.source_table.item(row, 4).text() == "Available"
     finally:
-        dialog.close()
-        QCoreApplication.processEvents()
+        _dispose_dialog(dialog, qapp)
 
 
-def test_v1_transition_notice_uses_explicit_history_language(
-    qapp,
-    tmp_path: Path,
-) -> None:
-    service, _artifacts, recipes, _historical = _domain(tmp_path)
-    first = _materialize(service, recipes, _leaf("sma", {"period": 3}))
-    collection = service.create_artifact_collection(first, "Legacy")
-    seed = service.create_database_seed(MARKET, "Legacy Database")
-    database = service.build_database_revision(seed.seed_id, collection.collection_id)
-    second = _materialize(service, recipes, _leaf("ema", {"period": 4}))
-    service.reconcile_update_status(force=True)
-    snapshot = service.scan_product_catalogs()
-    database_entry = next(
-        item
-        for item in snapshot.databases
-        if item.definition.database_id == database.database_id
-    )
+def test_head_change_invalidates_reviewed_plan_and_baseline(qapp, tmp_path: Path) -> None:
+    service, snapshot, database, first, second, _collection = _context(tmp_path)
+    database_id = database.definition.database_id
+    baseline = service.plan_database_content_edit(database_id)
     dialog = DataManagerDatabaseContentDialog()
     try:
-        dialog.set_context(database_entry, snapshot, mode="artifacts")
-        logical_id = second.root_logical_artifact_ids[0]
-        row = next(
-            row
-            for row, value in enumerate(dialog._source_values)
-            if value.logical_artifact_id == logical_id
+        dialog.set_context(
+            database, snapshot, mode="artifacts", baseline_plan=baseline
+        )
+        row = _artifact_row(
+            dialog, first.root_logical_artifact_ids[0], "sma_3"
         )
         _check(dialog, row).setChecked(True)
-        plan = service.plan_database_artifact_addition(
-            database.database_id, (logical_id,)
+        reviewed = service.plan_database_content_edit(database_id, **dialog.edit_intent())
+        dialog.set_plan(reviewed)
+        assert dialog.apply_button.isEnabled()
+
+        competing = service.plan_database_artifact_addition(
+            database_id, second.root_logical_artifact_ids
         )
-        dialog.set_plan(plan)
-        assert plan.requires_v1_transition
-        assert "legacy V1 collection-following revision format" in (
-            dialog.preview_summary.text()
-        )
-        assert "Existing V1 revisions and history will remain unchanged" in (
-            dialog.preview_summary.text()
-        )
+        assert service.execute_database_content_edit(competing) is not None
+        snapshot, database, _new_baseline = _refresh(service, database_id)
+        dialog.set_context(database, snapshot, mode="artifacts")
+        assert dialog.baseline_plan is None
+        assert dialog.reviewed_plan is None
+        assert not dialog.preview_button.isEnabled()
+        assert not dialog.apply_button.isEnabled()
     finally:
-        dialog.close()
-        QCoreApplication.processEvents()
+        _dispose_dialog(dialog, qapp)
 
 
-def test_duplicate_blocked_v1_and_success_refresh_presentation(
-    qapp,
-    tmp_path: Path,
-) -> None:
-    service, snapshot, database, first, second, _ca, _cb = _context(tmp_path)
+@pytest.mark.parametrize("schema", ("3.0", "4.0"))
+def test_content_preview_identifies_the_actual_new_revision_format(qapp, tmp_path, schema):
+    service, snapshot, database, first, _second, _collection = _context(tmp_path)
+    if schema == "3.0":
+        payload = database.current_manifest.to_dict(include_revision_id=False)
+        payload.pop("value_provenance")
+        payload["schema_version"] = schema
+        payload["previous_revision_id"] = database.current_manifest.revision_id
+        payload["revision_id"] = deterministic_hash(payload)
+        service.creation_store.publish_database_revision(
+            database.definition, database_revision_from_dict(payload),
+            service.load_database_revision(database.definition.database_id).values_csv,
+            expected_head_revision_id=database.current_manifest.revision_id,
+        )
+    identity = database.definition.database_id
+    snapshot, database, baseline = _refresh(service, identity)
     dialog = DataManagerDatabaseContentDialog()
     try:
-        dialog.set_context(database, snapshot, mode="artifacts")
-        first_id = first.root_logical_artifact_ids[0]
-        first_plan = service.plan_database_artifact_addition(
-            database.definition.database_id, (first_id,)
-        )
-        first_row = next(
-            row for row, value in enumerate(dialog._source_values)
-            if value.logical_artifact_id == first_id
-        )
-        _check(dialog, first_row).setChecked(True)
-        dialog.set_plan(first_plan)
-        published = service.execute_database_content_addition(first_plan)
-        assert published is not None
-        service.reconcile_update_status(force=True)
-        refreshed = service.scan_product_catalogs()
-        refreshed_database = next(
-            item for item in refreshed.databases
-            if item.definition.database_id == database.definition.database_id
-        )
-        dialog.publication_succeeded(refreshed_database, refreshed)
-        assert dialog.reviewed_plan is None
-        assert "published" in dialog.preview_summary.text()
-
-        duplicate = service.plan_database_artifact_addition(
-            published.database_id, (first_id,)
-        )
-        dialog.set_context(refreshed_database, refreshed, mode="artifacts")
-        first_row = next(
-            row for row, value in enumerate(dialog._source_values)
-            if value.logical_artifact_id == first_id
-        )
-        _check(dialog, first_row).setChecked(True)
-        dialog.set_plan(duplicate)
-        assert dialog.preview_table.item(0, 0).text() == "ALREADY INCLUDED"
-        assert not dialog.add_button.isEnabled()
-
-        collision = service._creation.plan_database_content_addition(
-            published.database_id,
-            service.plan_artifact_collection_selection(
-                published.market_id, second.root_logical_artifact_ids
-            ),
-            selected_outputs=(
-                ArtifactCollectionOutputV1(
-                    second.root_logical_artifact_ids[0], "ema_4", "close"
-                ),
-            ),
-            source_kind="artifacts",
-        )
-        dialog.set_context(refreshed_database, refreshed, mode="artifacts")
-        second_row = next(
-            row for row, value in enumerate(dialog._source_values)
-            if value.logical_artifact_id == second.root_logical_artifact_ids[0]
-        )
-        _check(dialog, second_row).setChecked(True)
-        dialog.set_plan(collision)
-        assert dialog.preview_table.item(0, 0).text() == "BLOCKED"
-        assert not dialog.add_button.isEnabled()
+        dialog.set_context(database, snapshot, mode="artifacts", baseline_plan=baseline)
+        row = _artifact_row(dialog, first.root_logical_artifact_ids[0], "sma_3")
+        _check(dialog, row).setChecked(True)
+        plan = service.plan_database_content_edit(identity, **dialog.edit_intent())
+        dialog.set_plan(plan)
+        text = dialog.preview_summary.text()
+        assert "V3 Database revision" not in text
+        assert ("V4 Database revision" in text) == (schema == "3.0")
+        if schema == "3.0":
+            assert "value provenance" in text
+            assert "Historical revisions remain unchanged." in text
     finally:
-        dialog.close()
-        QCoreApplication.processEvents()
+        _dispose_dialog(dialog, qapp)
+
+
+
+@pytest.mark.parametrize("schema", ("1.0", "2.0"))
+def test_a2_legacy_rows_remain_removable_and_preview_tracks_columns(qapp, tmp_path, schema):
+    from tests.data_manager_test.test_database_content_management import _a2_snapshot
+    service, _artifacts, recipes, _historical = _domain(tmp_path)
+    original, collection, roots, _before = _a2_snapshot(service, recipes, schema)
+    service.delete_artifact_collection(collection.collection_id)
+    for root in roots:
+        service.delete_managed_artifact(MARKET, root)
+    snapshot, entry, baseline = _refresh(service, original.database_id)
+    dialog = DataManagerDatabaseContentDialog()
+    try:
+        dialog.set_context(entry, snapshot, mode="artifacts", baseline_plan=baseline)
+        assert dialog.source_table.rowCount() == 4
+        assert all(_check(dialog, row).isEnabled() and _check(dialog, row).isChecked() for row in range(4))
+        if schema == "1.0":
+            assert "not recorded" in dialog.source_table.item(0, 6).text()
+            assert dialog.selected_source_ids() == ()
+        column = dialog._source_values[0].output.column_name
+        _check(dialog, 0).setChecked(False)
+        assert dialog.edit_intent()["remove_columns"] == (column,)
+        plan = service.plan_database_content_edit(original.database_id, **dialog.edit_intent())
+        dialog.set_plan(plan)
+        assert dialog.apply_button.isEnabled()
+        assert "REMOVE" in tuple(dialog.preview_table.item(row, 0).text() for row in range(4))
+        _check(dialog, 1).setChecked(False)
+        assert not dialog.apply_button.isEnabled()
+        with pytest.raises(ValueError, match="does not match"):
+            dialog.set_plan(plan)
+    finally:
+        _dispose_dialog(dialog, qapp)

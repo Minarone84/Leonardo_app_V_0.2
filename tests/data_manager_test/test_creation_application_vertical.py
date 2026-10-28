@@ -129,16 +129,12 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
         assert len(materialization.root_logical_artifact_ids) == 1
         assert len(materialization.support_logical_artifact_ids) == 2
 
-        range_start = int(source_frame.ts_ms.iloc[5])
-        range_end = int(source_frame.ts_ms.iloc[-5])
         seed = _completed(
             application.submit_create_database_seed,
             MARKET,
             "Momentum Database",
             description="Headless vertical Seed",
-            selected_ohlcv_columns=("open", "close", "volume"),
-            selected_range_start_ms=range_start,
-            selected_range_end_ms=range_end,
+            selected_ohlcv_columns=("open", "high", "low", "close", "volume"),
         )
         assert _completed(application.submit_load_database_seed, seed.seed_id) == seed
         assert _completed(application.submit_inspect_database_seed, seed.seed_id) == seed
@@ -361,11 +357,26 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
             first_manifest.database_id,
             second_manifest.revision_id,
         ).values_csv == second_loaded.values_csv
-        artifact_collection_refusal = _failed(
+        deleted_artifact_collection = _completed(
             application.submit_delete_artifact_collection,
             collection.collection_id,
         )
-        assert "Database" in artifact_collection_refusal.error_message
+        assert deleted_artifact_collection == current_collection
+        artifact_collection_missing = _failed(
+            application.submit_load_artifact_collection,
+            collection.collection_id,
+        )
+        assert "not found" in artifact_collection_missing.error_message.lower()
+        assert _completed(
+            application.submit_load_database_revision,
+            first_manifest.database_id,
+            first_manifest.revision_id,
+        ).values_csv == first_loaded.values_csv
+        assert _completed(
+            application.submit_load_database_revision,
+            first_manifest.database_id,
+            second_manifest.revision_id,
+        ).values_csv == second_loaded.values_csv
     finally:
         app.shutdown()
 
@@ -392,18 +403,11 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
             batch_semantic_id
         ) == persisted_batch_recipe
         assert _completed(application.submit_load_database_seed, seed.seed_id) == seed
-        assert _completed(
-            application.submit_load_artifact_collection, collection.collection_id
-        ) == current_collection
-        assert _completed(
+        artifact_collection_missing = _failed(
             application.submit_load_artifact_collection,
             collection.collection_id,
-            reviewed_collection.revision_id,
-        ) == reviewed_collection
-        assert _completed(
-            application.submit_list_artifact_collection_revisions,
-            collection.collection_id,
-        ) == collection_history
+        )
+        assert "not found" in artifact_collection_missing.error_message.lower()
         definition = _completed(
             application.submit_load_database_definition, first_manifest.database_id
         )
@@ -427,9 +431,24 @@ def test_headless_creation_application_workflow_survives_restart(tmp_path) -> No
             second_manifest.revision_id,
         ) == second_loaded
         assert first_loaded.manifest.artifact_payload_hashes
-        assert second_loaded.manifest.collection_revision_id == (
-            current_collection.revision_id
-        )
+        assert tuple(
+            (source.collection_id, source.revision_id)
+            for source in second_loaded.manifest.collection_sources
+        ) == ((current_collection.collection_id, current_collection.revision_id),)
+        assert tuple(
+            (
+                source["source_kind"],
+                source["source_id"],
+                source["source_revision_id"],
+                tuple(source["column_names"]),
+            )
+            for source in second_loaded.manifest.selection_sources
+        ) == ((
+            "collection",
+            current_collection.collection_id,
+            current_collection.revision_id,
+            tuple(sorted(output.column_name for output in current_collection.selected_outputs)),
+        ),)
         assert first_loaded.values_csv == second_loaded.values_csv
     finally:
         restarted.shutdown()

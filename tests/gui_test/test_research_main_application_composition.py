@@ -668,6 +668,7 @@ def test_restored_commands_use_composed_environment_snapshot_and_notebook_servic
         old_notebook_manager = presenter._notebook_manager
         window.action_for_text("New Chart...").trigger()
         new_chart_dialog = presenter._new_chart_dialog
+        _wait_until(new_chart_dialog.isVisible)
 
         assert financial_tools.isVisible()
         assert studies_manager.isVisible()

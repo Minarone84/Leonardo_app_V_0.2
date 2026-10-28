@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,8 +10,9 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
+from shiboken6 import isValid
 
 from leonardo.core.core_runner import TaskProgress, TaskResult, TaskSubmission
 from leonardo.data import canonicalize_market_id
@@ -42,6 +44,14 @@ from leonardo.storage import OHLCVSidecarV1
 @pytest.fixture(scope="module")
 def qapp() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _dispose_window(window: OhlcvMaintenanceWindow, qapp: QApplication) -> None:
+    window.close()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(window, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    assert not isValid(window)
 
 
 class _FakeMaintenanceService:
@@ -487,7 +497,7 @@ def test_presenter_discovers_validates_and_refreshes(
         assert window.button_for_id("validate").isEnabled()
         assert notifications == [service.market]
     finally:
-        window.close()
+        _dispose_window(window, qapp)
 
 
 def test_presenter_plans_confirms_executes_and_refreshes_repair(
@@ -498,10 +508,12 @@ def test_presenter_plans_confirms_executes_and_refreshes_repair(
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
     notifications = []
+    accepted = []
     presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
         window,
         service,
         on_canonical_ohlcv_evidence_changed=notifications.append,
+        on_canonical_ohlcv_validation_accepted=accepted.append,
     )
     monkeypatch.setattr(window, "confirm_repair", lambda _summary: True)
     try:
@@ -527,8 +539,9 @@ def test_presenter_plans_confirms_executes_and_refreshes_repair(
         assert window.status_text().startswith("Repair accepted")
         assert not window.button_for_id("execute_repair").isEnabled()
         assert notifications == [service.market]
+        assert accepted == [service.market]
     finally:
-        window.close()
+        _dispose_window(window, qapp)
 
 
 def test_presenter_reports_source_invalid_provider_repair(
@@ -539,10 +552,12 @@ def test_presenter_reports_source_invalid_provider_repair(
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
     notifications = []
+    accepted = []
     presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
         window,
         service,
         on_canonical_ohlcv_evidence_changed=notifications.append,
+        on_canonical_ohlcv_validation_accepted=accepted.append,
     )
     monkeypatch.setattr(window, "confirm_repair", lambda _summary: True)
     try:
@@ -563,8 +578,9 @@ def test_presenter_reports_source_invalid_provider_repair(
         assert "no local correction applied" in window.status_text()
         assert not window.button_for_id("execute_repair").isEnabled()
         assert notifications == [service.market]
+        assert accepted == []
     finally:
-        window.close()
+        _dispose_window(window, qapp)
 
 
 def test_presenter_confirms_deletes_and_removes_dataset_row(
@@ -599,7 +615,7 @@ def test_presenter_confirms_deletes_and_removes_dataset_row(
         assert not window.button_for_id("delete").isEnabled()
         assert notifications == [service.market]
     finally:
-        window.close()
+        _dispose_window(window, qapp)
 
 
 def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
@@ -612,10 +628,12 @@ def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
     service.sidecar_exists = False
     window = OhlcvMaintenanceWindow()
     notifications = []
+    accepted = []
     presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
         window,
         service,
         on_canonical_ohlcv_evidence_changed=notifications.append,
+        on_canonical_ohlcv_validation_accepted=accepted.append,
     )
     monkeypatch.setattr(
         window,
@@ -647,8 +665,34 @@ def test_presenter_confirms_reconstructs_sidecar_and_refreshes(
         assert window.status_text().startswith("Sidecar created and accepted")
         assert not window.button_for_id("reconstruct_sidecar").isEnabled()
         assert notifications == [service.market]
+        assert accepted == [service.market]
     finally:
-        window.close()
+        _dispose_window(window, qapp)
+
+
+@pytest.mark.parametrize("accepted,changed", [(True, True), (True, False), (False, True), (False, False)])
+def test_validation_callbacks_order_and_acceptance(qapp, tmp_path, accepted, changed):
+    service = _FakeMaintenanceService(tmp_path)
+    window = OhlcvMaintenanceWindow()
+    calls = []
+    presenter = OhlcvMaintenancePresenter(
+        window, service,
+        on_canonical_ohlcv_evidence_changed=lambda market: calls.append(("changed", market)),
+        on_canonical_ohlcv_validation_accepted=lambda market: calls.append(("accepted", market)),
+    )
+    try:
+        window.button_for_id("validate").click()
+        value = _validation_result(tmp_path, service.market, persistence="committed")
+        value = replace(value, publication_changed=changed,
+                        sidecar=replace(value.sidecar, validation_status="ok" if accepted else "error"))
+        _, callback, dispatcher = service.callbacks["task-validation"]
+        dispatcher(lambda: callback(TaskResult("task-validation", "completed", value)))
+        QCoreApplication.processEvents()
+        expected = ([("changed", service.market)] if changed else [])
+        expected += ([("accepted", service.market)] if accepted else [])
+        assert calls == expected
+    finally:
+        _dispose_window(window, qapp)
 
 
 def test_presenter_does_not_notify_for_unchanged_failed_or_cancelled_validation(
@@ -658,15 +702,19 @@ def test_presenter_does_not_notify_for_unchanged_failed_or_cancelled_validation(
     service = _FakeMaintenanceService(tmp_path)
     window = OhlcvMaintenanceWindow()
     notifications = []
+    accepted = []
     presenter = OhlcvMaintenancePresenter(  # type: ignore[arg-type]
         window,
         service,
         on_canonical_ohlcv_evidence_changed=notifications.append,
+        on_canonical_ohlcv_validation_accepted=accepted.append,
     )
     try:
         window.button_for_id("validate").click()
         service.emit_validation_success(publication_changed=False)
         QCoreApplication.processEvents()
+        assert accepted == [service.market]
+        accepted.clear()
 
         for status in ("failed", "cancelled"):
             window.button_for_id("validate").click()
@@ -679,5 +727,6 @@ def test_presenter_does_not_notify_for_unchanged_failed_or_cancelled_validation(
             QCoreApplication.processEvents()
 
         assert notifications == []
+        assert accepted == []
     finally:
-        window.close()
+        _dispose_window(window, qapp)

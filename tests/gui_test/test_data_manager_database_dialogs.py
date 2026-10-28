@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, Qt
-from PySide6.QtWidgets import QApplication, QCheckBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QDateTimeEdit
 
 from leonardo.artifacts import OHLCVSourceFingerprintV1
 from leonardo.data import MarketId
@@ -22,6 +22,7 @@ from leonardo.data_manager import (
     SeedOnlyDatabaseCreationPlan,
 )
 from leonardo.data_manager.creation_models import deterministic_hash
+from leonardo.gui.data_manager.creation import DataManagerCreationWorkspace
 from leonardo.gui.windows.data_manager_database_creation_dialog import (
     DATA_MANAGER_DATABASE_CREATION_WINDOW_ID,
     DataManagerDatabaseCreationDialog,
@@ -125,8 +126,14 @@ def test_database_seed_dialog_form_preview_recovery_and_geometry() -> None:
         assert dialog.objectName() == DATA_MANAGER_DATABASE_SEED_WINDOW_ID
         assert dialog.width() == round(available.width() * 0.50)
         assert dialog.height() == round(available.height() * 0.65)
-        assert dialog.range_start.timeSpec() == Qt.TimeSpec.UTC
-        assert dialog.range_end.timeSpec() == Qt.TimeSpec.UTC
+        assert not dialog.findChildren(QDateTimeEdit)
+        assert not hasattr(dialog, "range_start")
+        assert not hasattr(dialog, "range_end")
+        for column in ("open", "high", "low", "close"):
+            assert dialog.column_checks[column].isChecked()
+            assert not dialog.column_checks[column].isEnabled()
+        assert dialog.column_checks["volume"].isChecked()
+        assert dialog.column_checks["volume"].isEnabled()
         assert not dialog.create_button.isEnabled()
 
         requests: list[dict[str, object]] = []
@@ -134,20 +141,25 @@ def test_database_seed_dialog_form_preview_recovery_and_geometry() -> None:
         dialog.name_edit.setText(" Invalid ")
         assert not dialog.preview_button.isEnabled()
         dialog.name_edit.setText("Base Seed")
-        dialog.column_checks["high"].setChecked(False)
-        dialog.column_checks["low"].setChecked(False)
         assert dialog.preview_button.isEnabled()
         dialog.preview_button.click()
         assert requests == [{
             "market_id": MARKET,
             "display_name": "Base Seed",
             "description": "",
-            "selected_ohlcv_columns": ("open", "close", "volume"),
-            "selected_range_start_ms": FIRST,
-            "selected_range_end_ms": LAST,
+            "selected_ohlcv_columns": ("open", "high", "low", "close", "volume"),
         }]
+        dialog.column_checks["volume"].setChecked(False)
+        dialog.preview_button.click()
+        assert requests[-1] == {
+            "market_id": MARKET, "display_name": "Base Seed", "description": "",
+            "selected_ohlcv_columns": ("open", "high", "low", "close"),
+        }
+        dialog.column_checks["volume"].setChecked(True)
 
-        plan = _seed_plan(_seed())
+        plan = _seed_plan(replace(
+            _seed(), selected_ohlcv_columns=("open", "high", "low", "close", "volume")
+        ))
         dialog.set_plan(plan)
         assert dialog.create_button.isEnabled()
         assert dialog.preview_table.rowCount() == 7
@@ -158,12 +170,57 @@ def test_database_seed_dialog_form_preview_recovery_and_geometry() -> None:
         dialog.set_busy(True)
         assert not dialog.preview_button.isEnabled()
         assert not dialog.name_edit.isEnabled()
+        assert not dialog.column_checks["volume"].isEnabled()
         assert dialog.close_button.isEnabled()
+        dialog.set_busy(False)
+        assert dialog.column_checks["volume"].isEnabled()
+        for column in ("open", "high", "low", "close"):
+            assert dialog.column_checks[column].isChecked()
+            assert not dialog.column_checks[column].isEnabled()
+        dialog.column_checks["high"].setChecked(False)
+        assert not dialog.preview_button.isEnabled()
+        dialog.column_checks["high"].setChecked(True)
+        assert dialog.preview_button.isEnabled()
         dialog.resize(640, 480)
         assert dialog.preview_table.width() > 0
     finally:
         dialog.close()
         QCoreApplication.processEvents()
+
+
+def test_legacy_seed_workspace_locks_ohlc_and_emits_no_range() -> None:
+    qapp = QApplication.instance() or QApplication([])
+    workspace = DataManagerCreationWorkspace()
+    try:
+        for key in (
+            "data_manager.creation.combo.seed_range",
+            "data_manager.creation.input.range_start",
+            "data_manager.creation.input.range_end",
+        ):
+            assert key not in workspace.controls
+        requests = []
+        workspace.action_requested.connect(lambda action, values: requests.append((action, values)))
+        workspace.controls["data_manager.input.seed_name"].setText("Legacy workspace Seed")
+        volume = workspace.controls["data_manager.creation.check.seed_volume"]
+        assert volume.isChecked() and volume.isEnabled()
+        for busy in (True, False):
+            workspace.set_busy(busy)
+            for column in ("open", "high", "low", "close"):
+                check = workspace.controls[f"data_manager.creation.check.seed_{column}"]
+                assert check.isChecked() and not check.isEnabled()
+        for include_volume in (True, False):
+            volume.setChecked(include_volume)
+            workspace.buttons["data_manager.button.creation.create_seed"].click()
+            action, payload = requests[-1]
+            assert action == "create_seed"
+            assert payload["seed_columns"] == (
+                ("open", "high", "low", "close", "volume")
+                if include_volume else ("open", "high", "low", "close")
+            )
+            assert not {"range_mode", "range_start", "range_end"} & payload.keys()
+    finally:
+        workspace.close()
+        qapp.processEvents()
 
 
 def test_seed_only_database_dialog_snapshot_selection_and_invalidation() -> None:

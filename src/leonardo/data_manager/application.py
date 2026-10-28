@@ -36,11 +36,13 @@ from .creation_models import (
     BatchArtifactPlan,
     BatchArtifactRequest,
     DatabaseContentAdditionPlan,
+    DatabaseContentEditPlan,
     DatabaseSeedCreationPlan,
+    DatabaseSeedAppendPlan,
     SeedOnlyDatabaseCreationPlan,
 )
 from .service import DataManagerService
-from .update_models import ArtifactCollectionUpdatePlan, DatabaseUpdatePlan
+from .update_models import ArtifactCollectionUpdatePlan, ArtifactUpdatePlan, DatabaseUpdatePlan
 
 
 class _CancellationGate:
@@ -82,6 +84,21 @@ class DataManagerApplicationService:
         self._service = service
         self._cancellations: dict[str, _CancellationGate] = {}
         self._lock = RLock()
+
+    def begin_session(self) -> None:
+        callback = getattr(getattr(self, "_service", None), "begin_session", None)
+        if callable(callback):
+            callback()
+
+    def end_session(self) -> None:
+        callback = getattr(getattr(self, "_service", None), "end_session", None)
+        if callable(callback):
+            callback()
+
+    def invalidate_source(self, market_id: MarketId) -> None:
+        callback = getattr(getattr(self, "_service", None), "invalidate_source", None)
+        if callable(callback):
+            callback(market_id)
 
     def submit_scan_catalog(
         self,
@@ -439,6 +456,7 @@ class DataManagerApplicationService:
         root_entry_ids: tuple[str, ...],
         *,
         create_collection: bool,
+        expected_environment_content_hash: str | None = None,
         collection_display_name: str = "",
         collection_description: str = "",
         progress_callback: ProgressCallback | None = None,
@@ -456,6 +474,7 @@ class DataManagerApplicationService:
                 create_collection=create_collection,
                 collection_display_name=collection_display_name,
                 collection_description=collection_description,
+                expected_environment_content_hash=expected_environment_content_hash,
                 before_publish=gate.begin_destructive,
             ),
             progress_callback=progress_callback,
@@ -988,8 +1007,6 @@ class DataManagerApplicationService:
         selected_ohlcv_columns: tuple[str, ...] = (
             "open", "high", "low", "close", "volume"
         ),
-        selected_range_start_ms: int | None = None,
-        selected_range_end_ms: int | None = None,
         progress_callback: ProgressCallback | None = None,
         result_callback: ResultCallback | None = None,
         callback_dispatcher: CallbackDispatcher | None = None,
@@ -1000,8 +1017,6 @@ class DataManagerApplicationService:
                 display_name,
                 description=description,
                 selected_ohlcv_columns=selected_ohlcv_columns,
-                selected_range_start_ms=selected_range_start_ms,
-                selected_range_end_ms=selected_range_end_ms,
             )
             return self._service.execute_database_seed_creation(
                 plan,
@@ -1030,8 +1045,6 @@ class DataManagerApplicationService:
         selected_ohlcv_columns: tuple[str, ...] = (
             "open", "high", "low", "close", "volume"
         ),
-        selected_range_start_ms: int | None = None,
-        selected_range_end_ms: int | None = None,
         progress_callback: ProgressCallback | None = None,
         result_callback: ResultCallback | None = None,
         callback_dispatcher: CallbackDispatcher | None = None,
@@ -1047,8 +1060,6 @@ class DataManagerApplicationService:
                 display_name,
                 description=description,
                 selected_ohlcv_columns=selected_ohlcv_columns,
-                selected_range_start_ms=selected_range_start_ms,
-                selected_range_end_ms=selected_range_end_ms,
             ),
             progress_callback=progress_callback,
             result_callback=result_callback,
@@ -1078,6 +1089,32 @@ class DataManagerApplicationService:
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
             metadata={"plan_id": plan.plan_id, "seed_id": plan.seed.seed_id},
+        )
+
+    def submit_plan_database_seed_append(
+        self, seed_id: str, *, progress_callback=None, result_callback=None, callback_dispatcher=None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.plan_database_seed_append",
+            task_name=f"Data Manager Seed append preview {seed_id}",
+            start_message="Planning Database Seed append", completed_message="Database Seed append preview ready",
+            work=lambda _reporter, _gate: self._service.plan_database_seed_append(seed_id),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher, metadata={"seed_id": seed_id},
+        )
+
+    def submit_execute_database_seed_append(
+        self, plan: DatabaseSeedAppendPlan, *, progress_callback=None, result_callback=None, callback_dispatcher=None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.execute_database_seed_append",
+            task_name=f"Data Manager Seed append {plan.seed.seed_id}",
+            start_message="Appending Database Seed", completed_message="Database Seed append completed",
+            work=lambda _reporter, gate: self._service.execute_database_seed_append(
+                plan, cancellation_requested=gate.is_cancelled, before_publish=gate.begin_destructive,
+            ),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher, metadata={"seed_id": plan.seed.seed_id, "plan_id": plan.plan_id},
         )
 
     def submit_plan_seed_only_database_creation(
@@ -1210,6 +1247,28 @@ class DataManagerApplicationService:
             metadata={"seed_id": seed_id},
         )
 
+    def submit_database_seed_newer_source_available(
+        self,
+        seed_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.database_seed_newer_source_available",
+            task_name=f"Data Manager Database Seed source advisory {seed_id}",
+            start_message="Checking Database Seed source coverage",
+            completed_message="Database Seed source advisory ready",
+            work=lambda _reporter, _gate: (
+                self._service.database_seed_newer_source_available(seed_id)
+            ),
+            progress_callback=progress_callback,
+            result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"seed_id": seed_id},
+        )
+
     def submit_delete_database_seed(
         self,
         seed_id: str,
@@ -1270,8 +1329,7 @@ class DataManagerApplicationService:
             task_name=f"Data Manager Artifact Collection {display_name}",
             start_message="Creating Artifact Collection",
             completed_message="Artifact Collection created",
-            work=lambda _reporter, gate: (
-                gate.begin_destructive(),
+            work=lambda _reporter, gate:
                 self._service.create_artifact_collection(
                     materialization,
                     display_name,
@@ -1281,8 +1339,8 @@ class DataManagerApplicationService:
                         source_recipe_collection_revision_id
                     ),
                     selected_outputs=selected_outputs,
+                    before_publish=gate.begin_destructive,
                 ),
-            )[1],
             progress_callback=progress_callback,
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
@@ -1293,10 +1351,17 @@ class DataManagerApplicationService:
         market_id: MarketId,
         root_logical_artifact_ids: Sequence[str],
         *,
+        collection_id: str | None = None,
+        expected_revision_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
         result_callback: ResultCallback | None = None,
         callback_dispatcher: CallbackDispatcher | None = None,
     ) -> TaskSubmission:
+        edit_context = (
+            {"collection_id": collection_id, "expected_revision_id": expected_revision_id}
+            if collection_id is not None or expected_revision_id is not None
+            else {}
+        )
         return self._market_submit(
             market_id,
             operation="data_manager.plan_artifact_collection_selection",
@@ -1305,7 +1370,7 @@ class DataManagerApplicationService:
             completed_message="Artifact Collection selection plan ready",
             work=lambda _reporter, _gate: (
                 self._service.plan_artifact_collection_selection(
-                    market_id, root_logical_artifact_ids
+                    market_id, root_logical_artifact_ids, **edit_context
                 )
             ),
             progress_callback=progress_callback,
@@ -1570,19 +1635,18 @@ class DataManagerApplicationService:
             task_name=f"Data Manager Artifact Collection revision {collection_id}",
             start_message=f"Revising Artifact Collection {collection_id}",
             completed_message="Artifact Collection revised",
-            work=lambda _reporter, gate: (
-                gate.begin_destructive(),
+            work=lambda _reporter, gate:
                 self._service.revise_artifact_collection(
                     collection_id,
                     display_name=display_name,
                     description=description,
                     selected_outputs=selected_outputs,
+                    before_publish=gate.begin_destructive,
                     presentation_order=presentation_order,
                     remove_root_logical_artifact_ids=(
                         remove_root_logical_artifact_ids
                     ),
                 ),
-            )[1],
             progress_callback=progress_callback,
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
@@ -1605,14 +1669,13 @@ class DataManagerApplicationService:
             task_name=f"Data Manager Artifact Collection branch add {collection_id}",
             start_message=f"Adding Artifact branches to Collection {collection_id}",
             completed_message="Artifact Collection branches added",
-            work=lambda _reporter, gate: (
-                gate.begin_destructive(),
+            work=lambda _reporter, gate:
                 self._service.add_artifact_collection_branches(
                     collection_id,
                     materialization,
                     selected_outputs=selected_outputs,
+                    before_publish=gate.begin_destructive,
                 ),
-            )[1],
             progress_callback=progress_callback,
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
@@ -1805,7 +1868,7 @@ class DataManagerApplicationService:
         result_callback: ResultCallback | None = None,
         callback_dispatcher: CallbackDispatcher | None = None,
     ) -> TaskSubmission:
-        if not isinstance(plan, DatabaseContentAdditionPlan):
+        if not isinstance(plan, (DatabaseContentAdditionPlan, DatabaseContentEditPlan)):
             raise TypeError("plan must be a DatabaseContentAdditionPlan")
         return self._market_submit(
             plan.market_id,
@@ -1827,6 +1890,45 @@ class DataManagerApplicationService:
                 "database_id": plan.database_id,
                 "plan_id": plan.plan_id,
             },
+        )
+
+    def submit_plan_database_content_edit(self, database_id, *, artifact_additions=(),
+                                          collection_additions=(), remove_sources=(), remove_outputs=(), remove_columns=(),
+                                          progress_callback=None, result_callback=None, callback_dispatcher=None):
+        return self._submit(
+            operation="data_manager.plan_database_content_edit",
+            task_name=f"Data Manager Database content edit {database_id}",
+            start_message="Planning Database content edit", completed_message="Database content edit ready",
+            work=lambda _reporter, _gate: self._service.plan_database_content_edit(
+                database_id, artifact_additions=artifact_additions, collection_additions=collection_additions,
+                remove_sources=remove_sources, remove_outputs=remove_outputs, remove_columns=remove_columns,
+            ),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher, metadata={"database_id": database_id},
+        )
+
+    def submit_execute_database_content_edit(self, plan, *, progress_callback=None,
+                                             result_callback=None, callback_dispatcher=None):
+        return self._market_submit(
+            plan.market_id, operation="data_manager.execute_database_content_edit",
+            task_name=f"Data Manager Database content edit {plan.database_id}",
+            start_message="Publishing Database content edit", completed_message="Database content edit published",
+            work=lambda _reporter, gate: self._service.execute_database_content_edit(
+                plan, cancellation_requested=gate.is_cancelled, before_publish=gate.begin_destructive,
+            ),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher, metadata={"database_id": plan.database_id, "plan_id": plan.plan_id},
+        )
+
+    def submit_delete_database(self, database_id, *, progress_callback=None,
+                               result_callback=None, callback_dispatcher=None):
+        return self._submit(
+            operation="data_manager.delete_database",
+            task_name=f"Data Manager Database deletion {database_id}",
+            start_message="Deleting Database", completed_message="Database deleted",
+            work=lambda _reporter, gate: self._service.delete_database(database_id, before_delete=gate.begin_destructive),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher, metadata={"database_id": database_id},
         )
 
     def submit_list_databases(
@@ -1956,6 +2058,41 @@ class DataManagerApplicationService:
             result_callback=result_callback,
             callback_dispatcher=callback_dispatcher,
             metadata={"collection_id": collection_id},
+        )
+
+    def submit_plan_artifact_update(
+        self, market_id: MarketId, root_logical_artifact_ids: tuple[str, ...], *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.plan_artifact_update",
+            task_name=f"Data Manager Artifact update plan {market_id.as_key()}",
+            start_message="Planning selected Artifact updates",
+            completed_message="Artifact update plan ready",
+            work=lambda _reporter, _gate: self._service.plan_artifact_update(market_id, root_logical_artifact_ids),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher,
+            metadata={"market_id": market_id.as_key(), "roots": root_logical_artifact_ids},
+        )
+
+    def submit_execute_artifact_update(
+        self, plan: ArtifactUpdatePlan, *,
+        progress_callback: ProgressCallback | None = None,
+        result_callback: ResultCallback | None = None,
+        callback_dispatcher: CallbackDispatcher | None = None,
+    ) -> TaskSubmission:
+        return self._submit(
+            operation="data_manager.execute_artifact_update",
+            task_name=f"Data Manager Artifact update {plan.market_id.as_key()}",
+            start_message="Executing reviewed Artifact update",
+            completed_message="Artifact update completed",
+            work=lambda _reporter, gate: self._service.execute_artifact_update(
+                plan, cancellation_requested=gate.is_cancelled, before_publish=gate.begin_destructive,
+            ),
+            progress_callback=progress_callback, result_callback=result_callback,
+            callback_dispatcher=callback_dispatcher, metadata={"plan_id": plan.plan_id},
         )
 
     def submit_execute_artifact_collection_update(
@@ -2101,7 +2238,13 @@ class DataManagerApplicationService:
             reporter.report(start_message, current=0, total=None)
             if destructive:
                 gate.begin_destructive()
-            value = work(reporter, gate)
+            with self._service._operation_checks(
+                progress=lambda current, total, message: reporter.report(
+                    message, current=current, total=total
+                ),
+                cancellation_requested=gate.is_cancelled,
+            ):
+                value = work(reporter, gate)
             if not destructive:
                 gate.raise_if_cancelled("publication")
             reporter.report(completed_message, current=1, total=1)

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from leonardo.research import StudyFillStyle, StudyLineStyle, StudyPresentation
+from leonardo.research import StudyFillStyle, StudyLineStyle, StudyPresentation, StudyPresentationValidationError
 
 
 _COLOR_PRESETS = (
@@ -124,6 +124,11 @@ class StudyStyleDialog(QDialog):
             tabs.addTab(page, fill_id)
             self._fill_controls[fill_id] = (color, opacity, visible)
 
+        self._validation = QLabel(self)
+        self._validation.setObjectName("research.study_style.label.validation")
+        self._validation.setWordWrap(True)
+        self._validation.hide()
+
         self.apply_button = QPushButton("Apply", self)
         self.ok_button = QPushButton("OK", self)
         self.cancel_button = QPushButton("Cancel", self)
@@ -141,6 +146,7 @@ class StudyStyleDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self._study_visible)
         layout.addWidget(tabs)
+        layout.addWidget(self._validation)
         layout.addLayout(buttons)
         self.apply_button.clicked.connect(self.apply_patch)
         self.ok_button.clicked.connect(self._apply_and_accept)
@@ -179,6 +185,8 @@ class StudyStyleDialog(QDialog):
             color.setEditText(style.color)
             opacity.setValue(style.opacity)
             visible.setChecked(style.visible)
+        self._validation.clear()
+        self._validation.hide()
 
     def build_patch(self) -> StudyStylePatch:
         lines = []
@@ -211,14 +219,21 @@ class StudyStyleDialog(QDialog):
             tuple(fills),
         )
 
-    def apply_patch(self) -> StudyStylePatch:
-        patch = self.build_patch()
+    def apply_patch(self) -> StudyStylePatch | None:
+        try:
+            patch = self.build_patch()
+        except StudyPresentationValidationError as error:
+            self._validation.setText(f"Style not applied: {error}")
+            self._validation.show()
+            return None
+        self._validation.clear()
+        self._validation.hide()
         self.patch_applied.emit(patch)
         return patch
 
     def _apply_and_accept(self) -> None:
-        self.apply_patch()
-        self.accept()
+        if self.apply_patch() is not None:
+            self.accept()
 
     def _reset_and_close(self) -> None:
         self.reset_requested.emit(self._presentation.study_id)

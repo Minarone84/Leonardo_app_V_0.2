@@ -1,559 +1,120 @@
-# Leonardo V2 Connection Suite and Historical Data Workflow
+# Leonardo V2 Connection Suite
 
-**Status:** Current operational specification
-**Updated:** 2026-08-02
-**Primary implementation:** `src/leonardo/connection/`,
-`src/leonardo/ohlcv/`, and the related GUI presenters/windows
+**Status:** Current implementation reference, after the 9 October 2026 correction audit
+**Updated:** 2026-10-09
 
-## 1. Purpose and current status
+**Development status:** Connection Suite is still incomplete and will undergo further development. Its structure can still change significantly. This document describes the current implementation, not a frozen future design.
 
-The Connection Area owns external provider capability and wire behavior.
+## Reading this documentation
 
-The current production capability is deliberately narrow:
+Read the four manuals together. They describe the implemented Connection workflow inside Leonardo, including its dependencies on Core and OHLCV. They do not define future provider, account or live-feed architecture.
 
-```text
-Bybit public historical REST
-→ historical OHLCV preflight and download
-→ canonical OHLCV persistence
-→ OHLCV validation and maintenance
-→ accepted historical datasets for Research
-```
-
-The historical workflow is implemented and Core-supervised.
-
-The top-level `ConnectionSuiteWindow` is still an honest presentation shell. Its
-provider, websocket, and download-overview tables are not connected to live
-backend projections. The real user workflow is exposed through:
-
-```text
-Connection Suite
-→ Historical Download Manager
-
-Main Window or Download Manager
-→ OHLCV Maintenance
-```
-
-This distinction is intentional and must remain visible in documentation. The
-existence of a dashboard-shaped window does not magically summon account APIs,
-websockets, or a trading gateway from the void.
-
-## 2. Area ownership
-
-| Concern | Canonical authority |
+| Document | Contents |
 |---|---|
-| Provider factory registration | `ProviderRegistry` |
-| Provider capabilities and wire behavior | Provider adapter |
-| Provider session coordination | `ConnectionApplicationService` |
-| Coarse runtime connection status | Core `ConnectionRegistry` |
-| Historical download planning/execution | `HistoricalDownloadService` |
-| Task submission/progress/cancellation | `HistoricalDownloadApplicationService` + Core |
-| OHLCV persistence | `OHLCVStore` |
-| Dataset mutation exclusion | `OHLCVDatasetOperationLocks` |
-| Canonical OHLCV validation | `CanonicalOHLCVValidator` / maintenance service |
-| Research admission | `AcceptedDatasetCatalog` |
-| GUI state and presentation | GUI windows and presenters |
+| This manual | Scope, supported behavior, user workflow, limitations and evidence |
+| [Architecture and Leonardo integration](CONNECTION_ARCHITECTURE.md) | Production composition, authorities, execution boundaries, source map and reconstruction order |
+| [Workflows and lifecycles](CONNECTION_LIFECYCLES.md) | Ordered operations, mutation points, cancellation, failures, surviving state and shutdown |
+| [Data and interface contracts](CONNECTION_DATA_CONTRACTS.md) | Identities, planning, wire behavior, persistence, events, model fields, API signatures and verification matrix |
 
-Connection owns provider semantics. Core only tracks generic connection state.
-OHLCV owns historical persistence and validation truth.
+**Visual companion:** [Connection Suite - Complete Map (PDF)](Leonardo_V2_Connection_Suite_Complete_Map.pdf).
+The map adds illustrated scope, composition, ownership, workflows, lifecycles and integration. It supplements these manuals; it does not replace them. "Complete Map" names the map of the current documented implementation, not a claim that Connection Suite is a completed product.
 
-## 3. Current architecture
+Current source and accepted tests ground this reference. Older task records and the previous August manual may describe superseded behavior. The working candidate includes accepted uncommitted changes; a Git commit identifier alone does not identify it.
+
+## 1. Purpose and scope
+
+Connection provides Leonardo with external-provider capabilities and provider-specific wire behavior. Its currently composed capability is public historical OHLCV access through Bybit REST. The user can inspect a proposed request, confirm a download, observe progress, request cancellation, and pass persisted data to OHLCV Maintenance for canonical validation.
 
 ```text
-Historical Download Manager
-→ HistoricalDownloadPresenter
-→ ConnectionApplicationService       capability queries / provider sessions
-→ HistoricalDownloadApplicationService
-→ CoreRunner / TaskManager
-→ HistoricalDownloadService
-→ BybitHistoricalProvider
-→ OHLCVStore
-→ preliminary validation and sidecar evidence
+Connection Suite navigation shell
+  -> Historical Download Manager -> review preflight -> confirm
+  -> Core-supervised historical download -> OHLCV Store
+  -> OHLCV Maintenance -> accepted dataset catalog -> Research / DMS
 ```
 
-For maintenance:
+This chain crosses several owners. Connection does not own dataset acceptance, financial calculations, Research studies, Notebooks, Workspaces or DMS objects. OHLCV Maintenance is a neighboring OHLCV workflow accessible from the manager and main window. Its placement in this guide explains the full user journey without transferring ownership.
 
-```text
-OHLCV Maintenance Window
-→ OhlcvMaintenancePresenter
-→ OHLCVMaintenanceApplicationService
-→ CoreRunner / TaskManager
-→ OHLCVMaintenanceService
-→ OHLCVStore + canonical validator
-→ AcceptedDatasetCatalog / Research cache invalidation
-```
+## 2. Implemented capability versus unfinished surfaces
 
-No GUI window calls provider methods, writes files, or owns download planning.
+| Surface or capability | Current state |
+|---|---|
+| Bybit public historical REST | Implemented; default production provider |
+| Provider capability queries and scoped sessions | Implemented through Connection services |
+| Historical request form, preflight, confirmation, task progress, Stop and recap | Wired production workflow |
+| Canonical OHLCV persistence, preliminary checks | Implemented by OHLCV services |
+| Maintenance discovery, validation, reviewed repair, sidecar reconstruction and controlled deletion | Implemented adjacent workflow; exact eligibility remains with Maintenance |
+| Connection Suite provider/account, websocket and download-overview tables | Presentation shells; no live backend projection |
+| Download task stage/output tables | Available presentation surfaces; the active presenter fills summary, progress, log and recap, not these tables |
+| Accounts, credentials, private APIs, websocket subscriptions, live reconnect, order/trading gateway | Not implemented by this Connection composition |
+| Additional production providers | Not registered by default |
+| Persistent download queue or automatic restart/resume | Not implemented |
 
-## 4. Provider registry
+Refresh and Clear Log on the Connection home window are local presentation actions. They do not refresh an exchange account or create a network connection. The Historical Download Manager navigation button is wired separately by GUI composition, even though the home shell's static footer still describes unwired backend behavior.
 
-`ProviderRegistry` stores factories rather than live provider instances.
+The incomplete areas above are a description of current scope, not an approved roadmap or a commitment to retain the present class structure. Future development requires its own decisions; this edition does not authorize changes to Leonardo's existing ownership, authority or data-lifecycle policies.
 
-Properties:
+## 3. Supported provider inputs
 
-- provider names are canonical lowercase strings;
-- duplicate provider registration is rejected;
-- each `create()` call returns a fresh provider adapter;
-- returned objects must satisfy the owner-local
-  `HistoricalOHLCVProvider` protocol;
-- capability queries may instantiate an adapter but do not open a network
-  session.
+Bybit supports `spot`, `linear` and `inverse` for standard historical klines. `options` is a canonical market type elsewhere in Leonardo but is rejected by this adapter.
 
-The default registry currently contains one provider:
+The displayed timeframes are `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `12h`, `1d`, `1w`, `1M`. Uppercase `M` means calendar month. The adapter accepts `60m` as an alias for its `1h` wire interval; this adapter alias must not be assumed to rewrite every generic MarketId or storage path.
 
-```text
-bybit
-```
+Symbols pass through Leonardo's canonical symbol normalization. This is syntactic normalization, not an exchange instrument-availability lookup. A valid-looking unavailable symbol may still fail or return no data at provider execution.
 
-## 5. Historical provider boundary
+Start and End are optional non-negative UTC epoch timestamps in milliseconds. When both are present, Start must not exceed End. Limit is a non-negative integer; blank or zero requests the provider default. Bybit's maximum is 1,000 candles per page, and larger requested values are capped. Limit controls each ordinary data page, not the number of total rows in the request.
 
-`HistoricalOHLCVProvider` defines the current Connection-to-OHLCV boundary:
+## 4. Normal user workflow
 
-```text
-name
-supported_markets()
-supported_timeframes(market)
-max_historical_ohlcv_limit(market)
-open()
-close()
-get_server_time_ms()
-oldest_historical_ohlcv_ts_ms(...)
-fetch_ohlcv_historical(...)
-```
+1. Open Connection Suite and then Historical Download Manager. Select provider, market, symbol and at least one timeframe. Select All and Clear/Deselect operate on the displayed timeframe choices.
+2. Leave dates blank for automatic history/update, or enter explicit boundaries. Press Start to prepare a non-mutating preflight. Provider calls and inspection may take time, particularly oldest-candle discovery.
+3. Review local data/evidence, planned ranges, page sizes, estimates and warnings for every timeframe. Unknown estimates are displayed as indeterminate. Local inspection warnings do not themselves mean the request is accepted for trusted use.
+4. Confirm in the preflight window. The manager submits one batch; selected timeframes run sequentially under one scoped provider session. Each dataset is identified independently by exchange, market, symbol and timeframe.
+5. Observe the task window. Stop requests cancellation of the current job. Closing the manager resets its form and cancels pending preflight, but retains any active download. Reopening and pressing Start reveals that active task rather than replacing it.
+6. Review the terminal recap and inspect Maintenance where necessary. Actual downloaded/updated datasets need canonical validation before trusted use. A genuine up-to-date automatic update preserves the prior files and validation evidence exactly.
+7. Use accepted datasets through the Research catalog or DMS. Connection does not automatically refresh open Research charts or recalculate derived objects.
 
-Provider candles are normalized into:
+## 5. Meaning of planning and completion
 
-```text
-timestamp milliseconds
-open
-high
-low
-close
-volume
-closed/open state
-```
+| Term | Exact meaning |
+|---|---|
+| `new_download` | Automatic request without local rows; discovers a lower bound and targets the latest closed candle |
+| `update_latest` | Automatic request with local rows; overlaps the last local timestamp and targets the latest closed candle |
+| `custom_range` | Start, End or both supplied; merges the requested range into existing data |
+| `up_to_date` | Automatic update whose local last timestamp is at or beyond the latest provider closed timestamp; no persistence mutation |
+| Preliminary validation | Read-only defensive feedback from the downloader; never Research acceptance |
+| Completed task | Requested execution reached its normal terminal result; does not mean canonical acceptance |
+| Accepted dataset | Final persistence and `validation_status="ok"`, with current canonical evidence verified by the consumer |
 
-Provider adapters own exchange-specific normalization, endpoint selection,
-request parameters, response parsing, rate limits, retry classification, and
-wire errors.
+All modes retrieve pages backwards from the end cursor, even though the resulting CSV is sorted ascending. Automatic updates do not search for missing earlier prefixes or repair internal gaps. Preflight is an advisory snapshot, not a dataset reservation or durable plan; execution rereads and replans under the per-dataset mutation lock.
 
-## 6. Bybit historical adapter
+The no-op classification is the explicit `up_to_date` result. It cannot be inferred from zero fetched rows: a custom-range request that fetches nothing can still finalize an existing dataset and reset acceptance to `unknown`. A no-op neither repairs nor promotes missing, invalid, stale, partial or unaccepted evidence.
 
-### 6.1 Endpoint and scope
+## 6. Data safety and authority
 
-The current default adapter uses Bybit v5 public REST endpoints. Mainnet is the
-default; a testnet base URL can be selected when constructing the adapter.
+Only `OHLCVStore` performs the physical canonical writes used by this workflow. Each persisted page merges by timestamp with incoming values winning, writes a sorted CSV, and records `partial/unknown`. Normal finalization records `committed/unknown`; Maintenance owns the later canonical validation publication. Each file is atomically replaced, but the CSV and sidecar are not one cross-file transaction.
 
-Implemented markets:
+Cancellation is not rollback. A completed write is allowed to settle before cancellation is reported. Earlier pages and earlier completed timeframes survive a later cancellation or failure. Reaching the 10,000-page safety ceiling without a completion condition now fails and preserves partial evidence; it does not declare a truncated download complete.
 
-```text
-spot
-linear
-inverse
-```
+Store, provider and UI details are specified in the [lifecycle manual](CONNECTION_LIFECYCLES.md). Do not manually edit a sidecar to bypass acceptance. Supported recovery is through the existing reviewed Maintenance operations where eligible.
 
-Options are deliberately rejected by the standard kline adapter.
+## 7. Integration with the rest of Leonardo
 
-Implemented timeframes:
+| Neighbor | Relationship |
+|---|---|
+| [Core](../core_docs/LIGHT_V2_RUNTIME.md) | One runtime for jobs, cancellation, coarse connection/window summaries, actions, audit and shutdown |
+| OHLCV | Owns planning, persistence, dataset locks, validation, repair, reconstruction and deletion |
+| [Research](../research_docs/RESEARCH_SUITE.md) | Discovers accepted OHLCV through its catalog and loader; Connection does not own charts/studies/saved Research objects |
+| [Data Manager](../data_manager_docs/DATA_MANAGER.md) | Receives actual OHLCV evidence-change and accepted-validation notifications through composition; preserves its own selected-context and object rules |
+| Runtime Manager | Shows generic tasks/connections from Core; no separate operating-system process is launched for a historical download |
 
-```text
-1m  3m  5m  15m  30m
-1h  2h  4h  6h   12h
-1d  1w  1M
-```
+## 8. Known limits and evidence
 
-`60m` is accepted as an input alias and normalized to `1h`.
+The 9 October 2026 bounded correction audit passed for four approved defects: no-op evidence preservation, retained active-task identity/stale-callback rejection, oldest-candle discovery with small page sizes, and honest page-ceiling failure. The test-lifetime cleanup also passed the formerly aborted ordered GUI sequence. The underlying historical native abort mechanism remains unidentified.
 
-Maximum page limit:
+Recorded implementation evidence: 2,890 repository tests passed and seven existing Windows symlink-privilege cases skipped; eight isolated native checks passed. The later independent package audit freshly passed 198 combined tests plus 27 probes and verified the unchanged full/native evidence without rerunning those two gates. This documentation task checks source, references, models and PDF layout; those earlier tests are not claimed as new runs here. Evidence directories are named in the architecture manual.
 
-```text
-1000 candles
-```
+Live exchange/account behavior and private/live capabilities were not validated by those generated-provider runs. The seven skips and agent-operated native checks do not constitute independent user visual acceptance.
 
-### 6.2 Session and pacing
+Two presentation limits remain explicit: cancellation recap uses the last item-cancel event, not a complete per-timeframe cancellation report; its zero-page text can say canonical validation is unknown even when cancellation of a no-op preserved previously accepted evidence. Persisted evidence, not that sentence, determines the dataset state. The old claim that the GUI always reports every completed and unfinished timeframe has been removed.
 
-The adapter owns one `aiohttp.ClientSession` per provider instance.
-
-Requests are serialized through an async lock and paced with a minimum interval
-of 0.20 seconds.
-
-### 6.3 Retry behavior
-
-The Bybit adapter performs at most four attempts for retryable transport,
-server, and rate-limit failures.
-
-It uses Bybit rate-limit reset headers when available and bounds rate-limit
-sleep to ten seconds.
-
-Permanent API errors are not retried.
-
-Failures are exposed through `HistoricalProviderRequestError` with:
-
-```text
-provider
-operation
-retryable
-attempts_exhausted
-HTTP status, when available
-provider error code, when available
-```
-
-This prevents the outer downloader from blindly retrying a permanent error or
-replaying a request after the provider adapter has already exhausted its own
-bounded policy.
-
-Cancellation during provider retry sleep propagates normally.
-
-### 6.4 Candle closure
-
-The adapter marks candles as closed or open using timeframe boundaries and
-server-time evidence. The current monthly candle is therefore not treated as a
-completed historical candle merely because an API returned a row for it.
-
-## 7. ConnectionApplicationService
-
-The application service provides:
-
-- provider names;
-- supported markets;
-- supported timeframes in canonical order;
-- async provider-session context management.
-
-### 7.1 Capability queries
-
-Capability queries use adapter-owned static knowledge and do not open network
-sessions.
-
-### 7.2 Provider sessions
-
-A session:
-
-```text
-creates a fresh provider adapter
-→ ensures a coarse ConnectionRegistry record exists
-→ marks connecting
-→ opens the provider
-→ marks connected
-→ yields the provider
-→ closes the provider
-→ marks disconnected when the last active session closes
-```
-
-The canonical runtime connection ID is currently:
-
-```text
-connection.bybit.historical_rest
-```
-
-Nested or concurrent sessions for the same provider are reference-counted. The
-connection remains `connected` until the final active session closes.
-
-If one of several concurrent sessions fails, the coarse state becomes
-`degraded`. If the only session fails, it becomes `failed`.
-
-The runtime record is a summary only. It does not own request planning, retry
-rules, or provider credentials.
-
-## 8. Historical Download Manager
-
-The Historical Download Manager is the real GUI entry point for current
-Connection functionality.
-
-It supports:
-
-- provider selection;
-- market type selection;
-- canonical symbol input;
-- one or more timeframes;
-- optional start timestamp;
-- optional end timestamp;
-- optional page limit;
-- select-all and clear-timeframe controls;
-- preflight review;
-- download confirmation;
-- task progress and cancellation;
-- result recap;
-- navigation to OHLCV Maintenance.
-
-The window owns only fields, validation-friendly presentation state, buttons,
-tables, and status text.
-
-`HistoricalDownloadPresenter` owns GUI workflow coordination and dispatches Core
-callbacks back to Qt.
-
-## 9. Download preflight
-
-Preflight runs as a Core task with operation metadata:
-
-```text
-ohlcv_preflight
-```
-
-For every selected timeframe it inspects:
-
-- canonical `MarketId`;
-- current CSV and metadata paths;
-- whether CSV and metadata exist;
-- sidecar validity;
-- local row count and timestamp range;
-- local state issues;
-- exchange oldest/youngest available timestamps;
-- planned start and end;
-- expected bars and pages;
-- provider page limit;
-- whether the dataset is already current;
-- whether execution is safe.
-
-A new download without an explicit range requires the provider to resolve the
-oldest available timestamp. If that lower bound cannot be established,
-preflight blocks execution rather than inventing a convenient historical start.
-
-## 10. Download planning modes
-
-The planner currently produces three user-relevant modes:
-
-### `new_download`
-
-Used when no local rows exist and the user did not provide a custom boundary.
-The downloader attempts to discover the oldest available provider timestamp and
-runs forward to the latest closed candle.
-
-### `update_latest`
-
-Used when local rows exist and no explicit range is provided. The last local
-timestamp becomes the starting point and the provider's latest closed candle
-becomes the target.
-
-If the local dataset is already current, the plan reports `up_to_date` with zero
-expected bars/pages.
-
-### `custom_range`
-
-Used when the user provides a start, end, or both.
-
-The requested limit is capped by the provider's maximum page limit.
-
-## 11. Download execution
-
-Download execution runs as a Core task with operation metadata:
-
-```text
-ohlcv_download
-```
-
-For a multi-timeframe batch, timeframes are processed under one provider
-session. Each target dataset uses its own canonical `MarketId` and operation
-lock.
-
-Execution provides:
-
-- batch and timeframe progress;
-- page progress;
-- bounded request timeout;
-- downloader-level retry only when the provider error remains retryable and its
-  adapter-level attempts are not already exhausted;
-- cancellation;
-- idempotent merge with existing candles;
-- canonical sort/deduplication;
-- preliminary validation;
-- atomic OHLCV/sidecar persistence through `OHLCVStore`;
-- audit evidence with correlation identity.
-
-Downloader constants currently include:
-
-```text
-30 second request timeout
-3 outer downloader attempts
-1 second linear retry backoff
-10,000 page safety ceiling
-```
-
-Provider-level retry happens inside the Bybit adapter. The outer downloader does
-not multiply retries after an adapter reports `attempts_exhausted=True`.
-
-## 12. Cancellation semantics
-
-Historical provider calls and download orchestration are asynchronous and
-respond to normal task cancellation.
-
-Completed timeframes remain reported in the cancellation recap; unfinished
-ones remain explicit.
-
-Persistence-sensitive maintenance operations use additional cancellation fences
-so cancellation cannot publish a half-completed canonical mutation.
-
-## 13. OHLCV persistence and Research acceptance
-
-A successful download writes canonical OHLCV data and sidecar evidence, then
-reports a **preliminary** validation result.
-
-Research does not accept a dataset merely because a CSV exists.
-
-Canonical Research admission requires the dataset sidecar to carry:
-
-```text
-validation_status = "ok"
-```
-
-The user flow is therefore:
-
-```text
-download or update OHLCV
-→ run canonical validation in OHLCV Maintenance
-→ dataset appears in the accepted Research catalog
-```
-
-Updating a dataset changes its fingerprint and invalidates prior Research cache
-evidence. The OHLCV maintenance application service calls
-`HistoricalDatasetLoader.invalidate()` after accepted mutation operations.
-
-## 14. OHLCV Maintenance boundary
-
-OHLCV Maintenance is not provider wire logic. It is an OHLCV Area workflow that
-uses the same Core and store authorities.
-
-Implemented operations:
-
-```text
-discovery
-validation
-deletion plan
-delete
-sidecar reconstruction plan
-sidecar reconstruction
-repair plan
-repair
-```
-
-Corresponding task metadata includes:
-
-```text
-ohlcv_validate
-ohlcv_deletion_plan
-ohlcv_delete
-ohlcv_sidecar_reconstruction_plan
-ohlcv_sidecar_reconstruct
-ohlcv_repair_plan
-ohlcv_repair
-```
-
-Dataset mutation is serialized by `OHLCVDatasetOperationLocks` so download,
-repair, delete, or reconstruction cannot independently write the same
-`MarketId` at the same time.
-
-## 15. Runtime and audit integration
-
-### TaskManager
-
-Preflight, download, validation, repair, reconstruction, and deletion appear as
-Tasks in Runtime Manager with progress, terminal status, errors, correlation
-identity, and operation metadata.
-
-### ConnectionRegistry
-
-Provider sessions create/update the coarse historical REST connection row.
-
-### ProcessManager
-
-No child operating-system process is launched. Historical work therefore does
-not create ProcessManager rows.
-
-### WindowRegistry
-
-The following long-lived windows are tracked by GUI composition:
-
-```text
-connection_suite.home.window
-historical_download_manager.window
-ohlcv_maintenance.window
-```
-
-Preflight and task windows are owned by the retained Historical Download
-presenter. They are workflow dialogs rather than separate provider authorities.
-
-### Audit
-
-Download batch start, completion, cancellation, and failure emit structured
-audit evidence. Store and maintenance operations also preserve their own
-canonical audit details.
-
-## 16. Top-level Connection Suite shell
-
-`ConnectionSuiteWindow` currently provides:
-
-- stable window and widget IDs;
-- provider/account/API table shell;
-- websocket/connection table shell;
-- historical-download overview shell;
-- activity log;
-- Refresh and Clear Log presentation actions;
-- an action that opens Historical Download Manager through GUI composition.
-
-It currently does **not**:
-
-- bind live `ConnectionRegistry` rows into its tables;
-- show real provider account state;
-- manage credentials;
-- establish persistent connections;
-- subscribe to websocket channels;
-- show live download task summaries;
-- perform provider or OHLCV work directly.
-
-Its empty-state text is therefore honest and should remain so until a bounded
-Connection dashboard task wires real read models.
-
-## 17. Not implemented
-
-The current Connection Area does not implement:
-
-- exchange credentials or private account APIs;
-- provider account management;
-- websocket market-data subscriptions;
-- persistent live connection management;
-- order or trading gateways;
-- reconnect policy for live feeds;
-- multiple production providers beyond Bybit historical REST;
-- live binding of the Connection Suite dashboard tables;
-- provider-specific GUI business logic.
-
-These are future vertical workflows, not hidden capabilities implied by empty
-widgets.
-
-## 18. Primary source map
-
-```text
-src/leonardo/connection/provider.py
-src/leonardo/connection/registry.py
-src/leonardo/connection/service.py
-src/leonardo/connection/bybit.py
-src/leonardo/ohlcv/models.py
-src/leonardo/ohlcv/download_service.py
-src/leonardo/ohlcv/application.py
-src/leonardo/ohlcv/store.py
-src/leonardo/ohlcv/maintenance.py
-src/leonardo/ohlcv/validation.py
-src/leonardo/ohlcv/operation_locks.py
-src/leonardo/gui/windows/connection_suite_window.py
-src/leonardo/gui/windows/historical_download_manager_window.py
-src/leonardo/gui/presenters/historical_download_presenter.py
-src/leonardo/gui/windows/ohlcv_maintenance_window.py
-src/leonardo/gui/presenters/ohlcv_maintenance_presenter.py
-src/leonardo/gui/composition.py
-```
-
-Primary tests:
-
-```text
-tests/connection_test/test_provider_registry.py
-tests/connection_test/test_bybit_historical_provider.py
-tests/ohlcv_test/test_download_vertical.py
-tests/ohlcv_test/test_download_acceptance_workflow.py
-tests/ohlcv_test/test_store_and_sidecar.py
-tests/ohlcv_test/test_maintenance_validation.py
-tests/ohlcv_test/test_maintenance_repair.py
-tests/ohlcv_test/test_maintenance_sidecar_reconstruction.py
-tests/ohlcv_test/test_maintenance_deletion.py
-tests/ohlcv_test/test_maintenance_performance.py
-tests/gui_test/test_historical_download_wiring_static.py
-tests/gui_test/test_download_maintenance_research_workflow.py
-tests/gui_test/test_ohlcv_maintenance_presenter.py
-```
+Current loading and merging operate on complete in-memory candle lists and rewrite the merged CSV per page. There is no compression, alternate storage format, automatic recovery, background resumption, or large-file parallel loading added by this documentation. These limitations do not invalidate the bounded correction verdict or imply authority to extend the product.

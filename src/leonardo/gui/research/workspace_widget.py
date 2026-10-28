@@ -1,6 +1,8 @@
-"""Restored adaptive workspace for up to eight Research chart panels."""
+"""Restored adaptive workspace for up to sixteen Research chart panels."""
 
 from __future__ import annotations
+
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QGridLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
@@ -43,6 +45,7 @@ class ResearchWorkspaceWidget(QWidget):
         self._scroll_area = QScrollArea(self)
         self._scroll_area.setObjectName("research_restoration.workspace.scroll")
         self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.viewport().installEventFilter(self)
         self._scroll_area.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -54,6 +57,17 @@ class ResearchWorkspaceWidget(QWidget):
         self._grid.setHorizontalSpacing(2)
         self._grid.setVerticalSpacing(2)
         self._scroll_area.setWidget(self._grid_host)
+        self._fit_pages: list[tuple[QWidget, QGridLayout]] = []
+        for page in range(2):
+            host = QWidget(self._grid_host)
+            host.setObjectName(f"research_restoration.workspace.fit_page_{page + 1}")
+            grid = QGridLayout(host)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(2)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            host.hide()
+            self._fit_pages.append((host, grid))
 
         self.empty_state_label = QLabel(EMPTY_STATE_TEXT, self)
         self.empty_state_label.setObjectName(
@@ -113,8 +127,8 @@ class ResearchWorkspaceWidget(QWidget):
             raise TypeError("chart_panel must be a ResearchChartPanel")
         if slot_id in self._panels:
             raise ValueError(f"Research chart slot {slot_id} already exists")
-        if len(self._panels) >= 8:
-            raise ValueError("Research workspace already contains eight charts")
+        if len(self._panels) >= MAX_RESEARCH_CHARTS:
+            raise ValueError("Research workspace already contains sixteen charts")
         placement = self._shell_state.register_slot(slot_id)
         self._panels[slot_id] = chart_panel
         chart_panel.setParent(self._grid_host)
@@ -172,12 +186,12 @@ class ResearchWorkspaceWidget(QWidget):
         return len(self._panels)
 
     def can_add_chart(self) -> bool:
-        return self.chart_count() < 8
+        return self.chart_count() < MAX_RESEARCH_CHARTS
 
     def next_free_slot_id(self) -> int | None:
         occupied = set(self.slot_ids())
         return next(
-            (slot_id for slot_id in range(1, 9) if slot_id not in occupied),
+            (slot_id for slot_id in range(1, MAX_RESEARCH_CHARTS + 1) if slot_id not in occupied),
             None,
         )
 
@@ -284,6 +298,8 @@ class ResearchWorkspaceWidget(QWidget):
         self._apply_height_policy(self.layout_plan())
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if watched is self._scroll_area.viewport() and event.type() == QEvent.Type.Resize:
+            self._apply_height_policy(self.layout_plan())
         slot_id = self._activation_slots.get(watched)
         if slot_id is not None and event.type() in (
             QEvent.Type.MouseButtonPress,
@@ -366,7 +382,7 @@ class ResearchWorkspaceWidget(QWidget):
             if not placement.detached
         )
         targets = tuple(
-            position for position in range(1, 9) if position not in reserved
+            position for position in range(1, MAX_RESEARCH_CHARTS + 1) if position not in reserved
         )[: len(attached)]
         for placement, target in zip(attached, targets, strict=True):
             current = self._shell_state.placement_for(placement.slot_id)
@@ -401,23 +417,34 @@ class ResearchWorkspaceWidget(QWidget):
     def _relayout(self) -> None:
         while self._grid.count():
             self._grid.takeAt(0)
+        for host, grid in self._fit_pages:
+            while grid.count():
+                grid.takeAt(0)
+            host.hide()
         plan = self.layout_plan()
-        density = (
-            "compact"
-            if self._mode == "fit_8" and plan.row_count >= 3
-            else "normal"
-        )
+        paged = self._mode == "fit_8" and plan.count > 8
+        if paged:
+            for page, (host, grid) in enumerate(self._fit_pages):
+                rows = 4 if page == 0 else plan.row_count - 4
+                for row in range(4):
+                    grid.setRowStretch(row, 1 if row < rows else 0)
+                self._grid.addWidget(host, page, 0, 1, 2)
+                host.show()
         for item in plan.items:
+            page = item.visual_index // 8 if paged else 0
+            rows = (4 if page == 0 else plan.row_count - 4) if paged else plan.row_count
+            density = "compact" if self._mode == "fit_8" and rows >= 3 else "normal"
             self._panels[item.slot_id].set_workspace_density(density)
-            self._grid.addWidget(
+            grid = self._fit_pages[page][1] if paged else self._grid
+            grid.addWidget(
                 self._panels[item.slot_id],
-                item.row,
+                item.row - page * 4,
                 item.column,
                 item.row_span,
                 item.column_span,
             )
-        for row in range(4):
-            self._grid.setRowStretch(row, 1 if row < plan.row_count else 0)
+        for row in range(MAX_RESEARCH_CHARTS // 2):
+            self._grid.setRowStretch(row, 1 if row < (2 if paged else plan.row_count) else 0)
         self._grid.setColumnStretch(0, 1)
         self._grid.setColumnStretch(1, 1)
         self.empty_state_label.setText(
@@ -438,6 +465,9 @@ class ResearchWorkspaceWidget(QWidget):
         viewport_height = self._scroll_area.viewport().height()
         if viewport_height <= 0:
             viewport_height = self.height()
+        paged = self._mode == "fit_8" and plan.count > 8
+        for host, _grid in self._fit_pages:
+            host.setMinimumHeight(max(0, viewport_height) if paged else 0)
         self._grid_host.setMinimumHeight(
-            max(0, int(viewport_height * plan.minimum_height_ratio))
+            max(0, int(viewport_height * plan.minimum_height_ratio) + (2 if paged else 0))
         )

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from dataclasses import replace
+import pytest
 
 from leonardo.research.workspace_snapshot import ResearchWorkspaceSnapshotV1
 
@@ -22,6 +24,36 @@ def test_frozen_append_position_plan_matches_authority():
         ("chart_002", 2),
         ("chart_001", 3),
     )
+
+
+def test_sixteen_chart_snapshot_store_and_append_capacity(tmp_path):
+    from leonardo.research.workspace_snapshot import ResearchWorkspaceSnapshotValidationError
+    from leonardo.research.workspace_snapshot_service import ResearchWorkspaceSnapshotService
+    from leonardo.research.workspace_snapshot_store import ResearchWorkspaceSnapshotStore
+    from tests.research_test.test_workspace_snapshot_store import _draft
+
+    original = _snapshot()
+    charts = tuple(replace(original.charts[0], chart_ref=f"chart_{slot:03}", workspace_position=slot)
+                   for slot in range(1, 17))
+    snapshot = ResearchWorkspaceSnapshotV1.build(
+        snapshot_id=original.snapshot_id, display_name=original.display_name,
+        description=original.description, created_at_utc=original.created_at_utc,
+        updated_at_utc=original.updated_at_utc,
+        workspace=replace(original.workspace, active_chart_ref="chart_016"), charts=charts)
+    store = ResearchWorkspaceSnapshotStore(tmp_path / "snapshots")
+    saved = store.create(_draft(snapshot))
+    assert store.load(saved.snapshot_id) == saved
+    assert store.list_summaries()[0].chart_count == 16
+    assert ResearchWorkspaceSnapshotV1.from_dict(snapshot.to_dict()) == snapshot
+    service = object.__new__(ResearchWorkspaceSnapshotService)
+    assert tuple(position for _, position in service.plan_append_positions(snapshot, ())) == tuple(range(1, 17))
+    assert tuple(position for _, position in service.plan_append_positions(original, range(1, 15))) == (15, 16)
+    with pytest.raises(ResearchWorkspaceSnapshotValidationError, match="capacity"):
+        service.plan_append_positions(original, range(1, 16))
+    with pytest.raises(ResearchWorkspaceSnapshotValidationError):
+        replace(charts[-1], workspace_position=17)
+    with pytest.raises(ResearchWorkspaceSnapshotValidationError, match="sixteen"):
+        replace(snapshot, charts=charts + (charts[0],))
 
 
 class _Link:

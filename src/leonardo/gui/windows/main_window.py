@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from functools import partial
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QGroupBox,
@@ -46,7 +46,7 @@ RuntimeManagerWindowFactory = Callable[[], QWidget]
 RuntimeSnapshotProvider = Callable[[], object]
 ShellActionIntentCallback = Callable[[str], str | None]
 DownloadActionIntentCallback = ShellActionIntentCallback
-MainWindowCloseCallback = Callable[[], None]
+MainWindowCloseCallback = Callable[[], bool | None]
 SettingsDialogFactory = Callable[[QWidget], QDialog]
 DisplayTimeZoneChangedCallback = Callable[[], None]
 _DOWNLOAD_SHELL_ACTION_IDS = frozenset(
@@ -106,6 +106,8 @@ class LeonardoMainWindow(QMainWindow):
     injected factories/callbacks. The class does not call provider, storage,
     chart, trading, or domain execution services.
     """
+
+    closed = Signal()
 
     def __init__(
         self,
@@ -240,9 +242,12 @@ class LeonardoMainWindow(QMainWindow):
 
         self.close_requested_locally = True
         if self._on_close_requested is not None:
-            self._on_close_requested()
+            if self._on_close_requested() is False:
+                event.ignore()
+                return
         if self._runtime_manager_window is not None:
             self._runtime_manager_window.close()
+        self.closed.emit()
         super().closeEvent(event)
 
     def _apply_window_defaults(self) -> None:

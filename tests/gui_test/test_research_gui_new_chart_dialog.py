@@ -389,10 +389,11 @@ def test_workspace_next_free_logical_slot_and_capacity(qapp: QApplication) -> No
             panels.append(panel)
             workspace.add_chart(slot_id, panel)
         assert workspace.next_free_slot_id() == 3
-        for slot_id in (3, 5, 6, 7, 8):
+        for slot_id in (3, *range(5, 17)):
             fixture = build_chart_fixture_for_market(
                 RESEARCH_GUI_DATASET_FIXTURES[0].market_id,
-                slot_id=slot_id,
+                # The historical fixture builder has eight independent variants.
+                slot_id=(slot_id - 1) % 8 + 1,
             )
             panel = _panel(fixture)
             panels.append(panel)

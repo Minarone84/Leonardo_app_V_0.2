@@ -8,42 +8,30 @@ from PySide6.QtCore import QObject, QTimer
 
 
 class DataManagerReconciliationCoordinator(QObject):
-    """Own the window-local 60-second reconciliation timer."""
+    """Own the one-shot Data Manager reconciliation trigger used on open."""
 
     def __init__(
         self,
         *,
         refresh_when_opened: Callable[[], None],
-        refresh_on_timer: Callable[[], None],
-        is_busy: Callable[[], bool],
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._refresh_when_opened = refresh_when_opened
-        self._refresh_on_timer = refresh_on_timer
-        self._is_busy = is_busy
-        self._timer = QTimer(self)
-        self._timer.setInterval(60_000)
-        self._timer.timeout.connect(self._on_timeout)
         self._started = False
 
     @property
     def active(self) -> bool:
-        return self._timer.isActive()
+        return self._started
 
     def start(self) -> None:
         if self._started:
             return
         self._started = True
         self._refresh_when_opened()
-        self._timer.start()
 
     def stop(self) -> None:
-        self._timer.stop()
-
-    def _on_timeout(self) -> None:
-        if not self._is_busy():
-            self._refresh_on_timer()
+        self._started = False
 
 
 def schedule_post_show_reconciliation(context: object) -> bool:

@@ -1,4 +1,4 @@
-"""Thread-safe membership state for the eight-slot Research workspace."""
+"""Thread-safe membership state for the sixteen-slot Research workspace."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from leonardo.data import MarketId
 from leonardo.research.session import ChartSessionState
 
 
-MAX_RESEARCH_CHARTS = 8
+MAX_RESEARCH_CHARTS = 16
 
 
 class ResearchWorkspaceStateError(RuntimeError):
@@ -75,7 +75,7 @@ class ResearchWorkspaceState:
             self._ensure_active_locked()
             if len(self._sessions) >= MAX_RESEARCH_CHARTS:
                 raise ResearchWorkspaceStateError(
-                    "Research workspace already contains eight charts"
+                    "Research workspace already contains sixteen charts"
                 )
             slot_id = next(
                 slot_id
@@ -173,5 +173,5 @@ class ResearchWorkspaceState:
     @staticmethod
     def _require_slot_id(slot_id: int) -> int:
         if type(slot_id) is not int or not 1 <= slot_id <= MAX_RESEARCH_CHARTS:
-            raise ResearchWorkspaceStateError("slot_id must be an integer from 1 through 8")
+            raise ResearchWorkspaceStateError("slot_id must be an integer from 1 through 16")
         return slot_id

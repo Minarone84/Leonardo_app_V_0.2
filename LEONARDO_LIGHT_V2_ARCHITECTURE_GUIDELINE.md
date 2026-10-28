@@ -308,9 +308,18 @@ Deleting a collection does not automatically delete its members.
 
 ### 9.3 Database Seeds
 
-A Database Seed is an immutable reviewed selection of accepted OHLCV source/range evidence used to establish a Database base.
+A newly created Database Seed owns a reviewed snapshot of the full accepted
+OHLCV source, with mandatory Open/High/Low/Close and optional Volume. Creation
+does not trim the source to a user-selected range.
 
-Seed identity and provenance remain explicit.
+A Seed may remain a historical snapshot. Explicit append extends its coverage
+while preserving every existing row and cell; incompatible or shorter source
+coverage never authorizes shrinking it.
+
+Legacy V1 Seeds retain their reference-based representation. V2 Seeds own their
+saved values. This distinction does not introduce migration or a new schema.
+Seed identity, source provenance and the existing persistence authority remain
+explicit.
 
 ### 9.4 Database ownership
 

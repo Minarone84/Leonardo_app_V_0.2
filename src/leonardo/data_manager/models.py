@@ -23,7 +23,9 @@ from .creation_models import (
     DatabaseDefinitionV1,
     DatabaseRevisionManifestV1,
     DatabaseRevisionManifestV2,
+    DatabaseRevisionManifestV3,
     DatabaseSeedV1,
+    DatabaseSeedV2,
 )
 
 
@@ -1285,9 +1287,31 @@ class DataManagerManagedArtifactCatalog:
 
 
 @dataclass(frozen=True, slots=True)
+class DataManagerDatabaseSeedStatus:
+    seed_id: str
+    valid: bool
+    rejection_reason: str = ""
+    newer_source_available: bool | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.seed_id, str) or not self.seed_id.strip():
+            raise ValueError("seed_id must be a non-empty string")
+        _require_validity(self.valid, self.rejection_reason)
+        if self.newer_source_available is not None and type(
+            self.newer_source_available
+        ) is not bool:
+            raise TypeError("newer_source_available must be bool or None")
+
+
+@dataclass(frozen=True, slots=True)
 class DataManagerDatabaseCatalogEntry:
     definition: DatabaseDefinitionV1
-    current_manifest: DatabaseRevisionManifestV1 | DatabaseRevisionManifestV2 | None
+    current_manifest: (
+        DatabaseRevisionManifestV1
+        | DatabaseRevisionManifestV2
+        | DatabaseRevisionManifestV3
+        | None
+    )
     revision_count: int
     currentness: object | None
     valid: bool = True
@@ -1301,7 +1325,7 @@ class DataManagerDatabaseCatalogEntry:
         if self.current_manifest is not None:
             if not isinstance(
                 self.current_manifest,
-                (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2),
+                (DatabaseRevisionManifestV1, DatabaseRevisionManifestV2, DatabaseRevisionManifestV3),
             ):
                 raise TypeError("current_manifest must be a Database revision manifest")
             if self.current_manifest.database_id != self.definition.database_id:
@@ -1324,9 +1348,10 @@ class DataManagerProductCatalogSnapshot:
     recipe_collections: DataManagerRecipeCollectionCatalog
     managed_artifacts: DataManagerManagedArtifactCatalog
     artifact_collections: tuple[ArtifactCollectionRevisionV1, ...]
-    database_seeds: tuple[DatabaseSeedV1, ...]
+    database_seeds: tuple[DatabaseSeedV1 | DatabaseSeedV2, ...]
     databases: tuple[DataManagerDatabaseCatalogEntry, ...]
     latest_reconciliation: object
+    database_seed_statuses: tuple[DataManagerDatabaseSeedStatus, ...] = ()
 
     def __post_init__(self) -> None:
         from .update_models import DataManagerReconciliationSnapshot
@@ -1361,12 +1386,18 @@ class DataManagerProductCatalogSnapshot:
         collections = tuple(self.artifact_collections)
         seeds = tuple(self.database_seeds)
         databases = tuple(self.databases)
+        seed_statuses = tuple(self.database_seed_statuses)
         if not all(isinstance(item, ArtifactCollectionRevisionV1) for item in collections):
             raise TypeError("artifact_collections contain invalid values")
-        if not all(isinstance(item, DatabaseSeedV1) for item in seeds):
+        if not all(isinstance(item, (DatabaseSeedV1, DatabaseSeedV2)) for item in seeds):
             raise TypeError("database_seeds contain invalid values")
         if not all(isinstance(item, DataManagerDatabaseCatalogEntry) for item in databases):
             raise TypeError("databases contain invalid values")
+        if not all(isinstance(item, DataManagerDatabaseSeedStatus) for item in seed_statuses):
+            raise TypeError("database_seed_statuses contain invalid values")
+        seed_ids = tuple(item.seed_id for item in seed_statuses)
+        if len(seed_ids) != len(set(seed_ids)):
+            raise ValueError("database_seed_statuses must have unique seed IDs")
         object.__setattr__(
             self,
             "artifact_collections",
@@ -1381,6 +1412,11 @@ class DataManagerProductCatalogSnapshot:
             self,
             "databases",
             tuple(sorted(databases, key=lambda item: (item.definition.display_name.casefold(), item.definition.database_id))),
+        )
+        object.__setattr__(
+            self,
+            "database_seed_statuses",
+            tuple(sorted(seed_statuses, key=lambda item: item.seed_id)),
         )
 
 
@@ -1397,6 +1433,7 @@ class DataManagerArtifactMaterializationResult:
     reused_version_keys: tuple[ManagedArtifactVersionKey, ...]
     advanced_logical_artifact_ids: tuple[str, ...]
     managed_artifacts: tuple[DataManagerManagedArtifactEntry, ...]
+    verified_artifact_metadata: tuple[object, ...] = field(default=(), compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _sha(self.plan_id, "plan_id")
@@ -1476,6 +1513,33 @@ class DataManagerArtifactMaterializationResult:
                 "advanced logical Artifact IDs must belong to managed_artifacts"
             )
         object.__setattr__(self, "managed_artifacts", managed)
+        from leonardo.artifacts import ArtifactMetadataV1
+        verified = tuple(self.verified_artifact_metadata)
+        by_id = {item.artifact_id: item for item in managed}
+        seen = set()
+        for metadata in verified:
+            if not isinstance(metadata, ArtifactMetadataV1):
+                raise TypeError("verified_artifact_metadata must contain Artifact metadata")
+            entry = by_id.get(metadata.artifact_id)
+            if (entry is None or metadata.artifact_id in seen
+                    or (
+                        metadata.source_ohlcv.market_id, metadata.source_ohlcv.row_count,
+                        metadata.source_ohlcv.first_timestamp_ms, metadata.source_ohlcv.last_timestamp_ms,
+                    ) != (
+                        self.source_ohlcv.market_id, self.source_ohlcv.row_count,
+                        self.source_ohlcv.first_timestamp_ms, self.source_ohlcv.last_timestamp_ms,
+                    )
+                    or (metadata.artifact_id in self.created_artifact_ids
+                        and metadata.source_ohlcv != self.source_ohlcv)
+                    or metadata.recipe.market_id != market
+                    or metadata.recipe.tool_key != entry.tool_key
+                    or metadata.recipe.output_names != entry.output_names
+                    or metadata.row_count != entry.row_count
+                    or metadata.first_timestamp_ms != entry.first_timestamp_ms
+                    or metadata.last_timestamp_ms != entry.last_timestamp_ms):
+                raise ValueError("checked Artifact evidence does not match materialization")
+            seen.add(metadata.artifact_id)
+        object.__setattr__(self, "verified_artifact_metadata", verified)
 
 
 def _dataset_key(item: DataManagerDatasetEntry) -> tuple[object, ...]:

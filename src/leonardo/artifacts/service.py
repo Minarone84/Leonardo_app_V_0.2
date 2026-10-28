@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -12,6 +14,7 @@ import pandas as pd
 from leonardo.data import MarketId, canonicalize_market_id
 from leonardo.financial_tools import (
     FinancialToolCalculationResult,
+    get_financial_tool_spec,
 )
 from leonardo.ohlcv.store import OHLCVStore
 
@@ -55,6 +58,9 @@ from .serialization import (
     encode_values_csv,
     sha256_bytes,
 )
+
+
+_OMITTED_DESCRIPTION = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +125,37 @@ class ArtifactService:
         self._ohlcv_store = OHLCVStore(self._historical_root)
         self._store = _CanonicalArtifactStore(self._historical_root)
         self._mutation_lock = RLock()
+        self._dms_checks = ContextVar("dms_artifact_checks", default=None)
+
+    @contextmanager
+    def _dms_operation(self, source_lookup):
+        existing = self._dms_checks.get()
+        if existing is not None:
+            yield existing
+            return
+        checks = {"source": source_lookup, "artifacts": {}}
+        token = self._dms_checks.set(checks)
+        try:
+            yield checks
+        finally:
+            self._dms_checks.reset(token)
+
+    def source_metadata(self, market_id: MarketId) -> OHLCVSourceFingerprintV1:
+        """Read accepted source identity, never the OHLCV payload."""
+        market = _require_market(market_id)
+        path = self._ohlcv_store.sidecar_path(market)
+        try:
+            before = path.read_bytes()
+            sidecar = self._ohlcv_store.read_sidecar(market)
+            if path.read_bytes() != before or sidecar.market_id != market:
+                raise ArtifactLineageError("OHLCV metadata changed during capture")
+            return OHLCVSourceFingerprintV1(
+                market, sidecar.file_sha256, sha256_bytes(before), sidecar.row_count,
+                sidecar.first_timestamp_ms, sidecar.last_timestamp_ms,
+                sidecar.persistence_status, sidecar.validation_status, sidecar.schema_version,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise ArtifactLineageError(f"OHLCV metadata unavailable for {market.as_key()}: {exc}") from exc
 
     def capture_accepted_source(
         self, market_id: MarketId
@@ -126,6 +163,113 @@ class ArtifactService:
         market = _require_market(market_id)
         source, _timestamps = self._capture_accepted_ohlcv(market)
         return OHLCVSourceFingerprintV1.from_dict(source.to_dict())
+
+    def load_artifact_metadata(self, market_id: MarketId, artifact_id: str) -> ArtifactMetadataV1:
+        market = _require_market(market_id)
+        directories = self._store.find_artifact_dirs(market, artifact_id)
+        if len(directories) != 1:
+            raise ArtifactLineageError(f"Artifact must have one canonical directory: {artifact_id}")
+        return self._load_artifact_metadata_directory(market, directories[0])
+
+    def _load_artifact_metadata_directory(self, market, directory):
+        metadata = ArtifactMetadataV1.from_dict(decode_canonical_json(
+            self._store.read_artifact_metadata_bytes(directory), context="artifact metadata"
+        ))
+        if (metadata.recipe.market_id != market
+                or metadata.recipe.kind != directory.parent.parent.name
+                or metadata.recipe.tool_key != directory.parent.name
+                or metadata.artifact_id != directory.name):
+            raise ArtifactValidationError("artifact content does not match canonical path")
+        return metadata
+
+    def list_artifacts_metadata(
+        self,
+        market_id: MarketId,
+        *,
+        kind: str | None = None,
+        tool_key: str | None = None,
+    ) -> tuple[ArtifactSummary, ...]:
+        market = _require_market(market_id)
+        summaries: list[ArtifactSummary] = []
+        for directory in self._store.iter_artifact_dirs(market, kind=kind, tool_key=tool_key):
+            path_kind = directory.parent.parent.name
+            path_tool = directory.parent.name
+            try:
+                metadata = self._load_artifact_metadata_directory(market, directory)
+                summaries.append(_artifact_summary(metadata))
+            except Exception as exc:
+                summaries.append(
+                    ArtifactSummary(
+                        market_id=market,
+                        artifact_id=directory.name,
+                        recipe_id="",
+                        tool_key=path_tool,
+                        kind=path_kind,
+                        output_names=(),
+                        row_count=0,
+                        first_timestamp_ms=0,
+                        last_timestamp_ms=0,
+                        created_at_utc=None,
+                        valid=False,
+                        rejection_reason=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+        return tuple(sorted(summaries, key=lambda item: (_sort_time(item.created_at_utc), item.artifact_id)))
+
+    def list_managed_artifacts_metadata(
+        self, market_id: MarketId
+    ) -> tuple[ManagedArtifactSummary, ...]:
+        market = _require_market(market_id)
+        summaries: list[ManagedArtifactSummary] = []
+        for directory in self._store.iter_logical_artifact_dirs(market):
+            logical_id = directory.name
+            try:
+                head = self.load_artifact_head(market, logical_id)
+                record = self.load_artifact_version(
+                    market, logical_id, head.artifact_id
+                )
+                versions = self.list_artifact_versions(market, logical_id)
+                _validate_managed_version_chain(
+                    logical_id, versions, head_artifact_id=head.artifact_id
+                )
+                metadata = self.load_artifact_metadata(market, head.artifact_id)
+                if metadata.artifact_id != record.artifact_id:
+                    raise ArtifactLineageError(
+                        "managed Artifact metadata disagrees with version record"
+                    )
+                if metadata.recipe.market_id != record.market_id:
+                    raise ArtifactLineageError(
+                        "managed Artifact MarketId disagrees with version record"
+                    )
+                if record.previous_artifact_id is not None:
+                    previous = self.load_artifact_version(
+                        market, logical_id, record.previous_artifact_id
+                    )
+                    if previous.logical_artifact_id != logical_id:
+                        raise ArtifactLineageError(
+                            "previous version belongs to another logical Artifact"
+                        )
+                summaries.append(_managed_summary(record, metadata))
+            except (ArtifactError, OSError) as exc:
+                summaries.append(
+                    ManagedArtifactSummary(
+                        logical_id,
+                        "",
+                        market,
+                        "",
+                        None,
+                        "",
+                        "",
+                        (),
+                        0,
+                        0,
+                        0,
+                        None,
+                        False,
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
+        return tuple(sorted(summaries, key=lambda item: item.logical_artifact_id))
 
     def load_artifact_by_id(
         self, market_id: MarketId, artifact_id: str
@@ -145,7 +289,7 @@ class ArtifactService:
         *,
         source_artifacts: Sequence[ArtifactSourceRefV1] = (),
         display_name: str | None = None,
-        description: str = "",
+        description: str | object = _OMITTED_DESCRIPTION,
         created_at_utc: datetime | None = None,
     ) -> RecipeSaveResult:
         market = _require_market(market_id)
@@ -164,6 +308,8 @@ class ArtifactService:
             display_name=display,
             description=normalized_description,
             created_at_utc=created,
+            explicit_display_name=display_name is not None,
+            explicit_description=description is not _OMITTED_DESCRIPTION,
         )
 
     def save_calculation(
@@ -173,7 +319,7 @@ class ArtifactService:
         *,
         source_artifacts: Sequence[ArtifactSourceRefV1] = (),
         display_name: str | None = None,
-        description: str = "",
+        description: str | object = _OMITTED_DESCRIPTION,
         created_at_utc: datetime | None = None,
     ) -> ArtifactSaveResult:
         market = _require_market(market_id)
@@ -220,6 +366,8 @@ class ArtifactService:
                 display_name=display,
                 description=normalized_description,
                 created_at_utc=created,
+                explicit_display_name=display_name is not None,
+                explicit_description=description is not _OMITTED_DESCRIPTION,
             )
             recipe = recipe_result.recipe
             identity_payload = artifact_identity_payload(
@@ -440,7 +588,7 @@ class ArtifactService:
         source_metadata: Sequence[ArtifactMetadataV1] = (),
         previous_artifact_id: str | None = None,
         display_name: str | None = None,
-        description: str = "",
+        description: str | object = _OMITTED_DESCRIPTION,
         created_at_utc: datetime | None = None,
     ) -> PreparedManagedArtifact:
         market = _require_market(market_id)
@@ -495,8 +643,14 @@ class ArtifactService:
             metadata = metadata_by_id[ref.artifact_id]
             if metadata.recipe.market_id != market:
                 raise ArtifactLineageError("source Artifact belongs to another MarketId")
-            if metadata.source_ohlcv != expected_source:
-                raise ArtifactLineageError("source Artifact OHLCV lineage is not exact")
+            if (
+                metadata.source_ohlcv.market_id, metadata.source_ohlcv.row_count,
+                metadata.source_ohlcv.first_timestamp_ms, metadata.source_ohlcv.last_timestamp_ms,
+            ) != (
+                expected_source.market_id, expected_source.row_count,
+                expected_source.first_timestamp_ms, expected_source.last_timestamp_ms,
+            ):
+                raise ArtifactLineageError("source Artifact OHLCV coverage is incompatible")
             if ref.output_name not in metadata.recipe.output_names:
                 raise ArtifactLineageError(
                     f"source artifact {ref.artifact_id} has no output {ref.output_name!r}"
@@ -518,8 +672,11 @@ class ArtifactService:
                 market, recipe.kind, recipe.tool_key, recipe.recipe_id
             )
             if (
-                existing_recipe.display_name != recipe.display_name
-                or existing_recipe.description != recipe.description
+                (display_name is not None and existing_recipe.display_name != recipe.display_name)
+                or (
+                    description is not _OMITTED_DESCRIPTION
+                    and existing_recipe.description != recipe.description
+                )
             ):
                 raise ArtifactIdentityCollisionError(
                     f"recipe identity collision: {recipe.recipe_id}"
@@ -630,6 +787,59 @@ class ArtifactService:
             raise ArtifactValidationError("Artifact head identity does not match path")
         return head
 
+    def restore_missing_managed_artifact_head(
+        self,
+        market_id: MarketId,
+        logical_artifact_id: str,
+        *,
+        before_publish: Callable[[], None] | None = None,
+    ) -> ArtifactHeadV1:
+        """Restore only an absent head from the unique surviving version tip."""
+        market = _require_market(market_id)
+        logical_id = _require_sha(logical_artifact_id, "logical_artifact_id")
+        with self._mutation_lock:
+            path = self._store.head_path(market, logical_id)
+            if self._store.read_optional_bytes(path) is not None:
+                raise ArtifactLineageError("managed Artifact head already exists")
+            versions = self._load_exact_managed_artifact_versions(
+                market, logical_id, head_required=False
+            )
+            predecessors = {
+                record.previous_artifact_id
+                for record in versions
+                if record.previous_artifact_id is not None
+            }
+            tips = {record.artifact_id for record in versions} - predecessors
+            if len(tips) != 1:
+                raise ArtifactLineageError("managed Artifact chain has no unique tip")
+            tip_id = next(iter(tips))
+            _validate_managed_version_chain(
+                logical_id, versions, head_artifact_id=tip_id
+            )
+            tip = next(record for record in versions if record.artifact_id == tip_id)
+            loaded = self.load_artifact_by_id(market, tip_id)
+            if (
+                loaded.metadata.artifact_id != tip.artifact_id
+                or loaded.metadata.recipe.market_id != tip.market_id
+                or loaded.metadata.source_ohlcv.market_id != tip.market_id
+            ):
+                raise ArtifactLineageError(
+                    "managed Artifact tip metadata disagrees with version record"
+                )
+            head = ArtifactHeadV1(logical_id, tip_id, tip.created_at_utc)
+            if before_publish is not None:
+                before_publish()
+            # The callback can re-enter this service; never overwrite a head.
+            if self._store.read_optional_bytes(path) is not None:
+                raise ArtifactLineageError("managed Artifact head already exists")
+            try:
+                self._store.replace_head(path, head.canonical_json_bytes())
+            except Exception:
+                # replace_head may fail after os.replace has published the bytes.
+                self._store.delete_head(path)
+                raise
+            return head
+
     def load_artifact_version(
         self,
         market_id: MarketId,
@@ -674,7 +884,7 @@ class ArtifactService:
         )
 
     def _load_exact_managed_artifact_versions(
-        self, market: MarketId, logical_id: str
+        self, market: MarketId, logical_id: str, *, head_required: bool = True
     ) -> tuple[ArtifactVersionRecordV1, ...]:
         head_path = self._store.head_path(market, logical_id)
         logical_root = head_path.parent
@@ -688,8 +898,8 @@ class ArtifactService:
                 self._store._assert_safe(logical_root / io_entry.name)
             if (
                 {entry.name for entry in logical_entries}
-                != {"head.json", "versions"}
-                or not _io_path(head_path).is_file()
+                != ({"head.json", "versions"} if head_required else {"versions"})
+                or (head_required and not _io_path(head_path).is_file())
                 or not _io_path(versions_root).is_dir()
             ):
                 raise ArtifactLineageError(
@@ -1310,6 +1520,8 @@ class ArtifactService:
         display_name: str,
         description: str,
         created_at_utc: datetime,
+        explicit_display_name: bool,
+        explicit_description: bool,
     ) -> RecipeSaveResult:
         with self._mutation_lock:
             return self._save_recipe_locked(
@@ -1319,6 +1531,8 @@ class ArtifactService:
                 display_name=display_name,
                 description=description,
                 created_at_utc=created_at_utc,
+                explicit_display_name=explicit_display_name,
+                explicit_description=explicit_description,
             )
 
     def _save_recipe_locked(
@@ -1330,6 +1544,8 @@ class ArtifactService:
         display_name: str,
         description: str,
         created_at_utc: datetime,
+        explicit_display_name: bool,
+        explicit_description: bool,
     ) -> RecipeSaveResult:
         payload = recipe_identity_payload(
             market_id=market,
@@ -1344,7 +1560,10 @@ class ArtifactService:
         path = self._store.recipe_path(market, result.kind, result.tool_key, recipe_id)
         if path.is_file():
             existing = self.load_recipe(market, result.kind, result.tool_key, recipe_id)
-            if existing.display_name != display_name or existing.description != description:
+            if (
+                (explicit_display_name and existing.display_name != display_name)
+                or (explicit_description and existing.description != description)
+            ):
                 raise ArtifactIdentityCollisionError(f"recipe identity collision: {recipe_id}")
             return RecipeSaveResult(recipe=existing, path=path, created=False)
         recipe = ArtifactRecipeV1(
@@ -1364,6 +1583,9 @@ class ArtifactService:
         return RecipeSaveResult(recipe=recipe, path=path, created=created)
 
     def _capture_ohlcv(self, market: MarketId) -> OHLCVSourceFingerprintV1:
+        checks = self._dms_checks.get()
+        if checks is not None:
+            return checks["source"](market)[0]
         csv_path = self._ohlcv_store.csv_path(market)
         sidecar_path = self._ohlcv_store.sidecar_path(market)
         if not csv_path.is_file():
@@ -1402,6 +1624,9 @@ class ArtifactService:
     def _capture_accepted_ohlcv(
         self, market: MarketId
     ) -> tuple[OHLCVSourceFingerprintV1, tuple[int, ...]]:
+        checks = self._dms_checks.get()
+        if checks is not None:
+            return checks["source"](market)
         first = self._capture_ohlcv(market)
         try:
             timestamps = tuple(candle.ts_ms for candle in self._ohlcv_store.read(market))
@@ -1484,9 +1709,15 @@ class ArtifactService:
             raise ArtifactLineageError(
                 "source Artifact belongs to another MarketId"
             )
-        if metadata.source_ohlcv != expected_source:
+        if (
+            metadata.source_ohlcv.market_id, metadata.source_ohlcv.row_count,
+            metadata.source_ohlcv.first_timestamp_ms, metadata.source_ohlcv.last_timestamp_ms,
+        ) != (
+            expected_source.market_id, expected_source.row_count,
+            expected_source.first_timestamp_ms, expected_source.last_timestamp_ms,
+        ):
             raise ArtifactLineageError(
-                "source Artifact OHLCV lineage is not exact"
+                "source Artifact OHLCV coverage is incompatible"
             )
         if ref.output_name not in metadata.recipe.output_names:
             raise ArtifactLineageError(
@@ -1550,6 +1781,14 @@ class ArtifactService:
         return self._load_artifact_directory(market, directories[0])
 
     def _load_artifact_directory(self, market: MarketId, directory: Path) -> LoadedArtifact:
+        checks = self._dms_checks.get()
+        key = (market, directory)
+        if checks is not None and key in checks["artifacts"]:
+            cached = checks["artifacts"][key]
+            metadata_bytes = self._store.read_artifact_metadata_bytes(directory)
+            if decode_canonical_json(metadata_bytes, context="artifact metadata") != cached.metadata.to_dict():
+                raise ArtifactLineageError(f"Artifact metadata changed during operation: {directory.name}")
+            return LoadedArtifact(cached.metadata, cached.frame.copy(deep=True), cached.analysis)
         values_bytes, analysis_bytes, metadata_bytes = self._store.read_artifact_bytes(directory)
         metadata = ArtifactMetadataV1.from_dict(
             decode_canonical_json(metadata_bytes, context="artifact metadata")
@@ -1607,7 +1846,11 @@ class ArtifactService:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ArtifactValidationError("artifact runtime outputs are invalid") from exc
-        return LoadedArtifact(metadata, validated.to_frame(), validated.analysis)
+        loaded = LoadedArtifact(metadata, validated.to_frame(), validated.analysis)
+        if checks is not None:
+            checks["artifacts"][key] = loaded
+            return LoadedArtifact(metadata, loaded.frame.copy(deep=True), loaded.analysis)
+        return loaded
 
 
 def _require_market(market_id: MarketId) -> MarketId:
@@ -1781,14 +2024,20 @@ def _created(value: datetime | None) -> datetime:
 def _recipe_arguments(
     result: FinancialToolCalculationResult,
     display_name: str | None,
-    description: str,
+    description: str | object,
     created_at_utc: datetime | None,
 ) -> tuple[str, str, datetime]:
     if display_name is not None and not isinstance(display_name, str):
         raise ArtifactValidationError("display_name must be a string or None")
-    display = result.tool_key if display_name is None else display_name.strip()
+    display = (
+        get_financial_tool_spec(result.tool_key).title
+        if display_name is None
+        else display_name.strip()
+    )
     if not display:
         raise ArtifactValidationError("display_name must be non-empty")
+    if description is _OMITTED_DESCRIPTION:
+        description = ""
     if not isinstance(description, str):
         raise ArtifactValidationError("description must be a string")
     return display, description.strip(), _created(created_at_utc)

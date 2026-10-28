@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 
@@ -8,6 +9,7 @@ import pytest
 from leonardo.artifacts import ArtifactService, ArtifactSourceRefV1
 from leonardo.core.core_runner import CoreRunner, TaskResult
 from leonardo.core.task_manager import TaskManager
+from leonardo.data import MarketId
 from leonardo.data_manager import DataManagerArtifactMaterializationRequest
 from leonardo.data_manager.application import DataManagerApplicationService
 from leonardo.data_manager.direct_artifact import (
@@ -32,6 +34,7 @@ from leonardo.research import (
 )
 
 from tests.artifacts_test.test_artifact_service_roundtrip import _accepted_dataset
+from tests.data_manager_test.test_update_workflow import _revalidate_unchanged
 from tests.data_manager_test.test_portable_recipe_workflow import _save_environment
 from tests.research_test.test_study_artifact_apply_save import _save_attempt
 from tests.research_test.test_study_execution import accepted_context, prepare
@@ -133,6 +136,113 @@ def test_direct_base_artifacts_create_global_recipes_and_reuse_current(
     logical_id = first.materialization.root_logical_artifact_ids[0]
     assert len(artifacts.list_artifact_versions(market, logical_id)) == 1
     assert len(recipes.list_recipe_summaries()) == 3
+
+
+@pytest.mark.parametrize("change", ("sidecar", "values"))
+def test_direct_compatible_inputs_survive_revalidation_and_source_value_change(tmp_path, change):
+    market, _frame, service, artifacts, _recipes, historical = _domain(tmp_path)
+    sma = service.create_direct_artifact(_request(service, market, "sma", {"period": 3}))
+    option = _option(service, market, "sma")
+    derivative = service.create_direct_artifact(
+        _request(service, market, "derivative", {"order": 1}, (_source(option, "source"),))
+    )
+    peaks = service.create_direct_artifact(_request(service, market, "peaks_troughs"))
+    old_source = option.source_ohlcv
+    if change == "sidecar":
+        _revalidate_unchanged(artifacts, market)
+    else:
+        from tests.data_manager_test.test_update_workflow import _publish_modified
+        _publish_modified(historical, rows=96, mutate_row=20)
+        assert artifacts.capture_accepted_source(market).csv_sha256 != old_source.csv_sha256
+    before = _persistence_bytes(historical)
+    catalog = service.build_direct_artifact_catalog(market)
+    assert {o.artifact_id for o in catalog.construct_options} == {
+        _root_entry(sma).artifact_id, _root_entry(derivative).artifact_id,
+    }
+    owner = catalog.utc_peaks_troughs_options[0]
+    assert owner.artifact_id == _root_entry(peaks).artifact_id
+    derivative_option = _option(service, market, "derivative")
+    request = _request(service, market, "angle", {}, (_source(derivative_option, "source"),))
+    angle = service.create_direct_artifact(request)
+    loaded = artifacts.load_artifact_by_id(market, _root_entry(angle).artifact_id)
+    assert loaded.metadata.recipe.source_artifacts[0].artifact_id == derivative_option.artifact_id
+    outputs = {"trend_peak": "peak_fractal_5", "trend_trough": "trough_fractal_5",
+               "range_peak": "peak_fractal_3", "range_trough": "trough_fractal_3"}
+    utc = service.create_direct_artifact(_request(
+        service, market, "universal_trend_classifier",
+        {"trend_fractal_window": 5, "range_fractal_window": 3},
+        tuple(_source(owner, role, output) for role, output in outputs.items()),
+    ))
+    assert {ref.artifact_id for ref in artifacts.load_artifact_by_id(
+        market, _root_entry(utc).artifact_id
+    ).metadata.recipe.source_artifacts} == {owner.artifact_id}
+    after = _persistence_bytes(historical)
+    assert {path: after[path] for path in before} == before
+    replay = service.create_direct_artifact(request)
+    assert replay.materialization.created_artifact_ids == ()
+    assert _persistence_bytes(historical) == after
+    if change == "sidecar":
+        repeated_sma = service.create_direct_artifact(_request(service, market, "sma", {"period": 3}))
+        assert repeated_sma.materialization.created_artifact_ids == ()
+        assert _root_entry(repeated_sma).artifact_id == _root_entry(sma).artifact_id
+    else:
+        refreshed_sma = service.create_direct_artifact(_request(service, market, "sma", {"period": 3}))
+        assert _root_entry(refreshed_sma).artifact_id != _root_entry(sma).artifact_id
+
+
+@pytest.mark.parametrize("change", ("sidecar", "hash", "identity", "count", "bounds"))
+def test_direct_catalog_model_preserves_compatible_input_evidence(tmp_path, change):
+    market, _frame, service, artifacts, _recipes, _historical = _domain(tmp_path)
+    service.create_direct_artifact(_request(service, market, "sma", {"period": 3}))
+    catalog = service.build_direct_artifact_catalog(market)
+    source = catalog.source_ohlcv
+    replacements = {
+        "hash": {"csv_sha256": "f" * 64},
+        "identity": {"market_id": MarketId("bybit", "linear", "ETHUSDT", "1m")},
+        "count": {"row_count": source.row_count + 1},
+        "bounds": {"first_timestamp_ms": source.first_timestamp_ms + 60_000},
+    }
+    changed = (_revalidate_unchanged(artifacts, market) if change == "sidecar"
+               else replace(source, **replacements[change]))
+    if change in {"sidecar", "hash"}:
+        updated = replace(catalog, source_ohlcv=changed)
+        assert updated.construct_options == catalog.construct_options
+        assert updated.construct_options[0].source_ohlcv == source
+        assert updated.source_ohlcv == changed
+    else:
+        with pytest.raises(ValueError):
+            replace(catalog, market_id=changed.market_id, source_ohlcv=changed)
+
+
+@pytest.mark.parametrize("change", ("sidecar", "hash", "identity", "count", "bounds"))
+def test_materialization_result_preserves_reused_evidence_and_exact_new_source(tmp_path, change):
+    market, _frame, service, artifacts, _recipes, _historical = _domain(tmp_path)
+    original = service.create_direct_artifact(
+        _request(service, market, "sma", {"period": 3})
+    ).materialization
+    source = original.source_ohlcv
+    replacements = {
+        "hash": {"csv_sha256": "f" * 64},
+        "identity": {"market_id": MarketId("bybit", "linear", "ETHUSDT", "1m")},
+        "count": {"row_count": source.row_count + 1},
+        "bounds": {"first_timestamp_ms": source.first_timestamp_ms + 60_000},
+    }
+    changed = (_revalidate_unchanged(artifacts, market) if change == "sidecar"
+               else replace(source, **replacements[change]))
+    reused = replace(
+        original, created_artifact_ids=(), reused_artifact_ids=original.created_artifact_ids,
+        created_version_keys=(), reused_version_keys=original.created_version_keys,
+        advanced_logical_artifact_ids=(),
+    )
+    if change in {"sidecar", "hash"}:
+        updated = replace(reused, source_ohlcv=changed)
+        assert updated.verified_artifact_metadata == original.verified_artifact_metadata
+        assert updated.verified_artifact_metadata[0].source_ohlcv == source
+        with pytest.raises(ValueError, match="checked Artifact evidence"):
+            replace(original, source_ohlcv=changed)
+    else:
+        with pytest.raises(ValueError):
+            replace(reused, target_market_id=changed.market_id, source_ohlcv=changed)
 
 
 def test_direct_creation_reuses_semantically_equivalent_recipe_artifact(

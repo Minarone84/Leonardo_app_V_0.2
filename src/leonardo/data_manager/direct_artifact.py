@@ -147,7 +147,13 @@ class DataManagerDirectArtifactCatalog:
             if not all(
                 isinstance(item, DataManagerDirectArtifactOption)
                 and item.market_id == market
-                and item.source_ohlcv == self.source_ohlcv
+                and (
+                    item.source_ohlcv.market_id, item.source_ohlcv.row_count,
+                    item.source_ohlcv.first_timestamp_ms, item.source_ohlcv.last_timestamp_ms,
+                ) == (
+                    self.source_ohlcv.market_id, self.source_ohlcv.row_count,
+                    self.source_ohlcv.first_timestamp_ms, self.source_ohlcv.last_timestamp_ms,
+                )
                 for item in values
             ):
                 raise ValueError(f"{field_name} contains mismatched options")

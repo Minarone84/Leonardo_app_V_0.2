@@ -386,10 +386,22 @@ def _peaks_and_utc_entries():
 def test_artifact_source_reconstructs_unique_prior_recipe_and_rejects_ambiguity(
     tmp_path: Path,
 ) -> None:
-    service, environments, _recipes = _domain(tmp_path)
+    from tests.data_manager_test.test_update_workflow import (
+        MARKET, _domain as saved_domain, _materialize,
+    )
+
+    service, _artifacts, recipes, _historical = saved_domain(tmp_path)
+    environments = service._study_environments
     peaks, utc = _peaks_and_utc_entries()
+    portable = build_portable_recipe(
+        tool_key=peaks.tool_key, kind=peaks.kind, parameters=peaks.parameters,
+        output_names=peaks.expected_output_names,
+    )
+    result = _materialize(service, recipes, portable)
+    artifact_id = result.managed_artifacts[0].artifact_id
+    utc = replace(utc, sources=tuple(replace(source, artifact_id=artifact_id) for source in utc.sources))
     environment = _save_environment(
-        environments, environment_id="env_utc", entries=(peaks, utc)
+        environments, environment_id="env_utc", entries=(peaks, utc), market=MARKET,
     )
     plan = service.plan_recipe_derivation(environment.environment_id, ("entry_utc",))
     assert not plan.blocked
@@ -405,6 +417,7 @@ def test_artifact_source_reconstructs_unique_prior_recipe_and_rejects_ambiguity(
         environment_id="env_ambiguous",
         display_name="Ambiguous",
         entries=(peaks, duplicate, utc),
+        market=MARKET,
     )
     blocked = service.plan_recipe_derivation(ambiguous.environment_id, ("entry_utc",))
     assert blocked.blocked

@@ -13,6 +13,7 @@ from threading import Lock, RLock
 
 from leonardo.data import MarketId, canonicalize_market_id
 from leonardo.research.catalog import (
+    _dms_accepted_lookup,
     AcceptedDatasetCatalog,
     AcceptedDatasetSummary,
     DatasetRejection,
@@ -104,10 +105,13 @@ class HistoricalDatasetLoader:
         market = _canonical_market(market_id)
         cancel_check = cancellation_requested or _never_cancelled
         _raise_if_cancelled(cancel_check)
+        # A DMS lookup can perform the first checked load under this loader's
+        # per-market lock. Resolve it before acquiring that non-reentrant lock.
+        dms_summary = self._require_accepted(market) if _dms_accepted_lookup.get() is not None else None
         dataset_lock = self._lock_for(market)
         with dataset_lock:
             _raise_if_cancelled(cancel_check)
-            summary = self._require_accepted(market)
+            summary = dms_summary if dms_summary is not None else self._require_accepted(market)
             _raise_if_cancelled(cancel_check)
             cached = self._get_cached(summary)
             if cached is not None:
@@ -138,7 +142,11 @@ class HistoricalDatasetLoader:
             return count
 
     def _require_accepted(self, market: MarketId) -> AcceptedDatasetSummary:
-        result = self._catalog.inspect_market(market)
+        lookup = _dms_accepted_lookup.get()
+        result = (
+            self._catalog.inspect_market(market)
+            if lookup is None else lookup(self._catalog, market)
+        )
         if isinstance(result, DatasetRejection):
             raise DatasetNotAcceptedError(
                 f"Research dataset {market.as_key()} is not accepted: "

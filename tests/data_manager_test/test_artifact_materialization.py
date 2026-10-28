@@ -421,10 +421,10 @@ def test_utc_canonical_range_windows_and_shared_selectors(
     original = materialization.calculate_financial_tool
     utc_columns: list[tuple[str, ...]] = []
 
-    def capture_columns(tool_key, frame, parameters, *, bindings=None):
+    def capture_columns(tool_key, frame, parameters, *, bindings=None, utc_context=None):
         if tool_key == "universal_trend_classifier":
             utc_columns.append(tuple(frame.columns))
-        return original(tool_key, frame, parameters, bindings=bindings)
+        return original(tool_key, frame, parameters, bindings=bindings, utc_context=utc_context)
 
     monkeypatch.setattr(materialization, "calculate_financial_tool", capture_columns)
     for recipe in (distinct, shared):
@@ -948,6 +948,13 @@ def test_utc_materializes_four_outputs_from_one_peaks_troughs_owner(
 ) -> None:
     market, service, artifacts, _recipes, _root, environments = _domain(tmp_path)
     peaks, utc = _peaks_and_utc_entries()
+    utc = replace(utc, sources=tuple(
+        replace(
+            source, source_kind="environment", source_entry_id=peaks.entry_id,
+            artifact_kind=None, artifact_tool_key=None, artifact_id=None,
+        )
+        for source in utc.sources
+    ))
     environment = _save_environment(
         environments,
         environment_id="env_materialize_utc",

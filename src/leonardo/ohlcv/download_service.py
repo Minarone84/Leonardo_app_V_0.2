@@ -281,13 +281,16 @@ class HistoricalDownloadService:
         requests: Sequence[DownloadBatchRequest],
         *,
         before_first_write: Callable[[], None],
+        after_ranges: Callable[[tuple[DownloadBatchResult, ...]], None] | None = None,
         progress: ProgressSink | None = None,
         correlation_id: str | None = None,
     ) -> tuple[DownloadBatchResult, ...]:
         """Execute reviewed repair ranges under one dataset lock.
 
         The stale-plan precondition runs after the shared downloader lock is
-        acquired, and the lock remains held across every reviewed range.
+        acquired, and the lock remains held across every reviewed range and the
+        optional synchronous after_ranges finalizer. Cancellation drains that
+        worker before releasing ownership; completed durable work is not undone.
         """
 
         normalized = tuple(normalize_batch_request(request) for request in requests)
@@ -330,6 +333,22 @@ class HistoricalDownloadService:
                             results=(item,),
                         )
                     )
+            if after_ranges is not None:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError
+                finalizer = asyncio.create_task(asyncio.to_thread(after_ranges, tuple(results)))
+                cancelled = False
+                while not finalizer.done():
+                    try:
+                        await asyncio.shield(finalizer)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                # Actual worker failure takes precedence over a cancellation
+                # request. Repeated cancellation cannot orphan its writes.
+                finalizer.result()
+                if cancelled:
+                    raise asyncio.CancelledError
         return tuple(results)
 
     async def _run_one(
@@ -350,272 +369,365 @@ class HistoricalDownloadService:
             else self._operation_locks.acquire(market)
         )
         async with lock_context:
-            existing = await asyncio.to_thread(self._store.read, market)
-            inspection = await asyncio.to_thread(self._store.inspect, market)
-            plan = await self._build_plan(provider, market, request, inspection)
-            pages_written = 0
-            rows_written = 0
-            download_complete = False
-            downloaded_first: int | None = None
-            downloaded_last: int | None = None
-            self._emit_progress(
-                progress,
-                DownloadProgressEvent(
-                    kind="plan_ready",
-                    message=f"{market.timeframe} plan ready: {plan.mode}",
-                    timeframe=market.timeframe,
-                    current=0,
-                    total=plan.expected_bars,
-                    overall_current=overall_current,
-                    overall_total=overall_total,
-                    details={
-                        "mode": plan.mode,
-                        "planned_start_ms": plan.effective_start_ms,
-                        "planned_end_ms": plan.planned_end_ms,
-                        "expected_pages": plan.expected_pages,
-                        "page_limit": plan.page_limit,
-                        "up_to_date": plan.up_to_date,
-                    },
-                ),
-            )
+            before = self._persistence_witness(market)
+            operation_error: BaseException | None = None
             try:
-                if not plan.up_to_date:
-                    end_cursor = plan.end_cursor_ms
-                    last_cursor: int | None = None
-                    fetched_total = 0
-                    for page_no in range(1, plan.max_pages + 1):
-                        if end_cursor is not None and end_cursor < 0:
-                            break
-                        if last_cursor is not None and end_cursor is not None and end_cursor >= last_cursor:
-                            raise RuntimeError(
-                                "paging end cursor did not move backwards "
-                                f"(current={end_cursor}, previous={last_cursor})"
-                            )
-                        last_cursor = end_cursor
-                        batch = await self._fetch_page_with_retries(
-                            provider,
-                            market,
-                            start_ms=plan.effective_start_ms,
-                            end_ms=end_cursor,
-                            limit=plan.page_limit,
-                            page_no=page_no,
-                            expected_pages=plan.expected_pages,
-                            progress=progress,
-                            overall_current=overall_current,
-                            overall_total=overall_total,
-                        )
-                        if not batch:
-                            break
-                        incoming = [
-                            Candle(
-                                ts_ms=int(item.ts_ms),
-                                open=float(item.open),
-                                high=float(item.high),
-                                low=float(item.low),
-                                close=float(item.close),
-                                volume=float(item.volume),
-                            )
-                            for item in batch
-                        ]
-                        incoming.sort(key=lambda item: item.ts_ms)
-                        if (
-                            request.start_ms is None
-                            and request.end_ms is None
-                            and page_no == 1
-                            and incoming
-                        ):
-                            newest_source = batch[-1]
-                            if not bool(getattr(newest_source, "is_closed", True)):
-                                incoming = incoming[:-1]
-                            elif (
-                                plan.latest_closed_ts_ms is not None
-                                and incoming[-1].ts_ms > plan.latest_closed_ts_ms
-                            ):
-                                incoming = incoming[:-1]
-                        if plan.effective_start_ms is not None:
-                            incoming = [
-                                item for item in incoming if item.ts_ms >= plan.effective_start_ms
-                            ]
-                        if plan.planned_end_ms is not None:
-                            incoming = [
-                                item for item in incoming if item.ts_ms <= plan.planned_end_ms
-                            ]
-                        if not incoming:
-                            break
-                        merged = merge_idempotent(existing, incoming)
-                        write_task = asyncio.create_task(
-                            asyncio.to_thread(
-                                self._store.write,
-                                market,
-                                merged,
-                                source=provider.name,
-                                persistence_status="partial",
-                                lineage={
-                                    "download_mode": plan.mode,
-                                    "planned_start_ms": plan.effective_start_ms,
-                                    "planned_end_ms": plan.planned_end_ms,
-                                    "pages_written": pages_written + 1,
-                                },
-                            )
-                        )
-                        cancelled_during_write = False
-                        try:
-                            await asyncio.shield(write_task)
-                        except asyncio.CancelledError:
-                            cancelled_during_write = True
-                            await write_task
-                        existing = merged
-                        pages_written += 1
-                        rows_written += len(incoming)
-                        fetched_total += len(incoming)
-                        page_first = incoming[0].ts_ms
-                        page_last = incoming[-1].ts_ms
-                        downloaded_first = (
-                            page_first if downloaded_first is None else min(downloaded_first, page_first)
-                        )
-                        downloaded_last = (
-                            page_last if downloaded_last is None else max(downloaded_last, page_last)
-                        )
-                        self._emit_progress(
-                            progress,
-                            DownloadProgressEvent(
-                                kind="page_persisted",
-                                message=(
-                                    f"{market.timeframe}: persisted page {page_no} "
-                                    f"({len(incoming)} rows)"
-                                ),
-                                timeframe=market.timeframe,
-                                current=fetched_total,
-                                total=plan.expected_bars,
-                                overall_current=overall_current,
-                                overall_total=overall_total,
-                                details={
-                                    "page": page_no,
-                                    "expected_pages": plan.expected_pages,
-                                    "page_rows": len(incoming),
-                                    "total_rows": len(existing),
-                                    "path": str(self._store.csv_path(market)),
-                                    "progress_ratio": _progress_ratio(fetched_total, plan.expected_bars),
-                                },
-                            ),
-                        )
-                        self._audit(
-                            "download.page_persisted",
-                            f"OHLCV page persisted for {market.as_key()}",
-                            correlation_id=correlation_id,
-                            details={
-                                "market_id": market.as_key(),
-                                "page": page_no,
-                                "page_rows": len(incoming),
-                                "total_rows": len(existing),
-                            },
-                        )
-                        if cancelled_during_write:
-                            raise asyncio.CancelledError
-                        oldest_ts = incoming[0].ts_ms
-                        if plan.effective_start_ms is not None and oldest_ts <= plan.effective_start_ms:
-                            break
-                        end_cursor = oldest_ts - 1
-                    if not existing:
-                        raise RuntimeError(
-                            f"provider returned no OHLCV candles for {market.as_key()}"
-                        )
-                download_complete = True
-                report = await asyncio.to_thread(self._validator.validate, self._store, market)
-                warning_messages = tuple(
-                    item.message for item in report.issues if item.severity == "warning"
-                )
-                finalize_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        self._store.finalize,
-                        market,
-                        source=provider.name,
-                        warnings=warning_messages,
-                        lineage={
-                            "download_mode": plan.mode,
-                            "planned_start_ms": plan.effective_start_ms,
-                            "planned_end_ms": plan.planned_end_ms,
-                            "pages_written": pages_written,
-                            "preliminary_validation_status": report.status,
-                            "canonical_validation_status": "unknown",
-                        },
-                    )
-                )
-                cancelled_during_finalize = False
-                try:
-                    await asyncio.shield(finalize_task)
-                except asyncio.CancelledError:
-                    cancelled_during_finalize = True
-                    await finalize_task
-                if cancelled_during_finalize:
-                    raise asyncio.CancelledError
+                existing = await asyncio.to_thread(self._store.read, market)
+                inspection = await asyncio.to_thread(self._store.inspect, market)
+                plan = await self._build_plan(provider, market, request, inspection)
+                pages_written = 0
+                rows_written = 0
+                download_complete = False
+                downloaded_first: int | None = None
+                downloaded_last: int | None = None
                 self._emit_progress(
                     progress,
                     DownloadProgressEvent(
-                        kind="preliminary_validation_completed",
-                        message=(
-                            f"{market.timeframe}: preliminary validation {report.status}; "
-                            "OHLCV Maintenance acceptance is still required"
-                        ),
+                        kind="plan_ready",
+                        message=f"{market.timeframe} plan ready: {plan.mode}",
                         timeframe=market.timeframe,
-                        current=plan.expected_bars if plan.expected_bars is not None else len(existing),
+                        current=0,
                         total=plan.expected_bars,
                         overall_current=overall_current,
                         overall_total=overall_total,
                         details={
-                            "status": report.status,
-                            "issues": report.messages,
-                            "row_count": report.row_count,
-                            "validation_status": "unknown",
+                            "mode": plan.mode,
+                            "planned_start_ms": plan.effective_start_ms,
+                            "planned_end_ms": plan.planned_end_ms,
+                            "expected_pages": plan.expected_pages,
+                            "page_limit": plan.page_limit,
+                            "up_to_date": plan.up_to_date,
                         },
                     ),
                 )
-                return DownloadItemResult(
-                    market_id=market,
-                    file_path=self._store.csv_path(market),
-                    total_rows=len(existing),
-                    fetched_rows=rows_written,
-                    downloaded_first_ts_ms=downloaded_first,
-                    downloaded_last_ts_ms=downloaded_last,
-                    preliminary_validation_status=report.status,
-                    preliminary_validation_issues=report.messages,
-                )
-            except asyncio.CancelledError:
                 try:
-                    persistence_status = self._store.read_sidecar(market).persistence_status
-                except Exception:
-                    persistence_status = None
-                details = {
-                    "partial_persistence": pages_written > 0 and persistence_status != "committed",
-                    "download_complete": download_complete,
-                    "persistence_status": persistence_status,
-                    "pages_written": pages_written,
-                    "rows_written": rows_written,
-                    "persisted_total_rows": len(existing),
-                    "persisted_first_ts_ms": existing[0].ts_ms if existing else None,
-                    "persisted_last_ts_ms": existing[-1].ts_ms if existing else None,
-                    "persisted_downloaded_first_ts_ms": downloaded_first,
-                    "persisted_downloaded_last_ts_ms": downloaded_last,
-                    "path": str(self._store.csv_path(market)) if pages_written else None,
-                }
-                self._emit_progress(
-                    progress,
-                    DownloadProgressEvent(
-                        kind="item_cancelled",
-                        message=f"{market.timeframe} download cancelled",
-                        timeframe=market.timeframe,
-                        overall_current=overall_current,
-                        overall_total=overall_total,
-                        details=details,
-                    ),
-                )
-                self._audit(
-                    "download.item_cancelled",
-                    f"OHLCV download cancelled for {market.as_key()}",
-                    correlation_id=correlation_id,
-                    details={"market_id": market.as_key(), **details},
-                )
+                    if plan.up_to_date:
+                        report = await asyncio.to_thread(self._validator.validate, self._store, market)
+                        self._emit_progress(
+                            progress,
+                            DownloadProgressEvent(
+                                kind="preliminary_validation_completed",
+                                message=(
+                                    f"{market.timeframe}: no new closed candles needed; "
+                                    f"preliminary validation {report.status}; "
+                                    "existing persistence and validation evidence unchanged"
+                                ),
+                                timeframe=market.timeframe,
+                                overall_current=overall_current,
+                                overall_total=overall_total,
+                                details={
+                                    "status": report.status,
+                                    "issues": report.messages,
+                                    "row_count": report.row_count,
+                                    "up_to_date": True,
+                                },
+                            ),
+                        )
+                        return DownloadItemResult(
+                            market_id=market,
+                            file_path=self._store.csv_path(market),
+                            total_rows=len(existing),
+                            fetched_rows=0,
+                            downloaded_first_ts_ms=None,
+                            downloaded_last_ts_ms=None,
+                            preliminary_validation_status=report.status,
+                            preliminary_validation_issues=report.messages,
+                            up_to_date=True,
+                        )
+                    if not plan.up_to_date:
+                        end_cursor = plan.end_cursor_ms
+                        last_cursor: int | None = None
+                        fetched_total = 0
+                        for page_no in range(1, plan.max_pages + 1):
+                            if end_cursor is not None and end_cursor < 0:
+                                break
+                            if last_cursor is not None and end_cursor is not None and end_cursor >= last_cursor:
+                                raise RuntimeError(
+                                    "paging end cursor did not move backwards "
+                                    f"(current={end_cursor}, previous={last_cursor})"
+                                )
+                            last_cursor = end_cursor
+                            batch = await self._fetch_page_with_retries(
+                                provider,
+                                market,
+                                start_ms=plan.effective_start_ms,
+                                end_ms=end_cursor,
+                                limit=plan.page_limit,
+                                page_no=page_no,
+                                expected_pages=plan.expected_pages,
+                                progress=progress,
+                                overall_current=overall_current,
+                                overall_total=overall_total,
+                            )
+                            if not batch:
+                                break
+                            incoming = [
+                                Candle(
+                                    ts_ms=int(item.ts_ms),
+                                    open=float(item.open),
+                                    high=float(item.high),
+                                    low=float(item.low),
+                                    close=float(item.close),
+                                    volume=float(item.volume),
+                                )
+                                for item in batch
+                            ]
+                            incoming.sort(key=lambda item: item.ts_ms)
+                            if (
+                                request.start_ms is None
+                                and request.end_ms is None
+                                and page_no == 1
+                                and incoming
+                            ):
+                                newest_source = batch[-1]
+                                if not bool(getattr(newest_source, "is_closed", True)):
+                                    incoming = incoming[:-1]
+                                elif (
+                                    plan.latest_closed_ts_ms is not None
+                                    and incoming[-1].ts_ms > plan.latest_closed_ts_ms
+                                ):
+                                    incoming = incoming[:-1]
+                            if plan.effective_start_ms is not None:
+                                incoming = [
+                                    item for item in incoming if item.ts_ms >= plan.effective_start_ms
+                                ]
+                            if plan.planned_end_ms is not None:
+                                incoming = [
+                                    item for item in incoming if item.ts_ms <= plan.planned_end_ms
+                                ]
+                            if not incoming:
+                                break
+                            merged = merge_idempotent(existing, incoming)
+                            write_task = asyncio.create_task(
+                                asyncio.to_thread(
+                                    self._store.write,
+                                    market,
+                                    merged,
+                                    source=provider.name,
+                                    persistence_status="partial",
+                                    lineage={
+                                        "download_mode": plan.mode,
+                                        "planned_start_ms": plan.effective_start_ms,
+                                        "planned_end_ms": plan.planned_end_ms,
+                                        "pages_written": pages_written + 1,
+                                    },
+                                )
+                            )
+                            cancelled_during_write = False
+                            while not write_task.done():
+                                try:
+                                    await asyncio.shield(write_task)
+                                except asyncio.CancelledError:
+                                    cancelled_during_write = True
+                            write_task.result()
+                            existing = merged
+                            pages_written += 1
+                            rows_written += len(incoming)
+                            fetched_total += len(incoming)
+                            page_first = incoming[0].ts_ms
+                            page_last = incoming[-1].ts_ms
+                            downloaded_first = (
+                                page_first if downloaded_first is None else min(downloaded_first, page_first)
+                            )
+                            downloaded_last = (
+                                page_last if downloaded_last is None else max(downloaded_last, page_last)
+                            )
+                            self._emit_progress(
+                                progress,
+                                DownloadProgressEvent(
+                                    kind="page_persisted",
+                                    message=(
+                                        f"{market.timeframe}: persisted page {page_no} "
+                                        f"({len(incoming)} rows)"
+                                    ),
+                                    timeframe=market.timeframe,
+                                    current=fetched_total,
+                                    total=plan.expected_bars,
+                                    overall_current=overall_current,
+                                    overall_total=overall_total,
+                                    details={
+                                        "page": page_no,
+                                        "expected_pages": plan.expected_pages,
+                                        "page_rows": len(incoming),
+                                        "total_rows": len(existing),
+                                        "path": str(self._store.csv_path(market)),
+                                        "progress_ratio": _progress_ratio(fetched_total, plan.expected_bars),
+                                    },
+                                ),
+                            )
+                            self._audit(
+                                "download.page_persisted",
+                                f"OHLCV page persisted for {market.as_key()}",
+                                correlation_id=correlation_id,
+                                details={
+                                    "market_id": market.as_key(),
+                                    "page": page_no,
+                                    "page_rows": len(incoming),
+                                    "total_rows": len(existing),
+                                },
+                            )
+                            if cancelled_during_write:
+                                raise asyncio.CancelledError
+                            oldest_ts = incoming[0].ts_ms
+                            if plan.effective_start_ms is not None and oldest_ts <= plan.effective_start_ms:
+                                break
+                            end_cursor = oldest_ts - 1
+                        else:
+                            raise RuntimeError(
+                                f"OHLCV page ceiling ({plan.max_pages}) reached before completion "
+                                f"for {market.as_key()}; persisted pages remain partial"
+                            )
+                        if not existing:
+                            raise RuntimeError(
+                                f"provider returned no OHLCV candles for {market.as_key()}"
+                            )
+                    download_complete = True
+                    report = await asyncio.to_thread(self._validator.validate, self._store, market)
+                    warning_messages = tuple(
+                        item.message for item in report.issues if item.severity == "warning"
+                    )
+                    finalize_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            self._store.finalize,
+                            market,
+                            source=provider.name,
+                            warnings=warning_messages,
+                            lineage={
+                                "download_mode": plan.mode,
+                                "planned_start_ms": plan.effective_start_ms,
+                                "planned_end_ms": plan.planned_end_ms,
+                                "pages_written": pages_written,
+                                "preliminary_validation_status": report.status,
+                                "canonical_validation_status": "unknown",
+                            },
+                        )
+                    )
+                    cancelled_during_finalize = False
+                    while not finalize_task.done():
+                        try:
+                            await asyncio.shield(finalize_task)
+                        except asyncio.CancelledError:
+                            cancelled_during_finalize = True
+                    finalize_task.result()
+                    if cancelled_during_finalize:
+                        raise asyncio.CancelledError
+                    self._emit_progress(
+                        progress,
+                        DownloadProgressEvent(
+                            kind="preliminary_validation_completed",
+                            message=(
+                                f"{market.timeframe}: preliminary validation {report.status}; "
+                                "OHLCV Maintenance acceptance is still required"
+                            ),
+                            timeframe=market.timeframe,
+                            current=plan.expected_bars if plan.expected_bars is not None else len(existing),
+                            total=plan.expected_bars,
+                            overall_current=overall_current,
+                            overall_total=overall_total,
+                            details={
+                                "status": report.status,
+                                "issues": report.messages,
+                                "row_count": report.row_count,
+                                "validation_status": "unknown",
+                            },
+                        ),
+                    )
+                    return DownloadItemResult(
+                        market_id=market,
+                        file_path=self._store.csv_path(market),
+                        total_rows=len(existing),
+                        fetched_rows=rows_written,
+                        downloaded_first_ts_ms=downloaded_first,
+                        downloaded_last_ts_ms=downloaded_last,
+                        preliminary_validation_status=report.status,
+                        preliminary_validation_issues=report.messages,
+                    )
+                except asyncio.CancelledError:
+                    try:
+                        persistence_status = self._store.read_sidecar(market).persistence_status
+                    except Exception:
+                        persistence_status = None
+                    details = {
+                        "partial_persistence": pages_written > 0 and persistence_status != "committed",
+                        "download_complete": download_complete,
+                        "persistence_status": persistence_status,
+                        "pages_written": pages_written,
+                        "rows_written": rows_written,
+                        "persisted_total_rows": len(existing),
+                        "persisted_first_ts_ms": existing[0].ts_ms if existing else None,
+                        "persisted_last_ts_ms": existing[-1].ts_ms if existing else None,
+                        "persisted_downloaded_first_ts_ms": downloaded_first,
+                        "persisted_downloaded_last_ts_ms": downloaded_last,
+                        "path": str(self._store.csv_path(market)) if pages_written else None,
+                    }
+                    self._emit_progress(
+                        progress,
+                        DownloadProgressEvent(
+                            kind="item_cancelled",
+                            message=f"{market.timeframe} download cancelled",
+                            timeframe=market.timeframe,
+                            overall_current=overall_current,
+                            overall_total=overall_total,
+                            details=details,
+                        ),
+                    )
+                    self._audit(
+                        "download.item_cancelled",
+                        f"OHLCV download cancelled for {market.as_key()}",
+                        correlation_id=correlation_id,
+                        details={"market_id": market.as_key(), **details},
+                    )
+                    raise
+            except BaseException as error:
+                operation_error = error
                 raise
+            finally:
+                after = self._persistence_witness(market)
+                changed = {
+                    name: {"before": before[name], "after": after[name]}
+                    for name in before
+                    if before[name] != after[name]
+                    or before[name]["state"] == "uncertain"
+                    or after[name]["state"] == "uncertain"
+                }
+                if changed:
+                    try:
+                        self._emit_progress(progress, DownloadProgressEvent(
+                            kind="source_evidence_changed",
+                            message=f"{market.timeframe}: source file evidence changed or is uncertain",
+                            timeframe=market.timeframe,
+                            overall_current=overall_current,
+                            overall_total=overall_total,
+                            details={"market_id": market.as_key(), "timeframe": market.timeframe,
+                                     "changed_files": changed},
+                        ))
+                    except Exception as notification_error:
+                        if operation_error is None:
+                            raise
+                        operation_error.add_note(
+                            f"Source-evidence notification failed: {type(notification_error).__name__}: {notification_error}"
+                        )
+
+
+    def _persistence_witness(self, market: MarketId) -> dict[str, dict[str, object]]:
+        """Cheap atomic-file identity, independent of financial acceptance.
+
+        Absence and inspection uncertainty are explicit. An uncertain witness
+        conservatively notifies consumers and never masks an operation failure.
+        """
+        evidence = {}
+        for name, path in (("csv", self._store.csv_path(market)),
+                           ("sidecar", self._store.sidecar_path(market))):
+            try:
+                stat = path.stat()
+                evidence[name] = {"state": "present", "path": str(path),
+                                  "identity": (stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ino", 0))}
+            except FileNotFoundError:
+                evidence[name] = {"state": "absent", "path": str(path)}
+            except OSError as error:
+                evidence[name] = {"state": "uncertain", "path": str(path),
+                                  "error_type": type(error).__name__, "error": str(error)}
+        return evidence
 
     async def _build_plan(
         self,

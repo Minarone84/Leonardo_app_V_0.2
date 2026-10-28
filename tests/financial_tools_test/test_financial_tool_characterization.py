@@ -141,4 +141,16 @@ def test_all_26_tools_match_frozen_characterization_fixture() -> None:
                 assert actual.cat.ordered is expected_dtype.ordered
                 assert not actual.isna().any()
                 assert actual.tolist() == expected_values
-        _assert_nested(result.analysis, record.get("analysis", {}))
+        if tool_key == "universal_trend_classifier":
+            # The old fixture remains an exact legacy analysis/value contract.
+            assert set(result.analysis) == {"utc_classification", "utc_episode_metrics"}
+            assert result.analysis["utc_classification"]["schema_version"] == "1.0"
+            legacy = FinancialToolCalculationResult(
+                tool_key=result.tool_key, kind=result.kind, parameters=result.parameters,
+                bindings=result.bindings, output_names=result.output_names,
+                frame=result.to_frame(), analysis=record.get("analysis", {}),
+            )
+            _assert_nested(legacy.analysis, record.get("analysis", {}))
+            assert legacy.to_frame().equals(result.to_frame())
+        else:
+            _assert_nested(result.analysis, record.get("analysis", {}))

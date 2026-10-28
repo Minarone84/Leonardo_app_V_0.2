@@ -134,6 +134,9 @@ def _default_theme_applier(application: object) -> None:
 
 
 def _schedule_post_show_reconciliation(context: object) -> bool:
+    service = getattr(context, "data_manager_service", None)
+    if not callable(getattr(service, "submit_reconcile_status", None)):
+        return False
     from leonardo.gui.data_manager.reconciliation import (
         schedule_post_show_reconciliation,
     )

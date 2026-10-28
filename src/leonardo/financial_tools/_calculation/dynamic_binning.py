@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 
 from .common import _json_safe, _numeric_frame, _source_columns
+from .variation_analysis import _analyze, _input_values, _timestamps
+from ..variation_models import (
+    BinningPolicy, BinningResult, DynamicBinningProfile, VariationContext, _BANDS, _empirical_rank, _integer,
+)
 
 
 def _quantile(series: pd.Series, value: float, method: str) -> float:
@@ -143,7 +147,14 @@ def _calculate_dynamic_binning(
     data: pd.DataFrame, parameters: Mapping[str, object], bindings: Mapping[str, object]
 ) -> tuple[tuple[pd.Series, ...], Mapping[str, object]]:
     columns = _source_columns(parameters["source_columns"], context="dynamic_binning.source_columns")
+    if any(f"{name}_lab" in columns for name in columns):
+        raise ValueError("dynamic_binning generated label names collide with source columns")
     frame = _numeric_frame(data, columns, context="dynamic_binning")
+    for name in columns:
+        infinite = np.isinf(frame[name].to_numpy())
+        if infinite.any():
+            row = frame.index[int(np.flatnonzero(infinite)[0])]
+            raise ValueError(f"dynamic_binning source {name!r} at row {row!r} contains infinity")
     window = int(parameters["window"])
     multiplier = float(parameters["multiplier"])
     floor_quantile = float(parameters["floor_quantile"])
@@ -179,3 +190,101 @@ def _calculate_dynamic_binning(
         "binning_artifact": _json_safe(artifact),
         "labeled_rows": _json_safe(labeled_rows),
     }
+
+
+def _availability(data: pd.DataFrame, timestamps: np.ndarray) -> np.ndarray:
+    available = _timestamps(data, "available_at_ms", ordered=False)
+    if np.any(available < timestamps):
+        raise ValueError("available_at_ms cannot precede its observation ts_ms")
+    return available
+
+
+def _fit_profile(
+    data: pd.DataFrame, context: VariationContext, *, profile_id: str,
+    calibration_as_of_ms: int, measurement: str, policy: BinningPolicy,
+    provenance: tuple[str, ...],
+) -> DynamicBinningProfile:
+    if not isinstance(context, VariationContext):
+        raise TypeError("context must be a VariationContext")
+    cutoff = _integer(calibration_as_of_ms, "calibration_as_of_ms")
+    analysis, values, counts = _analyze(data, context.source, measurement, policy)
+    if not analysis.valid_count:
+        raise ValueError("insufficient_reference: no finite observations to calibrate")
+    timestamps = _timestamps(data, "ts_ms", ordered=True)
+    available = _availability(data, timestamps)
+    if np.any(available > cutoff):
+        raise ValueError("calibration includes observations available after calibration_as_of_ms")
+    return DynamicBinningProfile(
+        profile_id=profile_id, context=context, measurement=measurement, policy=policy,
+        calibration_as_of_ms=cutoff, provenance=provenance,
+        analysis=analysis, values=values, counts=counts,
+    )
+
+
+def _classify_profile(
+    data: pd.DataFrame, profile: DynamicBinningProfile, *, context: VariationContext, mode: str,
+) -> BinningResult:
+    if not isinstance(profile, DynamicBinningProfile):
+        raise TypeError("profile must be a DynamicBinningProfile")
+    if not isinstance(context, VariationContext) or context != profile.context:
+        raise ValueError("classification context does not match profile")
+    if mode not in ("retrospective", "forward"):
+        raise ValueError("mode must be explicitly 'retrospective' or 'forward'")
+    timestamps, raw, measured = _input_values(data, context.source, profile.measurement)
+    available = _availability(data, timestamps)
+    if mode == "forward" and np.any(available <= profile.calibration_as_of_ms):
+        raise ValueError("forward observations must be available after calibration_as_of_ms")
+    size = len(data)
+    result = pd.DataFrame(index=data.index)
+    result["ts_ms"] = timestamps
+    result["available_at_ms"] = available
+    for name, value in (("source", context.source), ("profile_id", profile.profile_id),
+                        ("measurement", profile.measurement), ("mode", mode),
+                        ("support_status", profile.analysis.status)):
+        result[name] = pd.array([value] * size, dtype="string")
+    result["raw_value"] = pd.array(raw, dtype="Float64")
+    result["measured_value"] = pd.array(measured, dtype="Float64")
+    result["direction"] = pd.array(np.sign(raw), dtype="Int64")
+    result["reference_count"] = pd.array([profile.analysis.valid_count] * size, dtype="Int64")
+    for name in ("percentile", "tie_lower_percentile", "tie_upper_percentile",
+                 "lower_tail_frequency", "upper_tail_frequency"):
+        result[name] = pd.array([pd.NA] * size, dtype="Float64")
+    for name in ("lower_tail_count", "upper_tail_count", "bin_index"):
+        result[name] = pd.array([pd.NA] * size, dtype="Int64")
+    for name in ("band", "lower_tail_label", "upper_tail_label", "range_position"):
+        result[name] = pd.array([pd.NA] * size, dtype="string")
+    result["outside_reference_range"] = pd.array([pd.NA] * size, dtype="boolean")
+    result["status"] = pd.array(["missing_value"] * size, dtype="string")
+    valid = ~np.isnan(measured)
+    selected = measured[valid]
+    below, above = selected < profile.values[0], selected > profile.values[-1]
+    outside = below | above
+    relation = np.where(below, "below", np.where(above, "above", "inside"))
+    if profile.analysis.status == "degenerate_reference":
+        relation = np.where(outside, relation, "equal")
+    result.loc[valid, "range_position"] = relation
+    result.loc[valid, "outside_reference_range"] = outside
+    result.loc[valid, "status"] = profile.analysis.status
+    if profile.analysis.status != "degenerate_reference":
+        ranks, lower, equal = _empirical_rank(profile._ordered, profile._cumulative, selected)
+        count = profile.analysis.valid_count
+        lower_count, upper_count = lower + equal, count - lower
+        bands = np.searchsorted(profile.policy.cutoffs, ranks, side="right")
+        for name, values in (
+            ("percentile", ranks), ("tie_lower_percentile", 100.0 * lower / count),
+            ("tie_upper_percentile", 100.0 * (lower + equal) / count),
+            ("lower_tail_count", lower_count), ("upper_tail_count", upper_count),
+            ("lower_tail_frequency", lower_count / count),
+            ("upper_tail_frequency", upper_count / count), ("bin_index", bands),
+            ("band", np.asarray(_BANDS)[bands]),
+        ):
+            result.loc[valid, name] = values
+        result.loc[valid, "status"] = np.where(outside, "outside_reference_range", profile.analysis.status)
+        if profile.analysis.status == "ready":
+            # Out-of-range values get observed counts, but no extrapolated rarity label.
+            positions = np.flatnonzero(valid)[~outside]
+            for name, tail in (("lower_tail_label", lower_count), ("upper_tail_label", upper_count)):
+                frequency = tail[~outside] / count
+                labels = np.where(frequency <= 0.01, "very_rare", np.where(frequency <= 0.05, "rare", "common"))
+                result.iloc[positions, result.columns.get_loc(name)] = labels
+    return BinningResult(profile.profile_id, context, profile.measurement, mode, result)

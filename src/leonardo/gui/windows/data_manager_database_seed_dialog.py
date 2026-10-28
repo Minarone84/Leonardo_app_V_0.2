@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, Signal, Qt
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDateTimeEdit,
     QDialog,
     QFormLayout,
     QGroupBox,
@@ -64,7 +63,6 @@ class DataManagerDatabaseSeedDialog(QDialog):
         root.addWidget(self._build_dataset_group())
         root.addWidget(self._build_metadata_group())
         root.addWidget(self._build_columns_group())
-        root.addWidget(self._build_range_group())
 
         preview = QGroupBox("Preview", self)
         preview_layout = QVBoxLayout(preview)
@@ -103,8 +101,6 @@ class DataManagerDatabaseSeedDialog(QDialog):
         self.close_button.clicked.connect(self.close)
         self.name_edit.textChanged.connect(self._form_changed)
         self.description_edit.textChanged.connect(self._form_changed)
-        self.range_start.dateTimeChanged.connect(self._form_changed)
-        self.range_end.dateTimeChanged.connect(self._form_changed)
         for checkbox in self.column_checks.values():
             checkbox.toggled.connect(self._form_changed)
         self.set_dataset(dataset)
@@ -144,8 +140,6 @@ class DataManagerDatabaseSeedDialog(QDialog):
         )
         for label, widget in self.dataset_fields.items():
             widget.setText(dict(values)[label])
-        self.range_start.setDateTime(_utc_datetime(dataset.first_timestamp_ms))
-        self.range_end.setDateTime(_utc_datetime(dataset.last_timestamp_ms))
         self._populating = False
         self.invalidate_preview("Dataset context changed; preview again.")
 
@@ -159,8 +153,6 @@ class DataManagerDatabaseSeedDialog(QDialog):
                 for column in _COLUMNS
                 if self.column_checks[column].isChecked()
             ),
-            "selected_range_start_ms": self.range_start.dateTime().toMSecsSinceEpoch(),
-            "selected_range_end_ms": self.range_end.dateTime().toMSecsSinceEpoch(),
         }
 
     def set_plan(self, plan: DatabaseSeedCreationPlan) -> None:
@@ -200,9 +192,7 @@ class DataManagerDatabaseSeedDialog(QDialog):
         for widget in (
             self.name_edit,
             self.description_edit,
-            self.range_start,
-            self.range_end,
-            *self.column_checks.values(),
+            self.column_checks["volume"],
         ):
             widget.setEnabled(not self._busy)
         self._sync_controls()
@@ -266,6 +256,7 @@ class DataManagerDatabaseSeedDialog(QDialog):
         for column in _COLUMNS:
             checkbox = QCheckBox(column.title(), group)
             checkbox.setChecked(True)
+            checkbox.setEnabled(column == "volume")
             apply_identity(
                 checkbox,
                 f"{_OBJECT_PREFIX}.input.{column}",
@@ -274,28 +265,6 @@ class DataManagerDatabaseSeedDialog(QDialog):
             layout.addWidget(checkbox)
             self.column_checks[column] = checkbox
         layout.addStretch(1)
-        return group
-
-    def _build_range_group(self) -> QGroupBox:
-        group = QGroupBox("UTC range", self)
-        layout = QFormLayout(group)
-        layout.setContentsMargins(12, 24, 12, 12)
-        layout.setVerticalSpacing(8)
-        self.range_start = QDateTimeEdit(group)
-        self.range_end = QDateTimeEdit(group)
-        for widget, suffix in (
-            (self.range_start, "range_start"),
-            (self.range_end, "range_end"),
-        ):
-            widget.setDisplayFormat("yyyy-MM-dd HH:mm:ss.zzz")
-            widget.setTimeSpec(Qt.TimeSpec.UTC)
-            apply_identity(
-                widget,
-                f"{_OBJECT_PREFIX}.input.{suffix}",
-                object_type="date_time_edit",
-            )
-        layout.addRow("Start UTC", self.range_start)
-        layout.addRow("End UTC", self.range_end)
         return group
 
     def _button(self, label: str, suffix: str) -> QPushButton:
@@ -320,9 +289,7 @@ class DataManagerDatabaseSeedDialog(QDialog):
             name
             and name == name.strip()
             and description == description.strip()
-            and any(item.isChecked() for item in self.column_checks.values())
-            and self.range_start.dateTime().toMSecsSinceEpoch()
-            <= self.range_end.dateTime().toMSecsSinceEpoch()
+            and all(self.column_checks[column].isChecked() for column in _COLUMNS[:4])
         )
 
     def _sync_controls(self) -> None:
@@ -345,9 +312,3 @@ class DataManagerDatabaseSeedDialog(QDialog):
             for column, value in enumerate(values):
                 self.preview_table.setItem(row, column, QTableWidgetItem(value))
         resize_data_manager_table(self.preview_table)
-
-
-def _utc_datetime(value: int | None) -> QDateTime:
-    if type(value) is not int:
-        raise ValueError("accepted dataset timestamp is unavailable")
-    return QDateTime.fromMSecsSinceEpoch(value, Qt.TimeSpec.UTC)

@@ -6,7 +6,8 @@ from collections.abc import Callable
 from functools import partial
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSignalBlocker, Signal, Qt
+from PySide6.QtCore import QAbstractAnimation, QSignalBlocker, QVariantAnimation, Signal, Qt
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
@@ -46,7 +47,9 @@ from leonardo.data_manager import (
     DataManagerRecipeCollectionInspection,
     DataManagerProductCatalogSnapshot,
     DataManagerStudyEnvironmentInspection,
+    DatabaseContentEditPlan,
     DatabaseSeedV1,
+    DatabaseSeedV2,
 )
 from leonardo.data_manager.direct_artifact import DataManagerDirectArtifactCatalog
 from leonardo.gui.action_observer import GuiActionObserver
@@ -104,6 +107,7 @@ class DataManagerSuiteWindow(QWidget):
     """Display immutable Data Manager projections and emit user intent."""
 
     refresh_requested = Signal()
+    notebooks_requested = Signal()
     market_selected = Signal(object)
     artifact_selected = Signal(object)
     recipe_selected = Signal(object)
@@ -130,6 +134,8 @@ class DataManagerSuiteWindow(QWidget):
     catalog_delete_artifact_requested = Signal(object)
     catalog_delete_recipe_collection_requested = Signal(object)
     catalog_delete_artifact_collection_requested = Signal(object)
+    catalog_delete_database_seed_requested = Signal(object)
+    catalog_delete_database_requested = Signal(object)
     duplicate_maintenance_requested = Signal(str)
     duplicate_maintenance_scan_requested = Signal(object)
     duplicate_maintenance_purge_requested = Signal(object)
@@ -154,11 +160,12 @@ class DataManagerSuiteWindow(QWidget):
         str, object, str, str, object, object, str
     )
     create_database_seed_requested = Signal()
+    append_database_seed_requested = Signal(object)
     create_seed_only_database_requested = Signal(object)
-    add_database_artifacts_requested = Signal(object)
-    add_database_collection_requested = Signal(object)
+    edit_database_artifacts_requested = Signal(object)
+    edit_database_collections_requested = Signal(object)
     database_content_preview_requested = Signal(str, str, object)
-    database_content_add_requested = Signal(object)
+    database_content_apply_requested = Signal(object)
     database_seed_preview_requested = Signal(object)
     database_seed_create_requested = Signal(object)
     seed_only_database_preview_requested = Signal(object)
@@ -228,8 +235,23 @@ class DataManagerSuiteWindow(QWidget):
         self._upper_panel: QWidget | None = None
         self._catalog_details_panel: QWidget | None = None
         self._busy = False
+        self._dataset_context_suspended = False
+        self._dataset_evidence_message = ""
+        self._dataset_evidence_cancel_allowed = False
         self._build_window()
         apply_theme_stylesheet(self, load_default_theme())
+        self._selected_dataset_normal_stylesheet = ""
+        self._selected_dataset_attention_animation = QVariantAnimation(self)
+        self._selected_dataset_attention_animation.setDuration(4000)
+        self._selected_dataset_attention_animation.setKeyValues([
+            (0.0, QColor("#142B45")),
+            (0.5, QColor("#315F8A")),
+            (1.0, QColor("#142B45")),
+        ])
+        self._selected_dataset_attention_animation.setLoopCount(-1)
+        self._selected_dataset_attention_animation.valueChanged.connect(
+            self._set_selected_dataset_attention_color
+        )
         self.load_empty_state()
 
     def button_for_id(self, button_id: str) -> QPushButton:
@@ -279,8 +301,9 @@ class DataManagerSuiteWindow(QWidget):
         self._datasets = ()
         self._artifacts = ()
         self._recipes = ()
-        self._selected_market = None
-        self._selected_dataset_entry = None
+        if not self._dataset_context_suspended:
+            self._selected_market = None
+            self._selected_dataset_entry = None
         self._invalidate_duplicate_maintenance_scope(None)
         if self._catalog_workspace is not None:
             self._catalog_workspace.set_selected_market(None)
@@ -320,10 +343,16 @@ class DataManagerSuiteWindow(QWidget):
             self._invalidate_artifact_creation_target()
             self._invalidate_duplicate_maintenance_scope(next_market)
         self._clear_object_selection()
-        self._selected_market = None if snapshot is None else snapshot.market_id
-        self._selected_dataset_entry = None if snapshot is None else snapshot.dataset
+        if not self._dataset_context_suspended:
+            self._selected_market = None if snapshot is None else snapshot.market_id
+            self._selected_dataset_entry = None if snapshot is None else snapshot.dataset
         if self._catalog_workspace is not None:
+            blocker = (
+                QSignalBlocker(self._catalog_workspace)
+                if self._dataset_context_suspended else None
+            )
             self._catalog_workspace.set_selected_market(self._selected_market)
+            del blocker
         self._sync_database_seed_dialog_context()
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_current_market(self._selected_market)
@@ -365,13 +394,17 @@ class DataManagerSuiteWindow(QWidget):
         )
         if accepted is None:
             return False
+        if self._dataset_context_suspended:
+            return True
         if market_id != self._selected_market:
             self._invalidate_artifact_creation_target()
             self._invalidate_duplicate_maintenance_scope(market_id)
         self._selected_market = market_id
         self._selected_dataset_entry = accepted
         if self._catalog_workspace is not None:
+            blocker = QSignalBlocker(self._catalog_workspace)
             self._catalog_workspace.set_selected_market(market_id)
+            del blocker
         if self._artifact_collection_dialog is not None:
             self._artifact_collection_dialog.set_browsing_market(market_id)
         if self._recipe_artifact_materialization_dialog is not None:
@@ -434,10 +467,14 @@ class DataManagerSuiteWindow(QWidget):
         self, busy: bool, operation: str = "", *, preserve_operation: bool = False
     ) -> None:
         self._busy = bool(busy)
+        if not self._busy:
+            self._dataset_evidence_cancel_allowed = False
         for table in self._tables.values():
-            table.setEnabled(not self._busy)
+            table.setEnabled(not self._busy or self._dataset_context_suspended)
         if self._catalog_workspace is not None:
-            self._catalog_workspace.setEnabled(not self._busy)
+            self._catalog_workspace.setEnabled(
+                not self._busy or self._dataset_context_suspended
+            )
             self._catalog_workspace.set_collection_actions_enabled(not self._busy)
         if self._dataset_selector_dialog is not None:
             self._dataset_selector_dialog.set_busy(self._busy)
@@ -471,7 +508,97 @@ class DataManagerSuiteWindow(QWidget):
 
     def set_status(self, message: str) -> None:
         if self._operation_surface is not None:
-            self._operation_surface.set_status(message)
+            self._operation_surface.set_status(
+                self._dataset_evidence_message
+                if self._dataset_context_suspended and not self._busy
+                else message
+            )
+
+    @property
+    def dataset_context_suspended(self) -> bool:
+        return self._dataset_context_suspended
+
+    def enter_dataset_evidence_changed_state(
+        self, market_id: MarketId, message: str
+    ) -> None:
+        entering = not self._dataset_context_suspended
+        if entering:
+            self._dataset_evidence_cancel_allowed = self._busy
+            self._selected_dataset_normal_stylesheet = (
+                self._selected_dataset_table.styleSheet()
+            )
+            self._selected_dataset_normal_header_stylesheet = (
+                self._selected_dataset_table.horizontalHeader().styleSheet()
+            )
+        self._dataset_context_suspended = True
+        self._dataset_evidence_message = message
+        if self._operation_surface is not None:
+            self._operation_surface.set_dataset_evidence_attention(
+                True, message=message
+            )
+        if entering:
+            for dialog in self.findChildren(QWidget):
+                if dialog.isWindow():
+                    dialog.close()
+            if self._dataset_selector_dialog is not None:
+                self._dataset_selector_dialog.clear_selection()
+        self._apply_selected_dataset_attention_typography(True)
+        animation = self._selected_dataset_attention_animation
+        if animation.state() != QAbstractAnimation.State.Running:
+            animation.start()
+        self._set_selected_dataset_attention_color(animation.currentValue())
+        for table in self._tables.values():
+            table.setEnabled(True)
+        if self._catalog_workspace is not None:
+            self._catalog_workspace.setEnabled(True)
+        self._sync_actions()
+
+    def _apply_selected_dataset_attention_typography(self, active: bool) -> None:
+        table = self._selected_dataset_table
+        items = [table.item(row, column) for row in range(table.rowCount())
+                 for column in range(table.columnCount())]
+        items.extend(table.horizontalHeaderItem(column) for column in range(table.columnCount()))
+        for item in items:
+            if item is None:
+                continue
+            if active:
+                item.setForeground(QBrush(QColor("#FF3B4D")))
+                font = QFont(item.font())
+                font.setBold(True)
+                item.setFont(font)
+            else:
+                item.setData(Qt.ItemDataRole.ForegroundRole, None)
+                item.setData(Qt.ItemDataRole.FontRole, None)
+        table.horizontalHeader().setStyleSheet(
+            self._selected_dataset_normal_header_stylesheet
+            + ("QHeaderView::section { color: #FF3B4D; font-weight: 700; }" if active else "")
+        )
+
+    def _set_selected_dataset_attention_color(self, color: QColor) -> None:
+        if self._dataset_context_suspended:
+            self._selected_dataset_table.setStyleSheet(
+                self._selected_dataset_normal_stylesheet
+                + "QTableWidget, QTableWidget > QWidget, QHeaderView::section "
+                + f"{{ background-color: {color.name()}; }}"
+                + "QTableWidget { selection-color: #FF3B4D; border: 2px solid #FF3B4D; }"
+                + "QTableWidget::item:selected { color: #FF3B4D; }"
+            )
+
+    def clear_dataset_evidence_changed_state(self) -> None:
+        if self._dataset_context_suspended:
+            self._selected_dataset_attention_animation.stop()
+            self._apply_selected_dataset_attention_typography(False)
+            self._selected_dataset_table.setStyleSheet(
+                self._selected_dataset_normal_stylesheet
+            )
+        self._dataset_context_suspended = False
+        self._dataset_evidence_message = ""
+        self._dataset_evidence_cancel_allowed = False
+        if self._operation_surface is not None:
+            self._operation_surface.set_dataset_evidence_attention(False)
+        if self._dataset_selector_dialog is not None:
+            self._dataset_selector_dialog.set_dataset_evidence_attention(False)
+        self._sync_actions()
 
     def append_status(self, message: str) -> None:
         if self._operation_surface is not None:
@@ -508,9 +635,14 @@ class DataManagerSuiteWindow(QWidget):
             raise TypeError("snapshot must be a DataManagerProductCatalogSnapshot")
         self._product_catalogs = snapshot
         if self._catalog_workspace is not None:
+            blocker = (
+                QSignalBlocker(self._catalog_workspace)
+                if self._dataset_context_suspended else None
+            )
             self._catalog_workspace.set_selected_market(self._selected_market)
             self._catalog_workspace.set_snapshot(snapshot)
             self._catalog_workspace.set_collection_actions_enabled(not self._busy)
+            del blocker
         self._existing_recipe_ids = tuple(
             item.recipe_id
             for item in snapshot.portable_recipes.recipes
@@ -582,6 +714,7 @@ class DataManagerSuiteWindow(QWidget):
         )
         if self._update_workspace is not None:
             self._update_workspace.set_snapshot(snapshot)
+        self._sync_actions()
 
     def set_catalog_inspection(
         self,
@@ -677,7 +810,23 @@ class DataManagerSuiteWindow(QWidget):
         return QMessageBox.question(
             self,
             "Delete Database Seed",
-            f"Delete exactly one unreferenced Database Seed?\n\n{seed_id}",
+            (
+                "Delete exactly this Database Seed snapshot?\n\n"
+                f"{seed_id}\n\n"
+                "Existing Databases, Artifacts and Collections are not deleted."
+            ),
+        ) == QMessageBox.StandardButton.Yes
+
+    def confirm_database_seed_append(self, plan) -> bool:
+        return QMessageBox.question(
+            self, "Append Database Seed",
+            f"Seed: {plan.seed.display_name}\nID: {plan.seed.seed_id}\n\n"
+            f"Previous rows: {plan.previous_row_count}\n"
+            f"Added rows: {plan.appended_row_count}\n"
+            f"Resulting rows: {plan.previous_row_count + plan.appended_row_count}\n\n"
+            "Existing rows and existing Databases remain unchanged.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes
 
     def confirm_database_publication(
@@ -705,30 +854,6 @@ class DataManagerSuiteWindow(QWidget):
         )
         return QMessageBox.question(
             self, "Publish Database Revision", message
-        ) == QMessageBox.StandardButton.Yes
-
-    def confirm_database_rebuild(self, plan: object) -> bool:
-        source_change = getattr(plan, "source_change", None)
-        plan_status = str(getattr(plan, "status", "") or "unavailable")
-        source_status = str(
-            getattr(source_change, "status", "") or "unavailable"
-        )
-        source_reason = str(
-            getattr(source_change, "reason", "") or "not provided"
-        )
-        message = (
-            f"Database: {getattr(plan, 'database_id', '')}\n"
-            f"Current revision: {getattr(plan, 'database_revision_id', '')}\n"
-            f"Database plan status: {plan_status}\n"
-            f"Source-change status: {source_status}\n"
-            f"Reason append is unsafe: {source_reason}\n"
-            f"Target Artifact Collection revision: "
-            f"{getattr(plan, 'collection_revision_id', '')}\n\n"
-            "This publishes a new immutable Database revision. "
-            "Previous revisions remain unchanged."
-        )
-        return QMessageBox.question(
-            self, "Rebuild Database Revision", message
         ) == QMessageBox.StandardButton.Yes
 
     def creation_text(self, object_id: str) -> str:
@@ -866,7 +991,6 @@ class DataManagerSuiteWindow(QWidget):
             QSizePolicy.Policy.Expanding,
         )
         tabs.addTab(self._build_catalogs(), "Catalogs")
-        tabs.addTab(self._build_creation_workflow(), "Create Database")
         tabs.addTab(self._build_update_workflow(), "Update & Reconcile")
 
         operation = self._build_status()
@@ -917,6 +1041,20 @@ class DataManagerSuiteWindow(QWidget):
         selected_dataset = self._build_selected_dataset()
         layout.addWidget(actions)
         layout.addWidget(selected_dataset, 1)
+        notebooks = QPushButton("Open Notebooks...", strip)
+        object_id = "data_manager.button.open_notebooks"
+        apply_identity(
+            notebooks,
+            object_id,
+            object_type="button",
+            display_label="Open Notebooks...",
+            action_id=object_id,
+        )
+        notebooks.clicked.connect(
+            partial(self._invoke_action, object_id, self.notebooks_requested.emit)
+        )
+        self._buttons[object_id] = notebooks
+        layout.addWidget(notebooks, 0, Qt.AlignmentFlag.AlignTop)
         layout.setStretch(0, 0)
         layout.setStretch(1, 1)
         return strip
@@ -1027,14 +1165,15 @@ class DataManagerSuiteWindow(QWidget):
         workspace.create_database_seed_requested.connect(
             self.create_database_seed_requested.emit
         )
+        workspace.append_database_seed_requested.connect(self.append_database_seed_requested.emit)
         workspace.create_seed_only_database_requested.connect(
             self.create_seed_only_database_requested.emit
         )
-        workspace.add_database_artifacts_requested.connect(
-            self.add_database_artifacts_requested.emit
+        workspace.edit_database_artifacts_requested.connect(
+            self.edit_database_artifacts_requested.emit
         )
-        workspace.add_database_collection_requested.connect(
-            self.add_database_collection_requested.emit
+        workspace.edit_database_collections_requested.connect(
+            self.edit_database_collections_requested.emit
         )
         workspace.delete_recipe_requested.connect(
             self._confirm_catalog_recipe_deletion
@@ -1047,6 +1186,12 @@ class DataManagerSuiteWindow(QWidget):
         )
         workspace.delete_artifact_collection_requested.connect(
             self._confirm_catalog_artifact_collection_deletion
+        )
+        workspace.delete_database_seed_requested.connect(
+            self._confirm_catalog_database_seed_deletion
+        )
+        workspace.delete_database_requested.connect(
+            self._confirm_catalog_database_deletion
         )
         workspace.family_changed.connect(lambda _family: self._sync_actions())
         self._catalog_workspace = workspace
@@ -1367,7 +1512,7 @@ class DataManagerSuiteWindow(QWidget):
         self,
         snapshot: DataManagerProductCatalogSnapshot,
         *,
-        selected_seed: DatabaseSeedV1 | None = None,
+        selected_seed: DatabaseSeedV1 | DatabaseSeedV2 | None = None,
     ) -> None:
         from leonardo.gui.windows.data_manager_database_creation_dialog import (
             DATA_MANAGER_DATABASE_CREATION_WINDOW_ID,
@@ -1427,29 +1572,39 @@ class DataManagerSuiteWindow(QWidget):
         snapshot: DataManagerProductCatalogSnapshot,
         *,
         mode: str,
+        baseline_plan: DatabaseContentEditPlan | None = None,
     ) -> None:
         from leonardo.gui.windows.data_manager_database_content_dialog import (
-            DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID,
             DataManagerDatabaseContentDialog,
         )
 
+        if mode not in {"artifacts", "collections"}:
+            raise ValueError("mode must be artifacts or collections")
         dialog = self._database_content_dialog
+        if dialog is not None and dialog.mode != mode:
+            dialog.close()
+            dialog = None
         created = dialog is None
         if dialog is None:
             dialog = DataManagerDatabaseContentDialog(self)
             dialog.preview_requested.connect(
                 self.database_content_preview_requested.emit
             )
-            dialog.add_requested.connect(
-                self.database_content_add_requested.emit
+            dialog.apply_requested.connect(
+                self.database_content_apply_requested.emit
             )
             dialog.closing.connect(self._release_database_content_dialog)
             self._database_content_dialog = dialog
-        dialog.set_context(database, snapshot, mode=mode)
+        dialog.set_context(
+            database,
+            snapshot,
+            mode=mode,
+            baseline_plan=baseline_plan,
+        )
         if created and self._floating_window_tracker is not None:
             self._floating_window_tracker(
                 dialog,
-                DATA_MANAGER_DATABASE_CONTENT_WINDOW_ID,
+                dialog.property("object_id"),
                 dialog.windowTitle(),
                 "window",
             )
@@ -2015,7 +2170,10 @@ class DataManagerSuiteWindow(QWidget):
 
     def _show_dataset_selector(self) -> None:
         dialog = self._ensure_dataset_selector()
+        dialog.set_dataset_evidence_attention(False)
         dialog.prepare_for_market(self._selected_market)
+        if self._dataset_context_suspended:
+            dialog.clear_selection()
         dialog.set_busy(self._busy)
         dialog.show()
         dialog.raise_()
@@ -2046,6 +2204,19 @@ class DataManagerSuiteWindow(QWidget):
     def _on_dataset_selector_selected(self, market_id: object) -> None:
         if not isinstance(market_id, MarketId):
             return
+        if self._busy or not any(
+            entry.accepted and entry.market_id == market_id
+            for entry in self._datasets
+        ):
+            return
+        if self._dataset_context_suspended and market_id == self._selected_market:
+            return
+        catalog_blocker = (
+            QSignalBlocker(self._catalog_workspace)
+            if self._catalog_workspace is not None
+            else None
+        )
+        self.clear_dataset_evidence_changed_state()
         if market_id != self._selected_market:
             self._invalidate_artifact_creation_target()
         self._selected_market = market_id
@@ -2069,6 +2240,7 @@ class DataManagerSuiteWindow(QWidget):
         self._sync_database_seed_dialog_context()
         self._set_selection_details("Loading accepted dataset...")
         self.market_selected.emit(market_id)
+        del catalog_blocker
         self._sync_actions()
 
     def _on_artifact_selection(self) -> None:
@@ -2148,12 +2320,14 @@ class DataManagerSuiteWindow(QWidget):
             )
 
     def _sync_actions(self) -> None:
+        operational = not self._busy and not self._dataset_context_suspended
         if not self._buttons:
             return
         self._buttons["data_manager.button.refresh"].setEnabled(not self._busy)
+        self._buttons["data_manager.button.open_notebooks"].setEnabled(not self._busy)
         self._buttons["data_manager.button.select_dataset"].setEnabled(not self._busy)
         self._buttons["data_manager.button.preview_dataset"].setEnabled(
-            not self._busy and self._selected_market is not None
+            operational and self._selected_market is not None
         )
         family = (
             ""
@@ -2161,7 +2335,7 @@ class DataManagerSuiteWindow(QWidget):
             else self._catalog_workspace.current_family
         )
         self._buttons["data_manager.button.duplicate_maintenance"].setEnabled(
-            not self._busy
+            operational
             and family
             in {
                 "Recipes",
@@ -2171,39 +2345,47 @@ class DataManagerSuiteWindow(QWidget):
             }
         )
         if self._catalog_workspace is not None:
+            self._catalog_workspace.set_collection_actions_enabled(operational)
             self._catalog_workspace.set_create_artifact_enabled(
-                not self._busy and self._selected_market is not None
+                operational and self._selected_market is not None
             )
-            self._catalog_workspace.set_derive_recipes_enabled(not self._busy)
-            self._catalog_workspace.set_deletion_actions_enabled(not self._busy)
+            self._catalog_workspace.set_derive_recipes_enabled(operational)
+            self._catalog_workspace.set_deletion_actions_enabled(operational)
+            self._catalog_workspace.set_database_seed_append_enabled(operational)
             self._catalog_workspace.set_materialization_actions_enabled(
-                not self._busy and self._accepted_target_market() is not None
+                operational and self._accepted_target_market() is not None
             )
             self._catalog_workspace.set_database_creation_actions_enabled(
                 create_seed=(
-                    not self._busy and self._accepted_target_dataset() is not None
+                    operational and self._accepted_target_dataset() is not None
                 ),
                 create_database=(
-                    not self._busy
+                    operational
                     and self._product_catalogs is not None
                     and bool(self._product_catalogs.database_seeds)
                 ),
             )
             self._catalog_workspace.set_database_content_actions_enabled(
-                not self._busy and self._product_catalogs is not None
+                operational and self._product_catalogs is not None
             )
         if self._cancel_button is not None:
-            self._cancel_button.setEnabled(self._busy)
-        target = self._selected_market is not None
-        self._buttons["data_manager.button.creation.use_target"].setEnabled(
-            not self._busy and target
-        )
-        for object_id in (
-            "data_manager.button.creation.create_seed",
-            "data_manager.button.creation.plan_base",
-            "data_manager.button.creation.plan_batch",
-        ):
-            self._buttons[object_id].setEnabled(not self._busy and target)
+            self._cancel_button.setEnabled(
+                self._busy and (
+                    not self._dataset_context_suspended
+                    or self._dataset_evidence_cancel_allowed
+                )
+            )
+        for workspace in (self._creation_workspace, self._update_workspace):
+            if workspace is not None:
+                workspace.set_busy(not operational)
+        if self._update_workspace is not None:
+            self._update_workspace.set_market(self._selected_market)
+        if self._operation_surface is not None:
+            self._operation_surface.clear_button.setEnabled(
+                not self._dataset_context_suspended
+            )
+            if self._dataset_context_suspended and not self._busy:
+                self._operation_surface.set_status(self._dataset_evidence_message)
 
     def _invalidate_artifact_creation_target(self) -> None:
         if self._artifact_creation_dialog is not None:
@@ -2317,12 +2499,37 @@ class DataManagerSuiteWindow(QWidget):
             f"Market: {value.market_id.as_key()}\n\n"
             "This deletes the Collection and all revisions.\n"
             "Member Artifacts are not deleted.\n"
-            "Deletion is refused if a Database revision references it."
+            "Existing Databases retain their captured snapshot and do not block deletion."
         )
         if QMessageBox.question(
             self, "Delete Artifact Collection", message
         ) == QMessageBox.StandardButton.Yes:
             self.catalog_delete_artifact_collection_requested.emit(value)
+
+    def _confirm_catalog_database_seed_deletion(self, value: object) -> None:
+        if not isinstance(value, (DatabaseSeedV1, DatabaseSeedV2)):
+            return
+        if self.confirm_database_seed_deletion(value.seed_id):
+            self.catalog_delete_database_seed_requested.emit(value)
+
+    def _confirm_catalog_database_deletion(self, value: object) -> None:
+        if not isinstance(value, DataManagerDatabaseCatalogEntry):
+            return
+        manifest = value.current_manifest
+        revision = "unavailable" if manifest is None else manifest.revision_id
+        message = (
+            f"Database name: {value.definition.display_name}\n"
+            f"Database ID: {value.definition.database_id}\n"
+            f"Market: {value.definition.market_id.as_key()}\n"
+            f"Current revision: {revision}\n"
+            f"Stored revisions: {value.revision_count}\n\n"
+            "This deletes only this Database and its immutable revisions.\n"
+            "Its Seed, Artifacts and Artifact Collections are not deleted."
+        )
+        if QMessageBox.question(
+            self, "Delete Database", message
+        ) == QMessageBox.StandardButton.Yes:
+            self.catalog_delete_database_requested.emit(value)
 
     def _invoke_action(self, action_id: str, callback) -> None:
         if self._action_observer is not None:
@@ -2362,6 +2569,8 @@ class DataManagerSuiteWindow(QWidget):
             self._operation_surface.set_context(text)
 
     def _refresh_selected_dataset_from_catalog(self) -> None:
+        if self._dataset_context_suspended:
+            return
         self._selected_dataset_entry = next(
             (
                 entry
@@ -2377,6 +2586,8 @@ class DataManagerSuiteWindow(QWidget):
         self._populate_selected_dataset()
 
     def _populate_selected_dataset(self) -> None:
+        if self._dataset_context_suspended:
+            return
         table = self._selected_dataset_table
         if table is None:
             return

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QDialog, QMessageBox
+from shiboken6 import isValid
 
 from leonardo.core.core_runner import TaskProgress, TaskResult
 from leonardo.gui.presenters.research_chart_presenter import (
@@ -166,6 +167,7 @@ class _SnapshotRestoreRun:
     pre_current_workspace_snapshot_id: str | None = None
     pre_assigned_notebook_id: str | None = None
     failure_message: str | None = None
+    notebook_transition: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +256,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._financial_tools_save_runs: dict[int, _FinancialToolsSaveRun] = {}
         self._financial_tools_settled_status: dict[int, str] = {}
         self._active_catalog_task_id: str | None = None
+        self._new_chart_open_requested = False
         self._dataset_summaries = ()
         self._disposed = False
         self._last_catalog_status = ""
@@ -271,12 +274,16 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._snapshot_manager: WorkspaceSnapshotManagerDialog | None = None
         self._snapshot_manager_mode: str | None = None
         self._snapshot_preflight_dialog: WorkspaceSnapshotPreflightDialog | None = None
+        self._snapshot_preflight_context = None
         self._snapshot_restore: _SnapshotRestoreRun | None = None
         self._notebook_editor: ResearchNotebookWindow | None = None
         self._notebook_manager: ResearchNotebookManagerDialog | None = None
+        self._notebook_manager_refresh_after_restore: ResearchNotebookManagerDialog | None = None
         self._active_notebook: ResearchNotebookV1 | None = None
         self._last_valid_notebook_draft: ResearchNotebookDraft | None = None
         self._notebook_task_id: str | None = None
+        self._notebook_save_pending = False
+        self._suite_close_approved = False
         self._notebook_link_operation_token: str | None = None
         self._notebook_pending_action: tuple[str, object | None] | None = None
         self._current_workspace_snapshot_id: str | None = None
@@ -324,6 +331,7 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._request_clear_research_suite
         )
         self._view.closed.connect(self.dispose)
+        self._view.set_close_guard(self.request_close)
         self._view.workspace.set_external_close_owner(True)
         self._view.workspace.chart_close_requested.connect(self._close_chart)
         self._view.workspace.detached_window_created.connect(
@@ -348,14 +356,32 @@ class RestoredResearchLifecyclePresenter(QObject):
     def open_new_chart(self) -> None:
         if self._disposed:
             return
-        self._new_chart_dialog.set_dataset_summaries(self._dataset_summaries)
-        self._new_chart_dialog.reset_selection()
-        self._new_chart_dialog.open()
+        if self._new_chart_dialog.isVisible():
+            self._show_dialog(self._new_chart_dialog)
+            return
+        if self._new_chart_open_requested:
+            return
+        self._new_chart_open_requested = True
+        if self._active_catalog_task_id is None:
+            self._refresh_catalog()
+
+    def request_close(self, resume: Callable[[], None] | None = None) -> bool:
+        if self._disposed:
+            return True
+        if resume is None and self._suite_close_approved:
+            self._suite_close_approved = False
+            return True
+        action = "close_main" if resume is not None else "close_suite"
+        allowed = self._allow_notebook_transition(action, resume or self._view.close)
+        if allowed and resume is not None:
+            self._suite_close_approved = True
+        return allowed
 
     def dispose(self) -> bool:
         if self._disposed:
             return False
         self._disposed = True
+        self._new_chart_open_requested = False
         if self._active_catalog_task_id is not None:
             self._service.cancel(self._active_catalog_task_id)
             self._active_catalog_task_id = None
@@ -420,6 +446,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._snapshot_preflight_dialog = None
         self._notebook_editor = None
         self._notebook_manager = None
+        self._notebook_manager_refresh_after_restore = None
         self._snapshot_restore = None
         panels = tuple(
             self._view.workspace.chart_panel_for_slot(slot_id)
@@ -436,6 +463,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         return True
 
     def _refresh_catalog(self) -> None:
+        self._new_chart_dialog.set_dataset_summaries(())
+        self._new_chart_dialog.reset_selection()
         self._view.set_dataset_summaries(())
         self._view.set_catalog_busy(True)
         self._append_activity("Scanning accepted historical datasets...")
@@ -473,11 +502,17 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._append_activity(
                 f"Catalog ready: {len(self._dataset_summaries)} accepted dataset(s)."
             )
+            if self._new_chart_open_requested:
+                self._new_chart_open_requested = False
+                self._new_chart_dialog.set_dataset_summaries(self._dataset_summaries)
+                self._new_chart_dialog.reset_selection()
+                self._new_chart_dialog.open()
             return
         detail = result.error_message or result.error_type or result.status
         self._publish_catalog_failure(f"Catalog scan {result.status}: {detail}")
 
     def _publish_catalog_failure(self, message: str) -> None:
+        self._new_chart_open_requested = False
         self._active_catalog_task_id = None
         self._dataset_summaries = ()
         self._view.set_dataset_summaries(())
@@ -485,7 +520,7 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._append_activity(message)
 
     def _accept_new_chart(self) -> None:
-        if self._disposed:
+        if self._disposed or self._active_catalog_task_id is not None:
             return
         summary = self._new_chart_dialog.selected_dataset_summary()
         if summary is None:
@@ -722,7 +757,9 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._notebook_manager, ResearchNotebookManagerDialog
         ):
             self._notebook_manager.set_busy(
-                notebook_busy or self._notebook_link_operation_token is not None
+                notebook_busy
+                or self._notebook_link_operation_token is not None
+                or self._notebook_restore_transition_active()
             )
         self._view.set_clear_research_suite_enabled(
             not self._clear_suite_conflict_active()
@@ -1578,49 +1615,58 @@ class RestoredResearchLifecyclePresenter(QObject):
         )
         dialog.show()
 
-    def _refresh_snapshot_manager(
-        self, dialog: WorkspaceSnapshotManagerDialog
-    ) -> None:
-        if dialog is not self._snapshot_manager:
+    def _refresh_snapshot_manager(self, dialog: WorkspaceSnapshotManagerDialog) -> None:
+        if (
+            self._disposed or dialog is not self._snapshot_manager
+            or not dialog.isVisible() or self._snapshot_restore is not None
+        ):
             return
+        dialog.invalidate_selection()
+        revision = dialog.selection_revision
         self._submit_snapshot_task(
             lambda callback: self._snapshot_service.submit_list_snapshots(
-                result_callback=callback,
-                callback_dispatcher=self._dispatch,
+                result_callback=callback, callback_dispatcher=self._dispatch,
             ),
             lambda result: dialog.set_summaries(result.value)
             if (
-                dialog is self._snapshot_manager
-                and result.status == "completed"
-                and isinstance(result.value, tuple)
-            )
-            else None,
+                not self._disposed and dialog is self._snapshot_manager
+                and dialog.isVisible() and self._snapshot_restore is None
+                and revision == dialog.selection_revision
+                and result.status == "completed" and isinstance(result.value, tuple)
+            ) else None,
         )
 
     def _load_snapshot_manager_selection(
         self, dialog: WorkspaceSnapshotManagerDialog, snapshot_id: str
     ) -> None:
-        if dialog is not self._snapshot_manager:
+        if (
+            self._disposed or dialog is not self._snapshot_manager
+            or not dialog.isVisible() or self._snapshot_restore is not None
+            or dialog.selected_snapshot_id != snapshot_id
+        ):
             return
+        dialog.invalidate_selection()
+        revision = dialog.selection_revision
         self._submit_snapshot_task(
             lambda callback: self._snapshot_service.submit_load_snapshot(
-                snapshot_id,
-                result_callback=callback,
-                callback_dispatcher=self._dispatch,
+                snapshot_id, result_callback=callback, callback_dispatcher=self._dispatch,
             ),
-            lambda result: self._snapshot_manager_loaded(
-                dialog, snapshot_id, result
-            ),
+            lambda result: self._snapshot_manager_loaded(dialog, snapshot_id, result)
+            if (
+                not self._disposed and dialog is self._snapshot_manager
+                and dialog.isVisible() and self._snapshot_restore is None
+                and revision == dialog.selection_revision
+                and dialog.selected_snapshot_id == snapshot_id
+            ) else None,
         )
 
     def _snapshot_manager_loaded(
-        self,
-        dialog: WorkspaceSnapshotManagerDialog,
-        snapshot_id: str,
-        result: TaskResult,
+        self, dialog: WorkspaceSnapshotManagerDialog, snapshot_id: str, result: TaskResult,
     ) -> None:
         if (
-            dialog is not self._snapshot_manager
+            self._disposed or dialog is not self._snapshot_manager
+            or not dialog.isVisible() or self._snapshot_restore is not None
+            or dialog.selected_snapshot_id != snapshot_id
             or result.status != "completed"
             or not isinstance(result.value, ResearchWorkspaceSnapshotV1)
             or result.value.snapshot_id != snapshot_id
@@ -1628,127 +1674,159 @@ class RestoredResearchLifecyclePresenter(QObject):
             return
         dialog.set_snapshot(result.value)
         self._check_snapshot_manager_compatibility(
-            dialog, WorkspaceSnapshotLoadIntent(snapshot_id, "append")
+            dialog, WorkspaceSnapshotLoadIntent(snapshot_id, dialog.load_mode)
         )
 
     def _check_snapshot_manager_compatibility(
-        self,
-        dialog: WorkspaceSnapshotManagerDialog,
-        intent: WorkspaceSnapshotLoadIntent,
+        self, dialog: WorkspaceSnapshotManagerDialog, intent: WorkspaceSnapshotLoadIntent,
     ) -> None:
         snapshot = dialog.snapshot
         if (
-            dialog is not self._snapshot_manager
-            or snapshot is None
+            self._disposed or dialog is not self._snapshot_manager
+            or not dialog.isVisible() or snapshot is None
+            or dialog.selected_snapshot_id != intent.snapshot_id
             or snapshot.snapshot_id != intent.snapshot_id
-            or self._snapshot_restore is not None
+            or intent.mode != dialog.load_mode or self._snapshot_restore is not None
         ):
+            return
+        dialog.invalidate_compatibility()
+        context = dialog.compatibility_context()
+        if context is None:
             return
         current = {
             "occupied_positions": self._view.workspace.shell_state.reserved_positions(),
-            "idle": all(
-                not presenter.is_busy
-                for presenter in self._chart_presenters.values()
-            ),
+            "idle": all(not presenter.is_busy for presenter in self._chart_presenters.values()),
         }
         self._submit_snapshot_task(
             lambda callback: self._snapshot_service.submit_preflight(
-                snapshot,
-                intent.mode,
-                current,
-                result_callback=callback,
-                callback_dispatcher=self._dispatch,
+                snapshot, intent.mode, current,
+                result_callback=callback, callback_dispatcher=self._dispatch,
             ),
-            lambda result: dialog.set_compatibility(result.value)
+            lambda result: dialog.set_compatibility(result.value, expected_context=context)
             if (
-                dialog is self._snapshot_manager
+                not self._disposed and dialog is self._snapshot_manager
+                and dialog.isVisible() and self._snapshot_restore is None
+                and context == dialog.compatibility_context()
                 and result.status == "completed"
-                and isinstance(
-                    result.value, ResearchWorkspaceSnapshotCompatibilityReport
-                )
-            )
-            else None,
+                and isinstance(result.value, ResearchWorkspaceSnapshotCompatibilityReport)
+                and result.value.snapshot_id == snapshot.snapshot_id
+                and result.value.mode == intent.mode
+            ) else None,
         )
 
     def _open_snapshot_preflight(
-        self,
-        dialog: WorkspaceSnapshotManagerDialog,
-        intent: WorkspaceSnapshotLoadIntent,
+        self, dialog: WorkspaceSnapshotManagerDialog, intent: WorkspaceSnapshotLoadIntent,
     ) -> None:
         snapshot = dialog.snapshot
         report = dialog.compatibility_report
+        context = dialog.reviewed_context
         if (
-            snapshot is None
-            or report is None
-            or report.mode != intent.mode
+            self._disposed or dialog is not self._snapshot_manager
+            or not dialog.isVisible() or self._snapshot_restore is not None
+            or snapshot is None or report is None or context is None
+            or dialog.selected_snapshot_id != intent.snapshot_id
+            or snapshot.snapshot_id != intent.snapshot_id
+            or report.snapshot_id != intent.snapshot_id
+            or report.mode != intent.mode or dialog.load_mode != intent.mode
             or not report.compatible
         ):
             return
         if self._snapshot_preflight_dialog is not None:
-            self._show_dialog(self._snapshot_preflight_dialog)
-            return
+            if self._snapshot_preflight_context == (dialog, context):
+                self._show_dialog(self._snapshot_preflight_dialog)
+                return
+            obsolete = self._snapshot_preflight_dialog
+            obsolete.close()
+            obsolete.deleteLater()
         preflight = WorkspaceSnapshotPreflightDialog(report, self._view)
         self._snapshot_preflight_dialog = preflight
+        self._snapshot_preflight_context = (dialog, context)
         preflight.load_requested.connect(
-            lambda _report: self._restore_snapshot_workspace(snapshot, report)
+            lambda emitted: self._confirm_snapshot_manager_preflight(
+                preflight, dialog, snapshot, report, context, emitted
+            )
         )
-        preflight.finished.connect(
-            lambda _code: self._forget_snapshot_preflight(preflight)
-        )
-        self._track_window(
-            preflight,
-            "research.workspace_snapshot_preflight",
-            "Load Workspace",
-        )
+        preflight.finished.connect(lambda _code: self._forget_snapshot_preflight(preflight))
+        self._track_window(preflight, "research.workspace_snapshot_preflight", "Load Workspace")
         preflight.show()
 
+    def _confirm_snapshot_manager_preflight(
+        self, preflight, dialog, snapshot, report, context, emitted_report,
+    ) -> None:
+        current = dialog.snapshot if dialog is self._snapshot_manager else None
+        if (
+            self._disposed or self._snapshot_restore is not None
+            or preflight is not self._snapshot_preflight_dialog
+            or self._snapshot_preflight_context != (dialog, context)
+            or dialog is not self._snapshot_manager or not dialog.isVisible()
+            or context != dialog.reviewed_context
+            or current is None
+            or (current.snapshot_id, current.content_hash, current.updated_at_utc)
+            != (snapshot.snapshot_id, snapshot.content_hash, snapshot.updated_at_utc)
+            or dialog.selected_snapshot_id != snapshot.snapshot_id
+            or dialog.load_mode != report.mode
+            or dialog.compatibility_report is not report
+            or emitted_report is not report or preflight.report is not report
+            or report.snapshot_id != snapshot.snapshot_id or not report.compatible
+        ):
+            preflight.show_failure("Workspace review changed; select and review it again.")
+            return
+        self._restore_snapshot_workspace(snapshot, report)
+
     def _save_snapshot_manager_metadata(
-        self,
-        dialog: WorkspaceSnapshotManagerDialog,
-        intent: WorkspaceSnapshotMetadataIntent,
+        self, dialog: WorkspaceSnapshotManagerDialog, intent: WorkspaceSnapshotMetadataIntent,
     ) -> None:
         snapshot = dialog.snapshot
         if (
-            snapshot is None
+            self._disposed or dialog is not self._snapshot_manager
+            or not dialog.isVisible() or self._snapshot_restore is not None
+            or snapshot is None or dialog.compatibility_context() is None
+            or dialog.selected_snapshot_id != intent.snapshot_id
             or intent.snapshot_id != snapshot.snapshot_id
-            or dialog is not self._snapshot_manager
         ):
             return
+        revision = dialog.selection_revision
+        identity = (snapshot.content_hash, snapshot.updated_at_utc)
         draft = ResearchWorkspaceSnapshotDraft(
-            intent.display_name,
-            intent.description,
-            snapshot.workspace,
-            snapshot.charts,
-            snapshot.snapshot_id,
+            intent.display_name, intent.description, snapshot.workspace,
+            snapshot.charts, snapshot.snapshot_id,
         )
         self._submit_snapshot_task(
             lambda callback: self._snapshot_service.submit_update_snapshot(
-                snapshot.snapshot_id,
-                draft,
-                result_callback=callback,
-                callback_dispatcher=self._dispatch,
+                snapshot.snapshot_id, draft,
+                result_callback=callback, callback_dispatcher=self._dispatch,
             ),
             lambda result: self._snapshot_metadata_saved_result(
-                dialog,
-                result,
+                dialog, result, snapshot_id=snapshot.snapshot_id,
+                selection_revision=revision, loaded_identity=identity,
             ),
         )
 
     def _snapshot_metadata_saved_result(
-        self,
-        dialog: WorkspaceSnapshotManagerDialog,
-        result: TaskResult,
+        self, dialog: WorkspaceSnapshotManagerDialog, result: TaskResult, *,
+        snapshot_id: str, selection_revision: int, loaded_identity: tuple,
     ) -> None:
         if (
-            dialog is not self._snapshot_manager
-            or result.status != "completed"
+            self._disposed or result.status != "completed"
             or not isinstance(result.value, ResearchWorkspaceSnapshotV1)
+            or result.value.snapshot_id != snapshot_id
         ):
             return
-        dialog.set_snapshot(result.value)
-        self._current_workspace_snapshot_id = result.value.snapshot_id
-        self._assigned_notebook_id = result.value.notebook_id
-        self._sync_notebook_assignment()
+        snapshot = dialog.snapshot if dialog is self._snapshot_manager else None
+        if (
+            dialog is self._snapshot_manager and dialog.isVisible()
+            and self._snapshot_restore is None
+            and dialog.selected_snapshot_id == snapshot_id
+            and dialog.selection_revision == selection_revision
+            and snapshot is not None and snapshot.snapshot_id == snapshot_id
+            and (snapshot.content_hash, snapshot.updated_at_utc) == loaded_identity
+        ):
+            dialog.set_snapshot(result.value)
+            self._check_snapshot_manager_compatibility(
+                dialog, WorkspaceSnapshotLoadIntent(snapshot_id, dialog.load_mode)
+            )
+        if self._current_workspace_snapshot_id == snapshot_id:
+            self._sync_notebook_assignment()
         if self._notebook_manager is not None:
             self._refresh_notebook_manager(self._notebook_manager)
 
@@ -1799,6 +1877,101 @@ class RestoredResearchLifecyclePresenter(QObject):
         dialog = self._snapshot_preflight_dialog
         if dialog is None:
             return
+        if (
+            self._notebook_link_operation_token is not None
+            or (self._notebook_task_id is not None and not self._notebook_save_pending)
+        ):
+            self._append_activity("Notebook operation is already in progress.")
+            dialog.show_failure("Notebook operation is already in progress.")
+            return
+        if self._snapshot_notebook_transition(snapshot):
+            if not self._allow_notebook_transition(
+                "restore_snapshot", (snapshot, report, dialog)
+            ):
+                # The dialog otherwise assumes an emitted request began a restore.
+                dialog.show_failure("Load not started; the current workspace is unchanged.")
+                return
+        elif self._notebook_pending_action is not None:
+            self._append_activity("Another Notebook transition is already pending.")
+            dialog.show_failure("Another Notebook transition is already pending.")
+            return
+        self._start_snapshot_restore(snapshot, report)
+
+    def _snapshot_notebook_transition(self, snapshot) -> bool:
+        editor = self._notebook_editor
+        return editor is not None and (
+            snapshot.notebook_id is None or editor.notebook_id != snapshot.notebook_id
+        )
+
+    def _resume_snapshot_restore(self, intent) -> None:
+        snapshot, report, dialog = intent
+        if dialog is not self._snapshot_preflight_dialog or self._snapshot_restore is not None:
+            self._append_activity("Workspace restore request is no longer current.")
+            self._refresh_saved_notebook_manager_after_restore()
+            return
+        editor = self._notebook_editor
+        self._notebook_pending_action = ("restore_snapshot", intent)
+        current = {
+            "occupied_positions": self._view.workspace.shell_state.reserved_positions(),
+            "idle": all(not item.is_busy for item in self._chart_presenters.values()),
+        }
+        sessions = tuple(
+            (slot, item.session.session_id, item.is_busy)
+            for slot, item in self._chart_presenters.items()
+        )
+
+        def checked(result):
+            if self._notebook_pending_action != ("restore_snapshot", intent):
+                return
+            self._notebook_pending_action = None
+            fresh = result.value
+            if (
+                dialog is not self._snapshot_preflight_dialog
+                or self._snapshot_restore is not None
+                or editor is not self._notebook_editor
+                or (editor is not None and editor.is_dirty)
+                or current["occupied_positions"] != self._view.workspace.shell_state.reserved_positions()
+                or sessions != tuple(
+                    (slot, item.session.session_id, item.is_busy)
+                    for slot, item in self._chart_presenters.items()
+                )
+            ):
+                self._append_activity("Workspace restore request is no longer current.")
+                self._refresh_saved_notebook_manager_after_restore()
+                return
+            if (
+                result.status != "completed"
+                or not isinstance(fresh, ResearchWorkspaceSnapshotCompatibilityReport)
+                or fresh.snapshot_id != snapshot.snapshot_id
+                or fresh.mode != report.mode
+                or not fresh.compatible
+            ):
+                message = result.error_message or "Workspace compatibility changed; review the load again."
+                dialog.show_failure(message)
+                self._append_activity(message)
+                self._refresh_saved_notebook_manager_after_restore()
+                return
+            self._start_snapshot_restore(snapshot, fresh)
+
+        try:
+            self._submit_snapshot_task(
+                lambda callback: self._snapshot_service.submit_preflight(
+                    snapshot, report.mode, current,
+                    result_callback=callback, callback_dispatcher=self._dispatch,
+                ),
+                checked,
+            )
+        except Exception as error:
+            self._notebook_pending_action = None
+            dialog.show_failure(str(error))
+            self._append_activity(f"Workspace preflight failed: {error}")
+            self._refresh_saved_notebook_manager_after_restore()
+
+    def _start_snapshot_restore(self, snapshot, report) -> None:
+        dialog = self._snapshot_preflight_dialog
+        if dialog is None:
+            self._refresh_saved_notebook_manager_after_restore()
+            return
         dialog.begin_restore(len(snapshot.charts))
         try:
             active_slot_id = self._view.workspace.active_slot_id
@@ -1827,6 +2000,7 @@ class RestoredResearchLifecyclePresenter(QObject):
             dialog.show_failure(message)
             self._append_activity(f"Workspace Snapshot restore failed: {message}")
             self._refresh_command_actions()
+            self._refresh_saved_notebook_manager_after_restore()
             return
         self._snapshot_restore = _SnapshotRestoreRun(
             uuid4().hex,
@@ -1843,7 +2017,10 @@ class RestoredResearchLifecyclePresenter(QObject):
                 self._current_workspace_snapshot_id
             ),
             pre_assigned_notebook_id=self._assigned_notebook_id,
+            notebook_transition=self._snapshot_notebook_transition(snapshot),
         )
+        if self._snapshot_restore.notebook_transition:
+            self._notebook_editor.setEnabled(False)
         self._refresh_command_actions()
         self._restore_next_snapshot_chart()
 
@@ -2094,6 +2271,8 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._current_workspace_snapshot_id = run.snapshot.snapshot_id
             self._assigned_notebook_id = run.snapshot.notebook_id
         self._snapshot_restore = None
+        if run.notebook_transition and self._notebook_editor is not None:
+            self._notebook_editor.setEnabled(True)
         if not rollback:
             self._close_secondary_windows_after_workspace_restore()
         self._sync_notebook_assignment()
@@ -2116,18 +2295,27 @@ class RestoredResearchLifecyclePresenter(QObject):
         if not rollback:
             if self._assigned_notebook_id is None:
                 if self._notebook_editor is not None:
-                    self._request_notebook_transition("close", None)
+                    self._perform_notebook_transition("close", None)
             elif (
                 self._notebook_editor is None
                 or self._notebook_editor.notebook_id
                 != self._assigned_notebook_id
             ):
-                self._request_notebook_transition(
+                self._perform_notebook_transition(
                     "open_assigned",
                     self._assigned_notebook_id,
                 )
+        self._refresh_saved_notebook_manager_after_restore()
+
+    def _refresh_saved_notebook_manager_after_restore(self) -> None:
+        dialog = self._notebook_manager_refresh_after_restore
+        self._notebook_manager_refresh_after_restore = None
+        self._refresh_command_actions()
+        if dialog is not None and dialog is self._notebook_manager:
+            self._refresh_notebook_manager(dialog)
 
     def _close_secondary_windows_after_workspace_restore(self) -> None:
+        self._new_chart_open_requested = False
         self._new_chart_dialog.close()
         for slot_id in tuple(self._financial_tools_dialogs):
             self._retire_financial_tools_dialog(slot_id)
@@ -2162,6 +2350,8 @@ class RestoredResearchLifecyclePresenter(QObject):
         if run is None:
             return
         self._snapshot_restore = None
+        if run.notebook_transition and self._notebook_editor is not None:
+            self._notebook_editor.setEnabled(True)
         for slot_id in reversed(tuple(run.added_slots)):
             presenter = self._chart_presenters.get(slot_id)
             if presenter is not None:
@@ -2224,6 +2414,7 @@ class RestoredResearchLifecyclePresenter(QObject):
                 )
             else:
                 dialog.show_failure(message)
+        self._refresh_saved_notebook_manager_after_restore()
 
     def _current_snapshot_progress_dialog(
         self,
@@ -2246,11 +2437,10 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._snapshot_manager = None
             self._snapshot_manager_mode = None
 
-    def _forget_snapshot_preflight(
-        self, dialog: WorkspaceSnapshotPreflightDialog
-    ) -> None:
+    def _forget_snapshot_preflight(self, dialog: WorkspaceSnapshotPreflightDialog) -> None:
         if self._snapshot_preflight_dialog is dialog:
             self._snapshot_preflight_dialog = None
+            self._snapshot_preflight_context = None
 
     def _new_notebook(self) -> None:
         if self._notebook_service is None:
@@ -2271,6 +2461,9 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._notebook_service is None
             or self._snapshot_service is None
         ):
+            return
+        if self._notebook_restore_transition_active():
+            self._append_activity("Workspace restore is already in progress.")
             return
         if self._notebook_task_id is not None:
             self._append_activity("Notebook operation is already in progress.")
@@ -2366,12 +2559,22 @@ class RestoredResearchLifecyclePresenter(QObject):
             "research.notebook_manager",
             "Notebook Manager",
         )
+        self._refresh_command_actions()
         dialog.show()
+
+    def _notebook_restore_transition_active(self) -> bool:
+        return self._snapshot_restore is not None or (
+            self._notebook_pending_action is not None
+            and self._notebook_pending_action[0] == "restore_snapshot"
+        )
 
     def _refresh_notebook_manager(
         self, dialog: ResearchNotebookManagerDialog
     ) -> None:
         if dialog is not self._notebook_manager:
+            return
+        if self._notebook_restore_transition_active():
+            self._notebook_manager_refresh_after_restore = dialog
             return
         self._submit_notebook_task(
             lambda callback: self._notebook_service.submit_list_notebooks(
@@ -2557,25 +2760,51 @@ class RestoredResearchLifecyclePresenter(QObject):
     def _request_notebook_transition(
         self, action: str, notebook_id: str | None
     ) -> None:
-        if self._notebook_task_id is not None:
+        if self._allow_notebook_transition(action, notebook_id):
+            self._perform_notebook_transition(action, notebook_id)
+
+    def _allow_notebook_transition(self, action: str, payload: object) -> bool:
+        if self._snapshot_restore is not None:
+            self._append_activity("Workspace restore is already in progress.")
+            return False
+        if self._notebook_link_operation_token is not None:
             self._append_activity("Notebook operation is already in progress.")
-            return
+            return False
+        requested = (action, payload)
+        if self._notebook_pending_action is not None:
+            if self._notebook_pending_action != requested:
+                self._append_activity("Another Notebook transition is already pending.")
+            return False
+        if self._notebook_task_id is not None:
+            if self._notebook_save_pending:
+                self._notebook_pending_action = requested
+            else:
+                self._append_activity("Notebook operation is already in progress.")
+            return False
         editor = self._notebook_editor
         if editor is not None and editor.is_dirty:
-            decision = editor.dirty_decision()
-            if decision == "cancel":
+            self._notebook_pending_action = requested
+            try:
+                decision = editor.dirty_decision()
+            finally:
                 self._notebook_pending_action = None
-                return
+            if decision == "cancel":
+                return False
             if decision == "save":
-                self._notebook_pending_action = (action, notebook_id)
+                self._notebook_pending_action = requested
                 self._save_notebook_editor(False)
-                return
-        self._notebook_pending_action = None
-        self._perform_notebook_transition(action, notebook_id)
+                return False
+        return True
 
     def _perform_notebook_transition(
-        self, action: str, notebook_id: str | None
+        self, action: str, notebook_id: object
     ) -> None:
+        if action in {"close_suite", "close_main"}:
+            notebook_id()
+            return
+        if action == "restore_snapshot":
+            self._resume_snapshot_restore(notebook_id)
+            return
         if action == "close":
             self._close_notebook_editor()
             return
@@ -2721,15 +2950,7 @@ class RestoredResearchLifecyclePresenter(QObject):
     ) -> None:
         if editor is not self._notebook_editor:
             return
-        if editor.is_dirty:
-            decision = editor.dirty_decision()
-            if decision == "cancel":
-                return
-            if decision == "save":
-                self._notebook_pending_action = ("close", None)
-                self._save_notebook_editor(False)
-                return
-        self._close_notebook_editor()
+        self._request_notebook_transition("close", None)
 
     def _notebook_draft_changed(
         self,
@@ -2759,6 +2980,8 @@ class RestoredResearchLifecyclePresenter(QObject):
             or not editor.is_current_valid
         ):
             self._notebook_pending_action = None
+            if editor is not None and not editor.is_current_valid:
+                editor.set_status("Save blocked: correct the invalid Notebook draft.")
             return
         try:
             draft = editor.current_draft()
@@ -2769,6 +2992,7 @@ class RestoredResearchLifecyclePresenter(QObject):
             return
         self._last_valid_notebook_draft = draft
         editor.set_save_pending(True)
+        self._notebook_save_pending = True
         if save_as or editor.notebook_id is None:
             create_draft = ResearchNotebookDraft(
                 draft.display_name,
@@ -2789,16 +3013,24 @@ class RestoredResearchLifecyclePresenter(QObject):
                 result_callback=callback,
                 callback_dispatcher=self._dispatch,
             )
-        self._submit_notebook_task(
-            submit,
-            lambda result: self._saved_notebook_result(editor, result),
-        )
+        try:
+            self._submit_notebook_task(
+                submit,
+                lambda result: self._saved_notebook_result(editor, result),
+            )
+        except Exception as error:
+            self._notebook_save_pending = False
+            self._notebook_pending_action = None
+            editor.set_save_pending(False)
+            editor.set_status(f"Save failed: {error}")
+            self._refresh_command_actions()
 
     def _saved_notebook_result(
         self, editor: ResearchNotebookWindow, result: TaskResult
     ) -> None:
         pending = self._notebook_pending_action
         self._notebook_pending_action = None
+        self._notebook_save_pending = False
         if editor is not self._notebook_editor:
             return
         editor.set_save_pending(False)
@@ -2809,6 +3041,10 @@ class RestoredResearchLifecyclePresenter(QObject):
                 "Save failed: "
                 f"{result.error_message or result.error_type or result.status}"
             )
+            if pending is not None and pending[0] == "restore_snapshot":
+                dialog = pending[1][2]
+                if dialog is self._snapshot_preflight_dialog:
+                    dialog.show_failure("Notebook save failed; the current workspace is unchanged.")
             self._refresh_command_actions()
             return
         self._active_notebook = result.value
@@ -2816,8 +3052,20 @@ class RestoredResearchLifecyclePresenter(QObject):
         self._last_valid_notebook_draft = editor.last_valid_draft
         self._sync_notebook_assignment()
         self._refresh_notebook_annotations()
-        if self._notebook_manager is not None:
-            self._refresh_notebook_manager(self._notebook_manager)
+        if pending is not None and pending[0] == "clear_suite":
+            manager = self._notebook_manager
+            self._perform_notebook_transition(*pending)
+            if manager is not None and manager is self._notebook_manager:
+                self._refresh_notebook_manager(manager)
+            return
+        if (
+            self._notebook_manager is not None
+            and (pending is None or pending[0] not in {"close_suite", "close_main"})
+        ):
+            if pending is not None and pending[0] == "restore_snapshot":
+                self._notebook_manager_refresh_after_restore = self._notebook_manager
+            else:
+                self._refresh_notebook_manager(self._notebook_manager)
         if pending is not None:
             if pending[0] == "close":
                 self._close_notebook_editor()
@@ -4519,9 +4767,15 @@ class RestoredResearchLifecyclePresenter(QObject):
             self._view.append_activity(message)
 
     def _dispatch(self, callback: Callable[[], None]) -> None:
-        self._callback_requested.emit(callback)
+        if self._disposed or not isValid(self):
+            return
+        try:
+            self._callback_requested.emit(callback)
+        except RuntimeError:
+            # Qt deletion can race a worker's delivery after the validity check.
+            if not self._disposed and isValid(self):
+                raise
 
-    @staticmethod
-    def _invoke_callback(callback: object) -> None:
-        if callable(callback):
+    def _invoke_callback(self, callback: object) -> None:
+        if not self._disposed and isValid(self) and callable(callback):
             callback()

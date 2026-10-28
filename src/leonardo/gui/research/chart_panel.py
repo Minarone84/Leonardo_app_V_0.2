@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from leonardo.research.workspace import MAX_RESEARCH_CHARTS
+
 from collections.abc import Sequence
 
 from PySide6.QtCore import Signal
@@ -69,8 +71,8 @@ class ResearchChartPanel(QFrame):
             raise TypeError(
                 "interaction_state must be a CandlestickInteractionState or None"
             )
-        if type(slot_id) is not int or not 1 <= slot_id <= 8:
-            raise ValueError("slot_id must be an integer from 1 through 8")
+        if type(slot_id) is not int or not 1 <= slot_id <= MAX_RESEARCH_CHARTS:
+            raise ValueError("slot_id must be an integer from 1 through 16")
         projections = tuple(study_projections)
         presentations = tuple(study_presentations)
         entries = tuple(study_entries)
@@ -139,8 +141,13 @@ class ResearchChartPanel(QFrame):
         self.position_label = QLabel("Position", self.control_bar)
         controls.addWidget(self.position_label)
         self.position_combo = QComboBox(self.control_bar)
-        self.position_combo.addItems(tuple(str(value) for value in range(1, 9)))
+        # Keep two-digit positions within the existing control-bar footprint.
+        self.position_combo.setStyleSheet(
+            "QComboBox { padding-left: 2px; padding-right: 2px; }"
+        )
+        self.position_combo.addItems(tuple(str(value) for value in range(1, MAX_RESEARCH_CHARTS + 1)))
         self.position_combo.setCurrentText("1")
+        self.position_combo.ensurePolished()
         controls.addWidget(self.position_combo)
 
         self.go_to_button = QPushButton("Go to", self.control_bar)
@@ -595,8 +602,8 @@ class ResearchChartPanel(QFrame):
         )
 
     def set_workspace_position(self, position: int) -> None:
-        if type(position) is not int or not 1 <= position <= 8:
-            raise ValueError("position must be an integer from 1 through 8")
+        if type(position) is not int or not 1 <= position <= MAX_RESEARCH_CHARTS:
+            raise ValueError("position must be an integer from 1 through 16")
         self.position_combo.setCurrentText(str(position))
 
     def set_workspace_density(self, density: str) -> None:

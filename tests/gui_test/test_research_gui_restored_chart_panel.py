@@ -116,8 +116,8 @@ def test_panel_reuses_v2_workspace_and_has_only_bottom_controls(
     assert "Add Study" not in button_texts
     assert "Show Volume" not in button_texts
     assert panel.dataset_label.text() == "Historical Chart: Bybit_linear_BTCUSDT_4h"
-    assert [panel.position_combo.itemText(index) for index in range(8)] == [
-        str(value) for value in range(1, 9)
+    assert [panel.position_combo.itemText(index) for index in range(panel.position_combo.count())] == [
+        str(value) for value in range(1, 17)
     ]
     assert panel.position_combo.currentText() == "1"
     assert panel.autoscale_button.isCheckable()

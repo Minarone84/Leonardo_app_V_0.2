@@ -17,6 +17,8 @@ from leonardo.data_manager import (
     DatabaseCollectionReferenceV2,
     DatabaseRevisionManifestV1,
     DatabaseRevisionManifestV2,
+    DatabaseRevisionManifestV3,
+    DatabaseSeedV2,
 )
 from leonardo.data_manager.creation_models import (
     DatabaseHeadV1,
@@ -70,7 +72,7 @@ def _create_seed_only_database(application, name: str):
         application.submit_plan_database_seed_creation,
         MARKET,
         f"{name} Seed",
-        selected_ohlcv_columns=("open", "close", "volume"),
+        selected_ohlcv_columns=("open", "high", "low", "close", "volume"),
     )
     seed = _completed(application.submit_execute_database_seed_creation, seed_plan)
     database_plan = _completed(
@@ -83,6 +85,59 @@ def _create_seed_only_database(application, name: str):
         database_plan,
     )
     return seed, manifest
+
+
+def _publish_v1_after_current(domain, previous, collection):
+    loaded = domain.load_database_revision(previous.database_id, previous.revision_id)
+    now = datetime.now(UTC)
+    payload = {
+        "schema_version": "1.0",
+        "object_type": "database_revision",
+        "database_id": previous.database_id,
+        "display_name": previous.display_name,
+        "description": previous.description,
+        "seed_id": previous.seed_id,
+        "market_id": {
+            "exchange": MARKET.exchange,
+            "market_type": MARKET.market_type,
+            "symbol": MARKET.symbol,
+            "timeframe": MARKET.timeframe,
+        },
+        "source_ohlcv": previous.source_ohlcv.to_dict(),
+        "collection_id": collection.collection_id,
+        "collection_revision_id": collection.revision_id,
+        "collection_manifest_hash": hashlib.sha256(
+            collection.canonical_json_bytes()
+        ).hexdigest(),
+        "artifact_version_keys": [
+            {
+                "logical_artifact_id": member.version_key.logical_artifact_id,
+                "artifact_id": member.version_key.artifact_id,
+            }
+            for member in collection.members
+        ],
+        "artifact_payload_hashes": [
+            member.values_sha256 for member in collection.members
+        ],
+        "portable_recipe_ids": list(collection.source_portable_recipe_ids),
+        "column_mapping": dict(previous.column_mapping),
+        "first_timestamp_ms": previous.first_timestamp_ms,
+        "last_timestamp_ms": previous.last_timestamp_ms,
+        "row_count": previous.row_count,
+        "column_count": previous.column_count,
+        "values_sha256": hashlib.sha256(loaded.values_csv).hexdigest(),
+        "previous_revision_id": previous.revision_id,
+        "created_at_utc": now.isoformat().replace("+00:00", "Z"),
+    }
+    payload["revision_id"] = deterministic_hash(payload)
+    manifest = DatabaseRevisionManifestV1.from_dict(payload)
+    domain.creation_store.publish_database_revision(
+        domain.load_database_definition(previous.database_id),
+        manifest,
+        loaded.values_csv,
+        expected_head_revision_id=previous.revision_id,
+    )
+    return manifest
 
 
 def _publish_v2_after_v1(domain, previous, collection):
@@ -152,6 +207,56 @@ def _publish_v2_after_v1(domain, previous, collection):
     return manifest
 
 
+def test_seed_v2_application_round_trip_and_source_advisory(tmp_path: Path) -> None:
+    app, application = _application(tmp_path)
+    try:
+        seed_plan = _completed(
+            application.submit_plan_database_seed_creation,
+            MARKET,
+            "Application Owned Seed",
+            selected_ohlcv_columns=("open", "high", "low", "close", "volume"),
+        )
+        seed = _completed(application.submit_execute_database_seed_creation, seed_plan)
+        assert isinstance(seed, DatabaseSeedV2)
+        assert _completed(application.submit_validate_database_seed, seed.seed_id) == (
+            True,
+            (),
+        )
+        assert _completed(
+            application.submit_database_seed_newer_source_available, seed.seed_id
+        ) is False
+
+        _accepted_dataset(tmp_path / "historical_data", market=MARKET, rows=56)
+        assert _completed(application.submit_validate_database_seed, seed.seed_id) == (
+            True,
+            (),
+        )
+        assert _completed(
+            application.submit_database_seed_newer_source_available, seed.seed_id
+        ) is True
+        assert _completed(application.submit_load_database_seed, seed.seed_id) == seed
+    finally:
+        app.shutdown()
+
+    restarted = LeonardoApp(
+        replace(load_default_config(tmp_path), audit=AuditConfig(enabled=False))
+    )
+    restarted.startup()
+    restarted.start_core_runtime()
+    try:
+        application = restarted.data_manager_service
+        assert _completed(application.submit_load_database_seed, seed.seed_id) == seed
+        assert _completed(application.submit_validate_database_seed, seed.seed_id) == (
+            True,
+            (),
+        )
+        assert _completed(
+            application.submit_database_seed_newer_source_available, seed.seed_id
+        ) is True
+    finally:
+        restarted.shutdown()
+
+
 def test_seed_only_database_application_create_scan_inspect_and_restart(
     tmp_path: Path,
 ) -> None:
@@ -161,7 +266,7 @@ def test_seed_only_database_application_create_scan_inspect_and_restart(
             application.submit_plan_database_seed_creation,
             MARKET,
             "Application Seed",
-            selected_ohlcv_columns=("open", "close", "volume"),
+            selected_ohlcv_columns=("open", "high", "low", "close", "volume"),
         )
         seed = _completed(
             application.submit_execute_database_seed_creation, seed_plan
@@ -175,11 +280,20 @@ def test_seed_only_database_application_create_scan_inspect_and_restart(
             application.submit_execute_seed_only_database_creation,
             database_plan,
         )
-        assert isinstance(manifest, DatabaseRevisionManifestV2)
+        assert isinstance(manifest, DatabaseRevisionManifestV3)
         assert manifest.members == manifest.collection_sources == ()
+        assert manifest.selection_sources == ()
 
         _completed(application.submit_reconcile_status, force=True)
         snapshot = _completed(application.submit_scan_product_catalogs)
+        seed_status = next(
+            item
+            for item in snapshot.database_seed_statuses
+            if item.seed_id == seed.seed_id
+        )
+        assert seed_status.valid
+        assert seed_status.rejection_reason == ""
+        assert seed_status.newer_source_available is False
         entry = next(
             item
             for item in snapshot.databases
@@ -346,11 +460,13 @@ def test_mixed_v1_v2_history_is_readable_without_v1_conversion(tmp_path: Path) -
         seed = _completed(
             application.submit_create_database_seed, MARKET, "Mixed History Seed"
         )
-        v1 = _completed(
+        initial = _completed(
             application.submit_build_database_revision,
             seed.seed_id,
             collection.collection_id,
         )
+        assert isinstance(initial, DatabaseRevisionManifestV3)
+        v1 = _publish_v1_after_current(domain, initial, collection)
         assert isinstance(v1, DatabaseRevisionManifestV1)
         v1_path = (
             domain.creation_store.root_dir
@@ -366,7 +482,7 @@ def test_mixed_v1_v2_history_is_readable_without_v1_conversion(tmp_path: Path) -
         history = _completed(
             application.submit_list_database_revisions, v1.database_id
         )
-        assert history == (v1, v2)
+        assert history == (initial, v1, v2)
         assert isinstance(
             _completed(
                 application.submit_load_database_revision,
@@ -388,7 +504,7 @@ def test_mixed_v1_v2_history_is_readable_without_v1_conversion(tmp_path: Path) -
         app.shutdown()
 
 
-def test_v2_collection_references_feed_duplicate_and_deletion_blockers(
+def test_database_collection_provenance_does_not_block_duplicate_or_deletion(
     tmp_path: Path,
 ) -> None:
     app, application = _application(tmp_path)
@@ -411,17 +527,19 @@ def test_v2_collection_references_feed_duplicate_and_deletion_blockers(
             "revised_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         })
         second_payload["revision_id"] = deterministic_hash(second_payload)
-        second = ArtifactCollectionRevisionV1.from_dict(second_payload)
+        second = type(first).from_dict(second_payload)
         domain.creation_store._publish_collection_revision(second)
         seed = _completed(
             application.submit_create_database_seed, MARKET, "Reference Seed"
         )
-        v1 = _completed(
+        database = _completed(
             application.submit_build_database_revision,
             seed.seed_id,
-            first.collection_id,
+            second.collection_id,
         )
-        _publish_v2_after_v1(domain, v1, second)
+        database_bytes = domain.load_database_revision(
+            database.database_id, database.revision_id
+        ).values_csv
 
         preflight = _completed(
             application.submit_prepare_duplicate_maintenance,
@@ -435,15 +553,33 @@ def test_v2_collection_references_feed_duplicate_and_deletion_blockers(
             for candidate in group.duplicates
             if candidate.object_id == second.collection_id
         )
-        assert candidate.classification == "BLOCKED"
-        assert any(v1.database_id in blocker for blocker in candidate.blockers)
+        assert candidate.classification == "SAFE"
+        assert candidate.blockers == ()
 
         _submission, deletion = _settled(
             application.submit_delete_artifact_collection,
             second.collection_id,
         )
-        assert deletion.status == "failed"
-        assert "referenced" in str(deletion.error_message).lower()
-        assert domain.load_artifact_collection(second.collection_id) == second
+        assert deletion.status == "completed"
+        assert second.collection_id not in domain.creation_store.list_collection_ids()
+        assert domain.load_database_revision(
+            database.database_id, database.revision_id
+        ).values_csv == database_bytes
+    finally:
+        app.shutdown()
+
+
+def test_application_delete_database_removes_only_database(tmp_path: Path) -> None:
+    app, application = _application(tmp_path)
+    try:
+        domain = app.data_manager_domain
+        seed, database = _create_seed_only_database(application, "Delete Database")
+        _submission, deletion = _settled(
+            application.submit_delete_database, database.database_id
+        )
+        assert deletion.status == "completed"
+        assert deletion.value == database.database_id
+        assert database.database_id not in domain.list_database_ids()
+        assert domain.load_database_seed(seed.seed_id) == seed
     finally:
         app.shutdown()

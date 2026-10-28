@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import QAbstractAnimation, QVariantAnimation, Signal, Qt
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QFormLayout,
@@ -153,6 +154,52 @@ class DataManagerOperationSurface(QGroupBox):
         layout.addWidget(self._notes_scroll)
         layout.addLayout(buttons)
         self.cancel_button.setEnabled(False)
+
+        self._dataset_evidence_attention = False
+        self._attention_normal_stylesheet = ""
+        self._attention_animation = QVariantAnimation(self)
+        self._attention_animation.setDuration(4000)
+        self._attention_animation.setKeyValues([
+            (0.0, QColor("#142B45")),
+            (0.5, QColor("#315F8A")),
+            (1.0, QColor("#142B45")),
+        ])
+        self._attention_animation.setLoopCount(-1)
+        self._attention_animation.valueChanged.connect(self._set_attention_color)
+
+    def _set_attention_color(self, color: QColor) -> None:
+        if self._dataset_evidence_attention:
+            self._status.setStyleSheet(
+                self._attention_normal_stylesheet
+                + f'QLabel[objectName="{self._status.objectName()}"] '
+                + f"{{ background-color: {color.name()}; color: #FF3B4D; font-weight: 700; border: 2px solid #FF3B4D; }}"
+            )
+
+    def set_dataset_evidence_attention(
+        self, active: bool, *, message: str = ""
+    ) -> None:
+        if active:
+            self.set_status(message)
+            if not self._dataset_evidence_attention:
+                self._attention_normal_stylesheet = self._status.styleSheet()
+                self._attention_normal_palette = QPalette(self._status.palette())
+                self._attention_normal_font = QFont(self._status.font())
+            self._dataset_evidence_attention = True
+            palette = QPalette(self._status.palette())
+            palette.setColor(QPalette.ColorRole.WindowText, QColor("#FF3B4D"))
+            self._status.setPalette(palette)
+            font = QFont(self._status.font())
+            font.setBold(True)
+            self._status.setFont(font)
+            if self._attention_animation.state() != QAbstractAnimation.State.Running:
+                self._attention_animation.start()
+            self._set_attention_color(self._attention_animation.currentValue())
+        elif self._dataset_evidence_attention:
+            self._dataset_evidence_attention = False
+            self._attention_animation.stop()
+            self._status.setStyleSheet(self._attention_normal_stylesheet)
+            self._status.setPalette(self._attention_normal_palette)
+            self._status.setFont(self._attention_normal_font)
 
     @property
     def state(self) -> str:

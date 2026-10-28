@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 from leonardo.data import MarketId
 from leonardo.gui.action_observer import GuiActionObserver, build_gui_action_observer
+from leonardo.gui.analysis.presenter import AnalysisSuitePresenter
 from leonardo.gui.presenters import (
     DataManagerSuitePresenter,
     HistoricalDownloadPresenter,
@@ -48,6 +49,7 @@ class GuiCoreContext(Protocol):
     research_workspace_snapshot_service: object
     research_notebook_service: object
     data_manager_service: object
+    analysis_service: object
 
 
 class GuiCompositionRoot:
@@ -75,6 +77,7 @@ class GuiCompositionRoot:
         self._data_manager_suite_window: DataManagerSuiteWindow | None = None
         self._data_manager_suite_presenter: DataManagerSuitePresenter | None = None
         self._analysis_suite_window: AnalysisSuiteWindow | None = None
+        self._analysis_suite_presenter: AnalysisSuitePresenter | None = None
         self._trading_suite_window: TradingSuiteWindow | None = None
         self._runtime_manager_window: RuntimeManagerWindow | None = None
 
@@ -122,6 +125,10 @@ class GuiCompositionRoot:
     @property
     def analysis_suite_window(self) -> AnalysisSuiteWindow | None:
         return self._analysis_suite_window
+
+    @property
+    def analysis_suite_presenter(self) -> AnalysisSuitePresenter | None:
+        return self._analysis_suite_presenter
 
     @property
     def trading_suite_window(self) -> TradingSuiteWindow | None:
@@ -207,6 +214,7 @@ class GuiCompositionRoot:
                 window,
                 getattr(self._context, "connection_service"),
                 getattr(self._context, "historical_download_service"),
+                on_ohlcv_evidence_changed=self._notify_data_manager_ohlcv_change,
             )
             self._historical_download_manager_window = window
             self._historical_download_presenter = presenter
@@ -236,6 +244,9 @@ class GuiCompositionRoot:
                 on_canonical_ohlcv_evidence_changed=(
                     self._notify_data_manager_ohlcv_change
                 ),
+                on_canonical_ohlcv_validation_accepted=(
+                    self._notify_data_manager_ohlcv_validation_accepted
+                ),
             )
             self._ohlcv_maintenance_window = window
             self._ohlcv_maintenance_presenter = presenter
@@ -256,13 +267,9 @@ class GuiCompositionRoot:
             return self._open_research_suite(parent)
         if action_id == "main_window.open_data_manager_suite":
             return self._open_data_manager_suite(parent)
+        if action_id == "main_window.open_analysis_suite":
+            return self._open_analysis_suite(parent)
         mapping = {
-            "main_window.open_analysis_suite": (
-                "_analysis_suite_window",
-                AnalysisSuiteWindow,
-                "analysis_suite.window",
-                "Analysis Suite",
-            ),
             "main_window.open_trading_suite": (
                 "_trading_suite_window",
                 TradingSuiteWindow,
@@ -282,6 +289,29 @@ class GuiCompositionRoot:
             self._install_tracker(window, window_id, title, "suite")
         self._show_window(window)
         return f"{title} shell opened."
+
+    def _open_analysis_suite(self, parent: LeonardoMainWindow) -> str:
+        window = self._analysis_suite_window
+        if window is None:
+            window = AnalysisSuiteWindow(action_observer=self._action_observer, parent=parent)
+            presenter = AnalysisSuitePresenter(window, self._context.analysis_service)
+            self._analysis_suite_window = window
+            self._analysis_suite_presenter = presenter
+            self._register_window_actions(window, "analysis_suite.window")
+            self._install_tracker(window, "analysis_suite.window", "Analysis Suite", "suite")
+            window.closing.connect(lambda: self._retire_analysis_suite(window, presenter))
+            presenter.start()
+        self._show_window(window)
+        return "Analysis Suite opened."
+
+    def _retire_analysis_suite(self, window, presenter) -> None:
+        if self._analysis_suite_window is not window or self._analysis_suite_presenter is not presenter:
+            return
+        presenter.dispose()
+        self._analysis_suite_window = None
+        self._analysis_suite_presenter = None
+        self._trackers.pop("analysis_suite.window", None)
+        window.deleteLater()
 
     def _open_research_suite(self, parent: LeonardoMainWindow) -> str:
         window = self._research_suite_window
@@ -312,6 +342,10 @@ class GuiCompositionRoot:
             )
         self._show_window(window)
         return "Research Suite opened."
+
+    def _open_research_notebook_manager(self, parent: LeonardoMainWindow) -> None:
+        self._open_research_suite(parent)
+        self._research_suite_window.action_for_text("Notebook Manager...").trigger()
 
     def _retire_research_suite(
         self,
@@ -347,6 +381,9 @@ class GuiCompositionRoot:
                 window,
                 getattr(self._context, "data_manager_service"),
             )
+            window.notebooks_requested.connect(
+                lambda: self._open_research_notebook_manager(parent)
+            )
             self._data_manager_suite_window = window
             self._data_manager_suite_presenter = presenter
             self._register_window_actions(window, "data_manager_suite.window")
@@ -355,6 +392,11 @@ class GuiCompositionRoot:
                 "data_manager_suite.window",
                 "Data Manager Suite",
                 "suite",
+            )
+            window.closing.connect(
+                lambda current_window=window, current_presenter=presenter: (
+                    self._retire_data_manager_suite(current_window, current_presenter)
+                )
             )
             created = True
         if created:
@@ -369,13 +411,36 @@ class GuiCompositionRoot:
             )
         return "Data Manager Suite opened."
 
+    def _retire_data_manager_suite(
+        self,
+        window: DataManagerSuiteWindow,
+        presenter: DataManagerSuitePresenter,
+    ) -> None:
+        if (
+            self._data_manager_suite_window is not window
+            or self._data_manager_suite_presenter is not presenter
+        ):
+            return
+        self._data_manager_suite_window = None
+        self._data_manager_suite_presenter = None
+        self._trackers.pop("data_manager_suite.window", None)
+
     def _notify_data_manager_ohlcv_change(self, market_id: MarketId) -> None:
         presenter = self._data_manager_suite_presenter
         if presenter is None or presenter.is_disposed:
             return
         presenter.notify_external_ohlcv_change(market_id)
 
+    def _notify_data_manager_ohlcv_validation_accepted(self, market_id: MarketId) -> None:
+        presenter = self._data_manager_suite_presenter
+        if presenter is None or presenter.is_disposed:
+            return
+        presenter.notify_ohlcv_validation_accepted(market_id)
+
     def _on_display_time_zone_changed(self) -> None:
+        analysis = self._analysis_suite_presenter
+        if analysis is not None and not analysis.is_disposed:
+            analysis.refresh_display_time()
         presenter = self._data_manager_suite_presenter
         if presenter is None or presenter.is_disposed:
             return
@@ -412,16 +477,27 @@ class GuiCompositionRoot:
     ) -> None:
         if not self._track_windows:
             return
+        guarded_close = isinstance(window, (ResearchSuiteWindow, LeonardoMainWindow))
         tracker = GuiWindowTracker(
             window,
             window_id=window_id,
             title=title,
             window_type=window_type,
             registry=self._window_registry,
+            close_on_event=not guarded_close,
         )
         self._trackers[window_id] = tracker
+        if guarded_close:
+            window.closed.connect(tracker.record_accepted_close)
 
-    def _close_suite_shells(self) -> None:
+    def _close_suite_shells(self) -> bool:
+        presenter = self._research_suite_presenter
+        window = self._research_suite_window
+        main_window = None if window is None else window.parentWidget()
+        if presenter is not None and not presenter.request_close(
+            main_window.close if main_window is not None else None
+        ):
+            return False
         for attr_name in (
             "_connection_suite_window",
             "_historical_download_manager_window",
@@ -435,6 +511,7 @@ class GuiCompositionRoot:
             window = getattr(self, attr_name)
             if window is not None:
                 window.close()
+        return True
 
     @staticmethod
     def _show_window(window: QWidget) -> None:

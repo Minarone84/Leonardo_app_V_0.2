@@ -28,6 +28,7 @@ from leonardo.financial_tools import calculate_financial_tool
 
 from tests.artifacts_test.test_artifact_service_roundtrip import _accepted_dataset
 from tests.artifacts_test.test_artifact_catalog_and_delete import _make_link
+from tests.data_manager_test.test_update_workflow import _revalidate_unchanged
 
 
 MARKET = MarketId("bybit", "linear", "BTCUSDT", "1m")
@@ -57,6 +58,145 @@ def _managed_deletion_fixture(tmp_path: Path):
         market, target.metadata.artifact_id
     )[0]
     return service, market, target, head_path, version_path, payload_path
+
+
+def _missing_head_fixture(tmp_path: Path):
+    service, market, first, head_path, _, _ = _managed_deletion_fixture(tmp_path)
+    _, frame = _accepted_dataset(tmp_path, market=market, rows=104)
+    source = service.capture_accepted_source(market)
+    second = service.prepare_managed_calculation(
+        market,
+        PORTABLE_ID,
+        calculate_financial_tool("sma", frame, {"period": 3}),
+        expected_source=source,
+        previous_artifact_id=first.metadata.artifact_id,
+        # Deliberately earlier: chain topology, not wall-clock order, owns the tip.
+        created_at_utc=CREATED.replace(hour=11),
+    )
+    service.publish_managed_artifact_graph((second,), expected_source=source)
+    head_path.unlink()
+    return service, market, first, second, head_path
+
+
+def _recovery_bytes(root: Path):
+    root = _io_path(root)
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*") if path.is_file()
+    }
+
+
+def test_restore_missing_head_uses_unique_tip_and_preserves_all_other_bytes(
+    tmp_path: Path,
+) -> None:
+    service, market, first, second, head_path = _missing_head_fixture(tmp_path)
+    before = _recovery_bytes(tmp_path)
+    assert not service.list_managed_artifacts(market)[0].valid
+    head = service.restore_missing_managed_artifact_head(
+        market, first.logical_artifact_id
+    )
+    assert head == ArtifactHeadV1(
+        first.logical_artifact_id, second.metadata.artifact_id,
+        second.version_record.created_at_utc,
+    )
+    assert head.artifact_id != first.metadata.artifact_id
+    assert service.load_artifact_head(market, first.logical_artifact_id) == head
+    assert service.list_managed_artifacts(market)[0].valid
+    after = _recovery_bytes(tmp_path)
+    assert after.pop(head_path.relative_to(tmp_path).as_posix()) == head.canonical_json_bytes()
+    assert after == before  # Includes every version, payload, and Recipe byte.
+
+
+@pytest.mark.parametrize("damage", (
+    "missing_payload", "invalid_metadata", "disconnected", "missing_predecessor",
+    "cycle", "no_versions", "wrong_identity", "unexpected_inventory",
+))
+def test_missing_head_recovery_refuses_unproven_lineage(
+    tmp_path: Path, damage: str,
+) -> None:
+    service, market, first, second, head_path = _missing_head_fixture(tmp_path)
+    first_path = _io_path(service._store.version_record_path(
+        market, first.logical_artifact_id, first.metadata.artifact_id
+    ))
+    second_path = _io_path(service._store.version_record_path(
+        market, second.logical_artifact_id, second.metadata.artifact_id
+    ))
+    payload = _io_path(service._store.artifact_dir(
+        market, second.metadata.recipe.kind, second.metadata.recipe.tool_key,
+        second.metadata.artifact_id,
+    ))
+    if damage == "missing_payload":
+        shutil.rmtree(payload)
+    elif damage == "invalid_metadata":
+        (payload / "metadata.json").write_bytes(b"{}\n")
+    elif damage == "disconnected":
+        second_path.write_bytes(replace(
+            second.version_record, previous_artifact_id=None
+        ).canonical_json_bytes())
+    elif damage == "missing_predecessor":
+        first_path.unlink()
+    elif damage == "cycle":
+        first_path.write_bytes(replace(
+            first.version_record, previous_artifact_id=second.metadata.artifact_id
+        ).canonical_json_bytes())
+    elif damage == "no_versions":
+        first_path.unlink()
+        second_path.unlink()
+    elif damage == "wrong_identity":
+        value = second.version_record.to_dict()
+        value["logical_artifact_id"] = "e" * 64
+        second_path.write_bytes(encode_canonical_json(value))
+    else:
+        (head_path.parent / "unexpected.txt").write_text("unproven", encoding="utf-8")
+    before = _recovery_bytes(tmp_path)
+    with pytest.raises((ArtifactLineageError, ArtifactNotFoundError, ArtifactValidationError)):
+        service.restore_missing_managed_artifact_head(market, first.logical_artifact_id)
+    assert not head_path.exists()
+    assert _recovery_bytes(tmp_path) == before
+
+
+def test_missing_head_recovery_refuses_existing_head(tmp_path: Path) -> None:
+    service, market, first, _, _, _ = _managed_deletion_fixture(tmp_path)
+    before = _recovery_bytes(tmp_path)
+    with pytest.raises(ArtifactLineageError, match="head already exists"):
+        service.restore_missing_managed_artifact_head(market, first.logical_artifact_id)
+    assert _recovery_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize("stage", (
+    "before_head_publication", "during_head_publication", "after_head_publication",
+))
+def test_missing_head_recovery_write_failure_restores_absence(
+    tmp_path: Path, stage: str,
+) -> None:
+    service, market, first, _, head_path = _missing_head_fixture(tmp_path)
+    before = _recovery_bytes(tmp_path)
+
+    def fail(actual):
+        if actual == stage:
+            raise OSError("injected recovery write failure")
+
+    service._store._failure_hook = fail
+    with pytest.raises(OSError, match="injected recovery write failure"):
+        service.restore_missing_managed_artifact_head(market, first.logical_artifact_id)
+    assert not head_path.exists()
+    assert _recovery_bytes(tmp_path) == before
+
+
+def test_missing_head_recovery_respects_publication_gate(tmp_path: Path) -> None:
+    service, market, first, _, head_path = _missing_head_fixture(tmp_path)
+    before = _recovery_bytes(tmp_path)
+
+    def reject():
+        assert service._mutation_lock._is_owned()
+        raise RuntimeError("publication cancelled")
+
+    with pytest.raises(RuntimeError, match="publication cancelled"):
+        service.restore_missing_managed_artifact_head(
+            market, first.logical_artifact_id, before_publish=reject
+        )
+    assert not head_path.exists()
+    assert _recovery_bytes(tmp_path) == before
 
 
 def test_logical_identity_and_strict_managed_schemas() -> None:
@@ -741,6 +881,66 @@ def test_managed_publication_recursively_revalidates_source_lineage(
     )
 
     assert published.managed_artifacts[0].artifact_id == candidate.metadata.artifact_id
+
+
+@pytest.mark.parametrize("change", ("sidecar", "values"))
+def test_managed_publication_accepts_compatible_historical_inputs(tmp_path, change):
+    market, frame = _accepted_dataset(tmp_path, market=MARKET)
+    service = ArtifactService(tmp_path)
+    first = service.save_calculation(
+        market, calculate_financial_tool("sma", frame, {"period": 3})
+    )
+    second = service.save_calculation(
+        market, calculate_financial_tool("ema", frame, {"period": 3}),
+        source_artifacts=(ArtifactSourceRefV1("first", first.metadata.artifact_id, "sma_3"),),
+    )
+    if change == "sidecar":
+        source = _revalidate_unchanged(service, market)
+    else:
+        from tests.data_manager_test.test_update_workflow import _publish_modified
+        _publish_modified(tmp_path, rows=len(frame), mutate_row=20)
+        source = service.capture_accepted_source(market)
+        assert source.csv_sha256 != second.metadata.source_ohlcv.csv_sha256
+    before = _recovery_bytes(tmp_path)
+    candidate = service.prepare_managed_calculation(
+        market, "d" * 64, calculate_financial_tool("rsi", frame, {"period": 3}),
+        expected_source=source,
+        source_artifacts=(ArtifactSourceRefV1("second", second.metadata.artifact_id, "ema_3"),),
+        source_metadata=(second.metadata,), created_at_utc=CREATED,
+    )
+    published = service.publish_managed_artifact_graph((candidate,), expected_source=source)
+    assert published.created_artifact_ids == (candidate.metadata.artifact_id,)
+    assert candidate.metadata.recipe.source_artifacts[0].artifact_id == second.metadata.artifact_id
+    after = _recovery_bytes(tmp_path)
+    assert {path: after[path] for path in before} == before
+
+
+@pytest.mark.parametrize("mismatch", ("identity", "count", "bounds"))
+def test_managed_preparation_rejects_incompatible_input_coverage(tmp_path, monkeypatch, mismatch):
+    market, frame = _accepted_dataset(tmp_path, market=MARKET)
+    service = ArtifactService(tmp_path)
+    input_market = OTHER_MARKET if mismatch == "identity" else market
+    if mismatch == "identity":
+        _accepted_dataset(tmp_path, market=input_market)
+    saved = service.save_calculation(input_market, calculate_financial_tool("sma", frame, {"period": 3}))
+    if mismatch == "count":
+        _, frame = _accepted_dataset(tmp_path, market=market, rows=104)
+    elif mismatch == "bounds":
+        from tests.artifacts_test import test_artifact_service_roundtrip as fixture_source
+        shifted = frame.copy()
+        shifted["ts_ms"] += 60_000
+        monkeypatch.setattr(fixture_source, "_frame", lambda rows: shifted.iloc[:rows].copy())
+        _, frame = _accepted_dataset(tmp_path, market=market)
+    source = service.capture_accepted_source(market)
+    before = _recovery_bytes(tmp_path)
+    with pytest.raises(ArtifactLineageError):
+        service.prepare_managed_calculation(
+            market, "d" * 64, calculate_financial_tool("ema", frame, {"period": 3}),
+            expected_source=source,
+            source_artifacts=(ArtifactSourceRefV1("source", saved.metadata.artifact_id, "sma_3"),),
+            source_metadata=(saved.metadata,),
+        )
+    assert _recovery_bytes(tmp_path) == before
 
 
 def test_managed_publication_rejects_removed_recursive_source_before_writes(

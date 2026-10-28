@@ -254,16 +254,13 @@ def test_creation_and_update_table_identity_columns_are_last() -> None:
         )
         assert headings(creation.batch_table)[-1] == "Source Logical Artifact ID"
         assert headings(creation.collection_table)[-1] == "Logical Artifact ID"
-        assert headings(update.artifact_plan_table)[-2:] == (
-            "Recipe ID", "Logical Artifact ID"
+        assert headings(update.artifact_plan_table) == (
+            "Tool", "Kind/Role", "Action", "Reason", "Strategy", "Context",
+            "Revisable Tail", "Dependencies", "Logical Artifact ID",
         )
-        assert headings(update.collection_validation_table)[-4:] == (
-            "Collection ID", "Revision ID", "Root Logical Artifact IDs",
-            "Support Logical Artifact IDs",
-        )
-        assert headings(update.database_plan_table)[-2:] == (
-            "Collection Revision ID", "Database ID"
-        )
+        assert headings(update.artifact_candidates)[-1] == "Logical Artifact ID"
+        assert headings(update.database_candidates)[-1] == "Database ID"
+        assert headings(update.database_plan_table) == ("Field", "Value")
     finally:
         creation.close()
         update.close()
@@ -273,32 +270,30 @@ def test_update_through_timestamps_use_canonical_utc_seconds() -> None:
     app = QApplication.instance() or QApplication([])
     del app
     market = MarketId("bybit", "linear", "BTCUSDT", "1h")
-    reconciliation = DataManagerReconciliationSnapshot(
-        datetime(2026, 8, 9, tzinfo=UTC),
-        (
-            DataManagerSourceChange(
-                market, "APPEND_ONLY", None, None, TIMESTAMP_MS,
-                TIMESTAMP_MS, 0, "",
-            ),
-        ),
-        (),
-        (),
-        (),
-        (),
-        "0" * 64,
+    change = DataManagerSourceChange(
+        market, "APPEND_ONLY", None, None, TIMESTAMP_MS,
+        TIMESTAMP_MS + 1000, 1, "OHLCV advanced",
     )
     workspace = DataManagerUpdateWorkspace()
     try:
-        workspace.set_snapshot(
-            replace(
-                empty_product_snapshot(),
-                latest_reconciliation=reconciliation,
-            )
+        plan = SimpleNamespace(
+            database_id="db_123", database_revision_id="a" * 64,
+            status="UPDATE_AVAILABLE", mode="APPEND", source_change=change,
+            column_names=("close",), starting_artifact_heads=(), blockers=(),
+            prerequisite_nodes=(),
         )
-        table = workspace.reconciliation_tables["sources"]
-        assert table.item(0, 2).text() == EXPECTED_TIMESTAMP
-        assert table.item(0, 3).text() == EXPECTED_TIMESTAMP
-        assert str(TIMESTAMP_MS) not in table.item(0, 2).text()
+        workspace.set_database_plan(plan)
+        table = workspace.database_plan_table
+        values = {table.item(row, 0).text(): table.item(row, 1).text()
+                  for row in range(table.rowCount())}
+        assert values["Old Through"] == EXPECTED_TIMESTAMP
+        assert values["Prospective Through"] == "2026-08-09 19:42:18 CEST (+02:00)"
+        assert str(TIMESTAMP_MS) not in values["Old Through"]
+        assert str(TIMESTAMP_MS + 1000) not in values["Prospective Through"]
+        short_width = table.columnWidth(1)
+        plan.source_change = replace(change, reason="An extended review reason " * 20)
+        workspace.set_database_plan(plan)
+        assert table.columnWidth(1) > short_width
     finally:
         workspace.close()
 

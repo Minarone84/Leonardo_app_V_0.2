@@ -79,6 +79,16 @@ class FinancialToolCalculationResult:
             raise ValueError("ts_ms must be strictly increasing without duplicates")
         if analysis is not None and not isinstance(analysis, Mapping):
             raise TypeError("analysis must be a mapping")
+        if key == "universal_trend_classifier" and analysis:
+            from .utc_classification import _validate_utc_analysis
+            report = _validate_utc_analysis(analysis).to_dict()
+            if (report["status"] == "legacy_unavailable"
+                    or report["parameters"] != canonical_parameters
+                    or report["timestamps_ms"] != [int(v) for v in timestamps]):
+                raise ValueError("UTC classification disagrees with result")
+            if "utc_episode_metrics" in analysis:
+                from .utc_episode_metrics_models import UtcEpisodeMetricsResult
+                UtcEpisodeMetricsResult.from_dict(analysis["utc_episode_metrics"], classification=report)._validate_output_membership(frame)
         self.validate_runtime_outputs(
             tool_key=key,
             parameters=canonical_parameters,

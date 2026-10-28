@@ -342,27 +342,44 @@ class _CanonicalArtifactStore:
 
     def read_recipe_bytes(self, path: Path) -> bytes:
         path = self._assert_safe(path)
-        if not path.is_file():
+        io_path = _io_path(path)
+        if not io_path.is_file():
             raise ArtifactNotFoundError(f"recipe not found: {path.stem}")
-        return path.read_bytes()
+        return io_path.read_bytes()
 
     def read_artifact_bytes(self, directory: Path) -> tuple[bytes, bytes | None, bytes]:
         directory = self._assert_safe(directory)
-        if not directory.is_dir():
+        io_directory = _io_path(directory)
+        if not io_directory.is_dir():
             raise ArtifactNotFoundError(f"artifact not found: {directory.name}")
-        entries = tuple(directory.iterdir())
+        entries = tuple(io_directory.iterdir())
         for entry in entries:
-            self._assert_safe(entry)
+            self._assert_safe(directory / entry.name)
         names = {entry.name for entry in entries}
         if names not in (
             {"values.csv", "artifact.meta.json"},
             {"values.csv", "artifact.meta.json", "analysis.json"},
         ) or any(not entry.is_file() for entry in entries):
             raise ArtifactValidationError("artifact directory payload inventory is invalid")
-        metadata_path = directory / "artifact.meta.json"
-        values_path = directory / "values.csv"
-        analysis_path = directory / "analysis.json"
+        metadata_path = io_directory / "artifact.meta.json"
+        values_path = io_directory / "values.csv"
+        analysis_path = io_directory / "analysis.json"
         return values_path.read_bytes(), analysis_path.read_bytes() if analysis_path.is_file() else None, metadata_path.read_bytes()
+
+    def read_artifact_metadata_bytes(self, directory: Path) -> bytes:
+        directory = self._assert_safe(directory)
+        io_directory = _io_path(directory)
+        if not io_directory.is_dir():
+            raise ArtifactNotFoundError(f"artifact not found: {directory.name}")
+        entries = tuple(io_directory.iterdir())
+        for entry in entries:
+            self._assert_safe(directory / entry.name)
+        if {entry.name for entry in entries} not in (
+            {"values.csv", "artifact.meta.json"},
+            {"values.csv", "artifact.meta.json", "analysis.json"},
+        ) or any(not entry.is_file() for entry in entries):
+            raise ArtifactValidationError("artifact directory payload inventory is invalid")
+        return (io_directory / "artifact.meta.json").read_bytes()
 
     def iter_recipe_paths(
         self, market_id: MarketId, *, kind: str | None = None, tool_key: str | None = None
@@ -373,9 +390,9 @@ class _CanonicalArtifactStore:
         for kind_dir in _selected_kind_dirs(root, kind, self._assert_safe):
             for tool_dir in _selected_tool_dirs(kind_dir, tool_key, self._assert_safe):
                 paths: list[Path] = []
-                for path in tool_dir.iterdir():
-                    self._assert_safe(path)
-                    if path.is_file() and path.suffix == ".json":
+                for entry in _io_path(tool_dir).iterdir():
+                    path = self._assert_safe(tool_dir / entry.name)
+                    if entry.is_file() and path.suffix == ".json":
                         paths.append(path)
                 yield from sorted(paths)
 
@@ -388,9 +405,9 @@ class _CanonicalArtifactStore:
         for kind_dir in _selected_kind_dirs(root, kind, self._assert_safe):
             for tool_dir in _selected_tool_dirs(kind_dir, tool_key, self._assert_safe):
                 paths: list[Path] = []
-                for path in tool_dir.iterdir():
-                    self._assert_safe(path)
-                    if path.is_dir():
+                for entry in _io_path(tool_dir).iterdir():
+                    path = self._assert_safe(tool_dir / entry.name)
+                    if entry.is_dir():
                         paths.append(path)
                 yield from sorted(paths)
 
@@ -400,19 +417,20 @@ class _CanonicalArtifactStore:
 
     def delete_artifact_dir(self, directory: Path) -> None:
         directory = self._assert_safe(directory)
-        if not directory.is_dir():
+        io_directory = _io_path(directory)
+        if not io_directory.is_dir():
             raise ArtifactNotFoundError(f"artifact not found: {directory.name}")
         allowed = {"values.csv", "artifact.meta.json", "analysis.json"}
-        entries = tuple(directory.iterdir())
+        entries = tuple(io_directory.iterdir())
         for entry in entries:
-            self._assert_safe(entry)
-        if any(not entry.is_file() or entry.name not in allowed for entry in entries):
+            self._assert_safe(directory / entry.name)
+        if any(not _io_path(directory / entry.name).is_file() or entry.name not in allowed for entry in entries):
             raise ArtifactValidationError("artifact directory contains unexpected entries")
         self._assert_safe(directory)
         for name in ("values.csv", "analysis.json", "artifact.meta.json"):
             target = self._assert_safe(directory / name)
-            target.unlink(missing_ok=True)
-        directory.rmdir()
+            _io_path(target).unlink(missing_ok=True)
+        io_directory.rmdir()
 
     def delete_recipe_file(self, path: Path) -> None:
         path = self._assert_safe(path)
@@ -453,13 +471,14 @@ def _selected_kind_dirs(
         if kind not in _KINDS:
             raise ArtifactValidationError("invalid kind filter")
         candidate = safety(root / kind)
-        return (candidate,) if candidate.is_dir() else ()
-    if not root.is_dir():
+        return (candidate,) if _io_path(candidate).is_dir() else ()
+    io_root = _io_path(root)
+    if not io_root.is_dir():
         return ()
     paths: list[Path] = []
-    for path in root.iterdir():
-        safety(path)
-        if path.is_dir() and path.name in _KINDS:
+    for entry in io_root.iterdir():
+        path = safety(root / entry.name)
+        if entry.is_dir() and path.name in _KINDS:
             paths.append(path)
     return tuple(sorted(paths))
 
@@ -508,11 +527,11 @@ def _selected_tool_dirs(
         if spec.kind != kind_dir.name:
             return ()
         candidate = safety(kind_dir / tool_key)
-        return (candidate,) if candidate.is_dir() else ()
+        return (candidate,) if _io_path(candidate).is_dir() else ()
     paths: list[Path] = []
-    for path in kind_dir.iterdir():
-        safety(path)
-        if path.is_dir() and canonicalize_tool_key(path.name) == path.name:
+    for entry in _io_path(kind_dir).iterdir():
+        path = safety(kind_dir / entry.name)
+        if entry.is_dir() and canonicalize_tool_key(path.name) == path.name:
             paths.append(path)
     return tuple(sorted(paths))
 

@@ -795,7 +795,7 @@ def _build_swings_from_peak_trough_columns(
             swings.append(_SwingPoint(position=pos, index=index, value=trough, kind="trough", atr=atr))
     return swings
 
-def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[List[_TrendInterval], List[_TrendInterval]]:
+def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint], *, _trace=None) -> Tuple[List[_TrendInterval], List[_TrendInterval]]:
     """Directional swing-state scan over confirmed swings.
 
     The scanner is intentionally sequential. It accepts same-kind swings while a
@@ -1029,9 +1029,17 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
         reset_reversal()
         start_down_reversal(last_peak, last_peak_i)
 
+    def trace_state():
+        return dict(mode=mode, start_i=start_i, last_peak=last_peak, last_trough=last_trough)
+
+    def trace_step(before, swing, next_i):
+        if _trace is not None:
+            _trace.observe(before, trace_state(), swing, next_i)
+
     i = 0
     while i < count:
         swing = swing_tuples[i]
+        before = trace_state() if _trace is not None else None
 
         if mode is None:
             if swing.kind == "trough":
@@ -1039,6 +1047,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
             elif swing.kind == "peak":
                 start_down_candidate(swing, i)
             i += 1
+            trace_step(before, swing, i)
             continue
 
         if mode == "candidate_up":
@@ -1049,6 +1058,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     if start_swing is not None and swing.value < start_swing.value:
                         start_up_candidate(swing, i)
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 # Once a peak exists, the candidate's structural floor may only
@@ -1059,11 +1069,13 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                         last_trough = swing
                         last_trough_i = i
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 restart_i = last_peak_i if last_peak is not None else i
                 reset()
                 i = restart_i
+                trace_step(before, swing, i)
                 continue
 
             if swing.kind == "peak":
@@ -1073,6 +1085,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     last_peak = swing
                     last_peak_i = i
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 structural_floor = (
@@ -1088,6 +1101,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     mode = "active_up"
                     start_down_reversal(last_peak, last_peak_i)
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 if swing.value >= structural_floor - tol:
@@ -1095,11 +1109,13 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     # confirm the trend, but they also do not invalidate the
                     # candidate.
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 restart_i = last_peak_i if last_peak is not None else i
                 reset()
                 i = restart_i
+                trace_step(before, swing, i)
                 continue
 
         if mode == "active_up":
@@ -1121,12 +1137,14 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     ):
                         activate_down_from_reversal(swing, i)
                         i += 1
+                        trace_step(before, swing, i)
                         continue
 
                     append_uptrend_at(last_peak)
                     restart_i = last_peak_i if last_peak is not None else i
                     reset()
                     i = restart_i
+                    trace_step(before, swing, i)
                     continue
 
                 if reversal_kind != "down" or reversal_start is None:
@@ -1142,6 +1160,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     elif reversal_last_trough is not None and swing.value < reversal_last_trough.value - tol:
                         activate_down_from_reversal(swing, i)
                         i += 1
+                        trace_step(before, swing, i)
                         continue
 
                 # The uptrend floor can only stay flat or move higher.
@@ -1149,6 +1168,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     last_trough = swing
                     last_trough_i = i
                 i += 1
+                trace_step(before, swing, i)
                 continue
 
             if swing.kind == "peak":
@@ -1157,6 +1177,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     restart_i = last_peak_i if last_peak is not None else i
                     reset()
                     i = restart_i
+                    trace_step(before, swing, i)
                     continue
 
                 if reversal_kind != "down" or reversal_start is None:
@@ -1178,6 +1199,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                         # Do not accept this lower/equal peak as the uptrend
                         # endpoint until the reversal candidate fails.
                         i += 1
+                        trace_step(before, swing, i)
                         continue
 
                     # A peak above the pending downtrend ceiling invalidates the
@@ -1186,6 +1208,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     last_peak_i = i
                     start_down_reversal(last_peak, last_peak_i)
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 # No trough after the current endpoint yet: same-kind peak
@@ -1194,6 +1217,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                 last_peak_i = i
                 start_down_reversal(last_peak, last_peak_i)
                 i += 1
+                trace_step(before, swing, i)
                 continue
 
         if mode == "candidate_down":
@@ -1204,6 +1228,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     if start_swing is not None and swing.value > start_swing.value:
                         start_down_candidate(swing, i)
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 # Once a trough exists, the candidate's structural ceiling may
@@ -1214,11 +1239,13 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                         last_peak = swing
                         last_peak_i = i
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 restart_i = last_trough_i if last_trough is not None else i
                 reset()
                 i = restart_i
+                trace_step(before, swing, i)
                 continue
 
             if swing.kind == "trough":
@@ -1228,6 +1255,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     last_trough = swing
                     last_trough_i = i
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 structural_ceiling = (
@@ -1243,6 +1271,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     mode = "active_down"
                     start_up_reversal(last_trough, last_trough_i)
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 if swing.value <= structural_ceiling + tol:
@@ -1250,11 +1279,13 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     # confirm the trend, but they also do not invalidate the
                     # candidate.
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 restart_i = last_trough_i if last_trough is not None else i
                 reset()
                 i = restart_i
+                trace_step(before, swing, i)
                 continue
 
         if mode == "active_down":
@@ -1276,12 +1307,14 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     ):
                         activate_up_from_reversal(swing, i)
                         i += 1
+                        trace_step(before, swing, i)
                         continue
 
                     append_downtrend_at(last_trough)
                     restart_i = last_trough_i if last_trough is not None else i
                     reset()
                     i = restart_i
+                    trace_step(before, swing, i)
                     continue
 
                 if reversal_kind != "up" or reversal_start is None:
@@ -1297,6 +1330,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     elif reversal_last_peak is not None and swing.value > reversal_last_peak.value + tol:
                         activate_up_from_reversal(swing, i)
                         i += 1
+                        trace_step(before, swing, i)
                         continue
 
                 # The downtrend ceiling can only stay flat or move lower.
@@ -1304,6 +1338,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     last_peak = swing
                     last_peak_i = i
                 i += 1
+                trace_step(before, swing, i)
                 continue
 
             if swing.kind == "trough":
@@ -1312,6 +1347,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     restart_i = last_trough_i if last_trough is not None else i
                     reset()
                     i = restart_i
+                    trace_step(before, swing, i)
                     continue
 
                 if reversal_kind != "up" or reversal_start is None:
@@ -1333,6 +1369,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                         # Do not accept this higher/equal trough as the
                         # downtrend endpoint until the reversal candidate fails.
                         i += 1
+                        trace_step(before, swing, i)
                         continue
 
                     # A trough below the pending uptrend floor invalidates the
@@ -1341,6 +1378,7 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                     last_trough_i = i
                     start_up_reversal(last_trough, last_trough_i)
                     i += 1
+                    trace_step(before, swing, i)
                     continue
 
                 # No peak after the current endpoint yet: same-kind trough
@@ -1349,10 +1387,12 @@ def _detect_trend_intervals_from_swings(swings: Sequence[_SwingPoint]) -> Tuple[
                 last_trough_i = i
                 start_up_reversal(last_trough, last_trough_i)
                 i += 1
+                trace_step(before, swing, i)
                 continue
 
         # Defensive forward progress for any unexpected branch.
         i += 1
+        trace_step(before, swing, i)
 
     if mode == "active_up":
         append_uptrend_at(last_peak)
@@ -1386,6 +1426,7 @@ def _valid_bar_segments(bars: Sequence[_Bar]) -> List[Tuple[int, int]]:
 def _detect_trend_intervals_from_swings_by_valid_segments(
     bars: Sequence[_Bar],
     swings: Sequence[_SwingPoint],
+    *, _trace=None,
 ) -> Tuple[List[_TrendInterval], List[_TrendInterval]]:
     """Detect directional trends without bridging invalid OHLC/source gaps."""
     uptrends: List[_TrendInterval] = []
@@ -1400,7 +1441,11 @@ def _detect_trend_intervals_from_swings_by_valid_segments(
         if not segment_swings:
             continue
 
-        segment_uptrends, segment_downtrends = _detect_trend_intervals_from_swings(segment_swings)
+        if _trace is not None:
+            _trace.segment(start_pos, end_pos, segment_swings)
+        segment_uptrends, segment_downtrends = _detect_trend_intervals_from_swings(segment_swings, _trace=_trace)
+        if _trace is not None:
+            _trace.finish_segment()
         uptrends.extend(segment_uptrends)
         downtrends.extend(segment_downtrends)
 
@@ -2296,6 +2341,7 @@ def _compute_historical(
     hr_min_inside_ratio: float = 0.8,
     min_range_swings: int = 4,
     hr_break_mode: str = "close",
+    _classification_trace=None,
 ) -> pd.DataFrame:
     """Compute Universal Trend Classifier outputs for a full dataframe.
 
@@ -2400,6 +2446,7 @@ def _compute_historical(
     uptrends, downtrends = _detect_trend_intervals_from_swings_by_valid_segments(
         engine._bars,
         trend_swings,
+        _trace=_classification_trace,
     )
     _apply_external_trend_intervals(result, uptrends, downtrends)
 
@@ -2410,6 +2457,7 @@ def _calculate_universal_trend_classifier(
     data: pd.DataFrame,
     parameters: Mapping[str, object],
     bindings: Mapping[str, object],
+    *, utc_context=None,
 ) -> tuple[tuple[pd.Series, ...], Mapping[str, object]]:
     from .common import _numeric_series
 
@@ -2453,5 +2501,13 @@ def _calculate_universal_trend_classifier(
     historical_parameters["range_peak_column"] = range_peak
     historical_parameters["range_trough_column"] = range_trough
 
-    result = _compute_historical(working, **historical_parameters)
-    return tuple(pd.Series(result[name], index=data.index) for name in _OUTPUT_COLUMNS), {}
+    from .utc_classification import _UtcTrace
+
+    trace = _UtcTrace(working, parameters, utc_context)
+    result = _compute_historical(working, **historical_parameters, _classification_trace=trace)
+    from .utc_episode_metrics import _build_metrics, _capture_evidence
+    classification = trace.report()
+    metrics = _build_metrics(classification, _capture_evidence(working, result, trace))
+    return tuple(pd.Series(result[name], index=data.index) for name in _OUTPUT_COLUMNS), {
+        "utc_classification": classification, "utc_episode_metrics": metrics
+    }

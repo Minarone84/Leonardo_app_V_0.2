@@ -461,7 +461,9 @@ class DataManagerArtifactCollectionDialog(QDialog):
         self.preview_summary.setText(
             f"Preview ready: {len(plan.root_logical_artifact_ids)} ROOT; "
             f"{len(plan.support_logical_artifact_ids)} SUPPORT; "
-            "checking Collection reuse..."
+            "checking Collection reuse...\n"
+            "Before publication: check selected Artifacts and required dependencies; "
+            "show actual check progress."
         )
         self._sync_controls()
         return True
@@ -483,7 +485,9 @@ class DataManagerArtifactCollectionDialog(QDialog):
         self._prediction_ready = True
         lines = [
             f"Preview ready: {len(plan.root_logical_artifact_ids)} ROOT; "
-            f"{len(plan.support_logical_artifact_ids)} SUPPORT"
+            f"{len(plan.support_logical_artifact_ids)} SUPPORT",
+            "Before publication: check new/replacement Artifacts and required "
+            "dependencies; retain unchanged members without payload rescans."
         ]
         if equivalent is None or equivalent.collection_id == self._collection_id:
             lines.append(

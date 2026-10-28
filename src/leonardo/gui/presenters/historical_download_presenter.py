@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QComboBox, QLineEdit
 
 from leonardo.connection import ConnectionApplicationService
 from leonardo.core.core_runner import TaskProgress, TaskResult
-from leonardo.data import canonicalize_market_id, normalize_symbol
+from leonardo.data import MarketId, canonicalize_market_id, normalize_symbol
 from leonardo.gui.windows.historical_download_manager_window import HistoricalDownloadManagerWindow
 from leonardo.gui.windows.ohlcv_download_preflight_window import (
     OhlcvDownloadPlanRow,
@@ -54,11 +54,15 @@ class HistoricalDownloadPresenter(QObject):
         view: HistoricalDownloadManagerWindow,
         connection_service: ConnectionApplicationService,
         download_service: HistoricalDownloadApplicationService,
+        on_ohlcv_evidence_changed: Callable[[MarketId], None] | None = None,
     ) -> None:
         super().__init__(view)
         self._view = view
         self._connections = connection_service
         self._downloads = download_service
+        self._on_ohlcv_evidence_changed = on_ohlcv_evidence_changed
+        self._active_download_request: DownloadBatchRequest | None = None
+        self._notified_ohlcv_markets: set[MarketId] = set()
         self._dispatcher = _QtCallbackDispatcher(self)
         self._preflight_window = OhlcvDownloadPreflightWindow(parent=view)
         self._task_window = OhlcvDownloadTaskWindow(parent=view)
@@ -152,6 +156,8 @@ class HistoricalDownloadPresenter(QObject):
             self._view.append_status(str(error))
 
     def _prepare_preflight(self) -> None:
+        if self._reveal_active_download():
+            return
         try:
             request = self._build_request()
         except (TypeError, ValueError) as error:
@@ -314,10 +320,14 @@ class HistoricalDownloadPresenter(QObject):
         self._preflight_window.set_status("Ready for confirmation" if report.can_download else "Blocked")
 
     def _start_confirmed_download(self) -> None:
+        if self._reveal_active_download():
+            return
         if self._request is None or self._preflight is None or not self._preflight.can_download:
             self._view.append_status("Download cannot start without a successful preflight.")
             return
         self._preflight_window.hide()
+        self._active_download_request = self._request
+        self._notified_ohlcv_markets.clear()
         self._last_cancel_event = None
         self._pending_progress = None
         self._task_window.clear_task_state()
@@ -348,6 +358,15 @@ class HistoricalDownloadPresenter(QObject):
         self._active_task_id = submission.task_id
         self._task_window.set_status("Running")
         self._view.append_status(f"Download task submitted: {submission.task_id}")
+
+    def _reveal_active_download(self) -> bool:
+        if self._active_task_id is None:
+            return False
+        self._task_window.show()
+        self._task_window.raise_()
+        self._task_window.activateWindow()
+        self._view.append_status("A historical OHLCV download is still running.")
+        return True
 
     def _cancel_active_preflight(self) -> None:
         task_id = self._active_preflight_task_id
@@ -387,10 +406,25 @@ class HistoricalDownloadPresenter(QObject):
             self._task_window.append_log_message("Task was already settled before cancellation.")
 
     def _on_task_progress(self, progress: TaskProgress) -> None:
+        if self._active_task_id is None or progress.task_id != self._active_task_id:
+            return
         event = (progress.details or {}).get("download_event")
         if not isinstance(event, DownloadProgressEvent):
             self._task_window.append_log_message(progress.message)
             return
+        request = self._active_download_request
+        if (
+            progress.task_id == self._active_task_id
+            and request is not None
+            and event.kind in ("page_persisted", "source_evidence_changed")
+            and event.timeframe in request.timeframes
+        ):
+            market = canonicalize_market_id(
+                request.exchange, request.market_type, request.symbol, event.timeframe
+            )
+            if (event.kind == "page_persisted"
+                    or event.details.get("market_id") == market.as_key()):
+                self._notify_ohlcv_evidence_changed(market)
         if event.kind == "item_cancelled":
             self._last_cancel_event = event
         if event.kind in _LIVE_PROGRESS_KINDS:
@@ -402,6 +436,13 @@ class HistoricalDownloadPresenter(QObject):
                 return
         self._flush_pending_progress()
         self._render_progress(event)
+
+    def _notify_ohlcv_evidence_changed(self, market_id: MarketId) -> None:
+        if market_id in self._notified_ohlcv_markets:
+            return
+        self._notified_ohlcv_markets.add(market_id)
+        if self._on_ohlcv_evidence_changed is not None:
+            self._on_ohlcv_evidence_changed(market_id)
 
     def _flush_pending_progress(self) -> None:
         event = self._pending_progress
@@ -431,8 +472,20 @@ class HistoricalDownloadPresenter(QObject):
             self._task_window.set_status(f"Preliminary validation: {event.details.get('status')}")
 
     def _on_download_result(self, result: TaskResult) -> None:
+        if self._active_task_id is None or result.task_id != self._active_task_id:
+            return
+        if (
+            result.task_id == self._active_task_id
+            and result.status == "completed"
+            and isinstance(result.value, DownloadBatchResult)
+        ):
+            for item in result.value.results:
+                if item.fetched_rows > 0:
+                    self._notify_ohlcv_evidence_changed(item.market_id)
+        self._progress_timer.stop()
         self._flush_pending_progress()
         self._active_task_id = None
+        self._active_download_request = None
         self._task_window.set_running(False)
         if result.status == "completed" and isinstance(result.value, DownloadBatchResult):
             self._task_window.set_status("Completed")
@@ -527,8 +580,15 @@ def _success_recap(result: DownloadBatchResult) -> str:
                 f"  Downloaded rows: {item.fetched_rows}",
                 f"  Downloaded range: {_range_text(item.downloaded_first_ts_ms, item.downloaded_last_ts_ms)}",
                 f"  Preliminary validation: {item.preliminary_validation_status}",
-                "  Canonical validation: unknown",
-                "  OHLCV Maintenance acceptance is required before trusted use.",
+                (
+                    "  No new closed candles were needed."
+                    if item.up_to_date else "  Canonical validation: unknown"
+                ),
+                (
+                    "  Existing persistence and validation evidence unchanged."
+                    if item.up_to_date
+                    else "  OHLCV Maintenance acceptance is required before trusted use."
+                ),
                 "",
             )
         )

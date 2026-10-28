@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 from leonardo.artifacts import (
     ArtifactMetadataV1,
     ManagedArtifactVersionKey,
+    OHLCVSourceFingerprintV1,
 )
 from leonardo.data import MarketId
 from leonardo.data_manager import (
@@ -111,6 +112,7 @@ def _artifact_revision() -> ArtifactCollectionRevisionV1:
         "root_logical_artifact_ids": (ROOT_LOGICAL_ID,),
         "support_logical_artifact_ids": (SUPPORT_LOGICAL_ID,),
         "members": (support_member, root_member),
+        "dependency_edges": (),
         "selected_outputs": (
             ArtifactCollectionOutputV1(
                 ROOT_LOGICAL_ID, "ema_20", "ema_column"
@@ -120,9 +122,18 @@ def _artifact_revision() -> ArtifactCollectionRevisionV1:
             ),
         ),
         "presentation_order": ("sma_column", "ema_column"),
+        "source_portable_recipe_ids": (SUPPORT_RECIPE_ID, ROOT_RECIPE_ID),
         "source_recipe_collection_id": "source_collection",
         "source_recipe_collection_revision_id": "9" * 64,
+        "source_ohlcv": OHLCVSourceFingerprintV1(
+            MARKET, "1" * 64, "2" * 64, 2, 0, 3_600_000,
+            "committed", "ok", "1.0",
+        ),
         "validation_state": "valid",
+        "database_ready": True,
+        "previous_revision_id": None,
+        "schema_version": "1.0",
+        "object_type": "artifact_collection_revision",
         "first_timestamp_ms": 0,
         "last_timestamp_ms": 3_600_000,
         "created_at_utc": datetime(2026, 8, 28, tzinfo=UTC),
